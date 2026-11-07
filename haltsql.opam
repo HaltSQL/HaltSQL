@@ -21,7 +21,6 @@ depends: [
   "alcotest" {with-test}
   "qcheck-core" {with-test}
   "qcheck-alcotest" {with-test}
-  "bisect_ppx" {with-test}
   "odoc" {with-doc}
 ]
 build: [

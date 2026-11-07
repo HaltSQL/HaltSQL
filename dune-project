@@ -39,8 +39,7 @@
    (>= 1.1))
   (alcotest :with-test)
   (qcheck-core :with-test)
-  (qcheck-alcotest :with-test)
-  (bisect_ppx :with-test)))
+  (qcheck-alcotest :with-test)))
 
 (package
  (name haltsql-server)
