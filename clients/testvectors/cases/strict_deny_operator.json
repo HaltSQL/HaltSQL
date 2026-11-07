@@ -1,0 +1,55 @@
+{
+  "name": "strict_deny_operator",
+  "description": "Operator outside the allowlist.",
+  "policy_file": "test/fixtures/policies/strict.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = $1 AND status LIKE 'a%' LIMIT 10",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "strict"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_OPERATOR_DENIED",
+        "message": "operator ~~ is not in the policy's operator allowlist",
+        "rule": "operators.allowlist",
+        "loc": 54,
+        "hint": "Rewrite the expression without the ~~ operator."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "strict",
+      "version": "sha256:4593f86c3ad56f1b0f8a71934073e8f96ef48f695dfc4afa2cfa3833f6f8aa22"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.id",
+      "app.orders.status",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "97aba9eb53b2fabc",
+    "sql_sha256": "9977b0d0fcbfebcb05dae57233698e3cb5fbac3578f921daad7efa3e5bb0876d",
+    "elapsed_us": 236
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

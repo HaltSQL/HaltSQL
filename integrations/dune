@@ -1,0 +1,3 @@
+; Python framework integrations (not OCaml): not scanned by dune.
+
+(data_only_dirs langchain llamaindex vanna)

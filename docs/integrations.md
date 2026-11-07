@@ -1,8 +1,32 @@
 # Integrations
 
-The sidecar's HTTP API is small: one `POST /v1/verify` call per query. These
-snippets show how to call it from common languages and agent frameworks. They
-are sketches to adapt, not published SDKs; official clients are planned.
+The sidecar's HTTP API is small: one `POST /v1/verify` call per query.
+
+## Official clients
+
+Use these rather than the sketches below. Every one fails closed, checks that
+the verdict's `sql_sha256` matches the SQL it sent, and has a guarded-execute
+helper that runs exactly the verified string with `bind_params`:
+
+| Language / tool | Location | Guide |
+|---|---|---|
+| Python (sync + async; psycopg 3, asyncpg, SQLAlchemy; local CLI verifier) | [`clients/python`](../clients/python) | [sdk-python.md](sdk-python.md) |
+| TypeScript / Node.js (node-postgres) | [`clients/typescript`](../clients/typescript) | [sdk-typescript.md](sdk-typescript.md) |
+| Go (`database/sql`, pgx, lib/pq) | [`clients/go`](../clients/go) | [sdk-go.md](sdk-go.md) |
+| Java (PgJDBC) | [`clients/java`](../clients/java) | [sdk-java.md](sdk-java.md) |
+| MCP server (`haltsql-mcp`) | [`clients/mcp`](../clients/mcp) | [mcp.md](mcp.md) |
+| LangChain | [`integrations/langchain`](../integrations/langchain) | [README](../integrations/langchain/README.md) |
+| LlamaIndex | [`integrations/llamaindex`](../integrations/llamaindex) | [README](../integrations/llamaindex/README.md) |
+| Vanna | [`integrations/vanna`](../integrations/vanna) | [README](../integrations/vanna/README.md) |
+
+Clients can check their behaviour against the shared request/verdict vectors
+in [`clients/testvectors`](../clients/testvectors). Drivers that cannot be
+changed at all can connect through [haltsql-proxy](proxy.md) instead.
+
+## Sketches
+
+The snippets below show the raw protocol for languages and frameworks without
+an official client. They are sketches to adapt.
 
 Every integration follows the same rules:
 

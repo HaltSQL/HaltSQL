@@ -1,0 +1,48 @@
+{
+  "name": "saas_allow_global_table",
+  "description": "Table without a tenant column; * expands from the catalog; no bind params.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT * FROM currencies LIMIT 5",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.currencies"
+    ],
+    "columns": [
+      "app.currencies.code",
+      "app.currencies.decimals",
+      "app.currencies.name",
+      "app.currencies.symbol"
+    ],
+    "bind_params": [],
+    "fingerprint": "69b9b66d4459bd6f",
+    "sql_sha256": "c7de903d7bf17f9e1cdb2faa6e6c6d544fc9216265be92b7fff3aca3b2e7066b",
+    "elapsed_us": 213
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

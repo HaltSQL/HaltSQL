@@ -1,0 +1,54 @@
+{
+  "name": "literal_deny_other_tenant",
+  "description": "Literal tenancy with another tenant's value.",
+  "policy_file": "test/fixtures/policies/saas_literal.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = 'globex' LIMIT 10",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas-literal"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_TENANT_MISMATCH",
+        "message": "orders.tenant_id is compared to 'globex', which is not the caller's tenant value (table app.orders)",
+        "rule": "tenancy.mismatch",
+        "loc": 38,
+        "hint": "Compare orders.tenant_id only to the tenant value from the request context."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas-literal",
+      "version": "sha256:3cadf16e091eebd8984df96b47388034e2e8cba13e15f5994646f78a68d68b5e"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "53a2755a1ded78c5",
+    "sql_sha256": "7da177fc86f36dda9362fc7271092242e29bccd91b03dc63af1f52ab9248c032",
+    "elapsed_us": 231
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

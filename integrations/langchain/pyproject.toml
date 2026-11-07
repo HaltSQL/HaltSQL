@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haltsql-langchain"
+version = "0.1.0"
+description = "HaltSQL guard for LangChain SQL tools and SQLDatabase"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = ["haltsql[psycopg]>=0.1.0"]
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.3", "langchain-community>=0.3", "sqlalchemy>=2"]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+haltsql_langchain = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs the lab Postgres (skipped when unavailable)"]

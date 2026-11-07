@@ -1,0 +1,54 @@
+{
+  "queryType": "INDEX",
+  "approximateCount": 4,
+  "entities": [
+    {
+      "typeName": "Column",
+      "guid": "1d1c6bb5-6f1f-4b0c-8a7e-1d5d3a0d9c11",
+      "status": "ACTIVE",
+      "attributes": {
+        "name": "email",
+        "qualifiedName": "default/postgres/1729912345/saas/app/customers/email",
+        "tableName": "customers",
+        "schemaName": "app",
+        "databaseName": "saas",
+        "dataType": "text",
+        "order": 4
+      },
+      "classifications": [
+        { "typeName": "tQoN8XtNIRWkGWHgyHxYQx", "displayName": "PII", "entityGuid": "1d1c6bb5-6f1f-4b0c-8a7e-1d5d3a0d9c11", "propagate": true }
+      ],
+      "meanings": [ { "termGuid": "a0e5c1f2-0000-4b4b-9a9a-7f7f7f7f7f7f", "displayText": "Email Address", "relationGuid": "c1" } ]
+    },
+    {
+      "typeName": "Column",
+      "guid": "2e2d7cc6-7020-4c1d-9b8f-2e6e4b1e0d22",
+      "status": "ACTIVE",
+      "attributes": {
+        "name": "full_name",
+        "qualifiedName": "default/postgres/1729912345/saas/app/users/full_name",
+        "dataType": "text"
+      },
+      "classificationNames": ["Confidential"],
+      "meaningNames": []
+    },
+    {
+      "typeName": "Column",
+      "guid": "3f3e8dd7-8131-4d2e-8c90-3f7f5c2f1e33",
+      "status": "ACTIVE",
+      "attributes": {
+        "name": "plan",
+        "qualifiedName": "default/postgres/1729912345/saas/app/orgs/plan",
+        "tableName": "orgs",
+        "schemaName": "app"
+      },
+      "classifications": [ { "typeName": "Certified" } ]
+    },
+    {
+      "typeName": "Table",
+      "guid": "4a4f9ee8-9242-4e3f-9da1-4a8a6d3a2f44",
+      "attributes": { "name": "customers", "qualifiedName": "default/postgres/1729912345/saas/app/customers" },
+      "classifications": [ { "typeName": "PII" } ]
+    }
+  ]
+}

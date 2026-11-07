@@ -18,6 +18,25 @@ depends: [
   "yaml" {>= "3.0"}
   "digestif" {>= "1.0"}
   "cmdliner" {>= "1.1"}
+  "lwt" {>= "5.6"}
+  "cohttp" {>= "6.0"}
+  "cohttp-lwt" {>= "6.0"}
+  "cohttp-lwt-unix" {>= "6.0"}
+  "http" {>= "6.0"}
+  "conduit-lwt-unix" {>= "7.0"}
+  "uri" {>= "4.0"}
+  "base64" {>= "3.5"}
+  "ptime" {>= "1.0"}
+  "x509" {>= "1.0"}
+  "tls" {>= "1.0"}
+  "tls-lwt" {>= "1.0"}
+  "ca-certs" {>= "1.0"}
+  "domain-name" {>= "0.4"}
+  "ipaddr" {>= "5.0"}
+  "eqaf" {>= "0.9"}
+  "mirage-crypto-pk" {>= "1.0"}
+  "mirage-crypto-ec" {>= "1.0"}
+  "mirage-crypto-rng" {>= "1.0"}
   "alcotest" {with-test}
   "qcheck-core" {with-test}
   "qcheck-alcotest" {with-test}

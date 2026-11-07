@@ -1,0 +1,44 @@
+; haltsql-proxy tests.
+;  - test_pgwire_unit: message codecs, SCRAM (RFC 7677 vector), config validation,
+;    enforcement decisions and statement-state bookkeeping. No network.
+;  - test_proxy_integration: real proxy binary against the lab Postgres
+;    (make -C lab up), driven by psycopg 3 (lab/.venv) and a raw protocol client.
+;    Skips cleanly when Postgres or the venv is unavailable.
+
+(executable
+ (name gencerts)
+ (modules gencerts)
+ (libraries
+  x509
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  mirage-crypto-pk
+  mirage-crypto-ec
+  ptime
+  ptime.clock.os))
+
+(test
+ (name test_pgwire_unit)
+ (package haltsql-proxy)
+ (modules test_pgwire_unit)
+ (libraries haltsql_pgwire haltsql alcotest yojson)
+ (deps
+  (source_tree fixtures)))
+
+(test
+ (name test_proxy_integration)
+ (package haltsql-proxy)
+ (modules test_proxy_integration)
+ (libraries haltsql_pgwire haltsql alcotest yojson unix)
+ (deps
+  pgclient.py
+  (source_tree fixtures)
+  (file ../../lab/schemas/saas_shared.sql))
+ (action
+  (setenv
+   HALTSQL_PROXY_BIN
+   %{dep:../../bin/proxy/main.exe}
+   (setenv
+    HALTSQL_GENCERTS_BIN
+    %{dep:gencerts.exe}
+    (run %{test})))))

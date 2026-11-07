@@ -244,7 +244,18 @@ let all_examples_cases =
               let p = Filename.concat dir f in
               if Sys.is_directory p then files p else [ p ])
         in
-        let all = files examples in
+        (* examples/ci holds CI-system files (GitHub/GitLab/pre-commit) and
+           examples/metadata holds third-party catalog exports (dbt, DataHub, ...):
+           neither are HaltSQL documents. They are covered by test/bundle and
+           test/catalog_tools. *)
+        let not_haltsql_docs = [ "ci"; "metadata" ] in
+        let all =
+          Array.to_list (Sys.readdir examples)
+          |> List.filter (fun d -> not (List.mem d not_haltsql_docs))
+          |> List.concat_map (fun d ->
+              let p = Filename.concat examples d in
+              if Sys.is_directory p then files p else [ p ])
+        in
         Alcotest.(check bool) "found" true (List.length all >= 10);
         List.iter
           (fun f ->
@@ -261,7 +272,8 @@ let all_examples_cases =
                         ~env:(fun n ->
                           if n = "HALTSQL_ANALYTICS_TOKEN_HASH" then
                             Some (String.make 64 'c')
-                          else if n = "OTEL_EXPORTER_OTLP_ENDPOINT" then Some "x"
+                          else if n = "OTEL_EXPORTER_OTLP_ENDPOINT" then
+                            Some "http://otel:4318"
                           else None)
                         f))
             | Some (`String "Catalog") -> ignore (get_ok (Catalog_load.of_file f))

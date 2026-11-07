@@ -1,0 +1,28 @@
+# Example ProxyConfig (also the one shown in docs/proxy.md). Validated by
+# test_pgwire_unit with UPSTREAM_PASSWORD set.
+apiVersion: haltsql.dev/v1
+kind: ProxyConfig
+listen: 127.0.0.1:6432
+upstream:
+  host: 127.0.0.1
+  port: 5417
+  database: app
+  user: haltsql_service
+  password: ${env:UPSTREAM_PASSWORD}
+  tls: { mode: disable }
+policies:
+  - path: ./policy.yaml
+auth:
+  method: scram
+  users:
+    - name: analytics-agent
+      scram_verifier: "SCRAM-SHA-256$4096:qmWzmR9DhbS129Oe/UkB8Q==$b9w8QFAIOZmxIVLOl4IOjiyhkITtKqqWfrUCKRi/WYE=:Ni8fNtB8vx2gn8dIhNuYtm9i7TvMbeuJHKpH5eqU7Tk="
+      policy: proxy-test
+      context: { tenant_id: acme }
+limits:
+  max_connections: 200
+  max_message_bytes: 1048576
+  idle_timeout_seconds: 300
+deny_sqlstate: "42501"
+audit: { type: stdout, log_raw_sql: false }
+logging: { level: info }

@@ -61,6 +61,12 @@ let tokens : Haltsql.Config.token list =
     };
   ]
 
+let file_sink p =
+  {
+    Haltsql.Config.sink = Haltsql.Config.Sink_file p;
+    on_error = Haltsql.Config.Fail_closed;
+  }
+
 let start ~overrides ~policy_files =
   let sources = { State.config_file = None; policy_files; overrides } in
   match State.load sources with
@@ -81,6 +87,7 @@ let st_a, port_a, _stop_a =
         tokens;
         allow_unauthenticated = false;
         audit_sinks = [ Haltsql.Config.Audit_file audit_path ];
+        sinks = [ file_sink audit_path ];
         reload_watch = true;
         max_request_bytes = 4096;
       })
@@ -94,6 +101,7 @@ let st_b, port_b, _stop_b =
         allow_unauthenticated = true;
         default_policy = Some "shop";
         audit_sinks = [ Haltsql.Config.Audit_file audit_path_b ];
+        sinks = [ file_sink audit_path_b ];
         log_raw_sql = true;
         reload_watch = false;
       })
@@ -401,6 +409,8 @@ let audit_chain () =
       "hash";
     ];
   Alcotest.(check bool) "caller" true (member "caller" first = `String "shop-agent");
+  Alcotest.(check bool) "caller_type" true (member "caller_type" first = `String "token");
+  Alcotest.(check bool) "subject" true (member "subject" first = `Null);
   Alcotest.(check bool) "no raw sql" true (member "sql" first = `Null);
   (* field order: hash last, prev_hash just before *)
   (match first with
@@ -413,6 +423,9 @@ let audit_chain () =
   let b = Yojson.Safe.from_string (List.hd (audit_lines audit_path_b)) in
   Alcotest.(check bool) "raw sql" true (member "sql" b = `String "DROP TABLE x");
   Alcotest.(check bool) "anonymous" true (member "caller" b = `String "anonymous");
+  Alcotest.(check bool)
+    "anonymous type" true
+    (member "caller_type" b = `String "anonymous");
   (match Audit.verify_file audit_path_b with
   | Ok _ -> ()
   | Error e -> Alcotest.failf "B chain: %s" e.problem);
@@ -465,6 +478,36 @@ let audit_resume () =
   | Ok n -> Alcotest.(check int) "3 records" 3 n
   | Error e -> Alcotest.failf "resume broke chain at %d: %s" e.line_no e.problem
 
+let audit_buffer_mode () =
+  (* on_error: buffer keeps records when the backend fails and writes them,
+     chained in order, once it recovers. *)
+  let lines = ref [] and fail = ref true in
+  let sink =
+    Audit.custom ~on_error:Haltsql.Config.Buffer ~name:"mem"
+      ~write:(fun l -> if !fail then failwith "down" else lines := l :: !lines)
+      ~close:ignore ()
+  in
+  let d n = Audit.deliver sink [ ("n", `Int n) ] in
+  Alcotest.(check bool) "buffered 1" true (d 1 = Audit.Buffered);
+  Alcotest.(check bool) "buffered 2" true (d 2 = Audit.Buffered);
+  fail := false;
+  Alcotest.(check bool) "written 3" true (d 3 = Audit.Written);
+  let written = List.rev_map String.trim !lines in
+  Alcotest.(check int) "all three written" 3 (List.length written);
+  (match Audit.verify_lines written with
+  | Ok n -> Alcotest.(check int) "chain" 3 n
+  | Error e -> Alcotest.failf "chain: %s" e.problem);
+  Alcotest.(check (list string))
+    "order" [ "1"; "2"; "3" ]
+    (List.map
+       (fun l -> Yojson.Safe.to_string (member "n" (Yojson.Safe.from_string l)))
+       written);
+  (* fail_closed reports failure immediately *)
+  let fc = Audit.custom ~name:"fc" ~write:(fun _ -> failwith "down") ~close:ignore () in
+  match Audit.deliver fc [ ("n", `Int 1) ] with
+  | Audit.Failed e -> Alcotest.(check string) "message" "down" e
+  | _ -> Alcotest.fail "expected Failed"
+
 let audit_failure_fails_closed () =
   (* A sink whose fd is closed makes writes fail: the request must get 503. *)
   let path = tmp "closed.jsonl" in
@@ -478,6 +521,7 @@ let audit_failure_fails_closed () =
             c with
             allow_unauthenticated = true;
             audit_sinks = [ Haltsql.Config.Audit_file path ];
+            sinks = [ file_sink path ];
           });
     }
   in
@@ -490,7 +534,7 @@ let audit_failure_fails_closed () =
   List.iter Audit.close st.sinks;
   (* A read-only descriptor: every append fails with EBADF. *)
   let ro = Unix.openfile path [ Unix.O_RDONLY ] 0 in
-  let st = { st with sinks = [ { Audit.name = path; fd = ro; prev = Audit.genesis } ] } in
+  let st = { st with sinks = [ Audit.of_fd ~name:path ro ] } in
   let fd, port = Server.bind_listen "127.0.0.1:0" in
   let stop, stopper = Lwt.wait () in
   Lwt.async (fun () -> Server.serve st fd ~stop);
@@ -586,6 +630,77 @@ let manual_reload () =
   match State.reload st_b with
   | Ok () -> ()
   | Error e -> Alcotest.failf "reload: %s" (String.concat ";" e)
+
+(* Regression: server.auth.allow_unauthenticated from the config file must be
+   applied on reload. Previously Http.static_caller read the startup value, so
+   switching anonymous access off with SIGHUP silently had no effect. *)
+let reload_disables_anonymous () =
+  let cfg_path = tmp "anon-reload.yaml" in
+  let audit = tmp "anon-reload.jsonl" in
+  let write_cfg allow =
+    write_file cfg_path
+      (Printf.sprintf
+         "apiVersion: haltsql.dev/v1\n\
+          kind: Config\n\
+          server:\n\
+         \  auth:\n\
+         \    tokens:\n\
+         \      - {name: shop-agent, token_sha256: %s, policy: shop}\n\
+         \    allow_unauthenticated: %b\n\
+          policies:\n\
+         \  - path: %s\n\
+          default_policy: shop\n"
+         (sha token_a) allow shop_path)
+  in
+  write_cfg true;
+  let sources =
+    {
+      State.config_file = Some cfg_path;
+      policy_files = [];
+      overrides =
+        (fun c ->
+          {
+            c with
+            audit_sinks = [ Haltsql.Config.Audit_file audit ];
+            sinks = [ file_sink audit ];
+            reload_watch = false;
+          });
+    }
+  in
+  let cfg =
+    match State.load sources with
+    | Ok c -> c
+    | Error e -> Alcotest.failf "load: %s" (String.concat ";" e)
+  in
+  Alcotest.(check bool) "starts open" true cfg.allow_unauthenticated;
+  let st = State.create ~sources cfg in
+  let fd, port = Server.bind_listen "127.0.0.1:0" in
+  let stop, stopper = Lwt.wait () in
+  Lwt.async (fun () -> Server.serve st fd ~stop);
+  run
+    (let* r = request ~meth:`POST ~body:(verify_body "DROP TABLE x") port "/v1/verify" in
+     check_status "anonymous accepted before reload" 200 r;
+     write_cfg false;
+     (match State.reload st with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "reload: %s" (String.concat ";" e));
+     Alcotest.(check bool) "snapshot updated" false st.snap.allow_unauthenticated;
+     let* r = request ~meth:`POST ~body:(verify_body "DROP TABLE x") port "/v1/verify" in
+     check_status "anonymous rejected after reload" 401 r;
+     let* r =
+       request ~meth:`POST ~token:token_a ~body:(verify_body "DROP TABLE x") port
+         "/v1/verify"
+     in
+     check_status "token still accepted" 200 r;
+     (* and back on again *)
+     write_cfg true;
+     (match State.reload st with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "reload: %s" (String.concat ";" e));
+     let* r = request ~meth:`POST ~body:(verify_body "DROP TABLE x") port "/v1/verify" in
+     check_status "anonymous accepted after re-enable" 200 r;
+     Lwt.wakeup_later stopper ();
+     Lwt.return_unit)
 
 (* ---- subprocess: the real binary ---- *)
 
@@ -687,12 +802,13 @@ let subprocess_signals () =
   | Error e -> Alcotest.failf "stdout audit chain: %s" e.problem);
   if not (contains (read_file err) "shutting down") then Alcotest.fail "no shutdown log"
 
-let subprocess_tls_refused () =
+(* TLS is built in now; unreadable certificate material must still refuse to
+   start (exit 2) with an error naming the setting. *)
+let subprocess_tls_bad_material () =
   let pid, _, err = spawn [ "--config"; fx "tls.yaml" ] in
   Alcotest.(check int) "exit 2" 2 (wait_exit pid);
   let s = read_file err in
-  if (not (contains s "TLS")) || not (contains s "deploy/README.md") then
-    Alcotest.failf "unclear TLS error:\n%s" s
+  if not (contains s "server.tls.cert") then Alcotest.failf "unclear TLS error:\n%s" s
 
 let subprocess_bad_config () =
   let pid, _, _ = spawn [ "--policy"; fx "missing.yaml" ] in
@@ -752,16 +868,18 @@ let () =
         [
           tc "hash chain + tamper detection" audit_chain;
           tc "fail closed" audit_failure_fails_closed;
+          tc "buffer mode" audit_buffer_mode;
         ] );
       ( "reload",
         [
           tc "file watch: success and failure" hot_reload_watch;
           tc "manual (SIGHUP path)" manual_reload;
+          tc "allow_unauthenticated off on reload" reload_disables_anonymous;
         ] );
       ( "process",
         [
           tc "SIGHUP reload, SIGTERM shutdown" subprocess_signals;
-          tc "TLS refused" subprocess_tls_refused;
+          tc "TLS with unreadable cert exits 2" subprocess_tls_bad_material;
           tc "bad config exits 2" subprocess_bad_config;
         ] );
     ]

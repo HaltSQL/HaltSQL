@@ -26,13 +26,13 @@ cases:
     tags: [params]
   - name: tenant param reused for non-tenant column
     sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $1 LIMIT 10
-    expect: allow
-    bind: [{ param: 1, value: acme }]
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
     tags: [params, ambiguous]
   - name: tenant param in select list
     sql: SELECT id, $1 AS who FROM orders WHERE tenant_id = $1 LIMIT 10
-    expect: allow
-    bind: [{ param: 1, value: acme }]
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
     tags: [params, ambiguous]
   - name: lone param in select list
     sql: SELECT $1 LIMIT 1
@@ -83,8 +83,8 @@ cases:
     tags: [params]
   - name: param under OR alongside tenant param
     sql: SELECT id FROM orders WHERE tenant_id = $1 AND (status = 'paid' OR $1 = 'acme') LIMIT 10
-    expect: allow
-    bind: [{ param: 1, value: acme }]
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
     tags: [params, ambiguous]
   - name: param with cast in non-tenant position
     sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at > $2::timestamptz LIMIT 10

@@ -1,0 +1,52 @@
+{
+  "name": "saas_allow_aggregate",
+  "description": "Aggregates from the presets.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT status, count(*) AS n, sum(total_cents) FROM orders WHERE tenant_id = $1 GROUP BY status ORDER BY n DESC LIMIT 10",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.status",
+      "app.orders.tenant_id",
+      "app.orders.total_cents"
+    ],
+    "bind_params": [
+      {
+        "param": 1,
+        "value": "acme"
+      }
+    ],
+    "fingerprint": "7215fd5d783983e4",
+    "sql_sha256": "d5098b28dbb3ca0a64b9752144f50945e47ee32fdc6add27edb23a61364688b2",
+    "elapsed_us": 331
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

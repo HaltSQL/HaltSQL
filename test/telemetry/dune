@@ -1,0 +1,20 @@
+; haltsql-server.telemetry tests: gzip, traceparent, OTLP JSON encoding, and the
+; exporter against an in-process fake OTLP collector (batching, queue bound,
+; retry/Retry-After, timeouts, gzip, metrics).
+
+(test
+ (name test_telemetry)
+ (package haltsql-server)
+ (libraries
+  haltsql_telemetry
+  haltsql.core
+  haltsql.load
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  unix))

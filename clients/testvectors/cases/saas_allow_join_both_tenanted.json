@@ -1,0 +1,56 @@
+{
+  "name": "saas_allow_join_both_tenanted",
+  "description": "Join where every tenant-scoped table carries its own predicate.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 20",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.customers",
+      "app.orders"
+    ],
+    "columns": [
+      "app.customers.id",
+      "app.customers.name",
+      "app.customers.tenant_id",
+      "app.orders.customer_id",
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [
+      {
+        "param": 1,
+        "value": "acme"
+      }
+    ],
+    "fingerprint": "ed9d7500186cb43c",
+    "sql_sha256": "e02683e9c4025b3f2413c2c8ff480c8e3fe7dc7ff334e954c9fa27c8f9f82ada",
+    "elapsed_us": 273
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

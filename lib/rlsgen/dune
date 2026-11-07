@@ -1,0 +1,19 @@
+(library
+ (name haltsql_rlsgen)
+ (public_name haltsql.rlsgen)
+ (libraries
+  haltsql.core
+  yojson
+  digestif
+  lwt
+  lwt.unix
+  tls
+  tls-lwt
+  x509
+  ca-certs
+  domain-name
+  ipaddr
+  mirage-crypto-rng
+  mirage-crypto-rng.unix)
+ (instrumentation
+  (backend bisect_ppx)))

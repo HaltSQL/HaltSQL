@@ -1,0 +1,56 @@
+{
+  "name": "composite_deny_one_key_missing",
+  "description": "Composite keys: workspace predicate missing.",
+  "policy_file": "test/fixtures/policies/composite.yaml",
+  "request": {
+    "sql": "SELECT id, name FROM projects WHERE org_id = $1 LIMIT 10",
+    "context": {
+      "org_id": "o1",
+      "workspace_id": "w9"
+    },
+    "policy": "composite"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_TENANT_MISSING",
+        "message": "app.projects (as projects) has no provable tenant predicate on projects.workspace_id in the same SELECT",
+        "rule": "tenancy.predicate",
+        "loc": 21,
+        "hint": "Add `WHERE projects.workspace_id = $1` as a top-level AND condition inside the same SELECT that reads app.projects (not in an outer query, not under OR/NOT, not in the ON of the preserved side of an outer join)."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "composite",
+      "version": "sha256:31505be72339317c38df2d8dc63a7b8eb5a689ba6586f894b1536e1dbf731ae0"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.projects"
+    ],
+    "columns": [
+      "app.projects.id",
+      "app.projects.name",
+      "app.projects.org_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "aba0e67693e0e2a0",
+    "sql_sha256": "20ea9b81409ebcceb5e3365d844982e31e690b607e6b8c0dcb6ba129ccd9f3f0",
+    "elapsed_us": 241
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

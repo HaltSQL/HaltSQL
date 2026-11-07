@@ -1,0 +1,51 @@
+{
+  "total": 4,
+  "offset": 0,
+  "limit": 1000,
+  "results": [
+    {
+      "id": "0193d5a2-7c41-7b5e-9a1f-1c2d3e4f5a61",
+      "name": "email",
+      "displayName": "email",
+      "fullName": "saas>app>customers>email",
+      "type": { "id": "00000000-0000-0000-0000-000000031008", "resourceType": "AssetType", "name": "Column" },
+      "domain": { "name": "saas Physical Data Dictionary" },
+      "status": { "name": "Accepted" },
+      "attributes": [
+        { "type": { "name": "Technical Data Type" }, "value": "text" },
+        { "type": { "name": "Personally Identifiable Information" }, "value": true }
+      ],
+      "tags": [ { "name": "customer-contact" } ]
+    },
+    {
+      "id": "0193d5a2-7c41-7b5e-9a1f-1c2d3e4f5a62",
+      "name": "phone",
+      "fullName": "saas>app>customers>phone",
+      "type": { "name": "Column" },
+      "attributes": { "Data Classification": ["Restricted"], "Description": "Customer phone number" },
+      "classificationMatches": [
+        { "classification": { "name": "Phone Number" }, "status": "ACCEPTED" }
+      ]
+    },
+    {
+      "id": "0193d5a2-7c41-7b5e-9a1f-1c2d3e4f5a63",
+      "name": "country",
+      "fullName": "saas>app>customers>country",
+      "type": { "name": "Column" },
+      "attributes": { "Data Classification": "Public" },
+      "classificationMatches": [
+        { "classification": { "name": "Email Address" }, "status": "REJECTED" }
+      ]
+    },
+    {
+      "id": "0193d5a2-7c41-7b5e-9a1f-1c2d3e4f5a64",
+      "name": "number",
+      "fullName": "saas>app>invoices>number",
+      "type": { "name": "Column" },
+      "relations": [
+        { "type": { "role": "represents", "coRole": "is represented by" },
+          "target": { "name": "Customer Personal Reference", "type": { "name": "Business Term" } } }
+      ]
+    }
+  ]
+}

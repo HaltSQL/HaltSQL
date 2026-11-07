@@ -82,23 +82,133 @@ let read_body ~max (req : Cohttp.Request.t) body =
           Lwt.return_ok (Buffer.contents buf))
         (function Too_large -> Lwt.return_error `Too_large | e -> Lwt.reraise e)
 
-(* ---- caller resolution ---- *)
+(* ---- caller resolution ----
 
-type caller = { caller_name : string; pinned : string option }
+   Order: a verified client certificate mapped to an mTLS identity; then the
+   bearer token: a JWT whose issuer matches a configured OIDC provider is
+   verified as such, anything else is checked against the static token
+   hashes. Callers with an authenticated context (OIDC claims, mTLS static
+   context) may only add the request-body context fields they are allowed. *)
 
-let resolve_caller (st : State.t) req =
-  let header = Cohttp.Header.get (Cohttp.Request.headers req) "authorization" in
+type caller = {
+  caller_name : string;
+  caller_type : string;  (** token | oidc | mtls | anonymous *)
+  subject : string option;  (** OIDC sub / SPIFFE id / certificate CN *)
+  pinned : string option;
+  auth_context : (Context.t * string list) option;
+      (** authenticated context and the body fields still allowed; [None]: the body
+          supplies the whole context (static tokens, anonymous) *)
+}
+
+type auth_failure =
+  | Unauthenticated of string  (** 401 *)
+  | Auth_unavailable of string  (** 503: e.g. the IdP's keys cannot be fetched *)
+
+let bearer_token header =
+  match header with
+  | None -> `Missing
+  | Some h ->
+      let h = String.trim h in
+      let prefix = "bearer " in
+      let lp = String.length prefix in
+      if String.length h <= lp || String.lowercase_ascii (String.sub h 0 lp) <> prefix
+      then `Invalid
+      else
+        let t = String.trim (String.sub h lp (String.length h - lp)) in
+        if t = "" then `Invalid else `Token t
+
+let static_caller (st : State.t) header =
   match Auth.authenticate st.snap.tokens header with
-  | Auth.Token t -> Ok { caller_name = t.token_name; pinned = Some t.token_policy }
-  | Auth.Missing when st.cfg.allow_unauthenticated ->
-      Ok { caller_name = "anonymous"; pinned = None }
-  | Auth.Missing -> Error "missing bearer token"
-  | Auth.Invalid -> Error "invalid bearer token"
+  | Auth.Token t ->
+      Metrics.observe_auth ~meth:"token" ~result:"ok";
+      Ok
+        {
+          caller_name = t.token_name;
+          caller_type = "token";
+          subject = None;
+          pinned = Some t.token_policy;
+          auth_context = None;
+        }
+  | Auth.Missing when st.snap.allow_unauthenticated ->
+      Metrics.observe_auth ~meth:"anonymous" ~result:"ok";
+      Ok
+        {
+          caller_name = "anonymous";
+          caller_type = "anonymous";
+          subject = None;
+          pinned = None;
+          auth_context = None;
+        }
+  | Auth.Missing ->
+      Metrics.observe_auth ~meth:"none" ~result:"rejected";
+      Error (Unauthenticated "missing bearer token")
+  | Auth.Invalid ->
+      Metrics.observe_auth ~meth:"token" ~result:"rejected";
+      Error (Unauthenticated "invalid bearer token")
+
+let resolve_caller (st : State.t) (conn : Conn.t) req =
+  let mtls_identity =
+    match conn.peer with
+    | Some peer when st.snap.mtls <> [] -> (
+        match Haltsql_auth.Mtls.find_identity st.snap.mtls peer with
+        | Some id -> Some (peer, id)
+        | None -> None)
+    | _ -> None
+  in
+  match mtls_identity with
+  | Some (peer, id) ->
+      Metrics.observe_auth ~meth:"mtls" ~result:"ok";
+      let subject = Haltsql_auth.Mtls.subject peer in
+      Lwt.return_ok
+        {
+          caller_name = "mtls:" ^ subject;
+          caller_type = "mtls";
+          subject = Some subject;
+          pinned = Some id.mtls_policy;
+          auth_context = Some (id.mtls_context, id.mtls_request_context_fields);
+        }
+  | None -> (
+      let header = Cohttp.Header.get (Cohttp.Request.headers req) "authorization" in
+      match bearer_token header with
+      | `Token tok when not (Haltsql_auth.Oidc_client.is_empty st.snap.oidc) -> (
+          let* r = Haltsql_auth.Oidc_client.authenticate st.snap.oidc tok in
+          match r with
+          | `Not_applicable -> Lwt.return (static_caller st header)
+          | `Verified (id : Haltsql_auth.Oidc.identity) ->
+              Metrics.observe_auth ~meth:"oidc" ~result:"ok";
+              Lwt.return_ok
+                {
+                  caller_name = "oidc:" ^ id.provider;
+                  caller_type = "oidc";
+                  subject = id.subject;
+                  pinned = Some id.policy;
+                  auth_context = Some (id.context, id.request_context_fields);
+                }
+          | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
+              Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
+              Lwt.return_error (Auth_unavailable (Haltsql_auth.Jwt.error_to_string e))
+          | `Rejected e ->
+              Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
+              Log.info "oidc token rejected"
+                ~fields:
+                  [
+                    ("reason", `String (Haltsql_auth.Jwt.error_code e));
+                    ("remote", `String conn.remote);
+                  ];
+              Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
+      | _ -> Lwt.return (static_caller st header))
 
 let unauthorized ~rid msg =
   error ~rid
     ~extra:[ ("www-authenticate", "Bearer realm=\"haltsql\"") ]
     `Unauthorized "UNAUTHORIZED" msg
+
+let auth_error ~rid = function
+  | Unauthenticated msg -> unauthorized ~rid msg
+  | Auth_unavailable msg ->
+      error ~rid
+        ~extra:[ ("retry-after", "5") ]
+        `Service_unavailable "AUTH_UNAVAILABLE" msg
 
 (* ---- /v1/verify ---- *)
 
@@ -136,30 +246,35 @@ let audit_record (st : State.t) ~rid ~caller ~(verdict : Verdict.t) ~sql =
   let fields =
     Audit.record_fields
       ~ts:(Log.rfc3339 (Unix.gettimeofday ()))
-      ~request_id:rid ~caller:caller.caller_name ~verdict ~sql
-      ~log_raw_sql:st.cfg.log_raw_sql
+      ~request_id:rid ~caller:caller.caller_name ~caller_type:caller.caller_type
+      ~subject:caller.subject ~verdict ~sql ~log_raw_sql:st.cfg.log_raw_sql
   in
   let failures =
     List.filter_map
       (fun (sink : Audit.sink) ->
-        match Audit.append sink fields with
-        | () -> None
-        | exception Unix.Unix_error (e, _, _) -> Some (sink.name, Unix.error_message e)
-        | exception Sys_error e -> Some (sink.name, e))
+        match Audit.deliver sink fields with
+        | Audit.Written -> None
+        | Audit.Buffered ->
+            Metrics.observe_audit_error ();
+            Log.warn "audit sink write failed; record buffered"
+              ~fields:[ ("sink", `String sink.name); ("request_id", `String rid) ];
+            None
+        | Audit.Failed e -> Some (sink.name, e))
       st.sinks
   in
   List.iter
     (fun (name, e) ->
-      incr Metrics.audit_errors;
+      Metrics.observe_audit_error ();
       Log.error "audit sink write failed; failing request closed"
         ~fields:
           [ ("sink", `String name); ("error", `String e); ("request_id", `String rid) ])
     failures;
   failures = []
 
-let handle_verify (st : State.t) ~rid req body =
-  match resolve_caller st req with
-  | Error msg -> unauthorized ~rid msg
+let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
+  let* c = resolve_caller st conn req in
+  match c with
+  | Error e -> auth_error ~rid e
   | Ok caller -> (
       let* b = read_body ~max:st.cfg.max_request_bytes req body in
       match b with
@@ -185,14 +300,26 @@ let handle_verify (st : State.t) ~rid req body =
               match policy_name with
               | Error `Forbidden ->
                   error ~rid `Forbidden "FORBIDDEN"
-                    "this token is pinned to a different policy"
+                    (Printf.sprintf "this %s caller is pinned to a different policy"
+                       caller.caller_type)
               | Error `No_default when st.snap.policies = [] ->
                   error ~rid `Service_unavailable "NOT_READY" "no policy is loaded"
               | Error `No_default ->
                   error ~rid `Not_found "POLICY_NOT_FOUND"
                     "no policy specified and no default_policy configured"
               | Ok name -> (
-                  match (State.find_policy st name, Context.of_json r.context) with
+                  let ctx =
+                    match (Context.of_json r.context, caller.auth_context) with
+                    | Error e, _ -> Error (`Bad e)
+                    | Ok body, None -> Ok body
+                    | Ok body, Some (authenticated, allowed) -> (
+                        match
+                          Haltsql_auth.Request_context.merge ~authenticated ~allowed ~body
+                        with
+                        | Ok c -> Ok c
+                        | Error fields -> Error (`Not_allowed fields))
+                  in
+                  match (State.find_policy st name, ctx) with
                   | None, _ when caller.pinned <> None ->
                       error ~rid `Service_unavailable "POLICY_UNAVAILABLE"
                         (Printf.sprintf "policy %S pinned to this token is not loaded"
@@ -200,11 +327,19 @@ let handle_verify (st : State.t) ~rid req body =
                   | None, _ ->
                       error ~rid `Not_found "POLICY_NOT_FOUND"
                         (Printf.sprintf "unknown policy %S" name)
-                  | Some _, Error e ->
+                  | Some _, Error (`Bad e) ->
                       error ~rid `Bad_request "BAD_REQUEST" ("invalid context: " ^ e)
+                  | Some _, Error (`Not_allowed fields) ->
+                      error ~rid `Forbidden "CONTEXT_NOT_ALLOWED"
+                        (Printf.sprintf
+                           "context field(s) %s may not be supplied in the request for \
+                            this %s caller (the authenticated identity provides the \
+                            context)"
+                           (String.concat ", " fields) caller.caller_type)
                   | Some policy, Ok ctx ->
                       let t0 = Unix.gettimeofday () in
                       let verdict = Haltsql.verify policy ctx r.sql in
+                      on_verdict verdict;
                       let seconds = Unix.gettimeofday () -. t0 in
                       let result =
                         if not verdict.allowed then "denied"
@@ -223,11 +358,39 @@ let handle_verify (st : State.t) ~rid req body =
                           "the audit log could not be written; request denied (fail \
                            closed)"))))
 
+(* One OTLP span per verify request (a no-op without telemetry.otlp). The span
+   carries the SQL hash, never the SQL. An incoming W3C traceparent is honoured. *)
+let handle_verify (st : State.t) ~conn ~rid req body =
+  let module E = Telemetry.Exporter in
+  let exp = Telemetry.exporter () in
+  let span =
+    E.start_verify exp
+      ?traceparent:(Cohttp.Header.get (Cohttp.Request.headers req) "traceparent")
+      ()
+  in
+  let verdict = ref None in
+  Lwt.catch
+    (fun () ->
+      let* resp, b =
+        handle_verify_inner st ~conn ~rid
+          ~on_verdict:(fun v -> verdict := Some v)
+          req body
+      in
+      let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
+      (match !verdict with
+      | Some v when status = 200 -> E.end_verify exp span v
+      | _ -> E.end_verify_error exp span (Printf.sprintf "HTTP %d" status));
+      Lwt.return (resp, b))
+    (fun e ->
+      E.end_verify_error exp span "internal error";
+      Lwt.reraise e)
+
 (* ---- other endpoints ---- *)
 
-let handle_policies (st : State.t) ~rid req =
-  match resolve_caller st req with
-  | Error msg -> unauthorized ~rid msg
+let handle_policies (st : State.t) ~conn ~rid req =
+  let* c = resolve_caller st conn req in
+  match c with
+  | Error e -> auth_error ~rid e
   | Ok caller ->
       let visible =
         match caller.pinned with
@@ -267,7 +430,10 @@ let routes =
     ("/v1/policies", [ `GET ]);
   ]
 
-let callback (st : State.t) _conn (req : Cohttp.Request.t) body =
+let health_routes = [ "/healthz"; "/readyz" ]
+
+let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
+    (req : Cohttp.Request.t) body =
   let t0 = Unix.gettimeofday () in
   let rid =
     match Cohttp.Header.get (Cohttp.Request.headers req) "x-request-id" with
@@ -280,12 +446,28 @@ let callback (st : State.t) _conn (req : Cohttp.Request.t) body =
     Lwt.catch
       (fun () ->
         match (meth, path) with
-        | `POST, "/v1/verify" -> handle_verify st ~rid req body
+        | _, p when health_only && not (List.mem p health_routes) ->
+            error ~rid `Not_found "NOT_FOUND" ("no route for " ^ p)
+        | `POST, "/v1/verify" -> handle_verify st ~conn ~rid req body
         | (`GET | `HEAD), "/healthz" ->
             respond ~rid `OK (`Assoc [ ("status", `String "ok") ])
         | (`GET | `HEAD), "/readyz" ->
             let n = List.length st.snap.policies in
-            if n > 0 then
+            let unhealthy =
+              List.filter_map
+                (fun (s : Audit.sink) ->
+                  if Audit.healthy s then None else Some (`String s.name))
+                st.sinks
+            in
+            if unhealthy <> [] then
+              respond ~rid `Service_unavailable
+                (`Assoc
+                   [
+                     ("status", `String "not_ready");
+                     ("policies", `Int n);
+                     ("unhealthy_audit_sinks", `List unhealthy);
+                   ])
+            else if n > 0 then
               respond ~rid `OK
                 (`Assoc [ ("status", `String "ready"); ("policies", `Int n) ])
             else
@@ -294,8 +476,9 @@ let callback (st : State.t) _conn (req : Cohttp.Request.t) body =
         | `GET, "/metrics" when st.cfg.metrics ->
             text ~rid ~content_type:"text/plain; version=0.0.4; charset=utf-8" `OK
               (Metrics.render ~version:Haltsql.version ~pg:Pg_parse.postgres_version
-                 ~policies_loaded:(List.length st.snap.policies))
-        | `GET, "/v1/policies" -> handle_policies st ~rid req
+                 ~policies_loaded:(List.length st.snap.policies)
+              ^ Haltsql_cloud.Object_sink.metrics_text (Audit.object_sinks st.sinks))
+        | `GET, "/v1/policies" -> handle_policies st ~conn ~rid req
         | _, p when p <> "/metrics" || st.cfg.metrics -> (
             match List.assoc_opt p routes with
             | Some ms ->

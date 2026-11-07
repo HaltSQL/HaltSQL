@@ -52,27 +52,65 @@ docker run --rm -p 8080:8080 -v "$PWD/examples:/etc/haltsql:ro" haltsql:dev \
   seconds. Kubernetes ConfigMap updates are picked up this way when the
   ConfigMap is mounted as a directory (not with `subPath`).
 - Startup fails with exit code `2` if the config or any policy cannot be
-  loaded, the listen address cannot be bound, or TLS is configured (below).
+  loaded, the listen address cannot be bound, or the TLS certificate/key
+  cannot be read or do not match (below).
 
-## TLS: terminate it in front of haltsql
+## TLS
 
-This build of `haltsql-server` has **no TLS support**: the OCaml TLS stack is
-not part of the dependency set yet. If `server.tls.cert` or `server.tls.key`
-is set, the server **refuses to start** with an error, instead of silently
-serving plain HTTP. Supported setups:
+`haltsql-server` has built-in TLS (`server.tls`): TLS 1.2/1.3 with ECDHE +
+AEAD ciphers only, optional or required client certificates verified against
+`server.tls.client_ca`, and certificate rotation on `SIGHUP` or file change
+(the previous certificate stays active if the new one is broken). See
+[docs/authentication.md](../docs/authentication.md).
 
-1. **Sidecar on loopback** (recommended): run haltsql in the same pod as the
-   agent and call `http://127.0.0.1:8080`. Traffic never leaves the pod. See
+```yaml
+server:
+  listen: 0.0.0.0:8443
+  tls:
+    cert: /etc/haltsql/tls/tls.crt
+    key: /etc/haltsql/tls/tls.key
+    client_ca: /etc/haltsql/tls/ca.crt
+    client_auth: required
+    min_version: "1.3"
+```
+
+With `client_auth: required`, start the server with
+`--health-listen 0.0.0.0:8081` so kubelet probes can reach `/healthz` and
+`/readyz` over plain HTTP (nothing else is served there). The Helm chart does
+this automatically when `tls.enabled` is set:
+
+```sh
+helm install haltsql deploy/helm/haltsql \
+  --set tls.enabled=true --set tls.secretName=haltsql-tls \
+  --set tls.clientAuth=required --set tls.minVersion=1.3
+```
+
+`tls.secretName` is a `kubernetes.io/tls` Secret (for example from
+cert-manager) with `tls.crt`, `tls.key` and, for client certificates,
+`ca.crt`. It is mounted as a directory, so rotations are picked up by
+`reload.watch` without restarting pods.
+
+Alternatives that remain fully supported:
+
+1. **Sidecar on loopback**: run haltsql in the same pod as the agent and call
+   `http://127.0.0.1:8080`. Traffic never leaves the pod. See
    `k8s/sidecar-example.yaml`.
 2. **Service mesh**: Istio, Linkerd or Consul provide mTLS between the agent
    and the haltsql Service. Keep the chart's NetworkPolicy so only the mesh
    reaches the pods.
-3. **Reverse proxy**: Envoy, nginx or HAProxy terminates TLS (and optionally
-   mTLS) and forwards to haltsql on `127.0.0.1`.
+3. **Reverse proxy**: Envoy, nginx or HAProxy terminates TLS and forwards to
+   haltsql on `127.0.0.1`.
 
 ## Authentication
 
-Callers send `Authorization: Bearer <token>`. The server stores only the
+Besides static tokens (below), callers can authenticate with OIDC access
+tokens (`server.auth.oidc`; Helm value `oidc`) or with client certificates
+mapped to identities (`server.auth.mtls`; Helm value `mtlsIdentities`). Both
+pin the policy and supply the tenant context from the identity, so the
+request body cannot change it. See
+[docs/authentication.md](../docs/authentication.md).
+
+Static-token callers send `Authorization: Bearer <token>`. The server stores only the
 lower-case hex SHA-256 of each token and compares hashes in constant time.
 Each token is pinned to one policy. A request that names another policy gets
 `403`.

@@ -87,6 +87,11 @@ let validate_scenario file (doc : Yojson.Safe.t) =
       unknown @ missing
   | _ -> [ Load_error.make ~file "document must be a mapping" ]
 
+(* Two-pass config load: the [secrets] section is decoded first, then provider
+   placeholders (${vault:..}, ${aws-sm:..}, ${gcp-sm:..}) are fetched and the
+   whole document is loaded with them. Never prints secret values. *)
+let load_config file = Haltsql_cloud.Secrets.load_config_blocking file
+
 let validate_one file : validated =
   let mk ?kind ?detail errors = { file; kind; detail; errors } in
   if not (Sys.file_exists file) then mk [ Load_error.make ~file "file not found" ]
@@ -116,7 +121,7 @@ let validate_one file : validated =
             res
               (fun (c : Config.t) ->
                 Printf.sprintf "%d policies" (List.length c.policies))
-              (Config.of_file file)
+              (load_config file)
         | Some "TestSuite" ->
             res
               (fun (t : Test_suite.t) ->
@@ -346,7 +351,7 @@ let test ~paths ~json ~filter ~verbose =
 let config_show ~config =
   run (fun () ->
       if not (Sys.file_exists config) then usage "config file not found: %s" config;
-      match Config.of_file config with
+      match load_config config with
       | Ok c ->
           print_json (Config.to_json_redacted c);
           0

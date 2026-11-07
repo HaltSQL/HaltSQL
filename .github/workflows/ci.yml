@@ -97,3 +97,226 @@ jobs:
           name: coverage-report
           path: _coverage/
           retention-days: 14
+
+  postgres-integration:
+    name: Postgres integration (rls, schema pull, Python guard)
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: haltlab
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      # These suites skip with a message when Postgres is unreachable; here the
+      # service container makes them run for real.
+      - name: rls generate/check and schema pull against Postgres 17
+        run: opam exec -- dune test test/rlsgen test/catalog_tools --force
+
+  python-clients:
+    name: Python SDK, MCP server and framework integrations
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: haltlab
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql and haltsql-server
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe
+          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
+          echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: SDK, MCP, LangChain, LlamaIndex, Vanna and test vectors
+        env:
+          FULL: "1"
+        run: clients/python/run-all-tests.sh
+
+  python-sdk-minimum:
+    name: Python SDK (Python 3.9, no frameworks)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Core SDK tests (CLI, server and Postgres tests skip)
+        working-directory: clients/python
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -e '.[test]' || .venv/bin/pip install -q -e . pytest
+          .venv/bin/python -m pytest -q
+
+  typescript-sdk:
+    name: TypeScript SDK (Node ${{ matrix.node }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: haltlab
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql-server (for the real-sidecar test)
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/server/main.exe
+          echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+
+      - name: Test
+        working-directory: clients/typescript
+        run: npm ci && npm test
+
+  go-sdk:
+    name: Go SDK
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: haltlab
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: SDK (standard library only)
+        working-directory: clients/go/haltsql
+        run: go vet ./... && go test -race -count=1 ./...
+      - name: pgx integration
+        working-directory: clients/go/pgxtest
+        run: go test -count=1 ./...
+
+  java-sdk:
+    name: Java SDK (Temurin 17)
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: haltlab
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Test
+        working-directory: clients/java
+        run: mvn -B test
+
+  policy-ci-action:
+    name: GitHub Action and GitLab template self-test
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe
+
+      - name: Action script tests
+        run: test/bundle/action/test_action.sh _build/default/bin/haltsql/main.exe
+
+      - name: GitLab template tests
+        run: |
+          python3 -m pip install --user pyyaml
+          test/bundle/action/test_gitlab.sh _build/default/bin/haltsql/main.exe
+
+      - name: shellcheck
+        run: shellcheck -x .github/actions/policy-ci/*.sh test/bundle/action/*.sh
+
+      - name: Generate a throwaway signing key
+        run: |
+          _build/default/bin/haltsql/main.exe bundle keygen -o "$RUNNER_TEMP/k"
+          {
+            echo 'HALTSQL_SELFTEST_KEY<<EOF_KEY'
+            cat "$RUNNER_TEMP/k"
+            echo 'EOF_KEY'
+          } >> "$GITHUB_ENV"
+
+      - name: Dogfood the action
+        uses: ./
+        with:
+          haltsql-path: _build/default/bin/haltsql/main.exe
+          policies: examples/policies
+          suites: examples/suites
+          bundle: "true"
+          upload-bundle: "false"
+          signing-key: ${{ env.HALTSQL_SELFTEST_KEY }}

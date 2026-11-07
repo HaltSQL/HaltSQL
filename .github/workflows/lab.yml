@@ -39,8 +39,9 @@ jobs:
       - name: Build haltsql
         run: |
           opam install . --deps-only -y
-          opam exec -- dune build ./bin/haltsql
+          opam exec -- dune build ./bin/haltsql ./bin/proxy/main.exe
           echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
+          echo "HALTSQL_PROXY_BIN=$PWD/_build/default/bin/proxy/main.exe" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,6 +83,13 @@ jobs:
           status=0
           for s in "$@"; do .venv/bin/python -m harness run "$s" || status=1; done
           exit $status
+
+      - name: Proxy parity scenario (haltsql-proxy vs the CLI, no tenant escapes)
+        working-directory: lab
+        run: .venv/bin/python -m proxy run proxy/scenarios/proxy-smoke.yaml
+
+      - name: Proxy integration tests (psycopg through haltsql-proxy)
+        run: opam exec -- dune test test/proxy --force
 
       - name: Collect container logs
         if: always()

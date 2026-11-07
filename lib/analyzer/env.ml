@@ -7,7 +7,12 @@
 
 open Haltsql_core
 
-type binding = { b_param : int; b_value : Context.value; b_loc : int }
+type binding = {
+  b_param : int;
+  b_value : Context.value;
+  b_loc : int;
+  b_ploc : int;  (** location of the [$n] node that the proof uses *)
+}
 
 type t = {
   policy : Policy.t;
@@ -43,8 +48,8 @@ let add_table env s = env.tables <- s :: env.tables
 let add_column env s = env.columns <- s :: env.columns
 let add_param env n loc = env.params <- (n, loc) :: env.params
 
-let add_binding env n v loc =
-  env.bindings <- { b_param = n; b_value = v; b_loc = loc } :: env.bindings
+let add_binding env n v ~ploc loc =
+  env.bindings <- { b_param = n; b_value = v; b_loc = loc; b_ploc = ploc } :: env.bindings
 
 let add_joins env n = env.joins <- env.joins + n
 

@@ -719,3 +719,63 @@ Open questions:
 3. Clone sql-guardrail, extract its policy schema and test cases into
    `test/conformance/` with attribution.
 4. Write ADRs: parser choice, AST codegen, tenancy semantics, verdict schema, license.
+
+---
+
+## 14. Enterprise integrations status
+
+Status as of 2026-11-07 (unreleased, on top of 0.1.0). "Tier 1" is what an
+enterprise needs to deploy the sidecar and call it from its stack; "Tier 2"
+is the policy lifecycle and database-side tooling around it. Every item fails
+closed and is tested against in-process fakes or the lab Postgres 17.
+
+### Tier 1: deploy and integrate
+
+| Item | Status | Where | Known gaps |
+|---|---|---|---|
+| Built-in TLS 1.2/1.3, mTLS, certificate hot reload, plain health listener | Implemented | `bin/server/lib/tls_setup.ml`, `server.ml`; [authentication.md](docs/authentication.md) | No CRL/OCSP; enabling or disabling TLS needs a restart |
+| OIDC/JWT callers (discovery, JWKS cache, claim-derived context, policy from claim) | Implemented | `lib/auth` (`haltsql-server.auth`) | HTTPS IdP only via system CAs or the `State.oidc_fetch` hook; no ES512/PS384/PS512 |
+| mTLS identities (SPIFFE ID, CN) with static context | Implemented | `lib/auth/mtls.ml` | — |
+| Secret providers (`${vault:}`, `${aws-sm:}`, `${gcp-sm:}`) for CLI and server, async prefetch on reload | Implemented | `lib/cloud/secrets.ml`, `bin/server/lib/integrations.ml`, `bin/haltsql/cmds.ml`; [secrets.md](docs/secrets.md) | Reload prefetch scans raw text, so YAML-escaped placeholders fail closed; no `~/.aws` or ECS credentials |
+| S3 / GCS audit sinks with `on_error` (fail closed or bounded buffer), `/readyz` health, sink metrics | Implemented | `lib/cloud` (`haltsql.cloud`), `bin/server/lib/audit.ml`; [audit-sinks.md](docs/audit-sinks.md) | No `spool_dir` config key yet; sinks are not reopened on reload |
+| OpenTelemetry (OTLP/HTTP JSON) spans per verify and mirrored metrics | Implemented | `lib/telemetry` (`haltsql-server.telemetry`), `bin/server/lib/telemetry.ml`; [observability.md](docs/observability.md) | No protobuf or gRPC; fixed-Huffman gzip only |
+| Python SDK + guarded execution (psycopg 3, asyncpg, SQLAlchemy) | Implemented | `clients/python`; [sdk-python.md](docs/sdk-python.md) | Not published to PyPI |
+| TypeScript, Go and Java SDKs with guarded execution | Implemented | `clients/{typescript,go,java}`; `docs/sdk-*.md` | Java refuses SQL containing `?`, `{` or `}`; not published |
+| MCP server | Implemented | `clients/mcp`; [mcp.md](docs/mcp.md) | One connection per query (no pool) |
+| LangChain, LlamaIndex, Vanna integrations | Implemented | `integrations/` | Vanna 2.x tested without a full Agent flow |
+| Shared client test vectors | Implemented | `clients/testvectors` (Python) and per-SDK `vectors.json` (TS/Go/Java) | Two vector formats still coexist |
+
+### Tier 2: policy lifecycle and database-side tooling
+
+| Item | Status | Where | Known gaps |
+|---|---|---|---|
+| `haltsql-proxy` wire-protocol firewall (SCRAM / client-cert auth, Bind rewriting, TLS) | Implemented | `lib/pgwire` (`haltsql-proxy.pgwire`), `bin/proxy`; [proxy.md](docs/proxy.md) | No pooling, hot reload or metrics endpoint; COPY, LISTEN and savepoints unavailable |
+| `haltsql rls generate` / `rls check` | Implemented | `lib/rlsgen`; [rls-generation.md](docs/rls-generation.md) | Expression comparison in `check` is heuristic; tested on PG 17 only |
+| `haltsql schema pull` / `schema import` (dbt, DataHub, Unity Catalog, Atlan, Collibra) / `policy draft` | Implemented | `lib/catalog_tools`; [schema-and-pii.md](docs/schema-and-pii.md) | No SASLprep, no channel binding; 4 MB document limit |
+| Signed policy bundles (`haltsql bundle`), server loading with reference re-validation, hot reload re-verification | Implemented | `lib/bundle`, `bin/server/lib/integrations.ml`; [policy-bundles.md](docs/policy-bundles.md) | Bundles from URLs/OCI are documented commands, not built in |
+| GitHub Action, GitLab templates, pre-commit hooks | Implemented | `action.yml`, `.github/actions/policy-ci`, `ci/gitlab`; [policy-ci.md](docs/policy-ci.md) | Not yet exercised on real GitHub/GitLab runners |
+
+### Packaging
+
+- `haltsql` (opam): the core libraries (`haltsql`, `haltsql.core`, `.parse`,
+  `.load`, `.analyzer`, `.pgquery`), which have no network or TLS
+  dependencies, plus the CLI and the libraries it links (`haltsql.cloud`,
+  `haltsql.bundle`, `haltsql.rlsgen`, `haltsql.catalog_tools`). The package
+  therefore depends on lwt, cohttp and tls. Splitting the CLI into its own
+  package would make the core package dependency-light again.
+- `haltsql-server`: the sidecar plus `haltsql-server.auth` and
+  `haltsql-server.telemetry`.
+- `haltsql-proxy`: the proxy binary plus `haltsql-proxy.pgwire`.
+- The container image and release archives ship `haltsql`, `haltsql-server`
+  and `haltsql-proxy`.
+
+### Cross-cutting gaps
+
+- Successful TLS handshakes to an upstream Postgres (proxy, `rls check`,
+  `schema pull`) are untested, because the lab Postgres runs with `ssl=off`.
+  Only the fail-closed refusals are tested.
+- Three small Postgres v3 clients exist (`lib/rlsgen/pg_wire.ml`,
+  `lib/catalog_tools/pg_wire.ml`, `lib/pgwire/upstream.ml`). They should be
+  merged into one library.
+- The musl static build of the new C stubs (mirage-crypto, zarith) has not
+  run in the release pipeline yet.

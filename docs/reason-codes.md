@@ -326,8 +326,10 @@ SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
 ### E_PARAM_UNBOUND
 
 The query uses a `$n` placeholder that HaltSQL cannot bind: a parameter that is
-not a tenant predicate value, a parameter used for two different tenancy keys,
-or any parameter in literal mode. HaltSQL only allows placeholders whose value
+not a tenant predicate value, a tenant parameter that is also used outside
+its tenant predicate (for example cast with `$1::float8`, which would change
+how PostgreSQL types the bound tenant value), a parameter used for two
+different tenancy keys, or any parameter in literal mode. HaltSQL only allows placeholders whose value
 it supplies in `bind_params`, so the caller never has to bind something the
 model chose.
 

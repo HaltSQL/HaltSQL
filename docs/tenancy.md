@@ -90,6 +90,13 @@ Rules:
   also `E_TENANT_MISMATCH`.
 - Every parameter in the query must be a tenant parameter, because HaltSQL
   must supply every bound value itself. Any other `$n` is `E_PARAM_UNBOUND`.
+- A tenant parameter may appear only as the value of a tenant predicate. Using
+  it anywhere else (`$1::float8 IS NOT NULL`, `status = $1`, `SELECT $1`,
+  `$1 = 'acme'` under an `OR`) is `E_PARAM_UNBOUND` (rule
+  `params.tenant_reuse`). Such a use could change the type PostgreSQL infers
+  for the parameter, and with it how the tenant value is compared. For
+  example, `float8` rounds a large `bigint` tenant ID, so a neighbouring
+  tenant's rows could match.
 - A literal where a tenant parameter is expected is not accepted
   (`E_TENANT_MISMATCH`, or `E_TENANT_WRITE` in `INSERT ... VALUES`), so a model
   that learned a tenant ID cannot use it.

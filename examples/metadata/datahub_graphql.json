@@ -1,0 +1,23 @@
+{
+  "data": {
+    "dataset": {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,saas.app.payments,PROD)",
+      "name": "saas.app.payments",
+      "schemaMetadata": {
+        "fields": [
+          { "fieldPath": "card_token", "type": "STRING", "nativeDataType": "text",
+            "tags": { "tags": [ { "tag": { "urn": "urn:li:tag:pci", "properties": { "name": "PCI" } } } ] },
+            "glossaryTerms": null },
+          { "fieldPath": "amount_cents", "type": "NUMBER", "nativeDataType": "bigint", "tags": null, "glossaryTerms": null }
+        ]
+      },
+      "editableSchemaMetadata": {
+        "editableSchemaFieldInfo": [
+          { "fieldPath": "card_last4",
+            "glossaryTerms": { "terms": [ { "term": { "urn": "urn:li:glossaryTerm:7f3a9c2e-1b4d-4e8f-a6b5-0c9d8e7f6a5b", "properties": { "name": "Payment Card Data (Sensitive)" } } } ] } }
+        ]
+      }
+    }
+  },
+  "extensions": {}
+}

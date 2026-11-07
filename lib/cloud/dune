@@ -1,0 +1,30 @@
+; Cloud integrations: AWS SigV4 + credential providers, S3 / GCS audit sinks,
+; and secret resolvers (Vault, AWS Secrets Manager, GCP Secret Manager) for the
+; Config ?resolve hook.
+
+(library
+ (name haltsql_cloud)
+ (public_name haltsql.cloud)
+ (libraries
+  haltsql.core
+  haltsql.load
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  http
+  conduit-lwt-unix
+  uri
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  base64
+  mirage-crypto-pk
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  x509
+  ptime
+  ptime.clock.os
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

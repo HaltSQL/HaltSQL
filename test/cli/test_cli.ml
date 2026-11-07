@@ -485,6 +485,72 @@ let lint () =
   | _ -> Alcotest.fail "findings");
   check_code "bad policy" 2 (run [ "lint-policy"; fx "bad_policy.yaml" ])
 
+(* ---- enterprise subcommands registered in main.ml ---- *)
+
+(* Every leaf command must build its command line: a duplicated option name
+   (e.g. a subcommand flag clashing with the inherited --version) only fails
+   at run time. *)
+let all_commands_have_help () =
+  List.iter
+    (fun c ->
+      let r = run (c @ [ "--help=plain" ]) in
+      check_code (String.concat " " c ^ " --help") 0 r)
+    [
+      [ "schema"; "export" ];
+      [ "schema"; "pull" ];
+      [ "schema"; "import" ];
+      [ "policy"; "draft" ];
+      [ "rls"; "generate" ];
+      [ "rls"; "check" ];
+      [ "bundle"; "keygen" ];
+      [ "bundle"; "build" ];
+      [ "bundle"; "sign" ];
+      [ "bundle"; "verify" ];
+      [ "bundle"; "inspect" ];
+    ]
+
+let bundle_roundtrip () =
+  let k = tmp "bundle.key" and b = tmp "shop.haltsqlbundle" in
+  List.iter
+    (fun f -> try Sys.remove f with Sys_error _ -> ())
+    [ k; k ^ ".pub"; b; b ^ ".sig" ];
+  check_code "keygen" 0 (run [ "bundle"; "keygen"; "-o"; k ]);
+  check_code "build" 0
+    (run [ "bundle"; "build"; policy; "--name"; "cli"; "--bundle-version"; "1"; "-o"; b ]);
+  check_code "sign" 0 (run [ "bundle"; "sign"; b; "--key"; k ]);
+  let r = run [ "bundle"; "verify"; b; "--public-key"; k ^ ".pub"; "--json" ] in
+  check_code "verify" 0 r;
+  check_contains "verified policy" r.out "\"shop\"";
+  Out_channel.with_open_gen [ Open_append; Open_binary ] 0o644 b (fun oc ->
+      output_string oc " ");
+  check_code "tampered" 1 (run [ "bundle"; "verify"; b; "--public-key"; k ^ ".pub" ])
+
+let rls_generate () =
+  let r = run [ "rls"; "generate"; "-p"; policy ] in
+  check_code "rls generate" 0 r;
+  check_contains "rls" r.out "CREATE POLICY";
+  check_contains "rls" r.out "ENABLE ROW LEVEL SECURITY"
+
+(* Provider placeholders go through the secrets resolver; without a
+   secrets.vault section they fail closed, before any network access. *)
+let config_secret_provider () =
+  let f = tmp "vault-config.yaml" in
+  Out_channel.with_open_bin f (fun oc ->
+      output_string oc
+        "apiVersion: haltsql.dev/v1\n\
+         kind: Config\n\
+         telemetry:\n\
+        \  otlp:\n\
+        \    endpoint: http://127.0.0.1:4318\n\
+        \    headers:\n\
+        \      authorization: \"Bearer ${vault:secret/data/x#token}\"\n");
+  let r = run [ "config"; "show"; "--config"; f ] in
+  check_code "config show" 2 r;
+  check_contains "config show" r.err "secrets.vault is not configured";
+  let r = run [ "validate"; f ] in
+  check_code "validate" 1 r;
+  check_contains "validate" r.out "secrets.vault is not configured"
+
 let () =
   let tc name f = Alcotest.test_case name `Quick f in
   let slow name f = Alcotest.test_case name `Slow f in
@@ -530,4 +596,11 @@ let () =
       ( "config",
         [ tc "[needs config loader] show" config_show; tc "errors" config_show_errors ] );
       ("misc", [ tc "version" version; tc "help" help; tc "lint-policy" lint ]);
+      ( "enterprise",
+        [
+          tc "every subcommand builds" all_commands_have_help;
+          tc "bundle keygen/build/sign/verify" bundle_roundtrip;
+          tc "rls generate" rls_generate;
+          tc "secret provider placeholders" config_secret_provider;
+        ] );
     ]

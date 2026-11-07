@@ -134,6 +134,30 @@ let finalize (env : Env.t) kind : analysis =
                  "parameter $%d cannot be bound: this policy uses literal tenancy mode" n)
               ~hint:"Write values as literals; do not use $n placeholders.")
     params;
+  (* Rule J, second half: a tenant placeholder may appear only as the value of a
+     tenant predicate. Any other occurrence ([$1::float8 IS NOT NULL],
+     [$1 = 'x'::name], ...) lets the query change the type PostgreSQL infers for
+     the parameter, and therefore how the bound tenant value is compared. *)
+  let proof_locs = List.map (fun (b : Env.binding) -> (b.b_param, b.b_ploc)) bindings in
+  let reported = ref [] in
+  List.iter
+    (fun (n, loc) ->
+      if
+        List.mem n bound_ns
+        && (not (List.mem (n, loc) proof_locs))
+        && not (List.mem n !reported)
+      then begin
+        reported := n :: !reported;
+        Env.emit env ~loc ~rule:"params.tenant_reuse" Reason.E_PARAM_UNBOUND
+          (Printf.sprintf
+             "tenant placeholder $%d is used outside a tenant predicate; it may only \
+              appear as the value of the tenant comparison"
+             n)
+          ~hint:
+            "Use each tenant placeholder only in its tenant predicate (e.g. o.tenant_id \
+             = $1); do not cast it or compare it to anything else."
+      end)
+    (List.rev env.params);
   {
     reasons = Util.dedupe (List.rev env.reasons);
     statement_kind = kind;

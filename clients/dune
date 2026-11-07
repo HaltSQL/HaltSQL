@@ -1,0 +1,4 @@
+; Non-OCaml client packages: keep dune from scanning their virtualenvs and caches.
+; (typescript, go and java carry their own `(dirs)` stanzas.)
+
+(data_only_dirs python mcp testvectors)

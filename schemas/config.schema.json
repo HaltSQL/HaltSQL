@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://haltsql.dev/schemas/v1/config.schema.json",
   "title": "HaltSQL runtime configuration",
-  "description": "How HaltSQL runs: listen address, TLS, auth tokens, policies, audit, logging. String values may use ${env:NAME} and ${file:/path} placeholders.",
+  "description": "How HaltSQL runs: listen address, TLS, auth tokens, policies, audit, logging. String values may use ${env:NAME}, ${file:/path}, ${vault:path#field}, ${aws-sm:id[#key]} and ${gcp-sm:name[#key]} placeholders.",
   "type": "object",
   "properties": {
     "apiVersion": {
@@ -22,22 +22,36 @@
           "type": "string"
         },
         "tls": {
-          "description": "TLS certificate and key (both or neither).",
+          "description": "TLS for the HTTP server. cert and key are required together.",
           "type": "object",
           "properties": {
             "cert": {
-              "description": "Path to the PEM certificate.",
+              "description": "Path to the PEM certificate chain (or inline PEM).",
               "type": "string"
             },
             "key": {
               "description": "Path to (or ${file:...} contents of) the PEM private key.",
               "type": "string"
+            },
+            "client_ca": {
+              "description": "PEM CA bundle used to verify client certificates (mTLS).",
+              "type": "string"
+            },
+            "client_auth": {
+              "description": "Whether to request client certificates. optional/required need client_ca.",
+              "enum": [ "none", "optional", "required" ],
+              "default": "none"
+            },
+            "min_version": {
+              "description": "Minimum TLS version.",
+              "enum": [ "1.2", "1.3", 1.2, 1.3 ],
+              "default": "1.2"
             }
           },
           "additionalProperties": false
         },
         "auth": {
-          "description": "Bearer-token authentication.",
+          "description": "Caller authentication: static bearer tokens, OIDC JWTs, mTLS.",
           "type": "object",
           "properties": {
             "tokens": {
@@ -68,6 +82,187 @@
               "description": "Accept requests without a token (uses default_policy). Local development only. Env: HALTSQL_ALLOW_UNAUTHENTICATED.",
               "type": "boolean",
               "default": false
+            },
+            "oidc": {
+              "description": "OpenID Connect providers.",
+              "type": "array",
+              "items": {
+                "description": "An OpenID Connect provider whose JWTs are accepted as bearer tokens.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Unique provider name (shown in audit logs).",
+                    "type": "string"
+                  },
+                  "issuer": {
+                    "description": "Issuer URL (https; http only with allow_insecure_http).",
+                    "type": "string"
+                  },
+                  "audiences": {
+                    "description": "Accepted aud values (at least one).",
+                    "type": "array",
+                    "items": { "description": "Audience.", "type": "string" },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "jwks_uri": {
+                    "description": "JWKS URL. Default: discovered from issuer/.well-known/openid-configuration.",
+                    "type": "string"
+                  },
+                  "algorithms": {
+                    "description": "Accepted signature algorithms. Default [RS256, ES256]. none and HS* are rejected.",
+                    "type": "array",
+                    "items": {
+                      "description": "Algorithm.",
+                      "enum": [
+                        "RS256", "RS384", "RS512", "PS256", "ES256", "ES384",
+                        "EdDSA"
+                      ]
+                    },
+                    "minItems": 1
+                  },
+                  "leeway_seconds": {
+                    "description": "Clock skew tolerance for exp/nbf/iat.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 300,
+                    "default": 60
+                  },
+                  "jwks_cache_seconds": {
+                    "description": "How long fetched keys are cached.",
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 86400,
+                    "default": 300
+                  },
+                  "policy": {
+                    "description": "Pinned policy name (use this or policy_claim).",
+                    "type": "string"
+                  },
+                  "policy_claim": {
+                    "description": "Claim whose value names the policy (needs allowed_policies).",
+                    "type": "string"
+                  },
+                  "allowed_policies": {
+                    "description": "Policies policy_claim may select.",
+                    "type": "array",
+                    "items": {
+                      "description": "Policy name.",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "context_claims": {
+                    "description": "Context field -> claim path (exact claim name first, then a dot path like org.id).",
+                    "type": "object",
+                    "additionalProperties": {
+                      "description": "Claim path.",
+                      "type": "string"
+                    }
+                  },
+                  "required_claims": {
+                    "description": "Claims that must match: a string (equal, or contained in an array / space-separated value) or a list (all contained).",
+                    "type": "object",
+                    "additionalProperties": {
+                      "description": "Expected value(s).",
+                      "oneOf": [
+                        {
+                          "description": "Required value.",
+                          "type": "string"
+                        },
+                        {
+                          "description": "All required values.",
+                          "type": "array",
+                          "items": {
+                            "description": "Value.",
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      ]
+                    }
+                  },
+                  "request_context_fields": {
+                    "description": "Context fields the request body may still supply. Default [].",
+                    "type": "array",
+                    "items": {
+                      "description": "Context field name.",
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "uniqueItems": true
+                  },
+                  "allow_insecure_http": {
+                    "description": "Allow http issuer/jwks URLs. Tests only.",
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "name", "issuer", "audiences" ]
+              }
+            },
+            "mtls": {
+              "description": "Client-certificate identities. Requires server.tls.client_ca and client_auth optional/required.",
+              "type": "object",
+              "properties": {
+                "identities": {
+                  "description": "Accepted client identities.",
+                  "type": "array",
+                  "items": {
+                    "description": "One identity: spiffe_id or subject_cn.",
+                    "type": "object",
+                    "properties": {
+                      "spiffe_id": {
+                        "description": "Exact SPIFFE ID URI SAN, e.g. spiffe://corp.example/ns/a/sa/b.",
+                        "type": "string"
+                      },
+                      "subject_cn": {
+                        "description": "Exact certificate subject common name.",
+                        "type": "string"
+                      },
+                      "policy": {
+                        "description": "Policy this identity is pinned to.",
+                        "type": "string"
+                      },
+                      "context": {
+                        "description": "Static context values for this identity.",
+                        "type": "object",
+                        "additionalProperties": {
+                          "description": "Context value.",
+                          "oneOf": [
+                            { "description": "A value.", "type": "string" },
+                            { "description": "A value.", "type": "integer" },
+                            {
+                              "description": "A set of values.",
+                              "type": "array",
+                              "items": {
+                                "description": "A value.",
+                                "type": "string"
+                              },
+                              "minItems": 1
+                            }
+                          ]
+                        }
+                      },
+                      "request_context_fields": {
+                        "description": "Context fields the request body may still supply.",
+                        "type": "array",
+                        "items": {
+                          "description": "Context field name.",
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        },
+                        "uniqueItems": true
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "policy" ]
+                  }
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -486,6 +681,28 @@
             },
             "additionalProperties": false,
             "required": [ "inline" ]
+          },
+          {
+            "description": "Signed policy bundle (verified by the server before use).",
+            "type": "object",
+            "properties": {
+              "bundle": {
+                "description": "Path to a .haltsqlbundle file, relative to this config.",
+                "type": "string"
+              },
+              "public_keys": {
+                "description": "Trusted ed25519 public keys: file paths, inline PEM, or base64 of the 32 raw bytes.",
+                "type": "array",
+                "items": { "description": "Public key.", "type": "string" },
+                "minItems": 1
+              },
+              "name_prefix": {
+                "description": "Prefix added to the names of the policies in this bundle.",
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [ "bundle", "public_keys" ]
           }
         ]
       }
@@ -520,7 +737,12 @@
                 "description": "Standard output.",
                 "type": "object",
                 "properties": {
-                  "type": { "description": "Sink type.", "const": "stdout" }
+                  "type": { "description": "Sink type.", "const": "stdout" },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps records in memory and retries.",
+                    "enum": [ "fail_closed", "buffer" ],
+                    "default": "fail_closed"
+                  }
                 },
                 "additionalProperties": false,
                 "required": [ "type" ]
@@ -533,10 +755,179 @@
                   "path": {
                     "description": "File path, relative to this config.",
                     "type": "string"
+                  },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps records in memory and retries.",
+                    "enum": [ "fail_closed", "buffer" ],
+                    "default": "fail_closed"
                   }
                 },
                 "additionalProperties": false,
                 "required": [ "type", "path" ]
+              },
+              {
+                "description": "Amazon S3 (or S3-compatible) object storage.",
+                "type": "object",
+                "properties": {
+                  "type": { "description": "Sink type.", "const": "s3" },
+                  "bucket": {
+                    "description": "Bucket name.",
+                    "type": "string"
+                  },
+                  "prefix": {
+                    "description": "Object key prefix (no leading '/').",
+                    "type": "string",
+                    "default": "haltsql/audit/"
+                  },
+                  "region": {
+                    "description": "AWS region, e.g. us-east-1.",
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "description": "Custom endpoint URL (MinIO, tests).",
+                    "type": "string"
+                  },
+                  "object_lock": {
+                    "description": "S3 Object Lock retention for written objects.",
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "description": "Retention mode.",
+                        "enum": [ "GOVERNANCE", "COMPLIANCE" ]
+                      },
+                      "retain_days": {
+                        "description": "Retention period in days.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 36500
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "mode", "retain_days" ]
+                  },
+                  "batch": {
+                    "description": "Batching of audit records into objects.",
+                    "type": "object",
+                    "properties": {
+                      "max_records": {
+                        "description": "Records per object at most.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000,
+                        "default": 500
+                      },
+                      "max_seconds": {
+                        "description": "Seconds before a partial batch is flushed.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3600,
+                        "default": 10
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "credentials": {
+                    "description": "Where AWS credentials come from.",
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "description": "Credential source.",
+                        "enum": [
+                          "env", "static", "web_identity", "instance"
+                        ],
+                        "default": "env"
+                      },
+                      "access_key_id": {
+                        "description": "Access key id (static only; use a secret placeholder).",
+                        "type": "string"
+                      },
+                      "secret_access_key": {
+                        "description": "Secret access key (static only; use a secret placeholder).",
+                        "type": "string"
+                      },
+                      "session_token": {
+                        "description": "Session token (static only, optional).",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "spool_dir": {
+                    "description": "Local directory (relative to the config file) where records are spooled before upload and the hash-chain head is persisted, so the chain and object sequence continue across restarts. One directory per sink.",
+                    "type": "string"
+                  },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps records in memory and retries.",
+                    "enum": [ "fail_closed", "buffer" ],
+                    "default": "fail_closed"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "type", "bucket", "region" ]
+              },
+              {
+                "description": "Google Cloud Storage.",
+                "type": "object",
+                "properties": {
+                  "type": { "description": "Sink type.", "const": "gcs" },
+                  "bucket": {
+                    "description": "Bucket name.",
+                    "type": "string"
+                  },
+                  "prefix": {
+                    "description": "Object key prefix (no leading '/').",
+                    "type": "string",
+                    "default": "haltsql/audit/"
+                  },
+                  "batch": {
+                    "description": "Batching of audit records into objects.",
+                    "type": "object",
+                    "properties": {
+                      "max_records": {
+                        "description": "Records per object at most.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000,
+                        "default": 500
+                      },
+                      "max_seconds": {
+                        "description": "Seconds before a partial batch is flushed.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3600,
+                        "default": 10
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "credentials": {
+                    "description": "Where Google credentials come from.",
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "description": "Credential source.",
+                        "enum": [ "metadata", "service_account_file" ],
+                        "default": "metadata"
+                      },
+                      "file": {
+                        "description": "Service account JSON key file (service_account_file only).",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "spool_dir": {
+                    "description": "Local spool directory, as for s3 sinks (relative to the config file).",
+                    "type": "string"
+                  },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps records in memory and retries.",
+                    "enum": [ "fail_closed", "buffer" ],
+                    "default": "fail_closed"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "type", "bucket" ]
               }
             ]
           }
@@ -566,8 +957,57 @@
           "additionalProperties": false
         },
         "otlp_endpoint": {
-          "description": "OTLP endpoint (accepted; reserved for a future release).",
+          "description": "Legacy shorthand for telemetry.otlp.endpoint (use one or the other).",
           "type": "string"
+        },
+        "otlp": {
+          "description": "OpenTelemetry (OTLP/HTTP) export.",
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "description": "Collector URL, e.g. http://collector:4318.",
+              "type": "string"
+            },
+            "headers": {
+              "description": "Extra HTTP headers (values may use secret placeholders; redacted in config show).",
+              "type": "object",
+              "additionalProperties": {
+                "description": "Header value.",
+                "type": "string"
+              }
+            },
+            "service_name": {
+              "description": "service.name resource attribute.",
+              "type": "string",
+              "default": "haltsql"
+            },
+            "traces": {
+              "description": "Export traces.",
+              "type": "boolean",
+              "default": true
+            },
+            "metrics": {
+              "description": "Export metrics.",
+              "type": "boolean",
+              "default": true
+            },
+            "export_interval_seconds": {
+              "description": "Metric export interval.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600,
+              "default": 15
+            },
+            "timeout_seconds": {
+              "description": "Export request timeout.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300,
+              "default": 5
+            }
+          },
+          "additionalProperties": false,
+          "required": [ "endpoint" ]
         }
       },
       "additionalProperties": false
@@ -597,6 +1037,98 @@
           "minimum": 1024,
           "maximum": 67108864,
           "default": 1048576
+        }
+      },
+      "additionalProperties": false
+    },
+    "secrets": {
+      "description": "Secret providers for ${vault:...}, ${aws-sm:...} and ${gcp-sm:...} placeholders. Values here may only use ${env:...} and ${file:...}.",
+      "type": "object",
+      "properties": {
+        "vault": {
+          "description": "HashiCorp Vault.",
+          "type": "object",
+          "properties": {
+            "address": {
+              "description": "Vault URL (https; http only for loopback).",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Vault Enterprise namespace.",
+              "type": "string"
+            },
+            "auth": {
+              "description": "How HaltSQL logs in to Vault.",
+              "type": "object",
+              "properties": {
+                "method": {
+                  "description": "Auth method.",
+                  "enum": [ "token", "kubernetes", "approle" ]
+                },
+                "token": {
+                  "description": "Vault token (method token).",
+                  "type": "string"
+                },
+                "role": {
+                  "description": "Vault role (method kubernetes).",
+                  "type": "string"
+                },
+                "role_id": {
+                  "description": "AppRole role id (method approle).",
+                  "type": "string"
+                },
+                "secret_id": {
+                  "description": "AppRole secret id (method approle).",
+                  "type": "string"
+                },
+                "jwt_path": {
+                  "description": "Service account token file (method kubernetes).",
+                  "type": "string",
+                  "default": "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                },
+                "mount": {
+                  "description": "Auth mount path. Default kubernetes or approle.",
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [ "method" ]
+            },
+            "ca_file": {
+              "description": "CA bundle for the Vault server certificate.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [ "address", "auth" ]
+        },
+        "aws": {
+          "description": "AWS Secrets Manager.",
+          "type": "object",
+          "properties": {
+            "region": { "description": "AWS region.", "type": "string" },
+            "endpoint": {
+              "description": "Custom endpoint URL (tests).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [ "region" ]
+        },
+        "gcp": {
+          "description": "Google Secret Manager.",
+          "type": "object",
+          "properties": {
+            "project": {
+              "description": "Default project for short secret names.",
+              "type": "string"
+            },
+            "endpoint": {
+              "description": "Custom endpoint URL (tests).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

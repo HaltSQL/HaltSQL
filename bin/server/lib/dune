@@ -5,12 +5,22 @@
  (name haltsql_server)
  (libraries
   haltsql
+  haltsql-server.auth
+  haltsql-server.telemetry
+  haltsql.cloud
+  haltsql.bundle
   cohttp-lwt-unix
   cohttp-lwt
   cohttp
+  conduit-lwt-unix
   http
   lwt
   lwt.unix
+  tls
+  tls-lwt
+  x509
+  ptime.clock.os
+  eqaf
   yojson
   unix
   digestif))

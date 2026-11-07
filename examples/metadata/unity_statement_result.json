@@ -1,0 +1,29 @@
+{
+  "statement_id": "01ef9c3a-7d2b-1a4e-9f0c-2b8d6e4a1c37",
+  "status": { "state": "SUCCEEDED" },
+  "manifest": {
+    "format": "JSON_ARRAY",
+    "schema": {
+      "column_count": 6,
+      "columns": [
+        { "name": "catalog_name", "type_text": "STRING", "type_name": "STRING", "position": 0 },
+        { "name": "schema_name", "type_text": "STRING", "type_name": "STRING", "position": 1 },
+        { "name": "table_name", "type_text": "STRING", "type_name": "STRING", "position": 2 },
+        { "name": "column_name", "type_text": "STRING", "type_name": "STRING", "position": 3 },
+        { "name": "tag_name", "type_text": "STRING", "type_name": "STRING", "position": 4 },
+        { "name": "tag_value", "type_text": "STRING", "type_name": "STRING", "position": 5 }
+      ]
+    },
+    "total_row_count": 2,
+    "truncated": false
+  },
+  "result": {
+    "chunk_index": 0,
+    "row_offset": 0,
+    "row_count": 2,
+    "data_array": [
+      ["main", "app", "audit_events", "ip", "pii", "ip_address"],
+      ["main", "app", "audit_events", "action", "domain", "security"]
+    ]
+  }
+}

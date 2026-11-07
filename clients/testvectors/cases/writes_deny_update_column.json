@@ -1,0 +1,54 @@
+{
+  "name": "writes_deny_update_column",
+  "description": "Updating a column outside writes.update.",
+  "policy_file": "test/fixtures/policies/writes.yaml",
+  "request": {
+    "sql": "UPDATE tickets SET created_at = now() WHERE id = 7 AND tenant_id = $1",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "writes"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_WRITE_DENIED",
+        "message": "column created_at of app.tickets may not be updated",
+        "rule": "writes.columns",
+        "loc": 0,
+        "hint": "Only these columns may be updated: status, priority, assignee_id, title, updated_at."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "writes",
+      "version": "sha256:a64b2ba7fea6874c5d5a34c6e4e939d3257ccef4452028edf4d9075e7092b8a4"
+    },
+    "statement_kind": "update",
+    "tables": [
+      "app.tickets"
+    ],
+    "columns": [
+      "app.tickets.id",
+      "app.tickets.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "283e7dfba01ad142",
+    "sql_sha256": "5ab233109661e07e2d95a80b3e0d7fdd56ab71eb2ce9a3f85f0a4a12c848c3c7",
+    "elapsed_us": 225
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

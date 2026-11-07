@@ -1,0 +1,52 @@
+{
+  "name": "mixed_case_allow_quoted",
+  "description": "Quoted mixed-case identifiers.",
+  "policy_file": "test/fixtures/policies/mixed_case.yaml",
+  "request": {
+    "sql": "SELECT c.\"Id\", c.\"FullName\" FROM \"Customers\" c WHERE c.\"TenantId\" = $1 LIMIT 5",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "mixed-case"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "mixed-case",
+      "version": "sha256:5fad2a8e719bbb9b9383978bd6cd1a6d1ed141a295331fc414f582da17c51aeb"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.Customers"
+    ],
+    "columns": [
+      "app.Customers.FullName",
+      "app.Customers.Id",
+      "app.Customers.TenantId"
+    ],
+    "bind_params": [
+      {
+        "param": 1,
+        "value": "acme"
+      }
+    ],
+    "fingerprint": "45a2f274df398a45",
+    "sql_sha256": "13be5ac278aea2b18e7d81863149f39e67eb2fe1b2f4a588c7b7382ffbf36c24",
+    "elapsed_us": 257
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

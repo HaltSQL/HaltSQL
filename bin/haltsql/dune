@@ -2,7 +2,17 @@
  (name main)
  (public_name haltsql)
  (package haltsql)
- (libraries haltsql cmdliner yojson unix)
+ (libraries
+  haltsql
+  haltsql.cloud
+  haltsql.bundle
+  haltsql.rlsgen
+  haltsql.catalog_tools
+  cmdliner
+  yojson
+  unix
+  lwt
+  lwt.unix)
  (link_flags
   (:include link_flags.sexp)))
 

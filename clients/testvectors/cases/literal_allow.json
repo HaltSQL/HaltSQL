@@ -1,0 +1,46 @@
+{
+  "name": "literal_allow",
+  "description": "Literal tenancy: the tenant value is written in the SQL; no bind params.",
+  "policy_file": "test/fixtures/policies/saas_literal.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas-literal"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas-literal",
+      "version": "sha256:3cadf16e091eebd8984df96b47388034e2e8cba13e15f5994646f78a68d68b5e"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "53a2755a1ded78c5",
+    "sql_sha256": "23764575137d4bdc1b8b7a6d16d3c54f945d405d82b4658ea8e2e10ef594d91d",
+    "elapsed_us": 307
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

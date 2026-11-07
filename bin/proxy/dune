@@ -1,0 +1,20 @@
+; haltsql-proxy: PostgreSQL wire-protocol firewall (docs/proxy.md).
+
+(executable
+ (name main)
+ (public_name haltsql-proxy)
+ (package haltsql-proxy)
+ (libraries haltsql_pgwire haltsql cmdliner lwt lwt.unix yojson)
+ (link_flags
+  (:include link_flags.sexp)))
+
+; Static linking is opt-in (HALTSQL_STATIC=1), see bin/link_flags.ml.
+
+(rule
+ (targets link_flags.sexp)
+ (deps
+  (env_var HALTSQL_STATIC))
+ (action
+  (with-stdout-to
+   link_flags.sexp
+   (run %{ocaml} %{dep:../link_flags.ml}))))

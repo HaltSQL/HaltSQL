@@ -1,0 +1,9 @@
+# Example: .pre-commit-config.yaml (needs the haltsql binary on PATH).
+repos:
+  - repo: https://github.com/ardada2468/HaltSQL
+    rev: v0.2.0
+    hooks:
+      - id: haltsql-validate
+      - id: haltsql-lint-policy
+      - id: haltsql-test
+        args: [tests]

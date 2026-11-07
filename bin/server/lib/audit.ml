@@ -13,11 +13,26 @@
 let genesis = String.make 64 '0'
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
 
+type backend =
+  | Fd of Unix.file_descr
+  | Custom of { write : string -> unit; close : unit -> unit }
+      (** e.g. a cloud sink registered by the integrator; [write] gets one line (with its
+          trailing newline) and raises on failure *)
+  | Object of Haltsql_cloud.Object_sink.t
+      (** S3 / GCS: the object sink seals records into its own hash chain (which continues
+          across objects), batches, uploads, and applies [on_error] itself *)
+
 type sink = {
-  name : string;  (** "stdout" or the file path *)
-  fd : Unix.file_descr;
+  name : string;  (** "stdout", the file path, or the custom sink's name *)
+  backend : backend;
   mutable prev : string;
+  on_error : Haltsql.Config.on_error;
+  pending : (string * Yojson.Safe.t) list Queue.t;
+      (** records not yet written ([Buffer] mode); sealed when written *)
 }
+
+(* Upper bound on buffered records per sink; beyond it requests fail closed. *)
+let max_pending = 10_000
 
 let rec write_all fd s off len =
   if len > 0 then begin
@@ -67,9 +82,45 @@ let hash_of_line line =
   | _ -> None
   | exception _ -> None
 
-let open_stdout () = { name = "stdout"; fd = Unix.stdout; prev = genesis }
+let make ?(on_error = Haltsql.Config.Fail_closed) ~name ?(prev = genesis) backend =
+  { name; backend; prev; on_error; pending = Queue.create () }
 
-let open_file path =
+let of_fd ?on_error ~name fd = make ?on_error ~name (Fd fd)
+
+let custom ?on_error ~name ~write ~close () =
+  make ?on_error ~name (Custom { write; close })
+
+(* The object sink applies the configured on_error policy itself (fail closed after
+   a failed upload, or a bounded buffer), so the Audit layer always fails closed
+   when it refuses a write. *)
+let of_object_sink obj =
+  make ~on_error:Haltsql.Config.Fail_closed
+    ~name:(Haltsql_cloud.Object_sink.name obj)
+    (Object obj)
+
+let healthy s =
+  match s.backend with
+  | Object o -> Haltsql_cloud.Object_sink.healthy o
+  | Fd _ | Custom _ -> Queue.length s.pending < max_pending
+
+let object_sinks sinks =
+  List.filter_map (fun s -> match s.backend with Object o -> Some o | _ -> None) sinks
+
+let start s =
+  match s.backend with Object o -> Haltsql_cloud.Object_sink.start o | _ -> ()
+
+(* Final flush of batching sinks (S3/GCS) on shutdown. *)
+let shutdown s =
+  match s.backend with
+  | Object o -> (
+      let open Lwt.Syntax in
+      let* r = Haltsql_cloud.Object_sink.close o in
+      match r with Ok () -> Lwt.return_ok () | Error e -> Lwt.return_error e)
+  | Fd _ | Custom _ -> Lwt.return_ok ()
+
+let open_stdout ?on_error () = make ?on_error ~name:"stdout" (Fd Unix.stdout)
+
+let open_file ?on_error path =
   let prev =
     match last_line path with
     | None -> genesis
@@ -88,9 +139,13 @@ let open_file path =
       [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT; Unix.O_CLOEXEC ]
       0o640
   in
-  { name = path; fd; prev }
+  make ?on_error ~name:path ~prev (Fd fd)
 
-let close s = if s.fd <> Unix.stdout then try Unix.close s.fd with _ -> ()
+let close s =
+  match s.backend with
+  | Fd fd -> ( if fd <> Unix.stdout then try Unix.close fd with _ -> ())
+  | Custom c -> ( try c.close () with _ -> ())
+  | Object _ -> () (* closed (flushed) by [shutdown], inside Lwt *)
 
 (* Builds the sealed line for [fields] chained after [prev]. Returns (line, hash). *)
 let seal ~prev (fields : (string * Yojson.Safe.t) list) =
@@ -99,8 +154,8 @@ let seal ~prev (fields : (string * Yojson.Safe.t) list) =
   let hash = sha256_hex (prev ^ unsealed) in
   (Yojson.Safe.to_string (`Assoc (body @ [ ("hash", `String hash) ])), hash)
 
-let record_fields ~ts ~request_id ~caller ~(verdict : Haltsql.Verdict.t) ~sql ~log_raw_sql
-    =
+let record_fields ~ts ~request_id ~caller ~caller_type ~(subject : string option)
+    ~(verdict : Haltsql.Verdict.t) ~sql ~log_raw_sql =
   let codes =
     List.map
       (fun (r : Haltsql.Reason.t) -> `String (Haltsql.Reason.code_to_string r.code))
@@ -110,6 +165,8 @@ let record_fields ~ts ~request_id ~caller ~(verdict : Haltsql.Verdict.t) ~sql ~l
     ("ts", `String ts);
     ("request_id", `String request_id);
     ("caller", `String caller);
+    ("caller_type", `String caller_type);
+    ("subject", match subject with Some s -> `String s | None -> `Null);
     ("policy", `String verdict.policy_name);
     ("policy_version", `String verdict.policy_version);
     ("allowed", `Bool verdict.allowed);
@@ -124,10 +181,60 @@ let record_fields ~ts ~request_id ~caller ~(verdict : Haltsql.Verdict.t) ~sql ~l
 (* Appends one record to the sink. The chain only advances if the write
    succeeded. Raises [Unix.Unix_error] on failure. *)
 let append sink fields =
-  let line, hash = seal ~prev:sink.prev fields in
-  let data = line ^ "\n" in
-  write_all sink.fd data 0 (String.length data);
-  sink.prev <- hash
+  let write_sealed out =
+    let line, hash = seal ~prev:sink.prev fields in
+    out (line ^ "\n");
+    sink.prev <- hash
+  in
+  match sink.backend with
+  | Fd fd -> write_sealed (fun data -> write_all fd data 0 (String.length data))
+  | Custom c -> write_sealed c.write
+  | Object o -> (
+      match Haltsql_cloud.Object_sink.write o fields with
+      | Ok () -> ()
+      | Error e -> failwith e)
+
+type delivery = Written | Buffered | Failed of string
+
+let error_message = function
+  | Unix.Unix_error (e, _, _) -> Unix.error_message e
+  | Sys_error e | Failure e -> e
+  | e -> Printexc.to_string e
+
+(* Writes buffered records first (in order), then [fields]. In [Fail_closed]
+   mode any failure is [Failed]. In [Buffer] mode a failed write queues the
+   record (sealed later, so the chain stays intact) unless the queue is full. *)
+let deliver sink fields =
+  let rec flush () =
+    match Queue.peek_opt sink.pending with
+    | None -> Ok ()
+    | Some f -> (
+        match append sink f with
+        | () ->
+            ignore (Queue.pop sink.pending);
+            flush ()
+        | exception e -> Error (error_message e))
+  in
+  match sink.on_error with
+  | Haltsql.Config.Fail_closed -> (
+      match append sink fields with
+      | () -> Written
+      | exception e -> Failed (error_message e))
+  | Haltsql.Config.Buffer -> (
+      let attempt =
+        match flush () with
+        | Error e -> Error e
+        | Ok () -> ( try Ok (append sink fields) with e -> Error (error_message e))
+      in
+      match attempt with
+      | Ok () -> Written
+      | Error e ->
+          if Queue.length sink.pending >= max_pending then
+            Failed (e ^ "; audit buffer is full")
+          else begin
+            Queue.push fields sink.pending;
+            Buffered
+          end)
 
 (* ---- verification ---- *)
 

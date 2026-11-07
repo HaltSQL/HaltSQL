@@ -1,0 +1,24 @@
+; OpenTelemetry (OTLP/HTTP JSON) exporter for haltsql-server: traces and
+; metrics, bounded non-blocking queue, periodic export with retry.
+
+(library
+ (name haltsql_telemetry)
+ (public_name haltsql-server.telemetry)
+ (libraries
+  haltsql.core
+  haltsql.load
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  http
+  uri
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  ptime
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

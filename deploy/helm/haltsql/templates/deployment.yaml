@@ -46,7 +46,13 @@ spec:
         - name: haltsql
           image: {{ include "haltsql.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["--config", "/etc/haltsql/config/config.yaml"]
+          args:
+            - --config
+            - /etc/haltsql/config/config.yaml
+            {{- if .Values.tls.enabled }}
+            - --health-listen
+            - "0.0.0.0:{{ .Values.tls.healthPort }}"
+            {{- end }}
           env:
             {{- range $i, $t := .Values.tokens }}
             - name: HALTSQL_TOKEN_{{ $i }}_SHA256
@@ -59,10 +65,21 @@ spec:
             - name: http
               containerPort: {{ .Values.server.port }}
               protocol: TCP
+            {{- if .Values.tls.enabled }}
+            - name: health
+              containerPort: {{ .Values.tls.healthPort }}
+              protocol: TCP
+            {{- end }}
+          {{- $live := deepCopy .Values.livenessProbe }}
+          {{- $ready := deepCopy .Values.readinessProbe }}
+          {{- if .Values.tls.enabled }}
+          {{- $_ := set $live.httpGet "port" "health" }}
+          {{- $_ := set $ready.httpGet "port" "health" }}
+          {{- end }}
           livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
+            {{- toYaml $live | nindent 12 }}
           readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
+            {{- toYaml $ready | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -78,6 +95,11 @@ spec:
               mountPath: /var/log/haltsql
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/haltsql/tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -95,6 +117,12 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "tls.secretName is required when tls.enabled" .Values.tls.secretName }}
+            defaultMode: 0440
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haltsql"
+version = "0.1.0"
+description = "Python client for HaltSQL, a policy firewall for LLM-generated PostgreSQL"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = ["httpx>=0.24,<1"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Database",
+  "Topic :: Security",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+psycopg = ["psycopg>=3.2"]
+asyncpg = ["asyncpg>=0.27"]
+test = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/ardada2468/HaltSQL"
+Documentation = "https://github.com/ardada2468/HaltSQL/blob/main/docs/sdk-python.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+haltsql = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: needs the haltsql binaries or the lab Postgres (skipped when unavailable)",
+]

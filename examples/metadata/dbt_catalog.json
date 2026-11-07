@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/catalog/v1.json",
+    "dbt_version": "1.8.7",
+    "generated_at": "2026-10-30T09:14:02.118230Z"
+  },
+  "nodes": {
+    "model.saas_analytics.customers": {
+      "metadata": { "type": "BASE TABLE", "schema": "app", "name": "customers", "database": "saas", "comment": null, "owner": "haltlab_owner" },
+      "columns": {
+        "id": { "type": "bigint", "index": 1, "name": "id", "comment": null },
+        "email": { "type": "text", "index": 4, "name": "email", "comment": "Primary contact email address" },
+        "phone": { "type": "text", "index": 5, "name": "phone", "comment": "PII: contact phone number" },
+        "country": { "type": "character", "index": 7, "name": "country", "comment": "ISO 3166 country code" }
+      },
+      "stats": {},
+      "unique_id": "model.saas_analytics.customers"
+    }
+  },
+  "sources": {},
+  "errors": null
+}

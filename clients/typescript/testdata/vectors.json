@@ -1,0 +1,664 @@
+{
+  "description": "Real haltsql-server responses recorded by clients/typescript/scripts/gen-testvectors.mjs. Tokens are throwaway test values.",
+  "tokens": {
+    "saas": "test-token-saas-analytics",
+    "org": "test-token-org-rollup"
+  },
+  "healthz": {
+    "status": "ok"
+  },
+  "readyz": {
+    "status": "ready",
+    "policies": 2
+  },
+  "policies": {
+    "policies": [
+      {
+        "name": "saas-analytics",
+        "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7",
+        "mode": "enforce"
+      }
+    ],
+    "default": null
+  },
+  "vectors": [
+    {
+      "name": "allowed_bound_single_tenant",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 50",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": true,
+        "reasons": [],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.orders"
+        ],
+        "columns": [
+          "app.orders.id",
+          "app.orders.status",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [
+          {
+            "param": 1,
+            "value": "acme"
+          }
+        ],
+        "fingerprint": "d42f5424e4843af2",
+        "sql_sha256": "7d38ccff63dfd358ccd7d73e5543281169aaf408a658b95f19e753b709a79d17",
+        "elapsed_us": 357
+      },
+      "expect": {
+        "allowed": true,
+        "codes": [],
+        "positional": [
+          "acme"
+        ],
+        "error_code": null
+      }
+    },
+    {
+      "name": "allowed_join_two_tenant_params",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $2 WHERE o.tenant_id = $1 LIMIT 10",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": true,
+        "reasons": [],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.customers",
+          "app.orders"
+        ],
+        "columns": [
+          "app.customers.id",
+          "app.customers.name",
+          "app.customers.tenant_id",
+          "app.orders.customer_id",
+          "app.orders.id",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [
+          {
+            "param": 1,
+            "value": "acme"
+          },
+          {
+            "param": 2,
+            "value": "acme"
+          }
+        ],
+        "fingerprint": "ed9d7500186cb43c",
+        "sql_sha256": "2eeba08b071ecdcd05ef346fcddb7744c744aed8fbff56891b79a965b8ed109a",
+        "elapsed_us": 102
+      },
+      "expect": {
+        "allowed": true,
+        "codes": [],
+        "positional": [
+          "acme",
+          "acme"
+        ],
+        "error_code": null
+      }
+    },
+    {
+      "name": "allowed_integer_context",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5",
+        "context": {
+          "tenant_id": 42
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": true,
+        "reasons": [],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.orders"
+        ],
+        "columns": [
+          "app.orders.id",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [
+          {
+            "param": 1,
+            "value": "42"
+          }
+        ],
+        "fingerprint": "53a2755a1ded78c5",
+        "sql_sha256": "dbe751474182bd31d192944676c852b4349431e9da9a40d069f0990e1f6663e0",
+        "elapsed_us": 56
+      },
+      "expect": {
+        "allowed": true,
+        "codes": [],
+        "positional": [
+          "42"
+        ],
+        "error_code": null
+      }
+    },
+    {
+      "name": "allowed_set_valued_tenant",
+      "token": "test-token-org-rollup",
+      "request": {
+        "sql": "SELECT org_id, day, revenue_cents FROM revenue_daily WHERE org_id = ANY($1) LIMIT 100",
+        "context": {
+          "org_ids": [
+            "acme",
+            "acme-eu",
+            "acme-us"
+          ]
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": true,
+        "reasons": [],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "org-rollup-reports",
+          "version": "sha256:215560f5f440186c723c3818084043cb635e39ce92884d591c224aa4b0fb6014"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "reporting.revenue_daily"
+        ],
+        "columns": [
+          "reporting.revenue_daily.day",
+          "reporting.revenue_daily.org_id",
+          "reporting.revenue_daily.revenue_cents"
+        ],
+        "bind_params": [
+          {
+            "param": 1,
+            "value": [
+              "acme",
+              "acme-eu",
+              "acme-us"
+            ]
+          }
+        ],
+        "fingerprint": "cf1b0bccd23c5e88",
+        "sql_sha256": "0456f3af98ef8e93960dc262b9a1de2ac9175744f306f655fb7dff8ae3e22d47",
+        "elapsed_us": 82
+      },
+      "expect": {
+        "allowed": true,
+        "codes": [],
+        "positional": [
+          [
+            "acme",
+            "acme-eu",
+            "acme-us"
+          ]
+        ],
+        "error_code": null
+      }
+    },
+    {
+      "name": "allowed_global_table_no_params",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT * FROM currencies LIMIT 10",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": true,
+        "reasons": [],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.currencies"
+        ],
+        "columns": [
+          "app.currencies.code",
+          "app.currencies.minor_units",
+          "app.currencies.name"
+        ],
+        "bind_params": [],
+        "fingerprint": "69b9b66d4459bd6f",
+        "sql_sha256": "4894062606fea2f1bbae9d24970c0e4d36ea958526f3100a3a9d39ea71f99935",
+        "elapsed_us": 64
+      },
+      "expect": {
+        "allowed": true,
+        "codes": [],
+        "positional": [],
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_column_and_tenant",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT o.id, c.email FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.tenant_id = $1 LIMIT 50",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_COLUMN_DENIED",
+            "message": "column email of app.customers is not readable under this policy",
+            "rule": "columns.denied",
+            "loc": 13,
+            "hint": "Remove email from the query; readable columns of app.customers are: id, tenant_id, name, country, created_at."
+          },
+          {
+            "code": "E_TENANT_MISSING",
+            "message": "app.customers (as c) has no provable tenant predicate on c.tenant_id in the same SELECT",
+            "rule": "tenancy.predicate",
+            "loc": 40,
+            "hint": "Add `WHERE c.tenant_id = $1` as a top-level AND condition inside the same SELECT that reads app.customers (not in an outer query, not under OR/NOT, not in the ON of the preserved side of an outer join)."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.customers",
+          "app.orders"
+        ],
+        "columns": [
+          "app.customers.email",
+          "app.customers.id",
+          "app.orders.customer_id",
+          "app.orders.id",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [],
+        "fingerprint": "74d4a144cd563bd7",
+        "sql_sha256": "2797774eb31291b21333e9e52bb412bc738466dbaa6d00b28d25ff3a29739519",
+        "elapsed_us": 81
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_COLUMN_DENIED",
+          "E_TENANT_MISSING"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_multi_statement",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1; DROP TABLE orders",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_MULTI_STATEMENT",
+            "message": "expected exactly one statement, found 2",
+            "rule": "statement.count",
+            "hint": "Send a single SQL statement with no semicolon-separated extras."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": null,
+        "tables": [],
+        "columns": [],
+        "bind_params": [],
+        "fingerprint": null,
+        "sql_sha256": "0c25976dce3488b63e5d504cd01eb6c48661a93c4f3caec21ab26cf4a53fd0d2",
+        "elapsed_us": 77
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_MULTI_STATEMENT"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_parse_error",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELEC id FROM orders",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_PARSE",
+            "message": "syntax error at or near \"SELEC\"",
+            "rule": "parse",
+            "loc": 0,
+            "hint": "Fix the SQL syntax; HaltSQL accepts PostgreSQL only."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": null,
+        "tables": [],
+        "columns": [],
+        "bind_params": [],
+        "fingerprint": null,
+        "sql_sha256": "5d8fbdcae12213f57163ced7f07600d255c592425f66afeae54cf6c0d6febb16",
+        "elapsed_us": 20
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_PARSE"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_limit_required",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT id FROM orders WHERE tenant_id = $1",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_LIMIT_REQUIRED",
+            "message": "the outermost SELECT must have a constant LIMIT <= 1000",
+            "rule": "limit.required",
+            "loc": 0,
+            "hint": "Add `LIMIT 1000` (or smaller) to the outermost SELECT."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.orders"
+        ],
+        "columns": [
+          "app.orders.id",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [],
+        "fingerprint": "300b6ac332da1da4",
+        "sql_sha256": "1d96326eb1fac8ffc3b190a77819a8a3f5eba5b0aece7812b95d2e4bc87d1884",
+        "elapsed_us": 51
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_LIMIT_REQUIRED"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_delete_statement",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "DELETE FROM orders WHERE tenant_id = $1",
+        "context": {
+          "tenant_id": "acme"
+        }
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_STATEMENT_KIND",
+            "message": "DELETE statements are not allowed by this policy",
+            "rule": "statement.kind",
+            "loc": 0,
+            "hint": "Only these statement kinds are allowed: select."
+          },
+          {
+            "code": "E_WRITE_DENIED",
+            "message": "DELETE on app.orders is not allowed by this policy",
+            "rule": "writes.table",
+            "loc": 0,
+            "hint": "Do not delete app.orders."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "delete",
+        "tables": [
+          "app.orders"
+        ],
+        "columns": [
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [],
+        "fingerprint": "f1f952aa4b63d59c",
+        "sql_sha256": "f1f6ccbbd0ce120df4290aea38e629cbab4981e07ace2c670094b6e818e0661d",
+        "elapsed_us": 46
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_STATEMENT_KIND",
+          "E_WRITE_DENIED"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "denied_context_missing",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5"
+      },
+      "raw_request": null,
+      "status": 200,
+      "response": {
+        "allowed": false,
+        "reasons": [
+          {
+            "code": "E_CONTEXT_MISSING",
+            "message": "the request context has no value for \"tenant_id\" (tenancy key \"tenant\")",
+            "rule": "tenancy.context",
+            "loc": 15,
+            "hint": "This is a caller configuration problem, not a query problem: the host application must supply the tenant context."
+          },
+          {
+            "code": "E_PARAM_UNBOUND",
+            "message": "parameter $1 is not a tenant placeholder, so its value is unknown",
+            "rule": "params.unbound",
+            "loc": 40,
+            "hint": "Use $n placeholders only as the value of a tenant predicate (e.g. o.tenant_id = $1); write other values as literals."
+          }
+        ],
+        "shadow_reasons": [],
+        "policy": {
+          "name": "saas-analytics",
+          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+        },
+        "statement_kind": "select",
+        "tables": [
+          "app.orders"
+        ],
+        "columns": [
+          "app.orders.id",
+          "app.orders.tenant_id"
+        ],
+        "bind_params": [],
+        "fingerprint": "53a2755a1ded78c5",
+        "sql_sha256": "dbe751474182bd31d192944676c852b4349431e9da9a40d069f0990e1f6663e0",
+        "elapsed_us": 68
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [
+          "E_CONTEXT_MISSING",
+          "E_PARAM_UNBOUND"
+        ],
+        "positional": null,
+        "error_code": null
+      }
+    },
+    {
+      "name": "error_unauthorized",
+      "token": null,
+      "request": {
+        "sql": "SELECT 1"
+      },
+      "raw_request": null,
+      "status": 401,
+      "response": {
+        "error": {
+          "code": "UNAUTHORIZED",
+          "message": "missing bearer token"
+        }
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [],
+        "positional": null,
+        "error_code": "UNAUTHORIZED"
+      }
+    },
+    {
+      "name": "error_wrong_token",
+      "token": "not-a-valid-token",
+      "request": {
+        "sql": "SELECT 1"
+      },
+      "raw_request": null,
+      "status": 401,
+      "response": {
+        "error": {
+          "code": "UNAUTHORIZED",
+          "message": "invalid bearer token"
+        }
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [],
+        "positional": null,
+        "error_code": "UNAUTHORIZED"
+      }
+    },
+    {
+      "name": "error_forbidden_policy",
+      "token": "test-token-saas-analytics",
+      "request": {
+        "sql": "SELECT 1",
+        "policy": "org-rollup-reports"
+      },
+      "raw_request": null,
+      "status": 403,
+      "response": {
+        "error": {
+          "code": "FORBIDDEN",
+          "message": "this token is pinned to a different policy"
+        }
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [],
+        "positional": null,
+        "error_code": "FORBIDDEN"
+      }
+    },
+    {
+      "name": "error_bad_request",
+      "token": "test-token-saas-analytics",
+      "request": null,
+      "raw_request": "{\"sql\": 7}",
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "BAD_REQUEST",
+          "message": "\"sql\" must be a string"
+        }
+      },
+      "expect": {
+        "allowed": false,
+        "codes": [],
+        "positional": null,
+        "error_code": "BAD_REQUEST"
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "name": "hierarchical_allow_set",
+  "description": "Tenant set: $1 binds to a list (a Postgres text[] array).",
+  "policy_file": "test/fixtures/policies/hierarchical.yaml",
+  "request": {
+    "sql": "SELECT a.id, a.name FROM accounts a WHERE a.tenant_id = ANY($1) LIMIT 100",
+    "context": {
+      "tenant_ids": [
+        "acme",
+        "acme-eu",
+        "acme-us"
+      ]
+    },
+    "policy": "hierarchical"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "hierarchical",
+      "version": "sha256:b3f6277ae937813ad2e1f6b4feba03382548f72fa5450a68d5796db03c715b1f"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.accounts"
+    ],
+    "columns": [
+      "app.accounts.id",
+      "app.accounts.name",
+      "app.accounts.tenant_id"
+    ],
+    "bind_params": [
+      {
+        "param": 1,
+        "value": [
+          "acme",
+          "acme-eu",
+          "acme-us"
+        ]
+      }
+    ],
+    "fingerprint": "2cff99aaa0450564",
+    "sql_sha256": "fdb501ed2469870453d02976dc391e3c98766d0b1c1e93dace9e6570851473e8",
+    "elapsed_us": 280
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

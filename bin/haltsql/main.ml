@@ -188,7 +188,10 @@ let schema_cmd =
          ~exits)
       Term.(const (fun out -> Cmds.schema_export ~out) $ out)
   in
-  Cmd.group (Cmd.info "schema" ~doc:"JSON Schema tooling for editors and CI.") [ export ]
+  Cmd.group
+    (Cmd.info "schema"
+       ~doc:"Catalog snapshots, PII metadata import and JSON Schema tooling.")
+    ([ export ] @ Cmd_schema.cmds)
 
 (* ---- test ---- *)
 
@@ -307,6 +310,9 @@ let main =
       config_cmd;
       version_cmd;
       lint_cmd;
+      Cmd_policy_draft.cmd;
+      Cmd_rls.cmd;
+      Cmd_bundle.cmd;
     ]
 
 let () =

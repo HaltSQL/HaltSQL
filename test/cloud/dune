@@ -1,0 +1,27 @@
+; haltsql.cloud tests: SigV4 against AWS's published examples, credential
+; providers (env/static/web identity/IMDSv2), S3 and GCS audit sinks, and the
+; Vault / AWS Secrets Manager / GCP Secret Manager resolvers -- all against
+; in-process fake servers on 127.0.0.1 (fakes recompute SigV4 server-side).
+
+(test
+ (name test_cloud)
+ (libraries
+  haltsql_cloud
+  haltsql.core
+  haltsql.load
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  base64
+  x509
+  ptime
+  mirage-crypto-pk
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix))

@@ -42,7 +42,7 @@ jobs:
             -e TAG -e ARCH=${{ matrix.arch }} \
             "ocaml/opam:alpine-3.20-ocaml-${OCAML_VERSION}" \
             sh -euxc '
-              sudo apk add --no-cache build-base linux-headers file
+              sudo apk add --no-cache build-base linux-headers file gmp-dev
               cp -r /src "$HOME/haltsql" && cd "$HOME/haltsql"
               opam update --yes
               opam install . --deps-only --yes
@@ -50,13 +50,12 @@ jobs:
               HALTSQL_STATIC=1 opam exec -- dune build @install --profile release
               out="haltsql-${TAG}-linux-${ARCH}"
               mkdir -p "$out"
-              for b in haltsql haltsql-server; do
-                if [ -f "_build/install/default/bin/$b" ]; then
-                  cp "_build/install/default/bin/$b" "$out/"
-                  strip "$out/$b"
-                  file "$out/$b"
-                  file "$out/$b" | grep -q "statically linked" || { echo "$b is not static"; exit 1; }
-                fi
+              # Every release ships all three binaries; a missing one fails the build.
+              for b in haltsql haltsql-server haltsql-proxy; do
+                cp "_build/install/default/bin/$b" "$out/"
+                strip "$out/$b"
+                file "$out/$b"
+                file "$out/$b" | grep -q "statically linked" || { echo "$b is not static"; exit 1; }
               done
               cp LICENSE NOTICE README.md "$out/" && cp vendor/libpg_query/LICENSE "$out/LICENSE.libpg_query"
               tar -czf "/dist/$out.tar.gz" "$out"
@@ -65,7 +64,10 @@ jobs:
       - name: Smoke test
         run: |
           tar -xzf dist/haltsql-${TAG}-linux-${{ matrix.arch }}.tar.gz -C /tmp
-          /tmp/haltsql-${TAG}-linux-${{ matrix.arch }}/haltsql version
+          d=/tmp/haltsql-${TAG}-linux-${{ matrix.arch }}
+          "$d/haltsql" version
+          "$d/haltsql-server" --help=plain > /dev/null
+          "$d/haltsql-proxy" --help=plain > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
@@ -92,16 +94,15 @@ jobs:
           opam exec -- dune build @install --profile release
           out="haltsql-${TAG}-darwin-arm64"
           mkdir -p "$out" dist
-          for b in haltsql haltsql-server; do
-            if [ -f "_build/install/default/bin/$b" ]; then
-              cp "_build/install/default/bin/$b" "$out/"
-              strip "$out/$b"
-              otool -L "$out/$b"
-            fi
+          for b in haltsql haltsql-server haltsql-proxy; do
+            cp "_build/install/default/bin/$b" "$out/"
+            strip "$out/$b"
+            otool -L "$out/$b"
           done
           cp LICENSE NOTICE README.md "$out/" && cp vendor/libpg_query/LICENSE "$out/LICENSE.libpg_query"
           tar -czf "dist/$out.tar.gz" "$out"
           "$out/haltsql" version
+          "$out/haltsql-proxy" --help=plain > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:

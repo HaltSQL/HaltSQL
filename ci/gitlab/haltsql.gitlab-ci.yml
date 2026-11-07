@@ -1,0 +1,179 @@
+# HaltSQL policy CI templates for GitLab CI.
+#
+# Include this file and extend the hidden jobs; including it adds no jobs by itself:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/ardada2468/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
+#
+#   policy-check:
+#     extends: .haltsql-check
+#     variables:
+#       HALTSQL_POLICIES: policies
+#       HALTSQL_SUITES: tests
+#
+#   policy-bundle:
+#     extends: .haltsql-bundle
+#     needs: [policy-check]
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#
+# Pin the include to a release tag (never a branch) and set HALTSQL_VERSION to the same
+# release. The release archive is verified against the release's SHA256SUMS before use.
+# Variables (all optional):
+#   HALTSQL_VERSION           release tag (default: latest)
+#   HALTSQL_POLICIES          policy files/dirs/globs, whitespace separated (default: policies)
+#   HALTSQL_SUITES            test-suite files/dirs/globs (default: none)
+#   HALTSQL_FAIL_ON_WARNINGS  "true" to fail on lint warnings
+#   HALTSQL_BUNDLE_NAME       bundle name (default: $CI_PROJECT_NAME)
+#   HALTSQL_BUNDLE_VERSION    bundle version (default: $CI_COMMIT_SHORT_SHA)
+#   HALTSQL_CATALOGS          catalog snapshots for the bundle ([NAME=]FILE ...)
+#   HALTSQL_SIGNING_KEY       PEM ed25519 private key: a masked, protected CI/CD variable
+#   HALTSQL_PUBLIC_KEYS       public keys the signed bundle must verify against
+#   HALTSQL_RELEASE_BASE_URL  https mirror of the GitHub release downloads
+
+variables:
+  HALTSQL_VERSION: latest
+  HALTSQL_POLICIES: policies
+  HALTSQL_SUITES: ""
+  HALTSQL_FAIL_ON_WARNINGS: "false"
+  HALTSQL_REPO: ardada2468/HaltSQL
+
+.haltsql-base:
+  image: alpine:3.20
+  variables:
+    HALTSQL_OUT: $CI_PROJECT_DIR/haltsql-ci
+  before_script:
+    - apk add --no-cache bash curl jq tar coreutils >/dev/null
+    - |
+      set -eu
+      case "$(uname -m)" in
+        x86_64) arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *) echo "unsupported architecture $(uname -m)"; exit 2 ;;
+      esac
+      tag="$HALTSQL_VERSION"
+      if [ "$tag" = latest ]; then
+        tag=$(curl -fsSL --proto '=https' "https://api.github.com/repos/$HALTSQL_REPO/releases/latest" | jq -r '.tag_name // empty')
+      fi
+      case "$tag" in v*) ;; *) tag="v$tag" ;; esac
+      echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "invalid HaltSQL version: $tag"; exit 2; }
+      base="${HALTSQL_RELEASE_BASE_URL:-https://github.com/$HALTSQL_REPO/releases/download}"
+      case "$base" in https://*) ;; *) echo "HALTSQL_RELEASE_BASE_URL must be https"; exit 2 ;; esac
+      asset="haltsql-$tag-linux-$arch.tar.gz"
+      dir=$(mktemp -d)
+      curl -fsSL --proto '=https' --retry 3 -o "$dir/$asset" "$base/$tag/$asset"
+      curl -fsSL --proto '=https' --retry 3 -o "$dir/SHA256SUMS" "$base/$tag/SHA256SUMS"
+      # Exactly one matching line, and the checksum must match: fail closed otherwise.
+      [ "$(awk -v f="$asset" '$2 == f' "$dir/SHA256SUMS" | wc -l)" -eq 1 ] || { echo "$asset not listed once in SHA256SUMS"; exit 2; }
+      (cd "$dir" && awk -v f="$asset" '$2 == f' SHA256SUMS | sha256sum -c -) || { echo "checksum mismatch for $asset"; exit 2; }
+      tar -xzf "$dir/$asset" -C "$dir"
+      install -m 0755 "$dir/haltsql-$tag-linux-$arch/haltsql" /usr/local/bin/haltsql
+      haltsql version
+      mkdir -p "$HALTSQL_OUT"
+
+# Defines expand KIND PATTERNS...: prints the files matching HALTSQL_POLICIES /
+# HALTSQL_SUITES-style patterns (files, directories or globs). Used as `- *haltsql_expand`.
+.haltsql-expand:
+  - &haltsql_expand |
+    expand() {
+      kind="$1"; shift
+      set -f; pats=$*; set +f
+      for p in $pats; do
+        if [ -d "$p" ]; then
+          if [ "$kind" = suite ]; then
+            find "$p" -type f \( -name '*.suite.yaml' -o -name '*.suite.yml' -o -name '*.suite.json' \)
+          else
+            find "$p" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) ! -name '*.suite.*'
+          fi
+        else
+          for f in $p; do [ -f "$f" ] && echo "$f"; done
+        fi
+      done | sort -u
+    }
+
+.haltsql-check:
+  extends: .haltsql-base
+  stage: test
+  script:
+    - *haltsql_expand
+    - |
+      set -eu
+      policies=$(expand policy $HALTSQL_POLICIES)
+      suites=$(expand suite $HALTSQL_SUITES)
+      [ -n "$policies" ] || { echo "no policy files match: $HALTSQL_POLICIES"; exit 2; }
+      status=0
+      # shellcheck disable=SC2086
+      haltsql validate $policies $suites || status=1
+      warnings=0
+      for p in $policies; do
+        haltsql lint-policy --json "$p" > "$HALTSQL_OUT/lint.json" || { status=1; continue; }
+        w=$(jq '[.findings[] | select(.severity == "warning")] | length' "$HALTSQL_OUT/lint.json")
+        jq -r '.policy as $p | .findings[] | select(.severity == "warning") | "warning: \($p): \(.code): \(.message)"' "$HALTSQL_OUT/lint.json"
+        warnings=$((warnings + w))
+      done
+      if [ "$HALTSQL_FAIL_ON_WARNINGS" = true ] && [ "$warnings" -gt 0 ]; then
+        echo "$warnings lint warning(s) and HALTSQL_FAIL_ON_WARNINGS=true"; status=1
+      fi
+      if [ -n "$suites" ]; then
+        # shellcheck disable=SC2086
+        haltsql test --json $suites > "$HALTSQL_OUT/test.json" || status=1
+        # JUnit report for the merge-request widget.
+        jq -r '
+          def x: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\""; "&quot;");
+          "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+          "<testsuites tests=\"\(.passed + .failed)\" failures=\"\(.failed)\" errors=\"\(.load_errors)\">",
+          (.suites[] |
+            if .errors then
+              "<testsuite name=\"\(.file | x)\" tests=\"1\" errors=\"1\"><testcase name=\"load\" classname=\"\(.file | x)\"><error message=\"\(.errors | map(.message) | join("; ") | x)\"/></testcase></testsuite>"
+            else
+              "<testsuite name=\"\(.name | x)\" tests=\"\(.passed + .failed)\" failures=\"\(.failed)\">",
+              (.cases[] |
+                "<testcase name=\"\(.name | x)\" classname=\"\(.verdict.policy.name // "" | x)\">"
+                + (if .passed then "" else "<failure message=\"\((.failure // "failed") | x)\"/>" end)
+                + (if .verdict.allowed == false then "<system-out>denied: \(.verdict.reasons | map(.code) | join(", ") | x)</system-out>" else "" end)
+                + "</testcase>"),
+              "</testsuite>"
+            end),
+          "</testsuites>"' "$HALTSQL_OUT/test.json" > "$HALTSQL_OUT/junit.xml"
+        jq -r '"\(.passed) passed, \(.failed) failed, \(.load_errors) suite(s) failed to load"' "$HALTSQL_OUT/test.json"
+      fi
+      exit "$status"
+  artifacts:
+    when: always
+    paths:
+      - haltsql-ci/
+    reports:
+      junit: haltsql-ci/junit.xml
+    expire_in: 30 days
+
+.haltsql-bundle:
+  extends: .haltsql-base
+  stage: deploy
+  script:
+    - *haltsql_expand
+    - |
+      set -eu
+      policies=$(expand policy $HALTSQL_POLICIES)
+      [ -n "$policies" ] || { echo "no policy files to bundle"; exit 2; }
+      name="${HALTSQL_BUNDLE_NAME:-$CI_PROJECT_NAME}"
+      version="${HALTSQL_BUNDLE_VERSION:-$CI_COMMIT_SHORT_SHA}"
+      out="$HALTSQL_OUT/$name.haltsqlbundle"
+      set --
+      for c in ${HALTSQL_CATALOGS:-}; do set -- "$@" --catalog "$c"; done
+      # shellcheck disable=SC2086
+      haltsql bundle build $policies "$@" --name "$name" --bundle-version "$version" \
+        --source-url "$CI_PROJECT_URL" --source-commit "$CI_COMMIT_SHA" -o "$out"
+      if [ -n "${HALTSQL_SIGNING_KEY:-}" ]; then
+        haltsql bundle sign "$out" --key-env HALTSQL_SIGNING_KEY
+        set --
+        for k in ${HALTSQL_PUBLIC_KEYS:-}; do set -- "$@" --public-key "$k"; done
+        if [ "$#" -gt 0 ]; then haltsql bundle verify "$out" "$@"; fi
+      else
+        echo "HALTSQL_SIGNING_KEY is not set: the bundle is unsigned"
+      fi
+      haltsql bundle inspect "$out"
+  artifacts:
+    paths:
+      - haltsql-ci/*.haltsqlbundle
+      - haltsql-ci/*.haltsqlbundle.sig
+    expire_in: 90 days

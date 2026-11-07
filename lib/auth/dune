@@ -1,0 +1,21 @@
+; haltsql-server.auth: caller authentication for haltsql-server.
+;   pure: B64url, Jwk, Jwt, Oidc, Mtls, Request_context (no IO; given keys + now)
+;   IO:   Oidc_client (discovery, JWKS fetch + cache over cohttp-lwt-unix)
+
+(library
+ (name haltsql_auth)
+ (public_name haltsql-server.auth)
+ (libraries
+  haltsql
+  yojson
+  digestif
+  zarith
+  mirage-crypto-pk
+  mirage-crypto-ec
+  x509
+  uri
+  lwt
+  lwt.unix
+  cohttp
+  cohttp-lwt
+  cohttp-lwt-unix))

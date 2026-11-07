@@ -22,8 +22,19 @@ yes, you run the exact string you checked.
 It ships as:
 
 - an **OCaml library** (`haltsql`),
-- a **CLI** (`haltsql`) for scripts, CI, and debugging, and
-- an **HTTP sidecar** (`haltsql-server`) for agents written in any language.
+- a **CLI** (`haltsql`) for scripts, CI, and debugging, plus RLS generation,
+  catalog and PII import, policy drafting and signed policy bundles,
+- an **HTTP sidecar** (`haltsql-server`) for agents written in any language,
+  with built-in TLS/mTLS, OIDC, S3/GCS audit sinks, secret providers and
+  OpenTelemetry ([authentication](docs/authentication.md)),
+- a **PostgreSQL wire-protocol proxy** (`haltsql-proxy`) that verifies every
+  statement an unmodified driver sends ([proxy.md](docs/proxy.md)),
+- **client SDKs** for [Python](docs/sdk-python.md),
+  [TypeScript](docs/sdk-typescript.md), [Go](docs/sdk-go.md) and
+  [Java](docs/sdk-java.md), an [MCP server](docs/mcp.md), and LangChain,
+  LlamaIndex and Vanna integrations (`integrations/`), and
+- a **GitHub Action**, GitLab CI templates and pre-commit hooks for
+  [policy CI](docs/policy-ci.md).
 
 ## Why
 
@@ -147,6 +158,7 @@ HaltSQL is **0.1.0, a pre-1.0 preview**. Limits to know about:
 ```sh
 opam pin add haltsql https://github.com/ardada2468/HaltSQL.git
 opam pin add haltsql-server https://github.com/ardada2468/HaltSQL.git   # optional sidecar
+opam pin add haltsql-proxy https://github.com/ardada2468/HaltSQL.git    # optional wire proxy
 ```
 
 **Docker:**
@@ -169,7 +181,10 @@ with `SHA256SUMS`, a CycloneDX SBOM, and cosign signatures. See
 | Get started | [Quickstart](docs/quickstart.md) · [CLI](docs/cli.md) · [HTTP API](docs/http-api.md) |
 | Reference | [Policy](docs/policy-reference.md) · [Config](docs/config-reference.md) · [Verdict](docs/verdict.md) · [Reason codes](docs/reason-codes.md) |
 | Concepts | [Tenancy semantics](docs/tenancy.md) · [Threat model](docs/threat-model.md) · [Defense in depth](docs/defense-in-depth.md) |
-| Operate | [Deployment](docs/deployment.md) · [Integrations](docs/integrations.md) · [Testing](docs/testing.md) |
+| Operate | [Deployment](docs/deployment.md) · [Authentication and TLS](docs/authentication.md) · [Secrets](docs/secrets.md) · [Audit sinks](docs/audit-sinks.md) · [Observability](docs/observability.md) · [Testing](docs/testing.md) |
+| Clients | [Integrations](docs/integrations.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md) · [Go](docs/sdk-go.md) · [Java](docs/sdk-java.md) · [MCP](docs/mcp.md) |
+| Policy lifecycle | [Schema and PII import](docs/schema-and-pii.md) · [Signed bundles](docs/policy-bundles.md) · [Policy CI](docs/policy-ci.md) · [RLS generation](docs/rls-generation.md) |
+| Proxy | [haltsql-proxy](docs/proxy.md) |
 | Project | [ADRs](docs/adr/) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Governance](GOVERNANCE.md) |
 
 ## HaltSQL is one layer of defense in depth

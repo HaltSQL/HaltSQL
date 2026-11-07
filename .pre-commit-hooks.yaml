@@ -1,0 +1,32 @@
+# pre-commit hooks for HaltSQL policy repositories (https://pre-commit.com).
+# They use the haltsql binary on PATH (language: system): install a release first and
+# keep its version in step with your CI and servers. See docs/policy-ci.md.
+
+- id: haltsql-validate
+  name: haltsql validate
+  description: Validate HaltSQL Policy, Config, Catalog and TestSuite documents.
+  entry: haltsql validate
+  language: system
+  types_or: [yaml, json]
+  # Only HaltSQL documents: override `files` if yours live elsewhere.
+  files: (^|/)(policies|policy|haltsql|tests|suites|catalogs?)/.*\.(ya?ml|json)$
+
+- id: haltsql-lint-policy
+  name: haltsql lint-policy
+  description: Report risky settings in changed policy files (warnings do not fail).
+  entry: sh -c 'for f in "$@"; do haltsql lint-policy "$f" || exit 1; done' --
+  language: system
+  types_or: [yaml, json]
+  files: (^|/)(policies|policy)/.*\.(ya?ml|json)$
+  exclude: \.suite\.(ya?ml|json)$
+
+- id: haltsql-test
+  name: haltsql test
+  description: Run every policy test suite when a policy or suite changes.
+  entry: haltsql test
+  language: system
+  pass_filenames: false
+  # Directories searched for *.suite.yaml / *.suite.json; override with `args`.
+  args: [tests]
+  types_or: [yaml, json]
+  files: (^|/)(policies|policy|tests|suites|catalogs?)/.*\.(ya?ml|json)$

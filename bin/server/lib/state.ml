@@ -1,12 +1,19 @@
-(* Server state: static settings, the hot-reloadable policy/token snapshot,
-   audit sinks, and the reload logic. *)
+(* Server state: static settings, the hot-reloadable snapshot (policies,
+   tokens, OIDC providers, mTLS identities, TLS material), audit sinks, and
+   the reload logic. *)
 
 open Haltsql
+module Oidc_client = Haltsql_auth.Oidc_client
 
 type snapshot = {
   policies : (string * Policy.t) list;
   tokens : Config.token list;
   default_policy : string option;
+  oidc : Oidc_client.registry;
+  mtls : Config.mtls_identity list;
+  allow_unauthenticated : bool;
+      (** [server.auth.allow_unauthenticated]; reloadable so that turning anonymous access
+          off takes effect without a restart *)
   watched : string list;  (** files whose changes trigger a reload *)
 }
 
@@ -17,22 +24,154 @@ type sources = {
 }
 
 type t = {
-  cfg : Config.t;  (** effective settings at startup (listen, auth mode, audit, ...) *)
+  cfg : Config.t;
+      (** effective settings at startup (listen, audit, ...). Reloadable settings
+          (policies, tokens, OIDC, mTLS, allow_unauthenticated) must be read from [snap],
+          never from here. *)
   sources : sources;
   mutable snap : snapshot;
   mutable signatures : (string * (float * int * int)) list;
+  mutable tls : Tls.Config.server option;
+      (** current TLS configuration; [Some] iff TLS was configured at startup *)
   sinks : Audit.sink list;
   started : float;
 }
+
+(* ---- integration hooks (set by the integrator before [Server.main]) ---- *)
+
+let secret_resolver : (Config.secrets -> (Config.resolver, string) result) option ref =
+  ref None
+
+let remote_sink :
+    (Config.sink_kind -> on_error:Config.on_error -> (Audit.sink, string) result) option
+    ref =
+  ref None
+
+let bundle_loader :
+    (Config.bundle_ref -> ((string * Policy.t) list, string) result) option ref =
+  ref None
+
+let oidc_fetch : Oidc_client.fetch option ref = ref None
+
+(* Asynchronous secret resolution for reloads, which run inside the Lwt loop
+   (no nested [Lwt_main.run]): fetches every provider placeholder of [file]
+   concurrently and returns a resolver serving only those cached values. *)
+let secret_prefetch : (file:string -> Config.secrets -> Config.resolver Lwt.t) option ref
+    =
+  ref None
+
+(* ---- loading ---- *)
 
 let errors_to_strings errs = List.map Load_error.to_string errs
 
 let abs path =
   if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
 
-(* Loads the config file (if any) and the --policy files, then applies flag
-   overrides. Fails if anything fails to load. *)
-let load (src : sources) : (Config.t, string list) result =
+let load_config_file ?resolver f =
+  match Config.secrets_of_file f with
+  | Error errs -> Error (errors_to_strings errs)
+  | Ok secrets -> (
+      (* Without a resolver, provider placeholders fail the load with
+         "secret provider not configured". *)
+      let resolve =
+        match (resolver, !secret_resolver) with
+        | Some r, _ -> Ok (Some r)
+        | None, Some build -> (
+            match build secrets with Ok r -> Ok (Some r) | Error e -> Error [ e ])
+        | None, None -> Ok None
+      in
+      match resolve with
+      | Error e -> Error e
+      | Ok resolve -> Config.of_file ?resolve f |> Result.map_error errors_to_strings)
+
+(* Bundle policies may not shadow a policy defined in the config file or in
+   another bundle: a silent override would let one signer replace another's
+   policy. ([--policy] flags still override, explicitly.) *)
+let check_bundle_duplicates (cfg : Config.t) bundled =
+  let rec go seen errs = function
+    | [] -> List.rev errs
+    | (n, _) :: rest ->
+        let errs =
+          if List.mem_assoc n cfg.policies then
+            Printf.sprintf
+              "bundle policy %S duplicates a policy defined in the config file" n
+            :: errs
+          else if List.mem n seen then
+            Printf.sprintf "bundle policy %S is defined by more than one bundle" n :: errs
+          else errs
+        in
+        go (n :: seen) errs rest
+  in
+  match go [] [] bundled with [] -> Ok bundled | errs -> Error errs
+
+let load_bundles (cfg : Config.t) =
+  match (cfg.policy_bundles, !bundle_loader) with
+  | [], _ -> Ok []
+  | _ :: _, None ->
+      Error
+        [
+          "policies: signed bundles are configured, but this build of haltsql-server \
+           cannot load them";
+        ]
+  | bundles, Some load ->
+      List.fold_left
+        (fun acc (b : Config.bundle_ref) ->
+          match acc with
+          | Error _ -> acc
+          | Ok ps -> (
+              match load b with
+              | Error e -> Error [ Printf.sprintf "bundle %s: %s" b.bundle_path e ]
+              | Ok loaded ->
+                  let prefix = Option.value b.name_prefix ~default:"" in
+                  Ok
+                    (ps
+                    @ List.map
+                        (fun (n, (p : Policy.t)) ->
+                          (prefix ^ n, { p with Policy.name = prefix ^ p.name }))
+                        loaded)))
+        (Ok []) bundles
+      |> fun r -> Result.bind r (check_bundle_duplicates cfg)
+
+(* Every policy referenced by tokens, default_policy, OIDC and mTLS must be
+   loaded: Config can only check this when no bundles are involved. *)
+let check_policy_refs (cfg : Config.t) =
+  let have n = List.mem_assoc n cfg.policies in
+  let refs =
+    List.map
+      (fun (t : Config.token) -> (Printf.sprintf "token %S" t.token_name, t.token_policy))
+      cfg.tokens
+    @ (match cfg.default_policy with Some d -> [ ("default_policy", d) ] | None -> [])
+    @ List.concat_map
+        (fun (o : Config.oidc_provider) ->
+          match o.oidc_policy with
+          | Config.Oidc_pinned n -> [ (Printf.sprintf "oidc provider %S" o.oidc_name, n) ]
+          | Config.Oidc_from_claim { allowed; _ } ->
+              List.map
+                (fun n -> (Printf.sprintf "oidc provider %S" o.oidc_name, n))
+                allowed)
+        cfg.oidc
+    @ List.map
+        (fun (m : Config.mtls_identity) ->
+          let who =
+            match m.mtls_match with
+            | Config.Spiffe_id s -> s
+            | Config.Subject_cn c -> "CN=" ^ c
+          in
+          (Printf.sprintf "mtls identity %S" who, m.mtls_policy))
+        cfg.mtls
+  in
+  match List.filter (fun (_, n) -> not (have n)) refs with
+  | [] -> Ok ()
+  | missing ->
+      Error
+        (List.map
+           (fun (who, n) ->
+             Printf.sprintf "%s references policy %S, which is not loaded" who n)
+           missing)
+
+(* Loads the config file (if any), bundles and the --policy files, then
+   applies flag overrides. Fails if anything fails to load. *)
+let load ?resolver (src : sources) : (Config.t, string list) result =
   let base =
     match src.config_file with
     | None -> (
@@ -49,43 +188,70 @@ let load (src : sources) : (Config.t, string list) result =
                 (Unix.environment ())
             in
             if has_env then Error (errors_to_strings errs) else Ok Config.default)
-    | Some f -> Config.of_file f |> Result.map_error errors_to_strings
+    | Some f -> load_config_file ?resolver f
   in
   match base with
   | Error e -> Error e
-  | Ok cfg ->
-      let loaded, errs =
-        List.fold_left
-          (fun (ok, errs) f ->
-            match Policy_load.of_file f with
-            | Ok p -> ((p.Policy.name, p, abs f) :: ok, errs)
-            | Error e -> (ok, errs @ errors_to_strings e))
-          ([], []) src.policy_files
-      in
-      if errs <> [] then Error errs
-      else
-        let loaded = List.rev loaded in
-        let policies =
-          List.filter
-            (fun (n, _) -> not (List.exists (fun (m, _, _) -> m = n) loaded))
-            cfg.policies
-          @ List.map (fun (n, p, _) -> (n, p)) loaded
-        in
-        let cfg =
-          {
-            cfg with
-            policies;
-            policy_files = cfg.policy_files @ List.map (fun (_, _, f) -> f) loaded;
-          }
-        in
-        Ok (src.overrides cfg)
+  | Ok cfg -> (
+      match load_bundles cfg with
+      | Error e -> Error e
+      | Ok bundled -> (
+          let loaded, errs =
+            List.fold_left
+              (fun (ok, errs) f ->
+                match Policy_load.of_file f with
+                | Ok p -> ((p.Policy.name, p, abs f) :: ok, errs)
+                | Error e -> (ok, errs @ errors_to_strings e))
+              ([], []) src.policy_files
+          in
+          if errs <> [] then Error errs
+          else
+            let loaded = List.rev loaded in
+            let flag_names = List.map (fun (n, _, _) -> n) loaded in
+            let base_policies =
+              List.filter (fun (n, _) -> not (List.mem_assoc n bundled)) cfg.policies
+              @ bundled
+            in
+            let policies =
+              List.filter (fun (n, _) -> not (List.mem n flag_names)) base_policies
+              @ List.map (fun (n, p, _) -> (n, p)) loaded
+            in
+            let cfg =
+              {
+                cfg with
+                policies;
+                policy_files =
+                  cfg.policy_files
+                  @ List.concat_map
+                      (fun (b : Config.bundle_ref) ->
+                        (* hot reload re-verifies when the bundle or its
+                           signature changes *)
+                        [ b.bundle_path; b.bundle_path ^ ".sig" ])
+                      cfg.policy_bundles
+                  @ List.map (fun (_, _, f) -> f) loaded;
+              }
+            in
+            let cfg = src.overrides cfg in
+            match check_policy_refs cfg with Ok () -> Ok cfg | Error e -> Error e))
 
-let snapshot_of_config ?config_file (cfg : Config.t) =
+let tls_files (cfg : Config.t) =
+  match cfg.tls with Some t -> Tls_setup.files t | None -> []
+
+let snapshot_of_config ?config_file ?previous (cfg : Config.t) =
+  let oidc =
+    match previous with
+    | Some (p : snapshot) -> Oidc_client.update p.oidc cfg.oidc
+    | None -> Oidc_client.registry ?fetch:!oidc_fetch cfg.oidc
+  in
   {
     policies = cfg.policies;
     tokens = cfg.tokens;
     default_policy = cfg.default_policy;
-    watched = Option.to_list (Option.map abs config_file) @ cfg.policy_files;
+    oidc;
+    mtls = cfg.mtls;
+    allow_unauthenticated = cfg.allow_unauthenticated;
+    watched =
+      Option.to_list (Option.map abs config_file) @ cfg.policy_files @ tls_files cfg;
   }
 
 let signature path =
@@ -95,34 +261,91 @@ let signature path =
 
 let signatures files = List.map (fun f -> (f, signature f)) files
 
+let open_sink (s : Config.sink) =
+  match s.sink with
+  | Config.Sink_stdout -> Audit.open_stdout ~on_error:s.on_error ()
+  | Config.Sink_file p -> Audit.open_file ~on_error:s.on_error p
+  | (Config.Sink_s3 _ | Config.Sink_gcs _) as k -> (
+      let kind = match k with Config.Sink_s3 _ -> "s3" | _ -> "gcs" in
+      match !remote_sink with
+      | None ->
+          failwith
+            (Printf.sprintf
+               "audit sink type %s is configured, but this build of haltsql-server does \
+                not support it"
+               kind)
+      | Some make -> (
+          match make k ~on_error:s.on_error with
+          | Ok sink -> sink
+          | Error e -> failwith (Printf.sprintf "audit sink %s: %s" kind e)))
+
+(* Opens every sink; on failure closes the ones already opened. *)
 let open_sinks (cfg : Config.t) =
-  List.map
-    (function
-      | Config.Audit_stdout -> Audit.open_stdout ()
-      | Config.Audit_file p -> Audit.open_file p)
-    cfg.audit_sinks
+  let opened = ref [] in
+  try
+    List.iter (fun s -> opened := open_sink s :: !opened) cfg.sinks;
+    List.rev !opened
+  with e ->
+    List.iter Audit.close !opened;
+    raise e
+
+let load_tls (cfg : Config.t) =
+  match cfg.tls with
+  | None -> Ok None
+  | Some t -> Result.map Option.some (Tls_setup.load t)
 
 let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.id })
     (cfg : Config.t) =
+  let tls = match load_tls cfg with Ok t -> t | Error e -> failwith e in
   let snap = snapshot_of_config ?config_file:sources.config_file cfg in
   {
     cfg;
     sources;
     snap;
     signatures = signatures snap.watched;
+    tls;
     sinks = open_sinks cfg;
     started = Unix.gettimeofday ();
   }
 
 let close t = List.iter Audit.close t.sinks
 
-(* Reloads every source. Swaps atomically only if everything loaded. *)
-let reload ?(reason = "manual") t =
-  match load t.sources with
-  | Ok cfg ->
-      t.snap <- snapshot_of_config ?config_file:t.sources.config_file cfg;
+(* Reloads every source (policies, auth settings, TLS material). Swaps
+   atomically only if everything loaded. TLS cannot be switched on or off
+   without a restart. *)
+let reload ?(reason = "manual") ?resolver t =
+  let result =
+    match load ?resolver t.sources with
+    | Error e -> Error e
+    | Ok cfg -> (
+        match (t.tls, cfg.tls) with
+        | Some _, None ->
+            Error [ "server.tls was removed; disabling TLS requires a restart" ]
+        | None, Some _ ->
+            Error [ "server.tls was added; enabling TLS requires a restart" ]
+        | None, None -> Ok (cfg, None)
+        | Some _, Some _ -> (
+            match load_tls cfg with
+            | Ok tls ->
+                Metrics.observe_tls_reload ~ok:true;
+                Ok (cfg, tls)
+            | Error e ->
+                Metrics.observe_tls_reload ~ok:false;
+                Error [ e ]))
+  in
+  let result =
+    Result.bind result (fun (cfg, tls) ->
+        match Telemetry.reconfigure cfg.otlp with
+        | Ok () -> Ok (cfg, tls)
+        | Error e -> Error [ e ])
+  in
+  match result with
+  | Ok (cfg, tls) ->
+      t.snap <- snapshot_of_config ?config_file:t.sources.config_file ~previous:t.snap cfg;
+      (match tls with Some _ -> t.tls <- tls | None -> ());
       t.signatures <- signatures t.snap.watched;
       Metrics.observe_reload ~ok:true;
+      Metrics.set_policies_loaded (List.length t.snap.policies);
       Log.info "policies reloaded"
         ~fields:
           [
@@ -132,19 +355,35 @@ let reload ?(reason = "manual") t =
                 (List.map
                    (fun (n, (p : Policy.t)) -> `String (n ^ "@" ^ p.version))
                    t.snap.policies) );
+            ("tls_reloaded", `Bool (tls <> None));
+            ( "auth",
+              `String (if t.snap.allow_unauthenticated then "optional" else "required") );
           ];
       Ok ()
   | Error errs ->
       (* Remember the broken files' signatures so we do not retry every poll. *)
       t.signatures <- signatures t.snap.watched;
       Metrics.observe_reload ~ok:false;
-      Log.error "policy reload failed; keeping the last good policies"
+      Log.error "reload failed; keeping the last good configuration"
         ~fields:
           [
             ("reason", `String reason);
             ("errors", `List (List.map (fun e -> `String e) errs));
           ];
       Error errs
+
+(* Reload from inside the Lwt loop (file watcher, SIGHUP): secrets from
+   providers are prefetched asynchronously first, with a fresh cache, so
+   rotated secrets are picked up. *)
+let reload_lwt ?reason t =
+  match (t.sources.config_file, !secret_prefetch) with
+  | Some f, Some prefetch -> (
+      match Config.secrets_of_file f with
+      | Error _ -> Lwt.return (reload ?reason t) (* reports the located errors *)
+      | Ok secrets ->
+          Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
+              Lwt.return (reload ?reason ~resolver t)))
+  | _ -> Lwt.return (reload ?reason t)
 
 let changed t = List.exists (fun (f, sg) -> signature f <> sg) t.signatures
 let find_policy t name = List.assoc_opt name t.snap.policies

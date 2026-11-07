@@ -1,0 +1,18 @@
+{
+  "name": "payments",
+  "catalog_name": "main",
+  "schema_name": "app",
+  "table_type": "MANAGED",
+  "data_source_format": "DELTA",
+  "full_name": "main.app.payments",
+  "owner": "data-platform",
+  "columns": [
+    { "name": "id", "type_text": "bigint", "type_name": "LONG", "position": 0, "nullable": false },
+    { "name": "card_last4", "type_text": "string", "type_name": "STRING", "position": 5, "nullable": true,
+      "tags": [ { "key": "sensitivity", "value": "internal" } ] },
+    { "name": "card_token", "type_text": "string", "type_name": "STRING", "position": 6, "nullable": true,
+      "tags": { "pci": "", "sensitivity": "restricted" } }
+  ],
+  "created_at": 1730277000000,
+  "updated_at": 1730277600000
+}

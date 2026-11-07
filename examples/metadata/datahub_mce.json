@@ -1,0 +1,56 @@
+[
+  {
+    "auditHeader": null,
+    "proposedSnapshot": {
+      "com.linkedin.pegasus2avro.metadata.snapshot.DatasetSnapshot": {
+        "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,saas.app.customers,PROD)",
+        "aspects": [
+          {
+            "com.linkedin.pegasus2avro.schema.SchemaMetadata": {
+              "schemaName": "saas.app.customers",
+              "platform": "urn:li:dataPlatform:postgres",
+              "version": 0,
+              "hash": "",
+              "platformSchema": { "com.linkedin.pegasus2avro.schema.MySqlDDL": { "tableSchema": "" } },
+              "fields": [
+                { "fieldPath": "id", "nativeDataType": "bigint", "type": { "type": { "com.linkedin.pegasus2avro.schema.NumberType": {} } }, "nullable": false, "recursive": false, "isPartOfKey": true },
+                { "fieldPath": "email", "nativeDataType": "text", "type": { "type": { "com.linkedin.pegasus2avro.schema.StringType": {} } }, "nullable": true, "recursive": false,
+                  "globalTags": { "tags": [ { "tag": "urn:li:tag:PII" } ] } },
+                { "fieldPath": "[version=2.0].[type=struct].[type=string].phone", "nativeDataType": "text", "type": { "type": { "com.linkedin.pegasus2avro.schema.StringType": {} } }, "nullable": true, "recursive": false,
+                  "glossaryTerms": { "terms": [ { "urn": "urn:li:glossaryTerm:PersonalInformation.PhoneNumber" } ], "auditStamp": { "time": 1730277000000, "actor": "urn:li:corpuser:datahub" } } },
+                { "fieldPath": "country", "nativeDataType": "character(2)", "type": { "type": { "com.linkedin.pegasus2avro.schema.StringType": {} } }, "nullable": false, "recursive": false,
+                  "globalTags": { "tags": [ { "tag": "urn:li:tag:Reference" } ] } }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "proposedDelta": null,
+    "systemMetadata": { "lastObserved": 1730277000000, "runId": "postgres-2026_10_30-09_10_00" }
+  },
+  {
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,saas.app.customers,PROD)",
+    "changeType": "UPSERT",
+    "aspectName": "editableSchemaMetadata",
+    "aspect": {
+      "json": {
+        "created": { "time": 1730277100000, "actor": "urn:li:corpuser:alice" },
+        "editableSchemaFieldInfo": [
+          { "fieldPath": "ssn", "globalTags": { "tags": [ { "tag": "urn:li:tag:Sensitive" } ] } }
+        ]
+      }
+    }
+  },
+  {
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,saas.app.users,PROD)",
+    "changeType": "UPSERT",
+    "aspectName": "schemaMetadata",
+    "aspect": {
+      "value": "{\"schemaName\":\"saas.app.users\",\"platform\":\"urn:li:dataPlatform:postgres\",\"version\":0,\"hash\":\"\",\"platformSchema\":{\"com.linkedin.schema.MySqlDDL\":{\"tableSchema\":\"\"}},\"fields\":[{\"fieldPath\":\"email\",\"nativeDataType\":\"text\",\"type\":{\"type\":{\"com.linkedin.schema.StringType\":{}}},\"globalTags\":{\"tags\":[{\"tag\":\"urn:li:tag:gdpr\"}]}},{\"fieldPath\":\"role\",\"nativeDataType\":\"text\",\"type\":{\"type\":{\"com.linkedin.schema.StringType\":{}}}}]}",
+      "contentType": "application/json"
+    }
+  }
+]

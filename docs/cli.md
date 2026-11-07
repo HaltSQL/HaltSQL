@@ -187,6 +187,9 @@ haltsql lint-policy FILE
 
 Print the effective configuration after merging the config file, `HALTSQL_*`
 environment variables, and defaults. Secrets are replaced by `"<redacted>"`.
+`${vault:...}`, `${aws-sm:...}` and `${gcp-sm:...}` placeholders are resolved
+from the config's `secrets` section first (see [secrets.md](secrets.md));
+`haltsql validate` does the same for `kind: Config` documents.
 
 ```
 haltsql config show --config FILE
@@ -194,6 +197,38 @@ haltsql config show --config FILE
 
 (`--effective` is accepted for compatibility; the output is always the merged
 result.)
+
+## haltsql schema pull / schema import
+
+Snapshot a live Postgres catalog into a `Catalog` document (`schema pull`,
+read-only, TLS and SCRAM-SHA-256), and import PII labels from dbt, DataHub,
+Unity Catalog, Atlan or Collibra exports (`schema import`). See
+[schema-and-pii.md](schema-and-pii.md).
+
+```
+haltsql schema pull --dsn postgres://... -o catalog.json
+haltsql schema import --dbt-manifest manifest.json -o pii.json
+```
+
+## haltsql policy draft
+
+Write a reviewable starter policy from a catalog snapshot and PII manifest:
+explicit column lists without PII columns, tenant columns, and `require_limit`.
+See [schema-and-pii.md](schema-and-pii.md).
+
+## haltsql rls generate / rls check
+
+Generate idempotent PostgreSQL role, grant and row-level-security DDL from a
+policy (`rls generate`), and report drift between a live database and the
+policy (`rls check`; exit 1 on drift). See [rls-generation.md](rls-generation.md).
+
+## haltsql bundle
+
+Build, sign (Ed25519), verify and inspect signed policy bundles:
+`bundle keygen`, `bundle build`, `bundle sign`, `bundle verify`,
+`bundle inspect`. The server loads bundles listed under `policies` and refuses
+any whose signature does not verify. See [policy-bundles.md](policy-bundles.md)
+and, for CI, [policy-ci.md](policy-ci.md).
 
 ## haltsql version
 
@@ -229,6 +264,7 @@ At least one of `--config` or `--policy` is required.
 | `--watch` / `--no-watch` | Reload when policy or config files change (polled every 2 seconds). |
 | `--max-request-bytes N` | Maximum request body size (HTTP 413 above). |
 | `--no-metrics` | Disable `GET /metrics`. |
+| `--health-listen HOST:PORT` | Extra plain-HTTP listener serving only `/healthz` and `/readyz` (for probes when the main port requires client certificates). |
 
 Flags override `HALTSQL_*` environment variables, which override the config
 file. The server reloads all policies atomically on `SIGHUP` (keeping the last
