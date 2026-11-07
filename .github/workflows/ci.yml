@@ -106,7 +106,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab
+          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -136,7 +136,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab
+          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -194,7 +194,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab
+          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -232,7 +232,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab
+          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -257,7 +257,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab
+          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s

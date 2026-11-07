@@ -1,0 +1,11 @@
+# GitGuardian (ggshield and the GitHub app) configuration.
+version: 2
+secret:
+  ignored-matches:
+    # Password of the disposable Postgres containers used by CI (service
+    # containers in .github/workflows/*.yml), the lab (lab/infra/compose) and
+    # the integration tests. These containers are created per run on localhost,
+    # hold only synthetic data and are thrown away afterwards; the value is not
+    # a credential for anything real.
+    - name: disposable CI/lab Postgres password
+      match: haltlab
