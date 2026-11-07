@@ -1,0 +1,31 @@
+{
+  "sql": "SELECT secret FROM api_keys WHERE tenant_id = $1 LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_TABLE_DENIED",
+      "message": "relation api_keys does not resolve to a policy table through search_path [app]",
+      "rule": "tables.allowlist",
+      "loc": 19,
+      "hint": "Use only the tables listed in the policy."
+    },
+    {
+      "code": "E_PARAM_UNBOUND",
+      "message": "parameter $1 is not a tenant placeholder, so its value is unknown",
+      "rule": "params.unbound",
+      "loc": 46,
+      "hint": "Use $n placeholders only as the value of a tenant predicate (e.g. o.tenant_id = $1); write other values as literals."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [],
+  "columns": [],
+  "bind_params": [],
+  "fingerprint": "6926f04727254776",
+  "sql_sha256": "b94fc445d9af3bd31a24d483eba38b1343bfc830a3975bc9c692e28c17b41332"
+}

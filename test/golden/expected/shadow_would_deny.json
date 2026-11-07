@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT id FROM orders LIMIT 10",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [
+    {
+      "code": "E_TENANT_MISSING",
+      "message": "app.orders (as orders) has no provable tenant predicate on orders.tenant_id in the same SELECT",
+      "rule": "tenancy.predicate",
+      "loc": 15,
+      "hint": "Add `WHERE orders.tenant_id = $1` as a top-level AND condition inside the same SELECT that reads app.orders (not in an outer query, not under OR/NOT, not in the ON of the preserved side of an outer join)."
+    }
+  ],
+  "policy": {
+    "name": "shadow",
+    "version": "sha256:fc000c63c5f1a76cec2c459c93568e77993d5de22041f3ec464e0df88fbd0891"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id" ],
+  "bind_params": [],
+  "fingerprint": "303dc6e086bb7f31",
+  "sql_sha256": "29cb43ea11d19d73f8ffd28cce3a486b1b0a6986296fe88f7e6308c426e721a3"
+}

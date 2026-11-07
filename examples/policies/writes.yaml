@@ -1,0 +1,37 @@
+# Support bot that may create tickets, update a few ticket fields and delete
+# its own drafts. Tenant columns can never be updated.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: support-bot
+  owner: support-tools
+dialect: postgres-16
+search_path: [support]
+statements:
+  allow: [select, insert, update, delete]
+require_limit:
+  max: 200
+tenancy:
+  mode: bound
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  tickets:
+    columns: [id, tenant_id, subject, status, priority, assignee_id, created_at, updated_at]
+    tenant_column: tenant_id
+    writes:
+      insert: true
+      update: [status, priority, assignee_id, updated_at]
+      delete: false
+  ticket_drafts:
+    columns: [id, tenant_id, ticket_id, body, created_at]
+    tenant_column: tenant_id
+    writes:
+      insert: true
+      update: [body]
+      delete: true
+  ticket_statuses:
+    columns: [code, label]
+functions:
+  presets: [aggregates, string, datetime]
+  allow: [now]

@@ -1,0 +1,10 @@
+_build/
+_build_*/
+_opam/
+*.install
+_coverage/
+bisect*.coverage
+.merlin
+.DS_Store
+lab/.env
+lab/out/

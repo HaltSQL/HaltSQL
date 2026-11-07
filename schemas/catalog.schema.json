@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://haltsql.dev/schemas/v1/catalog.schema.json",
+  "title": "HaltSQL catalog snapshot",
+  "description": "Schema snapshot used for name resolution and * expansion, e.g. produced by `haltsql schema pull`.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "description": "Document format version. Must be \"haltsql.dev/v1\".",
+      "const": "haltsql.dev/v1"
+    },
+    "kind": {
+      "description": "Document kind. Must be \"Catalog\".",
+      "const": "Catalog"
+    },
+    "metadata": {
+      "description": "Free-form information about the snapshot (source, time, tool version).",
+      "type": "object"
+    },
+    "tables": {
+      "description": "Tables keyed by \"schema.table\", written exactly as Postgres stores them (no case folding).",
+      "type": "object",
+      "additionalProperties": {
+        "description": "One table of the snapshot.",
+        "type": "object",
+        "properties": {
+          "columns": {
+            "description": "Complete column list of the table, in table order.",
+            "type": "array",
+            "items": {
+              "description": "A column name, or a name with its type.",
+              "oneOf": [
+                { "description": "Column name.", "type": "string" },
+                {
+                  "description": "Column with optional type.",
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "description": "Column name.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "description": "Postgres type name, e.g. int8, text, uuid.",
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [ "name" ]
+                }
+              ]
+            },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [ "columns" ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [ "tables" ]
+}

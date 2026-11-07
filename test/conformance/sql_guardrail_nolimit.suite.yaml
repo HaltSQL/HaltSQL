@@ -1,0 +1,690 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-nolimit
+  description: "sql-guardrail unit tests (predicates, statement kinds, preflight, robustness) under a policy without require_limit"
+policy: policies/sqlg_nolimit.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "forbidden statement kind: CALL my_procedure()"
+    sql: "CALL my_procedure()"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CALL my_procedure(1, 2, 3)"
+    sql: "CALL my_procedure(1, 2, 3)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: SET search_path = 'evil'"
+    sql: "SET search_path = 'evil'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: SET LOCAL statement_timeout = '1s'"
+    sql: "SET LOCAL statement_timeout = '1s'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: RESET search_path"
+    sql: "RESET search_path"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: DISCARD ALL"
+    sql: "DISCARD ALL"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: LISTEN evil_channel"
+    sql: "LISTEN evil_channel"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: NOTIFY evil_channel, 'payload'"
+    sql: "NOTIFY evil_channel, 'payload'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: UNLISTEN evil_channel"
+    sql: "UNLISTEN evil_channel"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: VACUUM orders"
+    sql: "VACUUM orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: ANALYZE orders"
+    sql: "ANALYZE orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: REFRESH MATERIALIZED VIEW mv"
+    sql: "REFRESH MATERIALIZED VIEW mv"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CLUSTER orders"
+    sql: "CLUSTER orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: REINDEX TABLE orders"
+    sql: "REINDEX TABLE orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CHECKPOINT"
+    sql: "CHECKPOINT"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: PREPARE plan AS SELECT 1"
+    sql: "PREPARE plan AS SELECT 1"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: EXPLAIN SELECT * FROM orders"
+    sql: "EXPLAIN SELECT * FROM orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: EXPLAIN ANALYZE SELECT * FROM orders"
+    sql: "EXPLAIN ANALYZE SELECT * FROM orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: LOAD 'evil_extension'"
+    sql: "LOAD 'evil_extension'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: BEGIN"
+    sql: "BEGIN"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: COMMIT"
+    sql: "COMMIT"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: ROLLBACK"
+    sql: "ROLLBACK"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CREATE EXTENSION pg_stat_statements"
+    sql: "CREATE EXTENSION pg_stat_statements"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CREATE ROLE evil WITH SUPERUSER"
+    sql: "CREATE ROLE evil WITH SUPERUSER"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: DROP ROLE alice"
+    sql: "DROP ROLE alice"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: ALTER ROLE alice WITH SUPERUSER"
+    sql: "ALTER ROLE alice WITH SUPERUSER"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CREATE FUNCTION evil() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql"
+    sql: "CREATE FUNCTION evil() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: CREATE DATABASE evil"
+    sql: "CREATE DATABASE evil"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "forbidden statement kind: DROP DATABASE production"
+    sql: "DROP DATABASE production"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_forbidden_statement_kinds"]
+  - name: "allowed statement kind: SELECT 1"
+    sql: "SELECT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_allowed_statement_kinds"]
+  - name: "SELECT * on tenant table expands to denied columns"
+    sql: "SELECT * FROM orders WHERE account_id = 42"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_allowed_statement_kinds", "differs"]
+  - name: "allowed statement kind: CTE"
+    sql: "WITH x AS (SELECT 1) SELECT * FROM x"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_statement_kinds.py::test_allowed_statement_kinds"]
+  - name: "read-only: SELECT 1"
+    sql: "SELECT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: SELECT * FROM users WHERE id = 1"
+    sql: "SELECT * FROM users WHERE id = 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases", "differs"]
+  - name: "read-only: INSERT INTO t VALUES (1)"
+    sql: "INSERT INTO t VALUES (1)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: UPDATE t SET x = 1"
+    sql: "UPDATE t SET x = 1"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: DELETE FROM t"
+    sql: "DELETE FROM t"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: DROP TABLE t"
+    sql: "DROP TABLE t"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: CREATE TABLE t (x int)"
+    sql: "CREATE TABLE t (x int)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: ALTER TABLE t ADD COLUMN y int"
+    sql: "ALTER TABLE t ADD COLUMN y int"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: TRUNCATE t"
+    sql: "TRUNCATE t"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: GRANT SELECT ON t TO u"
+    sql: "GRANT SELECT ON t TO u"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: REVOKE SELECT ON t FROM u"
+    sql: "REVOKE SELECT ON t FROM u"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: MERGE INTO t USING s ON s.id = t.id WHEN MATCHED THEN UPDATE SET x = 1"
+    sql: "MERGE INTO t USING s ON s.id = t.id WHEN MATCHED THEN UPDATE SET x = 1"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "read-only: WITH d AS (DELETE FROM t RETURNING 1) SELECT 1"
+    sql: "WITH d AS (DELETE FROM t RETURNING 1) SELECT 1"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_readonly.py::test_readonly_cases"]
+  - name: "preflight: SELECT 1"
+    sql: "SELECT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_select_one_is_clean"]
+  - name: "degenerate input \"\""
+    sql: ""
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_empty_or_degenerate_fails_closed", "differs-code"]
+  - name: "degenerate input \"   \""
+    sql: "   "
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_empty_or_degenerate_fails_closed", "differs-code"]
+  - name: "degenerate input \";\""
+    sql: ";"
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_empty_or_degenerate_fails_closed", "differs-code"]
+  - name: "degenerate input \"-- only\""
+    sql: "-- only"
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_empty_or_degenerate_fails_closed", "differs-code"]
+  - name: "degenerate input \"/* only */\""
+    sql: "/* only */"
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_empty_or_degenerate_fails_closed", "differs-code"]
+  - name: "preflight: garbage"
+    sql: "garbage SQL that won't parse $%@#"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_verify_never_raises"]
+  - name: "preflight: multi statement"
+    sql: "SELECT 1; SELECT 2"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_multi_statement_is_flagged"]
+  - name: "preflight: trailing semicolon is one statement"
+    sql: "SELECT 1;"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_trailing_semicolon_does_not_count"]
+  - name: "preflight: VACUUM"
+    sql: "VACUUM"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_vacuum_is_command_default_deny"]
+  - name: "preflight: LISTEN"
+    sql: "LISTEN foo"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_listen_is_command_default_deny"]
+  - name: "preflight: INSERT under read-only"
+    sql: "INSERT INTO t (a) VALUES (1)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_insert_under_read_only_emits_statement_forbidden_but_continues"]
+  - name: "preflight: UNION is select-like"
+    sql: "SELECT 1 UNION SELECT 2"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_union_is_select_like"]
+  - name: "preflight: WITH is select-like"
+    sql: "WITH x AS (SELECT 1 AS a) SELECT a FROM x"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_with_cte_is_select_like"]
+  - name: "preflight DDL/DCL: ALTER TABLE t ADD COLUMN c INT"
+    sql: "ALTER TABLE t ADD COLUMN c INT"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_other_ddl_dcl_rejected"]
+  - name: "preflight DDL/DCL: TRUNCATE TABLE t"
+    sql: "TRUNCATE TABLE t"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_other_ddl_dcl_rejected"]
+  - name: "preflight DDL/DCL: GRANT SELECT ON t TO somebody"
+    sql: "GRANT SELECT ON t TO somebody"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_other_ddl_dcl_rejected"]
+  - name: "preflight DDL/DCL: REVOKE SELECT ON t FROM somebody"
+    sql: "REVOKE SELECT ON t FROM somebody"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_other_ddl_dcl_rejected"]
+  - name: "DML in CTE: (INSERT INTO audit_log VA"
+    sql: "WITH x AS (INSERT INTO audit_log VALUES ('owned') RETURNING 1) SELECT * FROM x"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::TestDataModifyingCTE::test_dml_in_cte_is_flagged"]
+  - name: "DML in CTE: (UPDATE orders SET total "
+    sql: "WITH x AS (UPDATE orders SET total = 0 RETURNING id) SELECT * FROM x"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::TestDataModifyingCTE::test_dml_in_cte_is_flagged"]
+  - name: "DML in CTE: (DELETE FROM users WHERE "
+    sql: "WITH x AS (DELETE FROM users WHERE id = 1 RETURNING id) SELECT * FROM x"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::TestDataModifyingCTE::test_dml_in_cte_is_flagged"]
+  - name: "nested DML CTE"
+    sql: "WITH a AS (SELECT 1), b AS (DELETE FROM users WHERE id = 1 RETURNING id) SELECT * FROM a, b"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::TestDataModifyingCTE::test_nested_dml_cte_is_flagged"]
+  - name: "multiple DML CTEs"
+    sql: "WITH a AS (INSERT INTO t1 VALUES (1) RETURNING 1), b AS (UPDATE t2 SET x = 1 RETURNING x) SELECT * FROM a, b"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::TestDataModifyingCTE::test_multiple_dml_ctes_each_flagged"]
+  - name: "100 nested parentheses around TRUE"
+    sql: "SELECT 1 WHERE ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((TRUE))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestRobustness::test_verify_never_raises", "ambiguous"]
+  - name: "predicate: equality"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases"]
+  - name: "predicate: missing"
+    sql: "SELECT id FROM orders"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases"]
+  - name: "predicate: wrong tenant"
+    sql: "SELECT id FROM orders WHERE account_id = 99"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases", "differs-code"]
+  - name: "predicate: extra AND conjunct on a non-allowed column"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND status = 'paid'"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases", "differs"]
+  - name: "predicate: WHERE 1 = 1"
+    sql: "SELECT id FROM orders WHERE 1 = 1"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases"]
+  - name: "predicate: OR 1 = 1"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR 1 = 1"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases"]
+  - name: "predicate: empty context"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_predicate_cases"]
+  - name: "IN (42) single literal"
+    sql: "SELECT id FROM orders WHERE account_id IN (42)"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_single_literal_satisfies_equality", "ambiguous"]
+  - name: "IN (42, 99) multiple literals"
+    sql: "SELECT id FROM orders WHERE account_id IN (42, 99)"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_multiple_literals_does_not_satisfy_equality"]
+  - name: "cast tolerance: plain"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance"]
+  - name: "cast on column side does not prove: account_id::text = 42"
+    sql: "SELECT id FROM orders WHERE account_id::text = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance", "differs"]
+  - name: "cast on column side does not prove: account_id::text = '42'"
+    sql: "SELECT id FROM orders WHERE account_id::text = '42'"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance", "differs"]
+  - name: "cast on column side does not prove: account_id::int = 42"
+    sql: "SELECT id FROM orders WHERE account_id::int = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance", "differs"]
+  - name: "cast on column side does not prove: account_id::bigint = 42"
+    sql: "SELECT id FROM orders WHERE account_id::bigint = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance", "differs"]
+  - name: "expression on column side does not prove: (account_id + 1)::text = 42"
+    sql: "SELECT id FROM orders WHERE (account_id + 1)::text = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance"]
+  - name: "expression on column side does not prove: (account_id * 2)::int = 42"
+    sql: "SELECT id FROM orders WHERE (account_id * 2)::int = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance"]
+  - name: "expression on column side does not prove: abs(account_id) = 42"
+    sql: "SELECT id FROM orders WHERE abs(account_id) = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance"]
+  - name: "expression on column side does not prove: COALESCE(account_id, 0) = 42"
+    sql: "SELECT id FROM orders WHERE COALESCE(account_id, 0) = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_cast_tolerance.py::test_cast_tolerance"]
+  - name: "per-alias: single table no alias"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[single table no alias]"]
+  - name: "per-alias: single table no alias, qualified column"
+    sql: "SELECT id FROM orders WHERE orders.account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[single table no alias, qualified column]"]
+  - name: "per-alias: single table with alias, qualified column"
+    sql: "SELECT o.id FROM orders o WHERE o.account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[single table with alias, qualified column]"]
+  - name: "per-alias: single table with alias, unqualified column"
+    sql: "SELECT o.id FROM orders o WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[single table with alias, unqualified column]"]
+  - name: "per-alias: schema-qualified single table"
+    sql: "SELECT id FROM public.orders WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[schema-qualified single table]"]
+  - name: "per-alias: self-join cartesian, only one alias filtered (BYPASS)"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON 1=1 WHERE o1.account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[self-join cartesian, only one alias filtered (BYPASS)]"]
+  - name: "per-alias: self-join with proper join condition, only one alias filtered"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id WHERE o1.account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[self-join with proper join condition, only one alias filtered]"]
+  - name: "per-alias: self-join, neither alias filtered"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[self-join, neither alias filtered]"]
+  - name: "per-alias: self-join, both aliases filtered"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id WHERE o1.account_id = 42 AND o2.account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[self-join, both aliases filtered]"]
+  - name: "per-alias: three aliases, all filtered"
+    sql: "SELECT a.id FROM orders a JOIN orders b ON a.id = b.id JOIN orders c ON b.id = c.id WHERE a.account_id = 42 AND b.account_id = 42 AND c.account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[three aliases, all filtered]"]
+  - name: "per-alias: three aliases, middle one missing"
+    sql: "SELECT a.id FROM orders a JOIN orders b ON a.id = b.id JOIN orders c ON b.id = c.id WHERE a.account_id = 42 AND c.account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[three aliases, middle one missing]"]
+  - name: "per-alias: self-join, unqualified column does not satisfy either alias"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id WHERE account_id = 42"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[self-join, unqualified column does not satisfy either alias]", "ambiguous"]
+  - name: "per-alias: subquery referencing same table with its own filter"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id IN (SELECT id FROM orders WHERE account_id = 42)"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[subquery referencing same table with its own filter]"]
+  - name: "per-alias: subquery referencing same table with WRONG tenant"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id IN (SELECT id FROM orders WHERE account_id = 99)"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[subquery referencing same table with WRONG tenant]", "differs-code"]
+  - name: "per-alias: UNION, both arms properly filtered"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION SELECT id FROM orders WHERE account_id = 42"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[UNION, both arms properly filtered]"]
+  - name: "per-alias: UNION, one arm unfiltered"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION SELECT id FROM orders"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[UNION, one arm unfiltered]"]
+  - name: "per-alias: CTE selects all then outer filters"
+    sql: "WITH x AS (SELECT id, account_id FROM orders) SELECT id FROM x WHERE account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[CTE selects all then outer filters]"]
+  - name: "per-alias: CTE properly filtered, used in outer"
+    sql: "WITH x AS (SELECT id FROM orders WHERE account_id = 42) SELECT id FROM x"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[CTE properly filtered, used in outer]"]
+  - name: "per-alias: OR-wrapped predicate does not count as satisfied"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR id = 5"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_per_alias[OR-wrapped predicate does not count as satisfied]"]
+  - name: "literal coercion int=int"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    context: {"tenant_id":"42"}
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int=int]"]
+  - name: "literal coercion int=quoted-int"
+    sql: "SELECT id FROM orders WHERE account_id = '42'"
+    context: {"tenant_id":"42"}
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int=quoted-int]", "ambiguous"]
+  - name: "literal coercion zero"
+    sql: "SELECT id FROM orders WHERE account_id = 0"
+    context: {"tenant_id":"0"}
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[zero]"]
+  - name: "literal coercion negative int"
+    sql: "SELECT id FROM orders WHERE account_id = -7"
+    context: {"tenant_id":"-7"}
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[negative int]"]
+  - name: "literal coercion negative int vs quoted"
+    sql: "SELECT id FROM orders WHERE account_id = '-7'"
+    context: {"tenant_id":"-7"}
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[negative int vs quoted]", "ambiguous"]
+  - name: "literal coercion int!=wrong int"
+    sql: "SELECT id FROM orders WHERE account_id = 43"
+    context: {"tenant_id":"42"}
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int!=wrong int]"]
+  - name: "literal coercion int!=text"
+    sql: "SELECT id FROM orders WHERE account_id = 'abc'"
+    context: {"tenant_id":"42"}
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int!=text]"]
+  - name: "literal coercion int!=empty string"
+    sql: "SELECT id FROM orders WHERE account_id = ''"
+    context: {"tenant_id":"42"}
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int!=empty string]"]
+  - name: "literal coercion int!=float-ish-but-different"
+    sql: "SELECT id FROM orders WHERE account_id = 42.5"
+    context: {"tenant_id":"42"}
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_literal_coercion[int!=float-ish-but-different]"]
+  - name: "correlated outer alias 1"
+    sql: "SELECT o.id, (SELECT count(*) FROM users u WHERE u.id = o.id) FROM orders o WHERE o.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_correlated_subquery_outer_alias_is_allowed"]
+  - name: "correlated outer alias 2"
+    sql: "SELECT o.id FROM orders o WHERE o.account_id = 42 AND EXISTS (SELECT 1 FROM users u WHERE u.id = o.id) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_correlated_subquery_outer_alias_is_allowed"]
+  - name: "correlated outer alias 3"
+    sql: "SELECT o.id FROM orders o WHERE o.account_id = 42 AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = o.id) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_correlated_subquery_outer_alias_is_allowed"]
+  - name: "correlated LATERAL with comma join"
+    sql: "SELECT u.id, p.total FROM users u, LATERAL (SELECT total FROM orders WHERE account_id = 42 AND id = u.id) p"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_correlated_subquery_outer_alias_is_allowed", "ambiguous"]
+  - name: "denied column via correlated EXISTS"
+    sql: "SELECT o.id FROM orders o WHERE o.account_id = 42 AND EXISTS (SELECT 1 FROM users u WHERE u.password_hash = 'x') LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_outer_alias_fix_does_not_weaken_denials"]
+  - name: "denied outer column inside LATERAL"
+    sql: "SELECT u.id, p.x FROM users u, LATERAL (SELECT u.password_hash AS x FROM orders WHERE account_id = 42 AND id = u.id) p"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_outer_alias_fix_does_not_weaken_denials"]
+  - name: "bogus qualifier"
+    sql: "SELECT bogus.id FROM orders WHERE account_id = 42 LIMIT 1"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_outer_alias_fix_does_not_weaken_denials", "differs-code"]
+  - name: "natural join on unknown tables: NATURAL JOIN b"
+    sql: "SELECT a.id FROM a NATURAL JOIN b"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_natural_join_is_always_denied", "differs-code"]
+  - name: "natural join on unknown tables: NATURAL INNER JOIN b"
+    sql: "SELECT a.id FROM a NATURAL INNER JOIN b"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_natural_join_is_always_denied", "differs-code"]
+  - name: "natural join on unknown tables: NATURAL LEFT JOIN b"
+    sql: "SELECT a.id FROM a NATURAL LEFT JOIN b"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_natural_join_is_always_denied", "differs-code"]
+  - name: "natural join on unknown tables: NATURAL FULL JOIN b"
+    sql: "SELECT a.id FROM a NATURAL FULL JOIN b"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_natural_join_is_always_denied", "differs-code"]
+  - name: "natural join users/orders leaves orders unfiltered"
+    sql: "SELECT u.id, u.name FROM users u NATURAL JOIN orders WHERE u.id = 1"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_natural_join_is_always_denied", "sqlg-adapted", "differs-code", "ambiguous"]
+  - name: "cross join on unknown tables"
+    sql: "SELECT a.id FROM a CROSS JOIN b"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestNaturalJoin::test_real_cartesian_still_denied", "differs-code"]
+  - name: "recursive CTE without LIMIT (no require_limit)"
+    sql: "WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM r) SELECT n FROM r"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_recursive_cte_detected", "ambiguous"]
+  - name: "non-recursive CTE"
+    sql: "WITH x AS (SELECT 1) SELECT * FROM x"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_non_recursive_cte_allowed"]
+  - name: "sqlg-adapted nested subquery depth (no depth cap below max_depth)"
+    sql: "SELECT id FROM (SELECT id FROM orders WHERE account_id = 42) sub"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_nested_subquery_still_counts_as_depth", "sqlg-adapted", "differs"]
+  - name: "sqlg-adapted CTE does not inflate depth"
+    sql: "WITH a AS (SELECT id FROM orders WHERE account_id = 42) SELECT id FROM a"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_cte_body_does_not_inflate_subquery_depth", "sqlg-adapted"]

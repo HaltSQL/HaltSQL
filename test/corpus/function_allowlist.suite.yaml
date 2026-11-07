@@ -1,0 +1,245 @@
+# Threat class: function allowlist (deny by default, presets expanded).
+# Policy: saas.yaml (presets aggregates, math, string, datetime, json, window,
+# conditional; NOT regex). SQL value functions: CURRENT_DATE/TIME/TIMESTAMP/
+# LOCALTIME/LOCALTIMESTAMP allowed; CURRENT_USER/SESSION_USER/... denied.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: function_allowlist }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  # ---- allowed: one per preset family ----
+  - name: aggregates count sum avg min max
+    sql: SELECT count(*), sum(total_cents), avg(total_cents), min(created_at), max(created_at) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, aggregates]
+  - name: uppercase function name folds
+    sql: SELECT COUNT(*), SUM(total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, aggregates, case_folding]
+  - name: count distinct
+    sql: SELECT count(DISTINCT customer_id) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, aggregates]
+  - name: aggregate with filter clause
+    sql: SELECT count(*) FILTER (WHERE status = 'paid') AS paid FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, aggregates]
+  - name: string_agg with order
+    sql: SELECT string_agg(status, ',' ORDER BY status) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, aggregates]
+  - name: math round abs floor ceil
+    sql: SELECT round(total_cents / 100.0, 2), abs(total_cents), floor(total_cents / 7.0), ceil(total_cents / 3.0) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, math]
+  - name: string lower upper length
+    sql: SELECT lower(name), upper(country), length(name) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, string]
+  - name: string concat replace
+    sql: SELECT concat(name, ' (', country, ')'), replace(plan, '_', ' ') FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, string]
+  - name: datetime date_trunc now
+    sql: SELECT date_trunc('month', created_at), count(*) FROM orders WHERE tenant_id = $1 AND created_at > now() - interval '90 days' GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, datetime]
+  - name: datetime to_char
+    sql: SELECT to_char(created_at, 'YYYY-MM') FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, datetime]
+  - name: current_date sql value function
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at >= CURRENT_DATE LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, sql_value]
+  - name: current_timestamp sql value function
+    sql: SELECT id FROM invoices WHERE tenant_id = $1 AND due_at < CURRENT_TIMESTAMP LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, sql_value]
+  - name: localtimestamp sql value function
+    sql: SELECT LOCALTIMESTAMP, CURRENT_TIME, LOCALTIME FROM currencies LIMIT 1
+    expect: allow
+    bind: []
+    tags: [function_allowlist, sql_value]
+  - name: json build object
+    sql: SELECT jsonb_build_object('id', id, 'status', status) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, json]
+  - name: window row_number rank lag
+    sql: |-
+      SELECT id, row_number() OVER (ORDER BY created_at), rank() OVER (PARTITION BY status ORDER BY total_cents DESC),
+             lag(total_cents) OVER (ORDER BY created_at)
+      FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, window]
+  - name: aggregate as window
+    sql: SELECT id, sum(total_cents) OVER (PARTITION BY customer_id) FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, window]
+  - name: conditional coalesce nullif greatest
+    sql: SELECT coalesce(updated_at, created_at), nullif(status, ''), greatest(total_cents, 0) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, conditional]
+  # ---- denied ----
+  - name: quoted uppercase function name is a different function
+    sql: SELECT "COUNT"(*) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, quoting]
+  - name: user defined function in app schema
+    sql: SELECT app.tenant_report(id) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, udf]
+  - name: unqualified unknown function
+    sql: SELECT export_all_tenants() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, udf]
+  - name: schema qualified allowed name in other schema
+    sql: SELECT evil.lower(name) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, qualified]
+  - name: public schema shadow of count
+    sql: SELECT public.count(id) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, qualified]
+  - name: pg_catalog qualified allowed function
+    sql: SELECT pg_catalog.lower(name) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, qualified, ambiguous]
+  - name: current_user denied
+    sql: SELECT CURRENT_USER LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: session_user denied
+    sql: SELECT SESSION_USER FROM currencies LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: user keyword denied
+    sql: SELECT USER LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: current_role denied
+    sql: SELECT CURRENT_ROLE LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: current_schema denied
+    sql: SELECT CURRENT_SCHEMA LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: current_catalog denied
+    sql: SELECT CURRENT_CATALOG LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: current_user in where comparison
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = CURRENT_USER LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, sql_value]
+  - name: has_table_privilege recon
+    sql: SELECT has_table_privilege('app.api_keys', 'SELECT') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, recon]
+  - name: pg_get_viewdef
+    sql: SELECT pg_get_viewdef('app.secret_view') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, recon]
+  - name: pg_relation_size
+    sql: SELECT pg_relation_size('app.orders') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, recon]
+  - name: pg_typeof
+    sql: SELECT pg_typeof(total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist]
+  - name: text search function not in presets
+    sql: SELECT to_tsvector(name) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist]
+  - name: pgcrypto crypt
+    sql: SELECT crypt('pw', gen_salt('bf')) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, extension]
+  - name: xpath
+    sql: SELECT xpath('/a', '<a/>'::xml) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist]
+  - name: regex preset not enabled regexp_replace
+    sql: SELECT regexp_replace(name, 'a', 'b') FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, regex, ambiguous]
+  - name: regex preset not enabled regexp_matches
+    sql: SELECT regexp_matches(name, '[0-9]+') FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, regex, ambiguous]
+  - name: denied function inside allowed function
+    sql: SELECT lower(pg_read_file('/etc/passwd')) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, nested]
+  - name: denied function as window function argument
+    sql: SELECT sum(pg_column_size(id)) OVER () FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, nested]
+  - name: denied function in group by
+    sql: SELECT count(*) FROM orders WHERE tenant_id = $1 GROUP BY pg_typeof(status) LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, nested]
+  - name: denied function in having
+    sql: SELECT status FROM orders WHERE tenant_id = $1 GROUP BY status HAVING count(*) > txid_current() LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, nested]
+  - name: denied function in from clause
+    sql: SELECT * FROM pg_ls_dir('/') AS d LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, from_function]
+  - name: denied set returning function in lateral
+    sql: SELECT o.id, g FROM orders o, LATERAL generate_series(1, o.total_cents) g WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, from_function]
+  - name: variadic call of denied function
+    sql: SELECT format(VARIADIC ARRAY['%s', 'x']) LIMIT 1
+    expect: deny
+    tags: [function_allowlist, ambiguous]

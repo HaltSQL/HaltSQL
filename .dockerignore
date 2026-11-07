@@ -1,0 +1,25 @@
+# Build outputs and local state (vendor/ must NOT be excluded: libpg_query is
+# compiled from vendor/libpg_query inside the image).
+_build/
+_build_*/
+_opam/
+_coverage/
+*.install
+bisect*.coverage
+.git/
+.github/
+.DS_Store
+.merlin
+*.swp
+
+# Stray objects from building libpg_query in the source tree on the host.
+vendor/libpg_query/**/*.o
+vendor/libpg_query/*.a
+vendor/libpg_query/*.so
+vendor/libpg_query/*.dylib
+
+# Not needed to build the binaries.
+lab/
+docs/
+deploy/
+bench/

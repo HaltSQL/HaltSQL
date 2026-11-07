@@ -1,0 +1,45 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": {
+    "name": "haltlab-hierarchical-crm",
+    "owner": "haltlab",
+    "description": "CRM agent; a parent org sees its child orgs via a tenant_ids context list. Denied: contacts.email, contacts.phone."
+  },
+  "dialect": "postgres-17",
+  "search_path": ["crm"],
+  "limits": { "max_bytes": 16384, "max_depth": 64, "max_nodes": 20000, "max_joins": 6 },
+  "statements": { "allow": ["select"] },
+  "require_limit": { "max": 1000 },
+  "tenancy": {
+    "mode": "bound",
+    "keys": { "tenant": "${ctx.tenant_ids}" }
+  },
+  "tables": {
+    "crm.regions": { "columns": "*" },
+    "crm.tenants": {
+      "columns": ["id", "tenant_id", "parent_tenant_id", "name", "region", "created_at"],
+      "tenant_column": "tenant_id"
+    },
+    "crm.accounts": {
+      "columns": ["id", "tenant_id", "name", "tier", "created_at"],
+      "tenant_column": "tenant_id"
+    },
+    "crm.contacts": {
+      "columns": ["id", "tenant_id", "account_id", "full_name", "created_at"],
+      "tenant_column": "tenant_id"
+    },
+    "crm.opportunities": {
+      "columns": ["id", "tenant_id", "account_id", "stage", "amount_cents", "close_date", "title"],
+      "tenant_column": "tenant_id"
+    },
+    "crm.activities": {
+      "columns": ["id", "tenant_id", "opportunity_id", "kind", "note", "created_at"],
+      "tenant_column": "tenant_id"
+    }
+  },
+  "functions": {
+    "allow": ["count", "sum", "avg", "min", "max", "coalesce", "date_trunc", "lower", "upper", "now", "round"]
+  },
+  "mode": "enforce"
+}

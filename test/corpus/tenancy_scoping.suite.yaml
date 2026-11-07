@@ -1,0 +1,193 @@
+# Threat class: tenant bypass through scoping (PLAN.md §6.3): a predicate in an
+# outer query does not cover an inner occurrence (and vice versa), aliases can
+# shadow each other, the same table may appear several times.
+# Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_scoping }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: derived table filtered inside
+    sql: |-
+      SELECT s.status, s.n FROM (
+        SELECT o.status, count(*) AS n FROM orders o WHERE o.tenant_id = $1 GROUP BY o.status
+      ) s ORDER BY s.n DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping]
+  - name: predicate only in outer query over derived table
+    sql: |-
+      SELECT s.id FROM (SELECT o.id, o.tenant_id FROM orders o) s
+      WHERE s.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: predicate only in outer query two levels deep
+    sql: |-
+      SELECT t.id FROM (SELECT s.id, s.tenant_id FROM (SELECT id, tenant_id FROM orders) s) t
+      WHERE t.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: inner filtered, middle and outer not needed
+    sql: |-
+      SELECT t.id FROM (SELECT s.id FROM (SELECT id FROM orders WHERE tenant_id = $1) s) t LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping]
+  - name: predicate in subquery does not cover outer table
+    sql: |-
+      SELECT o.id FROM orders o
+      WHERE o.customer_id IN (SELECT c.id FROM customers c WHERE c.tenant_id = $1) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: outer predicate does not cover IN subquery
+    sql: |-
+      SELECT o.id FROM orders o
+      WHERE o.tenant_id = $1 AND o.customer_id IN (SELECT c.id FROM customers c) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: both scopes filtered
+    sql: |-
+      SELECT o.id FROM orders o
+      WHERE o.tenant_id = $1
+        AND o.customer_id IN (SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND c.plan = 'pro')
+      LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping]
+  - name: same table twice, only first filtered
+    sql: |-
+      SELECT a.id, b.id FROM orders a JOIN orders b ON b.customer_id = a.customer_id
+      WHERE a.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, self_join]
+  - name: same table twice, both filtered
+    sql: |-
+      SELECT a.id, b.id FROM orders a JOIN orders b ON b.customer_id = a.customer_id
+      WHERE a.tenant_id = $1 AND b.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping, self_join]
+  - name: alias shadowing in subquery, predicate on outer alias
+    sql: |-
+      SELECT o.id FROM orders o
+      WHERE o.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.status = 'refunded')
+      LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, alias_shadowing]
+  - name: alias shadowing, inner alias filtered on its own column
+    sql: |-
+      SELECT o.id FROM orders o
+      WHERE o.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.status = 'refunded')
+      LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping, alias_shadowing]
+  - name: alias named like another table
+    sql: |-
+      SELECT customers.id FROM orders customers WHERE customers.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping, alias_shadowing]
+  - name: alias swap - predicate on the global alias
+    sql: |-
+      SELECT o.id FROM orders c JOIN customers o ON o.id = c.customer_id
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, alias_shadowing]
+  - name: table name qualifier after aliasing is not the alias
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id = $1 AND o.status = 'x' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping]
+  - name: HAVING only predicate on grouped tenant
+    sql: |-
+      SELECT o.tenant_id, sum(o.total_cents) FROM orders o
+      GROUP BY o.tenant_id HAVING o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, having]
+  - name: HAVING with WHERE tenant predicate is fine
+    sql: |-
+      SELECT o.customer_id, sum(o.total_cents) AS spend FROM orders o
+      WHERE o.tenant_id = $1 GROUP BY o.customer_id HAVING sum(o.total_cents) > 10000 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping, having]
+  - name: scalar subquery in select list filtered
+    sql: |-
+      SELECT c.id, (SELECT count(*) FROM orders o WHERE o.customer_id = c.id AND o.tenant_id = $1) AS n
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping]
+  - name: scalar subquery in select list relies on outer predicate
+    sql: |-
+      SELECT c.id, (SELECT count(*) FROM orders o WHERE o.customer_id = c.id) AS n
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, correlated]
+  - name: correlated predicate o.tenant_id = c.tenant_id is not a proof
+    sql: |-
+      SELECT c.id, (SELECT count(*) FROM orders o WHERE o.customer_id = c.id AND o.tenant_id = c.tenant_id) AS n
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, correlated]
+  - name: subquery in ORDER BY unfiltered
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1
+      ORDER BY (SELECT max(o.total_cents) FROM orders o WHERE o.customer_id = c.id) DESC LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: subquery in HAVING unfiltered
+    sql: |-
+      SELECT o.status, count(*) FROM orders o WHERE o.tenant_id = $1 GROUP BY o.status
+      HAVING count(*) > (SELECT count(*) FROM invoices) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping, having]
+  - name: subquery in HAVING filtered
+    sql: |-
+      SELECT o.status, count(*) FROM orders o WHERE o.tenant_id = $1 GROUP BY o.status
+      HAVING count(*) > (SELECT count(*) / 10 FROM invoices i WHERE i.tenant_id = $1) LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_scoping, having]
+  - name: subquery in GROUP BY unfiltered
+    sql: |-
+      SELECT count(*) FROM orders o WHERE o.tenant_id = $1
+      GROUP BY (SELECT min(c.plan) FROM customers c WHERE c.id = o.customer_id) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: subquery in CASE in select list unfiltered
+    sql: |-
+      SELECT o.id, CASE WHEN EXISTS (SELECT 1 FROM payments p WHERE p.amount_cents > 0) THEN 'y' ELSE 'n' END
+      FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: subquery in window partition unfiltered
+    sql: |-
+      SELECT o.id, rank() OVER (ORDER BY (SELECT count(*) FROM order_items oi WHERE oi.order_id = o.id)) AS r
+      FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_scoping]
+  - name: subquery in LIMIT position not allowed to leak via count
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id = $1 LIMIT (SELECT count(*) FROM customers)
+    expect: deny
+    tags: [tenancy_scoping, ambiguous]

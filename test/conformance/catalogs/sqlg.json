@@ -1,0 +1,40 @@
+{
+  "tables": {
+    "public.orders": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "product_name", "type": "text"},
+        {"name": "account_id", "type": "int8"},
+        {"name": "created_at", "type": "timestamptz"},
+        {"name": "total", "type": "numeric"},
+        {"name": "status", "type": "text"},
+        {"name": "name", "type": "text"}
+      ]
+    },
+    "public.users": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "name", "type": "text"},
+        {"name": "password_hash", "type": "text"},
+        {"name": "ssn", "type": "text"},
+        {"name": "email", "type": "text"}
+      ]
+    },
+    "public.orders_copy": {
+      "columns": [{"name": "id", "type": "int8"}]
+    },
+    "analytics.orders": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "name", "type": "text"},
+        {"name": "account_id", "type": "int8"}
+      ]
+    },
+    "analytics.users": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "email", "type": "text"}
+      ]
+    }
+  }
+}

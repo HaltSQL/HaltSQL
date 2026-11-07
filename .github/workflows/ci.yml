@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Formatting (ocamlformat)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install the pinned ocamlformat
+        run: |
+          version="$(sed -n 's/^version *= *//p' .ocamlformat)"
+          opam install --yes "ocamlformat.${version}" dune
+
+      - name: Check formatting
+        run: opam exec -- dune build @fmt
+
+  build-test:
+    name: Build and test (${{ matrix.os }}, OCaml ${{ matrix.ocaml }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ocaml: ["5.2", "5.4"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml ${{ matrix.ocaml }}
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml }}
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Test
+        run: opam exec -- dune test
+
+  coverage:
+    name: Coverage (bisect_ppx)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes && opam install --yes bisect_ppx
+
+      - name: Run tests with instrumentation
+        run: opam exec -- dune runtest --instrument-with bisect_ppx --force
+
+      - name: Coverage report
+        run: |
+          opam exec -- bisect-ppx-report html -o _coverage
+          opam exec -- bisect-ppx-report summary --per-file | tee _coverage/summary.txt
+          {
+            echo '### Coverage'
+            echo '```'
+            tail -n 1 _coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: _coverage/
+          retention-days: 14

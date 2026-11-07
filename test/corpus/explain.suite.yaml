@@ -1,0 +1,125 @@
+# Threat class: EXPLAIN / EXPLAIN ANALYZE (PLAN.md §3). Plain EXPLAIN of an
+# allowed statement is permitted when allow_explain is true; the inner statement
+# gets the full analysis (tenancy, limit, columns). ANALYZE executes the
+# statement and is never allowed.
+# Policy: explain.yaml (allow_explain: true).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: explain }
+policy: ../fixtures/policies/explain.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: plain explain of allowed select
+    sql: EXPLAIN SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [explain]
+  - name: explain verbose of allowed select
+    sql: EXPLAIN VERBOSE SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [explain, ambiguous]
+  - name: explain with costs off option
+    sql: EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [explain, ambiguous]
+  - name: explain format json
+    sql: EXPLAIN (FORMAT JSON) SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [explain, ambiguous]
+  - name: explain of join with both filters
+    sql: |-
+      EXPLAIN SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [explain]
+  - name: explain of global table query
+    sql: EXPLAIN SELECT code, name FROM currencies LIMIT 50
+    expect: allow
+    bind: []
+    tags: [explain]
+  - name: explain analyze select
+    sql: EXPLAIN ANALYZE SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [explain, analyze]
+  - name: explain analyze option list
+    sql: EXPLAIN (ANALYZE) SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [explain, analyze]
+  - name: explain analyze true option
+    sql: EXPLAIN (ANALYZE TRUE, BUFFERS) SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [explain, analyze]
+  - name: explain analyze verbose
+    sql: EXPLAIN ANALYZE VERBOSE SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [explain, analyze]
+  - name: explain analyze wrapping delete
+    sql: EXPLAIN ANALYZE DELETE FROM orders WHERE tenant_id = $1
+    expect: deny
+    tags: [explain, analyze, dml]
+  - name: explain analyze wrapping update
+    sql: EXPLAIN ANALYZE UPDATE orders SET status = 'void' WHERE tenant_id = $1
+    expect: deny
+    tags: [explain, analyze, dml]
+  - name: explain analyze wrapping insert
+    sql: EXPLAIN ANALYZE INSERT INTO orders (id, tenant_id) VALUES (1, $1)
+    expect: deny
+    tags: [explain, analyze, dml]
+  - name: plain explain of delete still denied
+    sql: EXPLAIN DELETE FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [explain, dml]
+  - name: explain analyze of data modifying cte
+    sql: EXPLAIN ANALYZE WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d LIMIT 10
+    expect: deny
+    tags: [explain, analyze, dml_cte]
+  - name: plain explain of data modifying cte
+    sql: EXPLAIN WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [explain, dml_cte]
+  - name: explain inner missing tenant predicate
+    sql: EXPLAIN SELECT id FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [explain, tenancy]
+  - name: explain inner missing limit
+    sql: EXPLAIN SELECT id FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [explain, limit]
+  - name: explain inner denied table
+    sql: EXPLAIN SELECT * FROM pg_catalog.pg_authid LIMIT 1
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [explain, table]
+  - name: explain inner denied function
+    sql: EXPLAIN SELECT pg_sleep(1) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [explain, function]
+  - name: explain of explain is not valid sql
+    sql: EXPLAIN EXPLAIN SELECT 1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [explain, parse]
+  - name: explain of create table as
+    sql: EXPLAIN CREATE TABLE t AS SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [explain, ddl]
+  - name: explain analyze create table as
+    sql: EXPLAIN ANALYZE CREATE TABLE t AS SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    tags: [explain, analyze, ddl]
+  - name: explain then second statement
+    sql: EXPLAIN SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; DROP TABLE orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [explain, multi]

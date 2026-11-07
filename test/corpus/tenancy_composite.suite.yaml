@@ -1,0 +1,142 @@
+# Threat class: tenant bypass with composite tenant keys (PLAN.md §8.2
+# "org_id + workspace_id"). Fully scoped tables need BOTH key predicates in
+# the same scope; app.org_members is scoped by org only.
+# Policy: composite.yaml (bound mode, LIMIT <= 500).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_composite }
+policy: ../fixtures/policies/composite.yaml
+defaults:
+  context: { org_id: o1, workspace_id: w1 }
+cases:
+  - name: both keys bound
+    sql: SELECT p.id, p.name FROM projects p WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
+    tags: [tenancy_composite]
+  - name: keys in reverse order of params
+    sql: SELECT p.id FROM projects p WHERE p.workspace_id = $1 AND p.org_id = $2 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: w1 }, { param: 2, value: o1 }]
+    tags: [tenancy_composite]
+  - name: other context values bound
+    sql: SELECT t.id, t.title FROM tasks t WHERE t.org_id = $1 AND t.workspace_id = $2 LIMIT 50
+    context: { org_id: o9, workspace_id: w42 }
+    expect: allow
+    bind: [{ param: 1, value: o9 }, { param: 2, value: w42 }]
+    tags: [tenancy_composite]
+  - name: only org key
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: only workspace key
+    sql: SELECT p.id FROM projects p WHERE p.workspace_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: no keys
+    sql: SELECT p.id FROM projects p WHERE p.status = 'active' LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: one key under OR
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 AND (p.workspace_id = $2 OR p.status = 'public') LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite, or_bypass]
+  - name: same param for both keys
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 AND p.workspace_id = $1 LIMIT 50
+    expect: deny
+    tags: [tenancy_composite, ambiguous]
+  - name: workspace key compared to literal in bound mode
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 AND p.workspace_id = 'w1' LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_composite]
+  - name: org-only table with org key
+    sql: SELECT m.user_id, m.role FROM org_members m WHERE m.org_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: o1 }]
+    tags: [tenancy_composite]
+  - name: org-only table without key
+    sql: SELECT m.user_id, m.role FROM org_members m WHERE m.role = 'admin' LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: join both tables fully scoped
+    sql: |-
+      SELECT p.name, count(t.id) AS open_tasks
+      FROM projects p
+      JOIN tasks t ON t.project_id = p.id AND t.org_id = $1 AND t.workspace_id = $2
+      WHERE p.org_id = $1 AND p.workspace_id = $2 AND t.state = 'open'
+      GROUP BY p.name ORDER BY open_tasks DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
+    tags: [tenancy_composite]
+  - name: join second table missing workspace key
+    sql: |-
+      SELECT p.name, t.title FROM projects p
+      JOIN tasks t ON t.project_id = p.id AND t.org_id = $1
+      WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: join tasks to org members
+    sql: |-
+      SELECT t.title, m.role FROM tasks t
+      JOIN org_members m ON m.user_id = t.assignee_id AND m.org_id = $1
+      WHERE t.org_id = $1 AND t.workspace_id = $2 LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
+    tags: [tenancy_composite]
+  - name: workspace propagated via join equality not supported
+    sql: |-
+      SELECT p.name, t.title FROM projects p
+      JOIN tasks t ON t.project_id = p.id AND t.org_id = $1 AND t.workspace_id = p.workspace_id
+      WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite, propagation]
+  - name: subquery missing workspace key
+    sql: |-
+      SELECT p.id FROM projects p WHERE p.org_id = $1 AND p.workspace_id = $2
+        AND EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.org_id = $1)
+      LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite]
+  - name: cte fully scoped
+    sql: |-
+      WITH t AS (SELECT project_id, sum(estimate_hours) AS hours FROM tasks
+                 WHERE org_id = $1 AND workspace_id = $2 GROUP BY project_id)
+      SELECT project_id, hours FROM t ORDER BY hours DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
+    tags: [tenancy_composite]
+  - name: union branch missing org key
+    sql: |-
+      SELECT id FROM projects WHERE org_id = $1 AND workspace_id = $2
+      UNION ALL
+      SELECT project_id FROM tasks WHERE workspace_id = $2
+      LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_composite, setops]
+  - name: missing workspace in context
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 50
+    context: { org_id: o1 }
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_composite, context]
+  - name: org-only query with workspace missing from context
+    sql: SELECT m.user_id FROM org_members m WHERE m.org_id = $1 LIMIT 50
+    context: { org_id: o1 }
+    expect: allow
+    bind: [{ param: 1, value: o1 }]
+    tags: [tenancy_composite, context, ambiguous]
+  - name: extra param not bound to any key
+    sql: SELECT p.id FROM projects p WHERE p.org_id = $1 AND p.workspace_id = $2 AND p.name = $3 LIMIT 50
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [tenancy_composite, params]

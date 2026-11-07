@@ -1,0 +1,122 @@
+{
+  "tables": {
+    "app.orders": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "customer_id", "type": "int8"},
+        {"name": "status", "type": "text"},
+        {"name": "total_cents", "type": "int8"},
+        {"name": "currency", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"},
+        {"name": "updated_at", "type": "timestamptz"}
+      ]
+    },
+    "app.order_items": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "order_id", "type": "int8"},
+        {"name": "product_sku", "type": "text"},
+        {"name": "quantity", "type": "int4"},
+        {"name": "unit_price_cents", "type": "int8"},
+        {"name": "discount_cents", "type": "int8"}
+      ]
+    },
+    "app.customers": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "name", "type": "text"},
+        {"name": "email", "type": "text"},
+        {"name": "phone", "type": "text"},
+        {"name": "ssn", "type": "text"},
+        {"name": "country", "type": "text"},
+        {"name": "plan", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"},
+        {"name": "metadata", "type": "jsonb"}
+      ]
+    },
+    "app.invoices": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "customer_id", "type": "int8"},
+        {"name": "order_id", "type": "int8"},
+        {"name": "amount_cents", "type": "int8"},
+        {"name": "status", "type": "text"},
+        {"name": "issued_at", "type": "timestamptz"},
+        {"name": "due_at", "type": "timestamptz"},
+        {"name": "paid_at", "type": "timestamptz"},
+        {"name": "internal_notes", "type": "text"}
+      ]
+    },
+    "app.payments": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "invoice_id", "type": "int8"},
+        {"name": "amount_cents", "type": "int8"},
+        {"name": "method", "type": "text"},
+        {"name": "card_last4", "type": "text"},
+        {"name": "processor_token", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"}
+      ]
+    },
+    "app.users": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "email", "type": "text"},
+        {"name": "display_name", "type": "text"},
+        {"name": "role", "type": "text"},
+        {"name": "password_hash", "type": "text"},
+        {"name": "mfa_secret", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"},
+        {"name": "last_login_at", "type": "timestamptz"}
+      ]
+    },
+    "app.audit_events": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "actor_id", "type": "int8"},
+        {"name": "action", "type": "text"},
+        {"name": "target", "type": "text"},
+        {"name": "payload", "type": "jsonb"},
+        {"name": "ip_address", "type": "inet"},
+        {"name": "created_at", "type": "timestamptz"}
+      ]
+    },
+    "app.currencies": {
+      "columns": [
+        {"name": "code", "type": "text"},
+        {"name": "name", "type": "text"},
+        {"name": "symbol", "type": "text"},
+        {"name": "decimals", "type": "int4"}
+      ]
+    },
+    "app.exchange_rates": {
+      "columns": [
+        {"name": "base", "type": "text"},
+        {"name": "quote", "type": "text"},
+        {"name": "rate", "type": "numeric"},
+        {"name": "as_of", "type": "date"}
+      ]
+    },
+    "app.api_keys": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "secret", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"}
+      ]
+    },
+    "app.feature_flags": {
+      "columns": [
+        {"name": "name", "type": "text"},
+        {"name": "enabled", "type": "bool"}
+      ]
+    }
+  }
+}

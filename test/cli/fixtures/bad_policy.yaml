@@ -1,0 +1,8 @@
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: broken }
+search_path: [app]
+statements: { allow: [select] }
+tabels:
+  app.orders:
+    columns: [id]

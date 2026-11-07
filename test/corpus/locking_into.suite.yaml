@@ -1,0 +1,119 @@
+# Threat class: locking clauses and SELECT ... INTO (PLAN.md §3 hidden side
+# effects). FOR UPDATE/NO KEY UPDATE/SHARE/KEY SHARE -> E_LOCKING_CLAUSE;
+# SELECT ... INTO -> E_SELECT_INTO (creates a table).
+# Policy: saas.yaml.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: locking_into }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: for update
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR UPDATE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for share
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR SHARE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for no key update
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR NO KEY UPDATE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for key share
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR KEY SHARE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for update nowait
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR UPDATE NOWAIT
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for update skip locked
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR UPDATE SKIP LOCKED
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for update of alias
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id = $1 LIMIT 10 FOR UPDATE OF o
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for update before limit
+    sql: SELECT id FROM orders WHERE tenant_id = $1 FOR UPDATE LIMIT 10
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: for update in subquery
+    sql: SELECT x.id FROM (SELECT id FROM orders WHERE tenant_id = $1 FOR UPDATE) x LIMIT 10
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking, nested]
+  - name: for update in cte
+    sql: WITH x AS (SELECT id FROM orders WHERE tenant_id = $1 FOR UPDATE) SELECT id FROM x LIMIT 10
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking, nested]
+  - name: for share in exists
+    sql: |-
+      SELECT id FROM customers c WHERE c.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id FOR SHARE)
+      LIMIT 10
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking, nested]
+  - name: for update on global table
+    sql: SELECT code FROM currencies LIMIT 10 FOR UPDATE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [locking_into, locking]
+  - name: select into new table
+    sql: SELECT id, status INTO stolen FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into]
+  - name: select into temp table
+    sql: SELECT id INTO TEMP t FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into]
+  - name: select into unlogged table
+    sql: SELECT code INTO UNLOGGED TABLE t FROM currencies LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into]
+  - name: select into schema qualified table
+    sql: SELECT id INTO public.exfil FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into]
+  - name: select into with cte
+    sql: WITH x AS (SELECT id FROM orders WHERE tenant_id = $1) SELECT id INTO t FROM x LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into]
+  - name: select into in union first branch
+    sql: SELECT code INTO t FROM currencies UNION SELECT code FROM currencies LIMIT 10
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: [locking_into, into, setop]
+  - name: create table as is ddl
+    sql: CREATE TABLE t AS SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [locking_into, into]
+  - name: column named into-like is fine
+    sql: SELECT id AS "into", status AS "update" FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [locking_into, false_positive_guard]
+  - name: string mentioning for update is fine
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'FOR UPDATE' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [locking_into, false_positive_guard]

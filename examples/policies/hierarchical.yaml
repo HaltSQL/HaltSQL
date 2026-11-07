@@ -1,0 +1,31 @@
+# Hierarchical tenants: a parent organization may read its own rows and those
+# of its child organizations. The caller passes the allowed set in the request
+# context (e.g. {"org_ids": ["acme", "acme-eu", "acme-us"]}); the tenancy
+# predicate must then be `org_id = ANY($1)` and HaltSQL binds the set.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: org-rollup-reports
+  owner: finance-engineering
+  description: Roll-up reporting across an organization and its subsidiaries
+search_path: [reporting, public]
+statements:
+  allow: [select]
+require_limit:
+  max: 5000
+tenancy:
+  mode: bound
+  keys:
+    org: ${ctx.org_ids}
+tables:
+  reporting.revenue_daily:
+    columns: [org_id, day, revenue_cents, currency]
+    tenant_column: org_id
+  reporting.headcount:
+    columns: [org_id, month, department, headcount]
+    tenant_column: org_id
+  public.organizations:
+    columns: [id, parent_id, name]
+    tenant_column: id
+functions:
+  presets: [aggregates, math, datetime, window]

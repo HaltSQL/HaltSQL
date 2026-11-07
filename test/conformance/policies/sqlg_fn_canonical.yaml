@@ -1,0 +1,27 @@
+# Conformance policy translated from sql-guardrail (MIT, (c) 2026 nickusevich)
+# https://github.com/nickusevich/sql-guardrail @ eadfb9d0c725f4960621a7c67c23219103710c5b
+# Source: tests/test_security.py::test_canonical_aliases_allowlist_users_sql_name. No presets.
+# Their `require_predicate: {column: account_id, op: "=", value: "${tenant_id}"}`
+# maps to our LITERAL tenancy mode (they compare SQL literals to the context
+# value); their `allow_columns`/`deny_columns` map to our `columns` allowlist
+# checked against the catalog snapshot ../catalogs/sqlg.json.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: sqlg-fn-canonical
+  owner: qa
+  description: "allowed_functions: [date_trunc, to_char, json_agg, string_agg]"
+dialect: postgres-17
+search_path: [public]
+catalog: ../catalogs/sqlg.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 10 }
+statements: { allow: [select] }
+tenancy:
+  mode: literal
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  public.users:
+    columns: [id, name]
+functions:
+  allow: [date_trunc, to_char, json_agg, string_agg]
+mode: enforce

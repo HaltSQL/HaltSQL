@@ -1,0 +1,251 @@
+# Threat class: tenant bypass through subqueries (PLAN.md §3 "predicate only in
+# an outer query", §6.3): EXISTS / NOT EXISTS / IN / ANY / ALL / scalar / ARRAY
+# sublinks, derived tables and LATERAL each form their own scope.
+# Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_subqueries }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: exists filtered
+    sql: |-
+      SELECT c.id, c.name FROM customers c WHERE c.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.tenant_id = $1)
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, exists]
+  - name: exists unfiltered
+    sql: |-
+      SELECT c.id, c.name FROM customers c WHERE c.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, exists]
+  - name: exists boolean oracle on other tenant
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM customers x WHERE x.tenant_id = 'globex' AND x.name = 'Initech')
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_subqueries, exists]
+  - name: not exists filtered
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1
+        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = c.id AND i.tenant_id = $1)
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, exists]
+  - name: not exists unfiltered
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1
+        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = c.id)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, exists]
+  - name: in subquery filtered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.customer_id IN (SELECT id FROM customers WHERE tenant_id = $1 AND country = 'DE')
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, in]
+  - name: in subquery unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.customer_id IN (SELECT id FROM customers WHERE country = 'DE')
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, in]
+  - name: not in subquery unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.id NOT IN (SELECT order_id FROM invoices)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, in]
+  - name: any subquery unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents > ANY (SELECT amount_cents FROM payments)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries]
+  - name: all subquery unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents >= ALL (SELECT total_cents FROM orders)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries]
+  - name: all subquery filtered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents >= ALL (SELECT x.total_cents FROM orders x WHERE x.tenant_id = $1)
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries]
+  - name: scalar subquery in where unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents > (SELECT avg(total_cents) FROM orders)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, scalar]
+  - name: scalar subquery in where filtered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents > (SELECT avg(x.total_cents) FROM orders x WHERE x.tenant_id = $1)
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, scalar]
+  - name: scalar subquery in select list unfiltered
+    sql: SELECT (SELECT count(*) FROM customers) AS all_customers FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, scalar]
+  - name: scalar subquery as the only select item
+    sql: SELECT (SELECT max(total_cents) FROM orders) AS biggest LIMIT 1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, scalar]
+  - name: scalar subquery only item filtered
+    sql: SELECT (SELECT max(total_cents) FROM orders WHERE tenant_id = $1) AS biggest LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, scalar]
+  - name: array subquery unfiltered
+    sql: |-
+      SELECT c.id, ARRAY(SELECT o.id FROM orders o WHERE o.customer_id = c.id) AS order_ids
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, array]
+  - name: array subquery filtered
+    sql: |-
+      SELECT c.id, ARRAY(SELECT o.id FROM orders o WHERE o.customer_id = c.id AND o.tenant_id = $1) AS order_ids
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, array]
+  - name: derived table unfiltered
+    sql: SELECT d.n FROM (SELECT count(*) AS n FROM payments) d LIMIT 1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, derived]
+  - name: derived table filtered joined to filtered table
+    sql: |-
+      SELECT c.name, d.n FROM customers c
+      JOIN (SELECT customer_id, count(*) AS n FROM orders WHERE tenant_id = $1 GROUP BY customer_id) d
+        ON d.customer_id = c.id
+      WHERE c.tenant_id = $1 ORDER BY d.n DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, derived]
+  - name: derived table unfiltered joined to filtered table
+    sql: |-
+      SELECT c.name, d.n FROM customers c
+      JOIN (SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id) d
+        ON d.customer_id = c.id
+      WHERE c.tenant_id = $1 ORDER BY d.n DESC LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, derived]
+  - name: lateral derived unfiltered via comma
+    sql: |-
+      SELECT c.id, l.id FROM customers c,
+        LATERAL (SELECT i.id FROM invoices i WHERE i.customer_id = c.id LIMIT 3) l
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, lateral]
+  - name: lateral derived filtered via comma
+    sql: |-
+      SELECT c.id, l.id FROM customers c,
+        LATERAL (SELECT i.id FROM invoices i WHERE i.customer_id = c.id AND i.tenant_id = $1 LIMIT 3) l
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, lateral]
+  - name: correlated subquery relying on outer tenant predicate
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND o.total_cents > (SELECT sum(oi.unit_price_cents) FROM order_items oi WHERE oi.order_id = o.id)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, correlated]
+  - name: correlated subquery outer column in tenant position
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id AND oi.tenant_id = o.tenant_id)
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, correlated]
+  - name: deeply nested subquery innermost unfiltered
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND c.id IN (
+        SELECT o.customer_id FROM orders o WHERE o.tenant_id = $1 AND o.id IN (
+          SELECT i.order_id FROM invoices i WHERE i.tenant_id = $1 AND i.id IN (
+            SELECT p.invoice_id FROM payments p WHERE p.method = 'card')))
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries, nested]
+  - name: deeply nested subquery all filtered
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND c.id IN (
+        SELECT o.customer_id FROM orders o WHERE o.tenant_id = $1 AND o.id IN (
+          SELECT i.order_id FROM invoices i WHERE i.tenant_id = $1 AND i.id IN (
+            SELECT p.invoice_id FROM payments p WHERE p.method = 'card' AND p.tenant_id = $1)))
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries, nested]
+  - name: subquery inside OR branch unfiltered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND (o.status = 'paid' OR o.id IN (SELECT order_id FROM invoices WHERE status = 'open'))
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries]
+  - name: subquery inside OR branch filtered
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+        AND (o.status = 'paid' OR o.id IN (SELECT order_id FROM invoices WHERE tenant_id = $1 AND status = 'open'))
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_subqueries]
+  - name: subquery in join ON unfiltered
+    sql: |-
+      SELECT o.id FROM orders o
+      JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+        AND c.id IN (SELECT customer_id FROM invoices)
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries]
+  - name: subquery in function argument unfiltered
+    sql: |-
+      SELECT coalesce((SELECT max(amount_cents) FROM payments), 0) AS m
+      FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_subqueries]

@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: haltlab
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: haltlab }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: haltlab }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env: [{ name: POSTGRES_PASSWORD, value: haltlab }]
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres"] }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: haltsql-policies, namespace: haltlab }
+data:
+  # Replaced by `make kind-load` with lab/policies/*.
+  README: "policies are loaded from lab/policies by the lab Makefile"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: agent, namespace: haltlab }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: agent } }
+  template:
+    metadata: { labels: { app: agent } }
+    spec:
+      containers:
+        - name: agent
+          image: python:3.12-alpine
+          command: ["sleep", "infinity"]
+          env: [{ name: HALTSQL_URL, value: "http://127.0.0.1:8080" }]
+        - name: haltsql
+          image: ghcr.io/ardada2468/haltsql:latest
+          args: ["--policy", "/etc/haltsql/policies/saas_shared.yaml", "--allow-unauthenticated",
+                 "--listen", "127.0.0.1:8080", "--watch"]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /readyz, port: 8080 }, periodSeconds: 2 }
+          livenessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 10 }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts: [{ name: policies, mountPath: /etc/haltsql/policies }]
+      volumes:
+        - name: policies
+          configMap: { name: haltsql-policies }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: postgres-from-agent-only, namespace: haltlab }
+spec:
+  podSelector: { matchLabels: { app: postgres } }
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: agent } } }]
+      ports: [{ port: 5432 }]

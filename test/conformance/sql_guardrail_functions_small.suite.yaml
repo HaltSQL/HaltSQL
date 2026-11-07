@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-functions-small
+  description: "allowed_functions: [count, lower, upper, coalesce]"
+policy: policies/sqlg_fn_small.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "operator keyword is not a function 1"
+    sql: "SELECT id FROM users WHERE id = 1 AND name = 'x' LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 2"
+    sql: "SELECT id FROM users WHERE id = 1 OR name = 'x' LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 3"
+    sql: "SELECT id FROM users WHERE id = 1 AND (name = 'x' OR name = 'y') LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 4"
+    sql: "SELECT CASE WHEN id = 1 THEN 'a' ELSE 'b' END FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 5"
+    sql: "SELECT CASE WHEN id = 1 THEN 'a' WHEN id = 2 THEN 'b' ELSE 'c' END FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 6"
+    sql: "SELECT id FROM users WHERE EXISTS (SELECT 1 FROM users WHERE id = 1) LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "operator keyword is not a function 7"
+    sql: "SELECT id FROM users WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = 1) LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords"]
+  - name: "listed lower"
+    sql: "SELECT lower(name) FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_does_not_reject_operator_keywords", "sqlg-adapted"]
+  - name: "unlisted length"
+    sql: "SELECT length(name) FROM users LIMIT 1"
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_blocks_typed_func_subclasses_when_not_listed", "sqlg-adapted"]

@@ -1,0 +1,5 @@
+{
+  "tables": {
+    "app.orders": { "columns": [ { "name": "id", "type": "int8" }, { "name": "tenant_id", "type": "text" }, "status" ] }
+  }
+}

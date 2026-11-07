@@ -1,0 +1,42 @@
+{
+  "tables": {
+    "app.Customers": {
+      "columns": [
+        {"name": "Id", "type": "int8"},
+        {"name": "TenantId", "type": "text"},
+        {"name": "FullName", "type": "text"},
+        {"name": "Country", "type": "text"},
+        {"name": "order", "type": "int4"},
+        {"name": "user", "type": "text"},
+        {"name": "SSN", "type": "text"}
+      ]
+    },
+    "app.OrderItems": {
+      "columns": [
+        {"name": "Id", "type": "int8"},
+        {"name": "TenantId", "type": "text"},
+        {"name": "CustomerId", "type": "int8"},
+        {"name": "select", "type": "text"},
+        {"name": "from", "type": "text"},
+        {"name": "Qty", "type": "int4"}
+      ]
+    },
+    "app.customers": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "secret", "type": "text"}
+      ]
+    },
+    "app.events": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "group", "type": "text"},
+        {"name": "limit", "type": "int4"},
+        {"name": "desc", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"}
+      ]
+    }
+  }
+}

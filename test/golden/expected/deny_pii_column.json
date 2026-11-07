@@ -1,0 +1,26 @@
+{
+  "sql": "SELECT name, email FROM customers WHERE tenant_id = $1 LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_COLUMN_DENIED",
+      "message": "column email of app.customers is not readable under this policy",
+      "rule": "columns.denied",
+      "loc": 13,
+      "hint": "Remove email from the query; readable columns of app.customers are: id, tenant_id, name, country, plan, created_at, metadata."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.customers" ],
+  "columns": [
+    "app.customers.email", "app.customers.name", "app.customers.tenant_id"
+  ],
+  "bind_params": [],
+  "fingerprint": "1170f069f2372a60",
+  "sql_sha256": "e3fd106def0ac2794fe1dbe5153955854422189040f05596c510f1117540e3c6"
+}

@@ -1,0 +1,2 @@
+apiVersion: haltsql.dev/v1
+kind: Widget

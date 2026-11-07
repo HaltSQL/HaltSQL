@@ -1,0 +1,193 @@
+# Threat class: tenant bypass through set operations (PLAN.md §3 "UNION branch
+# without a filter", §6.3). Every branch is its own scope and needs its own
+# tenant predicate. Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_setops }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: union all both filtered
+    sql: |-
+      SELECT id, total_cents AS cents FROM orders WHERE tenant_id = $1
+      UNION ALL
+      SELECT id, amount_cents FROM invoices WHERE tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: union second branch unfiltered
+    sql: |-
+      SELECT id, total_cents FROM orders WHERE tenant_id = $1
+      UNION
+      SELECT id, total_cents FROM orders
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: union first branch unfiltered
+    sql: |-
+      SELECT id FROM customers
+      UNION
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: union with other tenant literal
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION ALL
+      SELECT id FROM orders WHERE tenant_id = 'globex'
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_setops]
+  - name: intersect both filtered
+    sql: |-
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      INTERSECT
+      SELECT customer_id FROM invoices WHERE tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: intersect second unfiltered
+    sql: |-
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      INTERSECT
+      SELECT customer_id FROM invoices
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: except both filtered
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1
+      EXCEPT
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: except second unfiltered (oracle leak)
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1
+      EXCEPT
+      SELECT customer_id FROM orders
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: union with global table branch
+    sql: |-
+      SELECT currency AS code FROM orders WHERE tenant_id = $1
+      UNION
+      SELECT code FROM currencies
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: three-way union third unfiltered
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION ALL SELECT id FROM invoices WHERE tenant_id = $1
+      UNION ALL SELECT id FROM payments
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: three-way union all filtered
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION ALL SELECT id FROM invoices WHERE tenant_id = $1
+      UNION ALL SELECT id FROM payments WHERE tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: parenthesized nested set op inner unfiltered
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION
+      (SELECT id FROM invoices WHERE tenant_id = $1 EXCEPT SELECT invoice_id FROM payments)
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: parenthesized nested set op all filtered
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION
+      (SELECT id FROM invoices WHERE tenant_id = $1 EXCEPT SELECT invoice_id FROM payments WHERE tenant_id = $1)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: set op inside derived table, unfiltered branch
+    sql: |-
+      SELECT u.id FROM (
+        SELECT id FROM orders WHERE tenant_id = $1
+        UNION ALL
+        SELECT id FROM orders WHERE status = 'paid'
+      ) u LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: set op inside derived table, filter outside only
+    sql: |-
+      SELECT u.id FROM (
+        SELECT id, tenant_id FROM orders
+        UNION ALL
+        SELECT id, tenant_id FROM invoices
+      ) u WHERE u.tenant_id = $1 LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: set op inside IN subquery unfiltered branch
+    sql: |-
+      SELECT c.id, c.name FROM customers c WHERE c.tenant_id = $1
+        AND c.id IN (SELECT customer_id FROM orders WHERE tenant_id = $1
+                     UNION SELECT customer_id FROM invoices)
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]
+  - name: aggregate over filtered union
+    sql: |-
+      SELECT kind, sum(cents) AS total FROM (
+        SELECT 'order' AS kind, total_cents AS cents FROM orders WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'invoice', amount_cents FROM invoices WHERE tenant_id = $1
+      ) x GROUP BY kind LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops]
+  - name: union branch filtered via OR
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION
+      SELECT id FROM invoices WHERE tenant_id = $1 OR amount_cents > 0
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops, or_bypass]
+  - name: union branch with VALUES
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+      UNION ALL
+      VALUES (1), (2)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_setops, ambiguous]
+  - name: union with join branch unfiltered side
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1
+      UNION
+      SELECT i.id FROM invoices i JOIN payments p ON p.invoice_id = i.id WHERE i.tenant_id = $1
+      LIMIT 100
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_setops]

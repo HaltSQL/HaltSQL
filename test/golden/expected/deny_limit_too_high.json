@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5000",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_LIMIT_TOO_HIGH",
+      "message": "LIMIT 5000 is not allowed; it must be an integer constant between 0 and 1000",
+      "rule": "limit.max",
+      "loc": 0,
+      "hint": "Use a literal `LIMIT 1000` or smaller."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id", "app.orders.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "53a2755a1ded78c5",
+  "sql_sha256": "1eb33648ac0436d91038d5870cb7e61427212683e0683cef7f690e9ee7a047ab"
+}

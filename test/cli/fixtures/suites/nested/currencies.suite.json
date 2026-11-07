@@ -1,0 +1,10 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "TestSuite",
+  "metadata": { "name": "shop-currencies" },
+  "policy": "../../shop.json",
+  "cases": [
+    { "name": "global table needs no tenant filter", "sql": "SELECT * FROM currencies LIMIT 5", "expect": "allow", "tags": ["global"] },
+    { "name": "DDL is denied", "sql": "DROP TABLE app.orders", "expect": "deny", "codes": ["E_STATEMENT_KIND"], "tags": ["statements"] }
+  ]
+}

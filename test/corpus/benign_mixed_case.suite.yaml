@@ -1,0 +1,83 @@
+# Threat class: benign_analytics (mixed-case / reserved-word schema).
+# Policy: mixed_case.yaml. Quoted "Customers"/"OrderItems" relations, quoted
+# mixed-case columns and reserved words used as column names. All MUST be allowed.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: benign_mixed_case
+  description: Correctly quoted queries against a mixed-case schema
+policy: ../fixtures/policies/mixed_case.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "quoted table and columns"
+    sql: |-
+      SELECT "Id", "FullName" FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "quoted with alias"
+    sql: |-
+      SELECT c."Id", c."Country" FROM app."Customers" c WHERE c."TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "reserved word column order"
+    sql: |-
+      SELECT c."order", c."user" FROM "Customers" c WHERE c."TenantId" = $1 ORDER BY c."order" LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "order items reserved columns"
+    sql: |-
+      SELECT oi."select", oi."from", oi."Qty" FROM "OrderItems" oi WHERE oi."TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "join mixed case tables"
+    sql: |-
+      SELECT c."FullName", sum(oi."Qty") AS qty
+      FROM "Customers" c
+      JOIN "OrderItems" oi ON oi."CustomerId" = c."Id" AND oi."TenantId" = $1
+      WHERE c."TenantId" = $1
+      GROUP BY c."FullName"
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "events reserved words"
+    sql: |-
+      SELECT e."group", e."limit", e."desc" FROM events e WHERE e.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "events group by reserved"
+    sql: |-
+      SELECT "group", count(*) FROM events WHERE tenant_id = $1 GROUP BY "group" ORDER BY 2 DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "events unquoted lowercase columns"
+    sql: |-
+      SELECT id, created_at FROM EVENTS WHERE TENANT_ID = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "customers country upper"
+    sql: |-
+      SELECT upper("Country"), count(*) FROM "Customers" WHERE "TenantId" = $1 GROUP BY 1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "qualified quoted schema"
+    sql: |-
+      SELECT "Id" FROM "app"."OrderItems" WHERE "TenantId" = $1 LIMIT 5
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]
+  - name: "sum limit column"
+    sql: |-
+      SELECT sum("limit") FROM events WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, mixed_case]

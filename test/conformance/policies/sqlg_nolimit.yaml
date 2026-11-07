@@ -1,0 +1,30 @@
+# Conformance policy translated from sql-guardrail (MIT, (c) 2026 nickusevich)
+# https://github.com/nickusevich/sql-guardrail @ eadfb9d0c725f4960621a7c67c23219103710c5b
+# Same as sqlg_standard.yaml but WITHOUT require_limit: used for their rule-level unit tests (tests/unit/test_predicates.py, test_predicate_advanced.py, test_statement_kinds.py, test_preflight.py) whose SQL carries no LIMIT and whose policies have no `large` table.
+# Their `require_predicate: {column: account_id, op: "=", value: "${tenant_id}"}`
+# maps to our LITERAL tenancy mode (they compare SQL literals to the context
+# value); their `allow_columns`/`deny_columns` map to our `columns` allowlist
+# checked against the catalog snapshot ../catalogs/sqlg.json.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: sqlg-nolimit
+  owner: qa
+  description: "sql-guardrail standard_policy without LIMIT requirement"
+dialect: postgres-17
+search_path: [public]
+catalog: ../catalogs/sqlg.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 10 }
+statements: { allow: [select] }
+tenancy:
+  mode: literal
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  public.orders:
+    columns: [id, product_name, account_id, created_at, total]
+    tenant_column: account_id
+  public.users:
+    columns: [id, name]
+functions:
+  presets: [aggregates, math, string, datetime, json, window, conditional]
+mode: enforce

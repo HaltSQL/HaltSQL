@@ -1,0 +1,14 @@
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: nightly-erp }
+environment: { postgres: [17], topology: embedded }
+fixture: erp_large
+data: { scale: small, tenants: 30, seed: 11, tables: 420 }
+workloads:
+  - benign: { queries: 3000 }
+  - adversarial: { queries: 10000 }
+expect:
+  escapes: 0
+  side_effects: 0
+  column_leaks: 0
+  false_positive_rate: { max: 0.05 }

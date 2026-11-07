@@ -1,0 +1,51 @@
+# Multi-tenant SaaS, shared tables keyed by tenant_id (PLAN.md §8.2, first fixture).
+# Bound tenancy mode: the model writes `alias.tenant_id = $1`, the caller binds
+# ctx.tenant_id. PII columns (customers.email/phone/ssn, users.email/
+# password_hash/mfa_secret, invoices.internal_notes, payments.processor_token,
+# audit_events.ip_address) exist in the catalog snapshot but are NOT readable.
+# app.api_keys and app.feature_flags exist in the catalog but are not in the
+# policy at all. JSON twin: saas.json (must decode to the same record).
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: saas
+  owner: qa
+  description: Shared-schema multi-tenant SaaS, bound tenancy
+dialect: postgres-17
+search_path: [app]
+catalog: ../catalogs/saas.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, created_at, updated_at]
+    tenant_column: tenant_id
+  app.order_items:
+    columns: "*"
+    tenant_column: tenant_id
+  app.customers:
+    columns: [id, tenant_id, name, country, plan, created_at, metadata]
+    tenant_column: tenant_id
+  app.invoices:
+    columns: [id, tenant_id, customer_id, order_id, amount_cents, status, issued_at, due_at, paid_at]
+    tenant_column: tenant_id
+  app.payments:
+    columns: [id, tenant_id, invoice_id, amount_cents, method, card_last4, created_at]
+    tenant_column: tenant_id
+  app.users:
+    columns: [id, tenant_id, display_name, role, created_at, last_login_at]
+    tenant_column: tenant_id
+  app.audit_events:
+    columns: [id, tenant_id, actor_id, action, target, payload, created_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+  app.exchange_rates:
+    columns: [base, quote, rate, as_of]
+functions:
+  presets: [aggregates, math, string, datetime, json, window, conditional]
+mode: enforce

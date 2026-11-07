@@ -1,0 +1,108 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": {
+    "name": "writes",
+    "owner": "qa",
+    "description": "Helpdesk agent allowed to write tickets"
+  },
+  "dialect": "postgres-17",
+  "search_path": [
+    "app"
+  ],
+  "limits": {
+    "max_bytes": 16384,
+    "max_depth": 64,
+    "max_nodes": 20000,
+    "max_joins": 6
+  },
+  "statements": {
+    "allow": [
+      "select",
+      "insert",
+      "update",
+      "delete"
+    ]
+  },
+  "require_limit": {
+    "max": 200
+  },
+  "tenancy": {
+    "mode": "bound",
+    "keys": {
+      "tenant": "${ctx.tenant_id}"
+    }
+  },
+  "tables": {
+    "app.tickets": {
+      "columns": [
+        "id",
+        "tenant_id",
+        "title",
+        "status",
+        "priority",
+        "assignee_id",
+        "created_at",
+        "updated_at"
+      ],
+      "tenant_column": "tenant_id",
+      "writes": {
+        "insert": true,
+        "update": [
+          "status",
+          "priority",
+          "assignee_id",
+          "title",
+          "updated_at"
+        ],
+        "delete": true
+      }
+    },
+    "app.ticket_comments": {
+      "columns": [
+        "id",
+        "tenant_id",
+        "ticket_id",
+        "author_id",
+        "body",
+        "created_at"
+      ],
+      "tenant_column": "tenant_id",
+      "writes": {
+        "insert": true
+      }
+    },
+    "app.tags": {
+      "columns": [
+        "id",
+        "tenant_id",
+        "label",
+        "color"
+      ],
+      "tenant_column": "tenant_id",
+      "writes": {
+        "update": "*"
+      }
+    },
+    "app.orders": {
+      "columns": [
+        "id",
+        "tenant_id",
+        "status",
+        "total_cents",
+        "created_at"
+      ],
+      "tenant_column": "tenant_id"
+    }
+  },
+  "functions": {
+    "presets": [
+      "aggregates",
+      "math",
+      "string",
+      "datetime",
+      "conditional"
+    ]
+  },
+  "mode": "enforce"
+}

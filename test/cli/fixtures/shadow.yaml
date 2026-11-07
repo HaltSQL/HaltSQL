@@ -1,0 +1,18 @@
+# Shadow-mode policy without require_limit and with an unused tenancy key (lint fixture).
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: shop-shadow }
+search_path: [app]
+statements: { allow: [select] }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}", region: "${ctx.region}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, status]
+    tenant_columns: { tenant_id: tenant }
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates]
+mode: shadow

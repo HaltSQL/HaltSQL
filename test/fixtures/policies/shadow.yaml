@@ -1,0 +1,28 @@
+# Shadow mode: verdicts are always allowed=true; would-be denials are reported
+# in shadow_reasons. The suite runner checks shadow_reasons for `expect: deny`.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: shadow
+  owner: qa
+  description: Candidate policy evaluated without enforcement
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, created_at, updated_at]
+    tenant_column: tenant_id
+  app.customers:
+    columns: [id, tenant_id, name, country, plan, created_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates, math, string, datetime]
+mode: shadow

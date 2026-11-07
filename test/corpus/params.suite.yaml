@@ -1,0 +1,126 @@
+# Threat class: parameter confusion (PLAN.md §6.3 bound mode). HaltSQL can bind
+# only the $n placeholders that appear as tenant-predicate values; any other $n
+# is E_PARAM_UNBOUND (the caller would have to invent a value, which the model
+# could then steer). Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: params }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: only tenant param
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'paid' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [params]
+  - name: second param in non-tenant position
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $2 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param compared to non-tenant column only
+    sql: SELECT id FROM orders WHERE customer_id = $1 AND tenant_id = $2 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: tenant param reused for non-tenant column
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [params, ambiguous]
+  - name: tenant param in select list
+    sql: SELECT id, $1 AS who FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [params, ambiguous]
+  - name: lone param in select list
+    sql: SELECT $1 LIMIT 1
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in LIMIT
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT $2
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params, limits]
+  - name: tenant param reused as LIMIT
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT $1
+    expect: deny
+    tags: [params, limits, ambiguous]
+  - name: param in OFFSET
+    sql: SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 10 OFFSET $2
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in ORDER BY
+    sql: SELECT id FROM orders WHERE tenant_id = $1 ORDER BY $2 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in function argument
+    sql: SELECT date_trunc($2, created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in IN list
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND id IN ($2, $3) LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in subquery non-tenant position
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+        AND customer_id IN (SELECT id FROM customers WHERE tenant_id = $1 AND name = $2)
+      LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param on global table column
+    sql: SELECT code FROM currencies WHERE code = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param under OR alongside tenant param
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND (status = 'paid' OR $1 = 'acme') LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [params, ambiguous]
+  - name: param with cast in non-tenant position
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at > $2::timestamptz LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in CASE
+    sql: SELECT CASE WHEN status = 'paid' THEN $2 ELSE 'x' END FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: two tenant tables two params both bound
+    sql: |-
+      SELECT o.id FROM orders o JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $2
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }, { param: 2, value: acme }]
+    tags: [params, ambiguous]
+  - name: large param number in tenant position
+    sql: SELECT id FROM orders WHERE tenant_id = $7 LIMIT 10
+    expect: allow
+    bind: [{ param: 7, value: acme }]
+    tags: [params, ambiguous]
+  - name: param in having
+    sql: SELECT status, count(*) FROM orders WHERE tenant_id = $1 GROUP BY status HAVING count(*) > $2 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: param in join ON non-tenant position
+    sql: |-
+      SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 AND c.plan = $2
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [params]
+  - name: tenant param inside expression
+    sql: SELECT id FROM orders WHERE tenant_id = $1 || '' LIMIT 10
+    expect: deny
+    tags: [params, ambiguous]

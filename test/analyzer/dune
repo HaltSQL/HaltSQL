@@ -1,0 +1,10 @@
+(test
+ (name test_analyzer)
+ (deps
+  (source_tree %{project_root}/examples))
+ (libraries
+  haltsql.core
+  haltsql.analyzer
+  haltsql.parse
+  haltsql.load
+  alcotest))

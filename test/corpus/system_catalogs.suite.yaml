@@ -1,0 +1,220 @@
+# Threat class: system_catalogs.
+# Policy: saas.yaml. System schemas (pg_catalog, information_schema, pg_toast) are denied unless listed; unqualified system relations resolve through pg_catalog implicitly. Introspection functions are not in any preset.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: system_catalogs
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "pg_catalog pg_tables"
+    sql: |-
+      SELECT tablename FROM pg_catalog.pg_tables LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_tables unqualified"
+    sql: |-
+      SELECT schemaname, tablename FROM pg_tables LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_class"
+    sql: |-
+      SELECT relname FROM pg_class LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_attribute"
+    sql: |-
+      SELECT attname FROM pg_catalog.pg_attribute LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_namespace"
+    sql: |-
+      SELECT nspname FROM pg_namespace LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_user"
+    sql: |-
+      SELECT usename FROM pg_user LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_shadow"
+    sql: |-
+      SELECT usename, passwd FROM pg_shadow LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_authid"
+    sql: |-
+      SELECT rolname, rolpassword FROM pg_catalog.pg_authid LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_roles"
+    sql: |-
+      SELECT rolname, rolsuper FROM pg_roles LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_settings"
+    sql: |-
+      SELECT name, setting FROM pg_settings LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_stat_activity"
+    sql: |-
+      SELECT pid, query FROM pg_stat_activity LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_stat_statements"
+    sql: |-
+      SELECT query FROM pg_stat_statements LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_proc"
+    sql: |-
+      SELECT proname, prosrc FROM pg_proc LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_policies"
+    sql: |-
+      SELECT * FROM pg_policies LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_largeobject"
+    sql: |-
+      SELECT data FROM pg_largeobject LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "pg_toast schema"
+    sql: |-
+      SELECT * FROM pg_toast.pg_toast_16384 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "information_schema tables"
+    sql: |-
+      SELECT table_name FROM information_schema.tables LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "information_schema columns"
+    sql: |-
+      SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'app' LIMIT 500
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "information_schema role grants"
+    sql: |-
+      SELECT * FROM information_schema.role_table_grants LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs]
+  - name: "quoted pg_catalog"
+    sql: |-
+      SELECT relname FROM "pg_catalog"."pg_class" LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, quoting]
+  - name: "upper case pg_catalog folds"
+    sql: |-
+      SELECT RELNAME FROM PG_CATALOG.PG_CLASS LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, quoting]
+  - name: "pg_class in exists subquery"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'api_keys') LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, subquery]
+  - name: "pg_class in scalar subquery"
+    sql: |-
+      SELECT id, (SELECT count(*) FROM pg_catalog.pg_class) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, subquery]
+  - name: "pg_tables in union"
+    sql: |-
+      SELECT status FROM orders WHERE tenant_id = $1 UNION SELECT tablename::text FROM pg_tables LIMIT 100
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, setop]
+  - name: "pg_settings in cte"
+    sql: |-
+      WITH s AS (SELECT setting FROM pg_settings WHERE name = 'data_directory') SELECT setting FROM s LIMIT 1
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, cte]
+  - name: "pg_class joined to orders"
+    sql: |-
+      SELECT o.id, c.relname FROM orders o JOIN pg_class c ON c.oid = o.id WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, join]
+  - name: "version function"
+    sql: |-
+      SELECT version() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "current_schema function"
+    sql: |-
+      SELECT current_schema() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "current_setting function"
+    sql: |-
+      SELECT current_setting('app.tenant_id') FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "pg_get_functiondef"
+    sql: |-
+      SELECT pg_get_functiondef(1) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "has_table_privilege"
+    sql: |-
+      SELECT has_table_privilege('app.api_keys', 'SELECT') FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "pg_catalog qualified version"
+    sql: |-
+      SELECT pg_catalog.version() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "inet_server_addr"
+    sql: |-
+      SELECT inet_server_addr() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "current_database"
+    sql: |-
+      SELECT current_database() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]
+  - name: "pg_backend_pid"
+    sql: |-
+      SELECT pg_backend_pid() FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [system_catalogs, function]

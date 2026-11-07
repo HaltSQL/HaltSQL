@@ -1,0 +1,90 @@
+# Threat class: function allowlist with no presets.
+# Policy: strict.yaml (functions.allow: [count, lower]; operators: comparison only;
+# require_limit 100; max_joins 2).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: function_allowlist_strict }
+policy: ../fixtures/policies/strict.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: count allowed
+    sql: SELECT count(*) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, strict]
+  - name: lower allowed
+    sql: SELECT lower(status) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [function_allowlist, strict]
+  - name: count on global table allowed
+    sql: SELECT count(sku) FROM products LIMIT 1
+    expect: allow
+    bind: []
+    tags: [function_allowlist, strict]
+  - name: sum not listed
+    sql: SELECT sum(total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: max not listed
+    sql: SELECT max(price_cents) FROM products LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: upper not listed
+    sql: SELECT upper(title) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: now not listed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at < now() LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: date_trunc not listed
+    sql: SELECT date_trunc('day', created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: row_number not listed
+    sql: SELECT row_number() OVER () FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: length not listed
+    sql: SELECT length(title) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: abs not listed
+    sql: SELECT abs(price_cents) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: json function not listed
+    sql: SELECT to_json(title) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: allowed function wrapping denied function
+    sql: SELECT lower(upper(title)) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict, nested]
+  - name: count wrapping denied function
+    sql: SELECT count(md5(title)) FROM products LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict, nested]
+  - name: pg_sleep still denied
+    sql: SELECT pg_sleep(1) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict]
+  - name: qualified lower in other schema
+    sql: SELECT app.lower(title) FROM products LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [function_allowlist, strict, qualified]

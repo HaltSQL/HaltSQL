@@ -1,0 +1,32 @@
+HaltSQL
+Copyright 2026 Arnav Dadarya
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+-------------------------------------------------------------------------------
+Design inspiration
+
+The policy model of HaltSQL (a declarative policy file, a
+verify(sql, policy, context) entry point, machine-readable violation reasons,
+and an HTTP sidecar) is inspired by the sql-guardrail project, which is
+distributed under the MIT License. HaltSQL is an independent implementation:
+it ports the design, not the code. Any test cases adapted from sql-guardrail
+are attributed in the files that contain them and remain under the MIT License.
+
+-------------------------------------------------------------------------------
+Third-party software
+
+HaltSQL parses SQL with libpg_query 17-6.2.5
+(https://github.com/pganalyze/libpg_query), which is vendored in
+vendor/libpg_query and bound by HaltSQL's own C stubs in lib/pgquery.
+libpg_query is Copyright (c) 2015, Lukas Fittl, and Copyright (c) 2016-2023,
+Duboce Labs, Inc. (pganalyze), distributed under the BSD 3-Clause License.
+libpg_query contains source code extracted from PostgreSQL 17, Copyright (c)
+1996-2024, The PostgreSQL Global Development Group, and Copyright (c) 1994,
+The Regents of the University of California, distributed under the PostgreSQL
+License. The full license texts are in vendor/libpg_query/LICENSE and are
+included in every binary release.
+
+Other dependencies (yojson, yaml, digestif, cmdliner, cohttp, lwt and their
+transitive dependencies) are distributed under their own licenses. A
+CycloneDX SBOM listing every component is attached to each release.

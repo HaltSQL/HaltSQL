@@ -1,0 +1,15 @@
+# Fault injection needs the server/proxy topologies; the harness records each
+# fault as TODO in the report until it is automated (see lab/README.md).
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: chaos }
+environment:
+  postgres: [17]
+  topology: proxy-behind-pgbouncer
+  pooler: { pgbouncer: transaction }
+  faults: [policy-reload-during-load, upstream-db-restart, audit-sink-down, network-partition]
+fixture: saas_shared
+data: { scale: tiny, tenants: 8, seed: 5 }
+workloads:
+  - adversarial: { queries: 1000 }
+expect: { escapes: 0, side_effects: 0 }

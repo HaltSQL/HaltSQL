@@ -1,0 +1,19 @@
+haltsql-server is running as {{ include "haltsql.fullname" . }} on port {{ .Values.service.port }}.
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "haltsql.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s localhost:8080/readyz
+
+Verify SQL:
+  curl -s localhost:8080/v1/verify -H "Authorization: Bearer $TOKEN" \
+    -d '{"sql":"SELECT 1","context":{"tenant_id":"acme"}}'
+
+Treat any non-200 response as a denial (fail closed).
+{{- if and (not .Values.tokens) (not .Values.server.allowUnauthenticated) }}
+
+WARNING: no tokens are configured and allowUnauthenticated is false: every
+/v1 request will be rejected with 401.
+{{- end }}
+{{- if not (or .Values.policies .Values.existingPolicyConfigMap) }}
+
+WARNING: no policies are configured; /readyz will return 503.
+{{- end }}

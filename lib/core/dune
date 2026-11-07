@@ -1,0 +1,6 @@
+(library
+ (name haltsql_core)
+ (public_name haltsql.core)
+ (libraries yojson)
+ (instrumentation
+  (backend bisect_ppx)))

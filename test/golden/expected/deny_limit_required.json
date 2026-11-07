@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT id FROM orders WHERE tenant_id = $1",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_LIMIT_REQUIRED",
+      "message": "the outermost SELECT must have a constant LIMIT <= 1000",
+      "rule": "limit.required",
+      "loc": 0,
+      "hint": "Add `LIMIT 1000` (or smaller) to the outermost SELECT."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id", "app.orders.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "300b6ac332da1da4",
+  "sql_sha256": "1d96326eb1fac8ffc3b190a77819a8a3f5eba5b0aece7812b95d2e4bc87d1884"
+}

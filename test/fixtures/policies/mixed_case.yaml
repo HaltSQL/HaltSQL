@@ -1,0 +1,33 @@
+# Mixed-case quoted relation and column names, and reserved words as column
+# names (PLAN.md §8.2 "Mixed-case quoted names, reserved words as names").
+# Names written with double quotes keep their case; everything else is folded
+# to lower case exactly as Postgres does. So in SQL:
+#   "Customers"  -> app."Customers"   (allowed)
+#   Customers    -> app.customers     (NOT in policy -> E_TABLE_DENIED)
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: mixed-case
+  owner: qa
+dialect: postgres-17
+search_path: [app]
+catalog: ../catalogs/mixed_case.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  'app."Customers"':
+    columns: ['"Id"', '"TenantId"', '"FullName"', '"Country"', order, user]
+    tenant_column: '"TenantId"'
+  'app."OrderItems"':
+    columns: ['"Id"', '"TenantId"', '"CustomerId"', select, from, '"Qty"']
+    tenant_column: '"TenantId"'
+  app.events:
+    columns: [id, tenant_id, "group", "limit", "desc", created_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates, math, string]
+mode: enforce

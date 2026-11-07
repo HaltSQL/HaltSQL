@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-schemas
+  description: "same table name in several schemas"
+policy: policies/sqlg_schemas.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "analytics.orders allows id"
+    sql: "SELECT id FROM analytics.orders LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_policies_do_not_collide"]
+  - name: "public.orders does not allow id"
+    sql: "SELECT id FROM public.orders LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_policies_do_not_collide"]
+  - name: "public.orders allows name"
+    sql: "SELECT name FROM public.orders LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_policies_do_not_collide"]
+  - name: "unqualified orders resolves via search_path to public"
+    sql: "SELECT name FROM orders LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_policy_matches_unqualified_query", "sqlg-adapted"]
+  - name: "three-part column ref to a denied column"
+    sql: "SELECT public.users.email FROM public.users, analytics.users LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_alias_collision_does_not_misattribute_denied_column"]
+  - name: "three-part column ref to an allowed column"
+    sql: "SELECT analytics.users.email FROM public.users, analytics.users LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_alias_collision_does_not_misattribute_denied_column", "ambiguous"]
+  - name: "bogus schema qualifier"
+    sql: "SELECT bogus.users.email FROM public.users LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_bogus_schema_qualifier_fails_closed", "differs-code"]
+  - name: "no require_limit: analytics.orders without LIMIT"
+    sql: "SELECT id FROM analytics.orders"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_large_does_not_force_limit_on_other_schema"]
+  - name: "no per-table large flag: public.orders without LIMIT"
+    sql: "SELECT name FROM public.orders"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_schema_qualified_large_does_not_force_limit_on_other_schema", "sqlg-adapted", "differs"]
+  - name: "unlisted schema"
+    sql: "SELECT id FROM billing.orders LIMIT 1"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_unqualified_policy_matches_any_schema", "sqlg-adapted", "differs"]

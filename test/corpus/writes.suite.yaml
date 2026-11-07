@@ -1,0 +1,312 @@
+# Threat class: writes (PLAN.md §6.3 "Writes", v1.1). INSERT needs
+# writes.insert, an explicit column list and the tenant column set to the
+# tenant value ($n in bound mode) in every VALUES row; INSERT...SELECT and
+# ON CONFLICT are E_UNSUPPORTED. UPDATE needs writes.update covering every SET
+# column, may not assign tenant columns, and needs the tenant proof in WHERE.
+# DELETE needs writes.delete and the proof. Otherwise E_WRITE_DENIED.
+# Policy: writes.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: writes }
+policy: ../fixtures/policies/writes.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  # ---------------- INSERT ----------------
+  - name: insert single row with tenant param
+    sql: INSERT INTO tickets (tenant_id, title, status, priority) VALUES ($1, 'Printer on fire', 'open', 2)
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert with returning allowed column
+    sql: INSERT INTO tickets (tenant_id, title, status) VALUES ($1, 'VPN down', 'open') RETURNING id, created_at
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert multi-row all tenant param
+    sql: |-
+      INSERT INTO ticket_comments (tenant_id, ticket_id, author_id, body)
+      VALUES ($1, 10, 7, 'Looking into it'), ($1, 10, 8, 'Thanks')
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert tenant column not first
+    sql: INSERT INTO tickets (title, status, tenant_id) VALUES ('Reset password', 'open', $1)
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert with now() value
+    sql: INSERT INTO tickets (tenant_id, title, status, created_at) VALUES ($1, 'x', 'open', now())
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert schema-qualified
+    sql: INSERT INTO app.tickets (tenant_id, title) VALUES ($1, 'qualified')
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, insert]
+  - name: insert missing tenant column
+    sql: INSERT INTO tickets (title, status) VALUES ('no tenant', 'open')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert other tenant literal
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ('globex', 'planted')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert own tenant literal in bound mode
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ('acme', 'literal')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert multi-row one row other tenant
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ($1, 'ok'), ('globex', 'planted')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert tenant DEFAULT
+    sql: INSERT INTO tickets (tenant_id, title) VALUES (DEFAULT, 'default tenant')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert tenant NULL
+    sql: INSERT INTO tickets (tenant_id, title) VALUES (NULL, 'null tenant')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert tenant expression
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ($1 || '-x', 'suffix')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert tenant from subquery
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ((SELECT tenant_id FROM orders LIMIT 1), 'stolen')
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, insert]
+  - name: insert without column list
+    sql: INSERT INTO tickets VALUES (1, $1, 'x', 'open', 1, NULL, now(), now())
+    expect: deny
+    tags: [writes, insert, ambiguous]
+  - name: insert default values
+    sql: INSERT INTO tickets DEFAULT VALUES
+    expect: deny
+    tags: [writes, insert, ambiguous]
+  - name: insert select
+    sql: INSERT INTO tickets (tenant_id, title) SELECT tenant_id, status FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [writes, insert]
+  - name: insert on conflict do nothing
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ($1, 'x') ON CONFLICT DO NOTHING
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [writes, insert]
+  - name: insert on conflict do update
+    sql: INSERT INTO tickets (id, tenant_id, title) VALUES (5, $1, 'x') ON CONFLICT (id) DO UPDATE SET tenant_id = 'globex'
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [writes, insert]
+  - name: insert into update-only table
+    sql: INSERT INTO tags (tenant_id, label) VALUES ($1, 'urgent')
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, insert]
+  - name: insert into read-only table
+    sql: INSERT INTO orders (tenant_id, status, total_cents) VALUES ($1, 'paid', 100)
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, insert]
+  - name: insert into unknown table
+    sql: INSERT INTO api_keys (tenant_id, secret) VALUES ($1, 'x')
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [writes, insert]
+  - name: insert extra unbound param
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ($1, $2)
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [writes, insert, params]
+  - name: insert returning unfiltered subquery
+    sql: INSERT INTO ticket_comments (tenant_id, ticket_id, body) VALUES ($1, 3, 'hi') RETURNING ticket_id, (SELECT count(*) FROM tickets)
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, insert]
+  - name: insert into unknown column
+    sql: INSERT INTO tickets (tenant_id, title, internal_score) VALUES ($1, 'x', 99)
+    expect: deny
+    tags: [writes, insert, ambiguous]
+  # ---------------- UPDATE ----------------
+  - name: update allowed columns with proof
+    sql: UPDATE tickets SET status = 'closed', updated_at = now() WHERE tenant_id = $1 AND id = 42
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, update]
+  - name: update with alias
+    sql: UPDATE tickets t SET priority = 1 WHERE t.tenant_id = $1 AND t.status = 'open'
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, update]
+  - name: update returning
+    sql: UPDATE tickets SET assignee_id = 7 WHERE tenant_id = $1 AND id = 42 RETURNING id, status
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, update]
+  - name: update star table any column
+    sql: UPDATE tags SET label = 'p1', color = 'red' WHERE tenant_id = $1 AND id = 3
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, update]
+  - name: update with filtered subquery
+    sql: |-
+      UPDATE tickets SET status = 'pending' WHERE tenant_id = $1
+        AND id IN (SELECT ticket_id FROM ticket_comments WHERE tenant_id = $1 AND author_id = 7)
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, update]
+  - name: update with unfiltered subquery
+    sql: |-
+      UPDATE tickets SET status = 'pending' WHERE tenant_id = $1
+        AND id IN (SELECT ticket_id FROM ticket_comments WHERE author_id = 7)
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update]
+  - name: update without where
+    sql: UPDATE tickets SET status = 'closed'
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update]
+  - name: update where without tenant
+    sql: UPDATE tickets SET status = 'closed' WHERE id = 42
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update]
+  - name: update tenant predicate under OR
+    sql: UPDATE tickets SET status = 'closed' WHERE tenant_id = $1 OR id = 42
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update, or_bypass]
+  - name: update sets tenant column
+    sql: UPDATE tickets SET tenant_id = 'globex' WHERE tenant_id = $1 AND id = 42
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, update]
+  - name: update sets tenant column to same param
+    sql: UPDATE tickets SET tenant_id = $1 WHERE tenant_id = $1 AND id = 42
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, update]
+  - name: update star table sets tenant column
+    sql: UPDATE tags SET tenant_id = 'globex' WHERE tenant_id = $1
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: [writes, update]
+  - name: update column outside update list
+    sql: UPDATE tickets SET created_at = now() WHERE tenant_id = $1 AND id = 42
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, update]
+  - name: update on insert-only table
+    sql: UPDATE ticket_comments SET body = 'edited' WHERE tenant_id = $1 AND id = 1
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, update]
+  - name: update on read-only table
+    sql: UPDATE orders SET status = 'refunded' WHERE tenant_id = $1 AND id = 1
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, update]
+  - name: update value with unbound param
+    sql: UPDATE tickets SET title = $2 WHERE tenant_id = $1 AND id = 42
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [writes, update, params]
+  - name: update value from unfiltered scalar subquery
+    sql: UPDATE tickets SET title = (SELECT max(status) FROM orders) WHERE tenant_id = $1 AND id = 42
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update]
+  - name: update from unfiltered table
+    sql: UPDATE tickets t SET status = o.status FROM orders o WHERE t.tenant_id = $1 AND o.id = t.id
+    expect: deny
+    tags: [writes, update, ambiguous]
+  - name: update cast on tenant column
+    sql: UPDATE tickets SET status = 'closed' WHERE tenant_id::text = $1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, update, cast]
+  # ---------------- DELETE ----------------
+  - name: delete with proof
+    sql: DELETE FROM tickets WHERE tenant_id = $1 AND id = 42
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, delete]
+  - name: delete with proof and returning
+    sql: DELETE FROM tickets WHERE tenant_id = $1 AND status = 'spam' RETURNING id
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, delete]
+  - name: delete without where
+    sql: DELETE FROM tickets
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, delete]
+  - name: delete OR tautology
+    sql: DELETE FROM tickets WHERE tenant_id = $1 OR 1 = 1
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, delete, or_bypass]
+  - name: delete with unfiltered subquery
+    sql: DELETE FROM tickets WHERE tenant_id = $1 AND id IN (SELECT ticket_id FROM ticket_comments)
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, delete]
+  - name: delete from insert-only table
+    sql: DELETE FROM ticket_comments WHERE tenant_id = $1 AND id = 9
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, delete]
+  - name: delete from update-only table
+    sql: DELETE FROM tags WHERE tenant_id = $1
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, delete]
+  - name: delete from read-only table
+    sql: DELETE FROM orders WHERE tenant_id = $1 AND id = 1
+    expect: deny
+    codes: [E_WRITE_DENIED]
+    tags: [writes, delete]
+  - name: delete using unfiltered table
+    sql: DELETE FROM tickets t USING orders o WHERE t.tenant_id = $1 AND o.id = t.id
+    expect: deny
+    tags: [writes, delete, ambiguous]
+  - name: delete returning denied subquery leak
+    sql: DELETE FROM tickets WHERE tenant_id = $1 AND id = 1 RETURNING (SELECT count(*) FROM orders)
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [writes, delete]
+  # ---------------- mixed ----------------
+  - name: data-modifying cte with writes allowed
+    sql: |-
+      WITH d AS (DELETE FROM tickets WHERE tenant_id = $1 AND status = 'spam' RETURNING id)
+      SELECT count(*) FROM d LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, dml_cte, ambiguous]
+  - name: select still needs limit
+    sql: SELECT id, title FROM tickets WHERE tenant_id = $1
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [writes, select]
+  - name: select on writes policy allowed
+    sql: SELECT id, title, status FROM tickets WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [writes, select]
+  - name: missing context on insert
+    sql: INSERT INTO tickets (tenant_id, title) VALUES ($1, 'x')
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [writes, insert, context]

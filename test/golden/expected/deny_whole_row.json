@@ -1,0 +1,31 @@
+{
+  "sql": "SELECT row_to_json(c) FROM customers c WHERE c.tenant_id = $1 LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_FUNCTION_DENIED",
+      "message": "function row_to_json is not in the policy's function allowlist",
+      "rule": "functions.allowlist",
+      "loc": 7,
+      "hint": "Rewrite the query without calling row_to_json(); only allowlisted functions may be used."
+    },
+    {
+      "code": "E_COLUMN_DENIED",
+      "message": "* or a whole-row reference to app.customers would read columns that are not readable (or not known to the catalog)",
+      "rule": "columns.star",
+      "loc": 19,
+      "hint": "List the allowed columns explicitly instead of * / whole-row references: id, tenant_id, name, country, plan, created_at, metadata."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.customers" ],
+  "columns": [ "app.customers.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "3c460706894d9f60",
+  "sql_sha256": "89724006eaff8fa3013635a84421ee4c199547d925d6c45710711196aa509bc3"
+}

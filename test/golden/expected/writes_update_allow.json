@@ -1,0 +1,16 @@
+{
+  "sql": "UPDATE tickets SET status = 'closed' WHERE tenant_id = $1 AND id = 42",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "writes",
+    "version": "sha256:a64b2ba7fea6874c5d5a34c6e4e939d3257ccef4452028edf4d9075e7092b8a4"
+  },
+  "statement_kind": "update",
+  "tables": [ "app.tickets" ],
+  "columns": [ "app.tickets.id", "app.tickets.tenant_id" ],
+  "bind_params": [ { "param": 1, "value": "acme" } ],
+  "fingerprint": "625db79b00b7542f",
+  "sql_sha256": "1ca07fd2cc791ee631f8cf9b1d261f555f9b2104c8fa2e430bf277c7267989aa"
+}

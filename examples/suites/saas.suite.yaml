@@ -1,0 +1,36 @@
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: saas-analytics-basics
+  description: Smoke tests for the saas-analytics policy
+policy: ../policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: filtered select is allowed
+    sql: SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy]
+  - name: missing tenant filter
+    sql: SELECT id FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy]
+  - name: other tenant context
+    sql: SELECT id FROM invoices WHERE tenant_id = $1 LIMIT 5
+    context: { tenant_id: globex }
+    expect: allow
+    bind: [{ param: 1, value: globex }]
+  - name: pii column denied
+    sql: SELECT email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+  - name: limit required
+    sql: SELECT code FROM currencies
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+  - name: catalog probing denied
+    sql: SELECT 'orders'::regclass
+    expect: deny
+    codes: [E_CAST_DENIED]

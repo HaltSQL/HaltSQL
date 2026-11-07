@@ -1,0 +1,164 @@
+# Threat class: tenant bypass in LITERAL tenancy mode (PLAN.md §6.3). The
+# tenant predicate must compare to a literal equal to the context value; a
+# different literal is E_TENANT_MISMATCH; any $n is E_PARAM_UNBOUND.
+# Policy: saas_literal.yaml.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_literal }
+policy: ../fixtures/policies/saas_literal.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: matching literal
+    sql: SELECT o.id, o.status FROM orders o WHERE o.tenant_id = 'acme' LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal]
+  - name: matching literal unqualified
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal]
+  - name: matching literal other context
+    sql: SELECT id FROM orders WHERE tenant_id = 'globex' LIMIT 10
+    context: { tenant_id: globex }
+    expect: allow
+    bind: []
+    tags: [tenancy_literal]
+  - name: other tenant literal
+    sql: SELECT id FROM orders WHERE tenant_id = 'globex' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal]
+  - name: uppercase look-alike
+    sql: SELECT id FROM orders WHERE tenant_id = 'ACME' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: trailing space look-alike
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme ' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: leading space look-alike
+    sql: SELECT id FROM orders WHERE tenant_id = ' acme' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: prefix look-alike
+    sql: SELECT id FROM orders WHERE tenant_id = 'acm' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: empty string literal
+    sql: SELECT id FROM orders WHERE tenant_id = '' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: escape-string literal that decodes to the value
+    sql: SELECT id FROM orders WHERE tenant_id = E'acme' LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal, ambiguous]
+  - name: escape-string literal with trailing backslash
+    sql: SELECT id FROM orders WHERE tenant_id = E'acme\\' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, lookalike]
+  - name: dollar-quoted literal equal to the value
+    sql: SELECT id FROM orders WHERE tenant_id = $$acme$$ LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal, ambiguous]
+  - name: concatenated literal
+    sql: SELECT id FROM orders WHERE tenant_id = 'ac' || 'me' LIMIT 10
+    expect: deny
+    tags: [tenancy_literal, ambiguous]
+  - name: param in literal mode
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [tenancy_literal, params]
+  - name: missing predicate
+    sql: SELECT id FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_literal]
+  - name: matching literal OR tautology
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' OR 1 = 1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_literal, or_bypass]
+  - name: matching literal OR other tenant
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' OR tenant_id = 'globex' LIMIT 10
+    expect: deny
+    tags: [tenancy_literal, or_bypass]
+  - name: matching and mismatching conjuncts
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' AND tenant_id = 'globex' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, ambiguous]
+  - name: cast on column side
+    sql: SELECT id FROM orders WHERE tenant_id::text = 'acme' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_literal, cast]
+  - name: join both matching literals
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = 'acme'
+      WHERE o.tenant_id = 'acme' LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal, joins]
+  - name: join second table other tenant
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = 'globex'
+      WHERE o.tenant_id = 'acme' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, joins]
+  - name: subquery other tenant
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = 'acme'
+        AND o.customer_id IN (SELECT id FROM customers WHERE tenant_id = 'initech')
+      LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, subqueries]
+  - name: union second branch other tenant
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = 'acme'
+      UNION ALL SELECT id FROM orders WHERE tenant_id = 'globex'
+      LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_literal, setops]
+  - name: cte matching literal
+    sql: |-
+      WITH o AS (SELECT customer_id, total_cents FROM orders WHERE tenant_id = 'acme')
+      SELECT customer_id, sum(total_cents) FROM o GROUP BY customer_id LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal, ctes]
+  - name: cte unfiltered
+    sql: |-
+      WITH o AS (SELECT customer_id, total_cents FROM orders)
+      SELECT customer_id FROM o LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_literal, ctes]
+  - name: numeric literal for text tenant
+    sql: SELECT id FROM orders WHERE tenant_id = 42 LIMIT 10
+    expect: deny
+    tags: [tenancy_literal, ambiguous]
+  - name: missing context
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_literal, context]
+  - name: global table literal mode
+    sql: SELECT code, decimals FROM currencies LIMIT 10
+    expect: allow
+    bind: []
+    tags: [tenancy_literal]

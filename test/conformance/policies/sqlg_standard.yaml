@@ -1,0 +1,33 @@
+# Conformance policy translated from sql-guardrail (MIT, (c) 2026 nickusevich)
+# https://github.com/nickusevich/sql-guardrail @ eadfb9d0c725f4960621a7c67c23219103710c5b
+# Source: tests/conftest.py::standard_policy and tests/test_security.py::policy (read_only, orders large+tenant, users with denied PII). Their per-table `large: true` becomes our global require_limit (their max_limit_value 10000).
+# Their `require_predicate: {column: account_id, op: "=", value: "${tenant_id}"}`
+# maps to our LITERAL tenancy mode (they compare SQL literals to the context
+# value); their `allow_columns`/`deny_columns` map to our `columns` allowlist
+# checked against the catalog snapshot ../catalogs/sqlg.json.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: sqlg-standard
+  owner: qa
+  description: "sql-guardrail standard_policy"
+dialect: postgres-17
+search_path: [public]
+catalog: ../catalogs/sqlg.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 10 }
+statements: { allow: [select] }
+require_limit: { max: 10000 }
+tenancy:
+  mode: literal
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  public.orders:
+    columns: [id, product_name, account_id, created_at, total]
+    tenant_column: account_id
+  public.users:
+    columns: [id, name]
+  public.orders_copy:
+    columns: [id]
+functions:
+  presets: [aggregates, math, string, datetime, json, window, conditional]
+mode: enforce

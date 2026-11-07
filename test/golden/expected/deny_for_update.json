@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1 FOR UPDATE",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_LOCKING_CLAUSE",
+      "message": "locking clause FOR UPDATE is not allowed",
+      "rule": "select.locking",
+      "loc": 0,
+      "hint": "Remove FOR UPDATE / FOR SHARE; the query must be read-only."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id", "app.orders.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "feadc70db2ee026b",
+  "sql_sha256": "1ceaef2940d2dce72baaf61c02ea9b1b69253ef0dc4491ae8feabe7bed198e2b"
+}

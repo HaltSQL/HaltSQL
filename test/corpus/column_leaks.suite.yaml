@@ -1,0 +1,296 @@
+# Threat class: column_leaks.
+# Policy: saas.yaml. A denied column read ANYWHERE (select list, WHERE, ON, GROUP BY, HAVING, ORDER BY, function arguments, CASE, subqueries, CTEs, window clauses) must be denied, even when it never appears in the output. Every case is otherwise valid (tenant predicate, LIMIT).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: column_leaks
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "email in select list"
+    sql: |-
+      SELECT id, email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "qualified ssn in select list"
+    sql: |-
+      SELECT c.ssn FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "phone aliased innocently"
+    sql: |-
+      SELECT c.phone AS country FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, alias]
+  - name: "password hash"
+    sql: |-
+      SELECT display_name, password_hash FROM users WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "mfa secret"
+    sql: |-
+      SELECT mfa_secret FROM app.users WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "processor token"
+    sql: |-
+      SELECT processor_token FROM payments WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "internal notes"
+    sql: |-
+      SELECT id, internal_notes FROM invoices WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "ip address"
+    sql: |-
+      SELECT ip_address FROM audit_events WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, select_list]
+  - name: "email only in where"
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1 AND email = 'ceo@globex.com' LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, where]
+  - name: "ssn prefix oracle in where"
+    sql: |-
+      SELECT count(*) FROM customers WHERE tenant_id = $1 AND ssn LIKE '123%' LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, where, oracle]
+  - name: "password hash comparison in where"
+    sql: |-
+      SELECT id FROM users WHERE tenant_id = $1 AND password_hash LIKE '$2b$%' LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, where, oracle]
+  - name: "email only in order by"
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1 ORDER BY email LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, order_by]
+  - name: "ssn only in group by"
+    sql: |-
+      SELECT count(*) FROM customers WHERE tenant_id = $1 GROUP BY ssn LIMIT 100
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, group_by]
+  - name: "email in having"
+    sql: |-
+      SELECT country FROM customers WHERE tenant_id = $1 GROUP BY country HAVING max(email) > 'm' LIMIT 100
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, having]
+  - name: "email in join on"
+    sql: |-
+      SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 AND c.email LIKE '%@globex.com' WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, join]
+  - name: "user email joined to customer email"
+    sql: |-
+      SELECT u.id FROM users u JOIN customers c ON c.email = u.email AND c.tenant_id = $1 WHERE u.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, join]
+  - name: "ssn in function arg"
+    sql: |-
+      SELECT length(ssn) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, function]
+  - name: "email in nested function"
+    sql: |-
+      SELECT upper(split_part(email, '@', 2)) AS domain FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, function]
+  - name: "email in aggregate"
+    sql: |-
+      SELECT string_agg(email, ',') FROM customers WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, function]
+  - name: "email in count distinct"
+    sql: |-
+      SELECT count(DISTINCT email) FROM customers WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, function]
+  - name: "ssn in case condition"
+    sql: |-
+      SELECT CASE WHEN ssn IS NULL THEN 'no' ELSE 'yes' END FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, case]
+  - name: "email in case result"
+    sql: |-
+      SELECT CASE WHEN plan = 'pro' THEN email ELSE name END FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, case]
+  - name: "phone in coalesce"
+    sql: |-
+      SELECT coalesce(phone, 'n/a') FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, function]
+  - name: "email in scalar subquery"
+    sql: |-
+      SELECT o.id, (SELECT c.email FROM customers c WHERE c.tenant_id = $1 AND c.id = o.customer_id) FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, subquery]
+  - name: "ssn in exists subquery where"
+    sql: |-
+      SELECT id FROM orders o WHERE o.tenant_id = $1 AND EXISTS (SELECT 1 FROM customers c WHERE c.tenant_id = $1 AND c.id = o.customer_id AND c.ssn = '078-05-1120') LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, subquery, oracle]
+  - name: "email in derived table"
+    sql: |-
+      SELECT x.e FROM (SELECT email AS e FROM customers WHERE tenant_id = $1) x LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, subquery]
+  - name: "email in cte"
+    sql: |-
+      WITH c AS (SELECT id, email FROM customers WHERE tenant_id = $1) SELECT id FROM c LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, cte]
+  - name: "email in union branch"
+    sql: |-
+      SELECT name FROM customers WHERE tenant_id = $1 UNION ALL SELECT email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, setop]
+  - name: "email in window partition"
+    sql: |-
+      SELECT id, row_number() OVER (PARTITION BY email ORDER BY id) FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, window]
+  - name: "email in filter clause"
+    sql: |-
+      SELECT count(*) FILTER (WHERE email LIKE '%gmail%') FROM customers WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, filter]
+  - name: "email in distinct on"
+    sql: |-
+      SELECT DISTINCT ON (email) id FROM customers WHERE tenant_id = $1 ORDER BY email LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, distinct]
+  - name: "email in lateral"
+    sql: |-
+      SELECT o.id, x.e FROM orders o CROSS JOIN LATERAL (SELECT c.email AS e FROM customers c WHERE c.tenant_id = $1 AND c.id = o.customer_id) x WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, lateral]
+  - name: "email cast to text"
+    sql: |-
+      SELECT email::varchar FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, cast]
+  - name: "email in concatenation"
+    sql: |-
+      SELECT name || ' <' || email || '>' FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, expression]
+  - name: "email in in list test"
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1 AND email IN ('a@x.com', 'b@x.com') LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, where]
+  - name: "email in array constructor"
+    sql: |-
+      SELECT ARRAY[name, email] FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, expression]
+  - name: "processor token in join to invoices"
+    sql: |-
+      SELECT i.id FROM invoices i JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1 WHERE i.tenant_id = $1 AND p.processor_token IS NOT NULL LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, join]
+  - name: "json field from denied column-like key is fine"
+    sql: |-
+      SELECT metadata ->> 'email' AS email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [column_leaks, json]
+  - name: "output alias named email is fine"
+    sql: |-
+      SELECT name AS email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [column_leaks, alias]
+  - name: "string literal email is fine"
+    sql: |-
+      SELECT id, 'email' AS field FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [column_leaks, literal]
+  - name: "allowed columns of same table"
+    sql: |-
+      SELECT id, name, country, plan, created_at FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [column_leaks, control]
+  - name: "unknown column"
+    sql: |-
+      SELECT id, nonexistent_col FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [column_leaks, unresolved, ambiguous]
+  - name: "unknown qualified column"
+    sql: |-
+      SELECT o.discount_code FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [column_leaks, unresolved, ambiguous]
+  - name: "ambiguous unqualified column across join"
+    sql: |-
+      SELECT id FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_UNRESOLVED]
+    tags: [column_leaks, unresolved]
+  - name: "ambiguous unqualified status across join"
+    sql: |-
+      SELECT o.id, status FROM orders o JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_UNRESOLVED]
+    tags: [column_leaks, unresolved]
+  - name: "unqualified email resolves to customers in join"
+    sql: |-
+      SELECT o.id, email FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, unresolved]
+  - name: "correlated outer denied column"
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.status = c.email) LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [column_leaks, subquery, correlated]
+  - name: "unqualified created_at is unambiguous when only orders has it"
+    sql: |-
+      SELECT o.id, created_at FROM orders o JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [column_leaks, resolution, control]

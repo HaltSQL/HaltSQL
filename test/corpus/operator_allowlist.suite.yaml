@@ -1,0 +1,121 @@
+# Threat class: operator allowlist.
+# Policy: strict.yaml (operators.allow: =, <>, <, >, <=, >=). Every other
+# operator (arithmetic, ||, LIKE, regex, JSON, array, bitwise, geometric)
+# is E_OPERATOR_DENIED. AND/OR/NOT are boolean expressions, not operators.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: operator_allowlist }
+policy: ../fixtures/policies/strict.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: comparison operators allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND total_cents >= 100 AND total_cents < 5000 AND status <> 'void' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist]
+  - name: boolean connectives are not operators
+    sql: SELECT sku FROM products WHERE (price_cents > 10 OR price_cents < 2) AND NOT (title = 'x') LIMIT 10
+    expect: allow
+    bind: []
+    tags: [operator_allowlist]
+  - name: is null is not an operator
+    sql: SELECT sku FROM products WHERE title IS NOT NULL LIMIT 10
+    expect: allow
+    bind: []
+    tags: [operator_allowlist]
+  - name: addition denied
+    sql: SELECT price_cents + 1 FROM products LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, arithmetic]
+  - name: multiplication in where denied
+    sql: SELECT sku FROM products WHERE price_cents * 2 > 100 LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, arithmetic]
+  - name: division denied
+    sql: SELECT price_cents / 100 FROM products LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, arithmetic]
+  - name: unary minus denied
+    sql: SELECT -price_cents FROM products LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, arithmetic, ambiguous]
+  - name: concatenation denied
+    sql: SELECT title || sku FROM products LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, string]
+  - name: like denied
+    sql: SELECT sku FROM products WHERE title LIKE 'a%' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, pattern]
+  - name: ilike denied
+    sql: SELECT sku FROM products WHERE title ILIKE 'a%' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, pattern]
+  - name: regex match denied
+    sql: SELECT sku FROM products WHERE title ~ '^a' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, pattern]
+  - name: case insensitive regex denied
+    sql: SELECT sku FROM products WHERE title ~* 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, pattern]
+  - name: bitwise and denied
+    sql: SELECT sku FROM products WHERE (price_cents & 1) = 1 LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, bitwise]
+  - name: shift left denied
+    sql: SELECT sku FROM products WHERE (price_cents << 2) > 0 LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, bitwise]
+  - name: array overlap denied
+    sql: SELECT sku FROM products WHERE ARRAY[sku] && ARRAY['a'] LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, array]
+  - name: text search match denied
+    sql: SELECT sku FROM products WHERE title @@ 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist]
+  - name: operator in tenant predicate side denied
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND total_cents % 2 = 0 LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, arithmetic]
+  - name: operator syntax with schema denied
+    sql: SELECT sku FROM products WHERE price_cents OPERATOR(pg_catalog.+) 1 > 0 LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, qualified]
+  - name: custom operator denied
+    sql: SELECT sku FROM products WHERE title <~> 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, custom]
+  - name: qualified equality operator to custom schema
+    sql: SELECT sku FROM products WHERE title OPERATOR(evil.=) 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, qualified]
+  - name: any with equality
+    sql: SELECT sku FROM products WHERE sku = ANY(ARRAY['a', 'b']) LIMIT 10
+    expect: allow
+    bind: []
+    tags: [operator_allowlist, ambiguous]
+  - name: in list uses equality
+    sql: SELECT sku FROM products WHERE sku IN ('a', 'b') LIMIT 10
+    expect: allow
+    bind: []
+    tags: [operator_allowlist]

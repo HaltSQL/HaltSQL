@@ -1,0 +1,27 @@
+# Tiny allowlist: two tables, two functions, no presets, a short operator list,
+# at most 2 joins, LIMIT <= 100.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: strict
+  owner: qa
+  description: Minimal allowlist used to test allowlist edges
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 4096, max_depth: 32, max_nodes: 2000, max_joins: 2 }
+statements: { allow: [select] }
+require_limit: { max: 100 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, created_at]
+    tenant_column: tenant_id
+  app.products:
+    columns: [sku, title, price_cents]
+functions:
+  allow: [count, lower]
+operators:
+  allow: ["=", "<>", "<", ">", "<=", ">="]
+mode: enforce

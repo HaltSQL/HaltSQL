@@ -1,0 +1,76 @@
+# Threat class: operator allowlist, default operator set.
+# Policy: saas.yaml (no operators key -> defaults: comparison, arithmetic, ||,
+# LIKE/regex, JSON, array). These common operators must stay ALLOWED.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: operator_allowlist_default }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: arithmetic allowed
+    sql: SELECT id, total_cents / 100.0 * 1.2 - 1 + 0 FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: modulo allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND id % 2 = 0 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: concatenation allowed
+    sql: SELECT name || ' / ' || country FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: like and ilike allowed
+    sql: SELECT id FROM customers WHERE tenant_id = $1 AND name LIKE 'A%' AND country ILIKE 'us' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: not like allowed
+    sql: SELECT id FROM customers WHERE tenant_id = $1 AND name NOT LIKE '%test%' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: regex operator allowed
+    sql: SELECT id FROM customers WHERE tenant_id = $1 AND name ~* '^acme' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: json arrow operators allowed
+    sql: SELECT metadata ->> 'segment', metadata -> 'tags' FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default, json]
+  - name: json containment allowed
+    sql: |-
+      SELECT id FROM audit_events WHERE tenant_id = $1 AND payload @> '{"kind": "login"}' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default, json]
+  - name: json key exists allowed
+    sql: SELECT id FROM audit_events WHERE tenant_id = $1 AND payload ? 'ip' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default, json]
+  - name: between allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND total_cents BETWEEN 100 AND 500 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: is distinct from allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status IS DISTINCT FROM 'void' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [operator_allowlist, default]
+  - name: custom operator denied by default set
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status <~> 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, default, custom]
+  - name: operator in evil schema denied
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status OPERATOR(evil.=) 'x' LIMIT 10
+    expect: deny
+    codes: [E_OPERATOR_DENIED]
+    tags: [operator_allowlist, default, qualified]

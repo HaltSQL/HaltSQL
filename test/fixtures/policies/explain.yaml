@@ -1,0 +1,28 @@
+# Plain EXPLAIN of an otherwise-allowed statement is permitted; EXPLAIN ANALYZE
+# (which executes the statement) never is.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: explain
+  owner: qa
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+allow_explain: true
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, created_at, updated_at]
+    tenant_column: tenant_id
+  app.customers:
+    columns: [id, tenant_id, name, country, plan, created_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates, math, string, datetime]
+mode: enforce

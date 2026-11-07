@@ -1,0 +1,28 @@
+# Threat class: EXPLAIN when the policy does not allow it.
+# Policy: saas.yaml (allow_explain defaults to false). EXPLAIN is then a
+# disallowed statement kind (E_STATEMENT_KIND).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: explain_disabled }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: plain explain not allowed by policy
+    sql: EXPLAIN SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [explain, disabled]
+  - name: explain analyze not allowed by policy
+    sql: EXPLAIN ANALYZE SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [explain, disabled, analyze]
+  - name: explain analyze delete not allowed by policy
+    sql: EXPLAIN ANALYZE DELETE FROM orders
+    expect: deny
+    tags: [explain, disabled, analyze, dml]
+  - name: explain options form not allowed by policy
+    sql: EXPLAIN (FORMAT JSON) SELECT code FROM currencies LIMIT 5
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [explain, disabled]

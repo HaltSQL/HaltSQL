@@ -1,0 +1,20 @@
+{
+  "sql": "SELECT id, name FROM accounts WHERE tenant_id = ANY($1) LIMIT 10",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "hierarchical",
+    "version": "sha256:b3f6277ae937813ad2e1f6b4feba03382548f72fa5450a68d5796db03c715b1f"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.accounts" ],
+  "columns": [
+    "app.accounts.id", "app.accounts.name", "app.accounts.tenant_id"
+  ],
+  "bind_params": [
+    { "param": 1, "value": [ "acme", "acme-eu", "acme-us" ] }
+  ],
+  "fingerprint": "b98ac981fc621ccf",
+  "sql_sha256": "46b24d7edf4a192e2bab7f49c37085f4591114d3a078c625c6b4fd55af2b58b3"
+}

@@ -1,0 +1,148 @@
+# Threat class: malformed input (PLAN.md §3 "Analyzer crashes"). Anything that
+# does not parse is E_PARSE; empty input / comments only is E_EMPTY. The
+# analyzer must fail closed and never raise.
+# Policy: saas.yaml.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: parse_errors }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: empty string
+    sql: ""
+    expect: deny
+    codes: [E_EMPTY]
+    tags: [parse_errors, empty]
+  - name: whitespace only
+    sql: "   \n\t  "
+    expect: deny
+    codes: [E_EMPTY]
+    tags: [parse_errors, empty]
+  - name: lone semicolon
+    sql: ";"
+    expect: deny
+    codes: [E_EMPTY]
+    tags: [parse_errors, empty]
+  - name: line comment only
+    sql: "-- just a comment"
+    expect: deny
+    codes: [E_EMPTY]
+    tags: [parse_errors, empty]
+  - name: block comment only
+    sql: /* nothing here */
+    expect: deny
+    codes: [E_EMPTY]
+    tags: [parse_errors, empty]
+  - name: misspelled keyword
+    sql: SELEC id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: trailing garbage
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 garbage garbage
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: unterminated string
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'open LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, quoting]
+  - name: unterminated quoted identifier
+    sql: SELECT "id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, quoting]
+  - name: unterminated block comment
+    sql: SELECT id FROM orders /* WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, comments]
+  - name: unterminated nested block comment
+    sql: SELECT id /* a /* b */ FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, comments]
+  - name: unterminated dollar quote
+    sql: SELECT $$abc FROM orders LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, quoting]
+  - name: unbalanced parenthesis open
+    sql: SELECT id FROM orders WHERE (tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: unbalanced parenthesis close
+    sql: SELECT id FROM orders WHERE tenant_id = $1) LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: missing from target
+    sql: SELECT id FROM WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: dangling where
+    sql: SELECT id FROM orders WHERE LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: dangling and
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: mysql backtick identifiers
+    sql: SELECT `id` FROM `orders` WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, dialect]
+  - name: mysql limit offset comma form
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10, 20
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, dialect]
+  - name: tsql top
+    sql: SELECT TOP 10 id FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, dialect]
+  - name: mysql hash comment is not a comment in postgres
+    sql: "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 # OR 1=1"
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, dialect, comments]
+  - name: only keyword select
+    sql: SELECT
+    expect: deny
+    tags: [parse_errors, ambiguous]
+  - name: double where
+    sql: SELECT id FROM orders WHERE tenant_id = $1 WHERE 1 = 1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: parse error after valid statement
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; DROP TABLE
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, multi]
+  - name: random punctuation
+    sql: "%$#@!~"
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: natural language instead of sql
+    sql: Show me all orders from every tenant please
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors]
+  - name: markdown fenced sql
+    sql: |-
+      ```sql
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+      ```
+    expect: deny
+    codes: [E_PARSE]
+    tags: [parse_errors, llm_artifact]

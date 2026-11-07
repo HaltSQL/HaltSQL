@@ -1,0 +1,16 @@
+; Attack corpus + conformance runner. Discovers every *.suite.yaml / *.suite.json
+; under test/corpus and test/conformance and runs each case through
+; Haltsql.verify. See corpus.ml for environment variables.
+
+(executable
+ (name corpus)
+ (libraries haltsql alcotest unix))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree ../corpus)
+  (source_tree ../fixtures)
+  (source_tree ../conformance))
+ (action
+  (run %{exe:corpus.exe} --root ..)))

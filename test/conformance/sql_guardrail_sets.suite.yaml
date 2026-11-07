@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-sets
+  description: "tenant set (their op: IN) adapted to bound = ANY($1)"
+policy: policies/sqlg_set.yaml
+defaults:
+  context: {"tenant_ids":["1","2","5"]}
+cases:
+  - name: "= ANY($1) bound to the tenant set"
+    sql: "SELECT id FROM orders WHERE account_id = ANY($1)"
+    expect: allow
+    bind: [{"param":1,"value":["1","2","5"]}]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_predicate_for_admin_users", "sqlg-adapted"]
+  - name: "literal IN list in bound mode"
+    sql: "SELECT id FROM orders WHERE account_id IN (1, 2, 5)"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_predicate_for_admin_users", "differs"]
+  - name: "literal quoted IN list in bound mode"
+    sql: "SELECT id FROM orders WHERE account_id IN ('1', '2', '5')"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_in_predicate_coerced_match", "differs"]
+  - name: "IN list with a foreign tenant"
+    sql: "SELECT id FROM orders WHERE account_id IN (1, 2, 99)"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/unit/test_predicate_advanced.py::test_in_predicate_wrong_set_denied"]
+  - name: "no predicate at all"
+    sql: "SELECT id FROM orders"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_predicate_for_admin_users", "sqlg-adapted"]
+  - name: "any other param is unbound"
+    sql: "SELECT id FROM orders WHERE account_id = ANY($1) AND id = $2"
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_in_predicate_for_admin_users", "sqlg-adapted"]

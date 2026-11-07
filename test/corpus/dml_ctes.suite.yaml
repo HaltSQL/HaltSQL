@@ -1,0 +1,154 @@
+# Threat class: data-modifying CTEs (PLAN.md §3). Every CTE body is classified;
+# a write inside a CTE on a read-only policy is E_DATA_MODIFYING_CTE.
+# Policy: saas.yaml (statements: select only).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: dml_ctes }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: read-only cte allowed
+    sql: |-
+      WITH o AS (SELECT id, status FROM orders WHERE tenant_id = $1)
+      SELECT id, status FROM o LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [dml_ctes, baseline]
+  - name: delete returning star in cte
+    sql: WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: delete with tenant filter in cte
+    sql: WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: update in cte
+    sql: |-
+      WITH u AS (UPDATE orders SET status = 'void' WHERE tenant_id = $1 RETURNING id)
+      SELECT count(*) FROM u LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, update]
+  - name: insert in cte
+    sql: |-
+      WITH i AS (INSERT INTO orders (id, tenant_id, status) VALUES (999, $1, 'new') RETURNING id)
+      SELECT id FROM i LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, insert]
+  - name: unreferenced delete cte still executes
+    sql: |-
+      WITH d AS (DELETE FROM orders WHERE tenant_id = $1)
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: delete cte second in list
+    sql: |-
+      WITH a AS (SELECT id FROM orders WHERE tenant_id = $1),
+           b AS (DELETE FROM customers WHERE tenant_id = $1 RETURNING id)
+      SELECT id FROM a LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: nested with inside cte with delete
+    sql: |-
+      WITH outer_cte AS (
+        WITH inner_cte AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id)
+        SELECT id FROM inner_cte)
+      SELECT id FROM outer_cte LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, nested]
+  - name: delete cte inside subquery
+    sql: |-
+      SELECT x.id FROM (
+        WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d
+      ) x LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, nested]
+  - name: delete cte inside exists
+    sql: |-
+      SELECT id FROM orders o WHERE o.tenant_id = $1 AND EXISTS (
+        WITH d AS (DELETE FROM payments WHERE tenant_id = $1 RETURNING id) SELECT 1 FROM d
+      ) LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, nested]
+  - name: delete cte inside scalar subquery
+    sql: |-
+      SELECT (WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING 1) SELECT count(*) FROM d) AS n
+      FROM currencies LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, nested]
+  - name: materialized delete cte
+    sql: WITH d AS MATERIALIZED (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d LIMIT 5
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: update global table in cte
+    sql: WITH u AS (UPDATE currencies SET decimals = 0 RETURNING code) SELECT code FROM u LIMIT 5
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, update]
+  - name: insert select from customers in cte
+    sql: |-
+      WITH i AS (INSERT INTO audit_events (id, tenant_id, action) SELECT id, tenant_id, 'x' FROM customers RETURNING id)
+      SELECT id FROM i LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, insert]
+  - name: delete cte from unlisted table
+    sql: WITH d AS (DELETE FROM api_keys RETURNING id) SELECT id FROM d LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: delete cte on recursive with
+    sql: |-
+      WITH RECURSIVE d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id)
+      SELECT id FROM d LIMIT 5
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, delete]
+  - name: update returning star joined
+    sql: |-
+      WITH u AS (UPDATE customers SET plan = 'free' WHERE tenant_id = $1 RETURNING *)
+      SELECT u.id FROM u JOIN orders o ON o.customer_id = u.id AND o.tenant_id = $1 LIMIT 5
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, update]
+  - name: delete cte wrapped in union
+    sql: |-
+      WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id)
+      SELECT id FROM d UNION ALL SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, setop]
+  - name: delete cte used in lateral
+    sql: |-
+      WITH d AS (DELETE FROM order_items WHERE tenant_id = $1 RETURNING order_id)
+      SELECT o.id FROM orders o, LATERAL (SELECT order_id FROM d WHERE d.order_id = o.id) x
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [dml_ctes, lateral]
+  - name: cte named delete is just a name
+    sql: |-
+      WITH "delete" AS (SELECT id FROM orders WHERE tenant_id = $1)
+      SELECT id FROM "delete" LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [dml_ctes, false_positive_guard]
+  - name: two read-only ctes allowed
+    sql: |-
+      WITH a AS (SELECT id, customer_id FROM orders WHERE tenant_id = $1),
+           b AS (SELECT id, name FROM customers WHERE tenant_id = $1)
+      SELECT a.id, b.name FROM a JOIN b ON b.id = a.customer_id LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [dml_ctes, baseline]

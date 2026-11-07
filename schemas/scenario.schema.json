@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://haltsql.dev/schemas/v1/scenario.schema.json",
+  "title": "HaltSQL lab scenario",
+  "description": "Declarative enterprise test environment for haltlab (PLAN.md §8.2).",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "description": "Document format version. Must be \"haltsql.dev/v1\".",
+      "const": "haltsql.dev/v1"
+    },
+    "kind": {
+      "description": "Document kind. Must be \"Scenario\".",
+      "const": "Scenario"
+    },
+    "metadata": {
+      "description": "Identification of the scenario.",
+      "type": "object",
+      "properties": {
+        "name": { "description": "Scenario name.", "type": "string" },
+        "description": {
+          "description": "What the scenario exercises.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [ "name" ]
+    },
+    "environment": {
+      "description": "Infrastructure to emulate.",
+      "type": "object",
+      "properties": {
+        "postgres": {
+          "description": "Postgres server versions; the scenario runs once per version.",
+          "type": "array",
+          "items": {
+            "description": "Major version, e.g. 17.",
+            "type": "integer",
+            "minimum": 13
+          }
+        },
+        "topology": {
+          "description": "Deployment shape.",
+          "enum": [
+            "embedded", "sidecar", "k8s-sidecar", "service", "proxy",
+            "proxy-behind-pgbouncer"
+          ]
+        },
+        "pooler": {
+          "description": "Connection pooler settings, e.g. {pgbouncer: transaction}.",
+          "type": "object"
+        },
+        "tls": {
+          "description": "TLS settings, e.g. {internal_ca: true, rotate_every: 10m}.",
+          "type": "object"
+        },
+        "identity": {
+          "description": "Identity settings, e.g. {oidc: keycloak, client_certs: true}.",
+          "type": "object"
+        },
+        "faults": {
+          "description": "Faults to inject during the run.",
+          "type": "array",
+          "items": { "description": "Fault name.", "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "schema": {
+      "description": "Database schema: a SQL file or a generator.",
+      "oneOf": [
+        { "description": "Path to a SQL schema file.", "type": "string" },
+        {
+          "description": "Generated schema.",
+          "type": "object",
+          "properties": {
+            "generate": {
+              "description": "Generator settings, e.g. {tables: 400, seed: 7}.",
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "data": {
+      "description": "Data generator settings.",
+      "type": "object",
+      "properties": {
+        "scale": { "description": "Scale factor.", "type": "number" },
+        "tenants": {
+          "description": "Number of tenants.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "skew": {
+          "description": "Tenant size distribution, e.g. zipf(1.2).",
+          "type": "string"
+        },
+        "seed": {
+          "description": "Random seed (runs are deterministic).",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "policies": {
+      "description": "Policy files used by the scenario.",
+      "type": "array",
+      "items": { "description": "Path to a policy file.", "type": "string" }
+    },
+    "workloads": {
+      "description": "Traffic to run.",
+      "type": "array",
+      "items": {
+        "description": "One workload, e.g. {benign: {source: nl2sql-corpus, queries: 50000}}.",
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 1
+      }
+    },
+    "expect": {
+      "description": "Pass/fail thresholds.",
+      "type": "object",
+      "properties": {
+        "escapes": {
+          "description": "Allowed isolation escapes (should be 0).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "side_effects": {
+          "description": "Allowed side effects (should be 0).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "false_positive_rate": {
+          "description": "e.g. {max: 0.02}.",
+          "type": "object"
+        },
+        "latency_p99_ms": {
+          "description": "p99 latency budgets per topology, e.g. {sidecar: 3}.",
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [ "apiVersion", "kind", "metadata" ]
+}

@@ -1,0 +1,30 @@
+# Hierarchical tenants (PLAN.md §8.2): a parent org may read its child orgs.
+# The context carries a SET of allowed tenant ids
+# ({ tenant_ids: [acme, acme-eu, acme-us] }); the proof is
+# `a.tenant_id = ANY($n)` and HaltSQL binds $n to the whole list.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: hierarchical
+  owner: qa
+  description: Parent org sees child orgs via a tenant set
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_ids}" }
+tables:
+  app.accounts:
+    columns: [id, tenant_id, name, balance_cents, opened_at]
+    tenant_column: tenant_id
+  app.transactions:
+    columns: [id, tenant_id, account_id, amount_cents, kind, posted_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates, math, string, datetime, conditional]
+mode: enforce

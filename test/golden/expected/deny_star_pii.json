@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT * FROM customers WHERE tenant_id = $1 LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_COLUMN_DENIED",
+      "message": "* or a whole-row reference to app.customers would read columns that are not readable (or not known to the catalog)",
+      "rule": "columns.star",
+      "loc": 7,
+      "hint": "List the allowed columns explicitly instead of * / whole-row references: id, tenant_id, name, country, plan, created_at, metadata."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.customers" ],
+  "columns": [ "app.customers.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "856aff0617331440",
+  "sql_sha256": "94521e9c778721c1c66c0fc957c1e90f7ba229078d09e1a984e4d624f130844b"
+}

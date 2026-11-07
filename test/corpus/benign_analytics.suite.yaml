@@ -1,0 +1,1301 @@
+# Threat class: benign_analytics (false-positive guard).
+# Policy: saas.yaml (bound tenancy, require_limit 1000).
+# Realistic queries an analytics / support LLM agent writes. Every case MUST be
+# allowed; each tenant-table occurrence carries `alias.tenant_id = $1` in its own
+# scope, so HaltSQL must return bind_params [$1 = acme] (or [] for global-only).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: benign_analytics
+  description: Realistic analytics queries that must be allowed (false-positive guard)
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "simple order list"
+    sql: |-
+      SELECT id, status, total_cents FROM orders WHERE tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "qualified alias order list"
+    sql: |-
+      SELECT o.id, o.status, o.created_at FROM orders o WHERE o.tenant_id = $1 ORDER BY o.created_at DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "schema qualified table"
+    sql: |-
+      SELECT o.id FROM app.orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "table name as qualifier"
+    sql: |-
+      SELECT orders.id, orders.status FROM orders WHERE orders.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "AS alias keyword"
+    sql: |-
+      SELECT o.id AS order_id FROM orders AS o WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "count orders"
+    sql: |-
+      SELECT count(*) AS n FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "total revenue"
+    sql: |-
+      SELECT sum(total_cents) AS revenue_cents FROM orders WHERE tenant_id = $1 AND status = 'paid' LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "average order value"
+    sql: |-
+      SELECT round(avg(total_cents) / 100.0, 2) AS aov FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "min max order"
+    sql: |-
+      SELECT min(total_cents), max(total_cents) FROM orders o WHERE o.tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "count distinct customers"
+    sql: |-
+      SELECT count(DISTINCT customer_id) AS buyers FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "revenue by month"
+    sql: |-
+      SELECT date_trunc('month', o.created_at) AS month, sum(o.total_cents) AS revenue
+      FROM orders o
+      WHERE o.tenant_id = $1
+      GROUP BY 1
+      ORDER BY 1
+      LIMIT 24
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "revenue by month last year"
+    sql: |-
+      SELECT date_trunc('month', created_at) AS month, sum(total_cents) AS revenue
+      FROM orders
+      WHERE tenant_id = $1 AND created_at >= now() - interval '12 months'
+      GROUP BY date_trunc('month', created_at)
+      ORDER BY month
+      LIMIT 12
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "orders per day current date"
+    sql: |-
+      SELECT created_at::date AS day, count(*) AS orders
+      FROM orders
+      WHERE tenant_id = $1 AND created_at >= CURRENT_DATE - 30
+      GROUP BY 1 ORDER BY 1 LIMIT 31
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "weekly signups"
+    sql: |-
+      SELECT date_trunc('week', c.created_at) AS week, count(*) AS signups
+      FROM customers c WHERE c.tenant_id = $1
+      GROUP BY 1 ORDER BY 1 DESC LIMIT 52
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "orders today"
+    sql: |-
+      SELECT count(*) FROM orders WHERE tenant_id = $1 AND created_at >= CURRENT_DATE LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "orders between dates"
+    sql: |-
+      SELECT id, total_cents FROM orders
+      WHERE tenant_id = $1 AND created_at BETWEEN '2026-01-01' AND '2026-03-31'
+      ORDER BY created_at LIMIT 500
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "to_char month label"
+    sql: |-
+      SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, count(*)
+      FROM orders WHERE tenant_id = $1 GROUP BY 1 ORDER BY 1 LIMIT 36
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "age of open invoices"
+    sql: |-
+      SELECT i.id, age(now(), i.issued_at) AS open_for
+      FROM invoices i WHERE i.tenant_id = $1 AND i.paid_at IS NULL
+      ORDER BY i.issued_at LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "extract year"
+    sql: |-
+      SELECT EXTRACT(YEAR FROM created_at) AS yr, count(*) FROM orders
+      WHERE tenant_id = $1 GROUP BY 1 ORDER BY 1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries, special_syntax]
+  - name: "date_part dow"
+    sql: |-
+      SELECT date_part('dow', created_at) AS dow, count(*) FROM orders
+      WHERE tenant_id = $1 GROUP BY 1 ORDER BY 1 LIMIT 7
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "interval due soon"
+    sql: |-
+      SELECT id, due_at FROM invoices
+      WHERE tenant_id = $1 AND due_at < now() + interval '7 days' AND paid_at IS NULL
+      LIMIT 200
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "localtimestamp comparison"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND created_at < CURRENT_TIMESTAMP LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, timeseries]
+  - name: "status breakdown"
+    sql: |-
+      SELECT status, count(*) AS n FROM orders WHERE tenant_id = $1 GROUP BY status ORDER BY n DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "status having"
+    sql: |-
+      SELECT status, count(*) FROM orders WHERE tenant_id = $1 GROUP BY status HAVING count(*) > 10 LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "customers by country"
+    sql: |-
+      SELECT country, count(*) AS customers FROM customers WHERE tenant_id = $1 GROUP BY country ORDER BY 2 DESC LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "plan mix"
+    sql: |-
+      SELECT plan, count(*) FROM customers c WHERE c.tenant_id = $1 GROUP BY plan LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "payment methods"
+    sql: |-
+      SELECT method, count(*), sum(amount_cents) FROM payments WHERE tenant_id = $1 GROUP BY method LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "audit actions"
+    sql: |-
+      SELECT action, count(*) FROM audit_events WHERE tenant_id = $1 GROUP BY action ORDER BY 2 DESC LIMIT 25
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "users by role"
+    sql: |-
+      SELECT role, count(*) FROM users WHERE tenant_id = $1 GROUP BY role LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "having avg"
+    sql: |-
+      SELECT customer_id, avg(total_cents) AS avg_cents FROM orders
+      WHERE tenant_id = $1 GROUP BY customer_id HAVING avg(total_cents) > 5000 ORDER BY avg_cents DESC LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]
+  - name: "distinct statuses"
+    sql: |-
+      SELECT DISTINCT status FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, distinct]
+  - name: "distinct on latest order per customer"
+    sql: |-
+      SELECT DISTINCT ON (customer_id) customer_id, id, created_at
+      FROM orders WHERE tenant_id = $1
+      ORDER BY customer_id, created_at DESC LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, distinct]
+  - name: "distinct countries"
+    sql: |-
+      SELECT DISTINCT country FROM customers WHERE tenant_id = $1 ORDER BY country LIMIT 300
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, distinct]
+  - name: "top customers by revenue"
+    sql: |-
+      SELECT c.id, c.name, sum(o.total_cents) AS revenue
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1
+      GROUP BY c.id, c.name
+      ORDER BY revenue DESC
+      LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "top customers both filters in where"
+    sql: |-
+      SELECT c.name, count(o.id) AS orders
+      FROM customers c, orders o
+      WHERE c.tenant_id = $1 AND o.tenant_id = $1 AND o.customer_id = c.id
+      GROUP BY c.name ORDER BY orders DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "inner join explicit"
+    sql: |-
+      SELECT o.id, c.name FROM orders o INNER JOIN customers c ON c.id = o.customer_id
+      WHERE o.tenant_id = $1 AND c.tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "join filter in on clause"
+    sql: |-
+      SELECT o.id, c.name
+      FROM orders o
+      JOIN customers c ON c.tenant_id = $1 AND c.id = o.customer_id
+      WHERE o.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "order items join"
+    sql: |-
+      SELECT oi.product_sku, sum(oi.quantity) AS units
+      FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id AND o.tenant_id = $1
+      WHERE oi.tenant_id = $1 AND o.status = 'paid'
+      GROUP BY oi.product_sku ORDER BY units DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "left join filtered nullable side in on"
+    sql: |-
+      SELECT c.id, c.name, count(o.id) AS orders
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1
+      GROUP BY c.id, c.name LIMIT 500
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "customers without orders"
+    sql: |-
+      SELECT c.id, c.name
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1 AND o.id IS NULL
+      LIMIT 200
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "invoices with payments"
+    sql: |-
+      SELECT i.id, i.amount_cents, coalesce(sum(p.amount_cents), 0) AS paid
+      FROM invoices i
+      LEFT JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      WHERE i.tenant_id = $1
+      GROUP BY i.id, i.amount_cents
+      LIMIT 500
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "outstanding balance"
+    sql: |-
+      SELECT i.id, i.amount_cents - coalesce(sum(p.amount_cents), 0) AS outstanding
+      FROM invoices i
+      LEFT JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      WHERE i.tenant_id = $1 AND i.status <> 'void'
+      GROUP BY i.id, i.amount_cents
+      HAVING i.amount_cents - coalesce(sum(p.amount_cents), 0) > 0
+      ORDER BY outstanding DESC
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "three way join"
+    sql: |-
+      SELECT c.name, o.id, i.status
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1
+      WHERE c.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "five way join report"
+    sql: |-
+      SELECT c.name, o.id AS order_id, oi.product_sku, i.status AS invoice_status, p.method
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      JOIN order_items oi ON oi.order_id = o.id AND oi.tenant_id = $1
+      JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1
+      LEFT JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      WHERE c.tenant_id = $1
+      ORDER BY o.created_at DESC
+      LIMIT 200
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "six joins with currency"
+    sql: |-
+      SELECT c.name, o.id, oi.product_sku, i.status, p.method, cur.symbol, u.display_name
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      JOIN order_items oi ON oi.order_id = o.id AND oi.tenant_id = $1
+      JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1
+      JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      JOIN currencies cur ON cur.code = o.currency
+      JOIN users u ON u.id = c.id AND u.tenant_id = $1
+      WHERE c.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "join currencies global"
+    sql: |-
+      SELECT o.id, o.total_cents, cur.symbol, cur.decimals
+      FROM orders o JOIN currencies cur ON cur.code = o.currency
+      WHERE o.tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join, global]
+  - name: "join exchange rates"
+    sql: |-
+      SELECT o.id, o.total_cents * r.rate AS total_usd_cents
+      FROM orders o
+      JOIN exchange_rates r ON r.base = o.currency AND r.quote = 'USD' AND r.as_of = o.created_at::date
+      WHERE o.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join, global]
+  - name: "self join customers same country"
+    sql: |-
+      SELECT a.name, b.name
+      FROM customers a JOIN customers b ON a.country = b.country AND a.id < b.id AND b.tenant_id = $1
+      WHERE a.tenant_id = $1
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "join using"
+    sql: |-
+      SELECT o.id, oi.product_sku
+      FROM orders o JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.tenant_id = $1 AND oi.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "audit events with actor"
+    sql: |-
+      SELECT e.action, e.created_at, u.display_name
+      FROM audit_events e JOIN users u ON u.id = e.actor_id AND u.tenant_id = $1
+      WHERE e.tenant_id = $1
+      ORDER BY e.created_at DESC LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "currencies only"
+    sql: |-
+      SELECT code, name, symbol FROM currencies ORDER BY code LIMIT 200
+    expect: allow
+    bind: []
+    tags: [benign_analytics, global]
+  - name: "currencies star"
+    sql: |-
+      SELECT * FROM currencies LIMIT 200
+    expect: allow
+    bind: []
+    tags: [benign_analytics, global]
+  - name: "latest exchange rate"
+    sql: |-
+      SELECT base, quote, rate FROM exchange_rates WHERE quote = 'USD' ORDER BY as_of DESC LIMIT 20
+    expect: allow
+    bind: []
+    tags: [benign_analytics, global]
+  - name: "max exchange rate date"
+    sql: |-
+      SELECT max(as_of) FROM exchange_rates LIMIT 1
+    expect: allow
+    bind: []
+    tags: [benign_analytics, global]
+  - name: "currency count"
+    sql: |-
+      SELECT count(*) FROM app.currencies LIMIT 1
+    expect: allow
+    bind: []
+    tags: [benign_analytics, global]
+  - name: "row number per customer"
+    sql: |-
+      SELECT id, customer_id, row_number() OVER (PARTITION BY customer_id ORDER BY created_at) AS nth
+      FROM orders WHERE tenant_id = $1 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "rank customers by spend"
+    sql: |-
+      SELECT customer_id, sum(total_cents) AS spend, rank() OVER (ORDER BY sum(total_cents) DESC) AS rnk
+      FROM orders WHERE tenant_id = $1 GROUP BY customer_id LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "dense rank countries"
+    sql: |-
+      SELECT country, count(*), dense_rank() OVER (ORDER BY count(*) DESC)
+      FROM customers WHERE tenant_id = $1 GROUP BY country LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "lag month over month"
+    sql: |-
+      SELECT month, revenue, revenue - lag(revenue) OVER (ORDER BY month) AS delta
+      FROM (
+        SELECT date_trunc('month', created_at) AS month, sum(total_cents) AS revenue
+        FROM orders WHERE tenant_id = $1 GROUP BY 1
+      ) m
+      ORDER BY month LIMIT 24
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "lead next order gap"
+    sql: |-
+      SELECT id, customer_id, lead(created_at) OVER (PARTITION BY customer_id ORDER BY created_at) - created_at AS gap
+      FROM orders WHERE tenant_id = $1 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "running total"
+    sql: |-
+      SELECT created_at, total_cents,
+             sum(total_cents) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running
+      FROM orders WHERE tenant_id = $1 ORDER BY created_at LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "moving average"
+    sql: |-
+      SELECT day, n, avg(n) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma7
+      FROM (SELECT created_at::date AS day, count(*) AS n FROM orders WHERE tenant_id = $1 GROUP BY 1) d
+      ORDER BY day LIMIT 365
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "ntile quartiles"
+    sql: |-
+      SELECT customer_id, ntile(4) OVER (ORDER BY sum(total_cents)) AS quartile
+      FROM orders WHERE tenant_id = $1 GROUP BY customer_id LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "first value per customer"
+    sql: |-
+      SELECT DISTINCT customer_id,
+             first_value(created_at) OVER (PARTITION BY customer_id ORDER BY created_at) AS first_order
+      FROM orders WHERE tenant_id = $1 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "named window clause"
+    sql: |-
+      SELECT id, row_number() OVER w, rank() OVER w
+      FROM orders WHERE tenant_id = $1
+      WINDOW w AS (PARTITION BY status ORDER BY total_cents DESC)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "percent of total"
+    sql: |-
+      SELECT status, count(*) * 100.0 / sum(count(*)) OVER () AS pct
+      FROM orders WHERE tenant_id = $1 GROUP BY status LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "top 3 per status"
+    sql: |-
+      SELECT id, status, total_cents FROM (
+        SELECT o.id, o.status, o.total_cents,
+               row_number() OVER (PARTITION BY o.status ORDER BY o.total_cents DESC) AS rn
+        FROM orders o WHERE o.tenant_id = $1
+      ) t
+      WHERE rn <= 3
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "percent rank"
+    sql: |-
+      SELECT id, percent_rank() OVER (ORDER BY total_cents) FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "filter clause counts"
+    sql: |-
+      SELECT count(*) FILTER (WHERE status = 'paid') AS paid,
+             count(*) FILTER (WHERE status = 'refunded') AS refunded,
+             count(*) AS total
+      FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, filter]
+  - name: "filter clause sum by month"
+    sql: |-
+      SELECT date_trunc('month', created_at) AS m,
+             sum(total_cents) FILTER (WHERE currency = 'EUR') AS eur,
+             sum(total_cents) FILTER (WHERE currency = 'USD') AS usd
+      FROM orders WHERE tenant_id = $1 GROUP BY 1 ORDER BY 1 LIMIT 24
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, filter]
+  - name: "case bucket order size"
+    sql: |-
+      SELECT CASE WHEN total_cents < 1000 THEN 'small'
+                  WHEN total_cents < 10000 THEN 'medium'
+                  ELSE 'large' END AS bucket,
+             count(*)
+      FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 3
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, case]
+  - name: "simple case status label"
+    sql: |-
+      SELECT id, CASE status WHEN 'paid' THEN 'Paid' WHEN 'open' THEN 'Open' ELSE 'Other' END AS label
+      FROM invoices WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, case]
+  - name: "sum case pivot"
+    sql: |-
+      SELECT customer_id,
+             sum(CASE WHEN status = 'paid' THEN total_cents ELSE 0 END) AS paid_cents,
+             sum(CASE WHEN status = 'refunded' THEN total_cents ELSE 0 END) AS refunded_cents
+      FROM orders WHERE tenant_id = $1 GROUP BY customer_id LIMIT 500
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, case]
+  - name: "coalesce last login"
+    sql: |-
+      SELECT display_name, coalesce(last_login_at, created_at) AS last_seen FROM users WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "nullif divide"
+    sql: |-
+      SELECT sum(total_cents) / NULLIF(count(DISTINCT customer_id), 0) AS revenue_per_customer
+      FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "greatest least"
+    sql: |-
+      SELECT id, greatest(issued_at, due_at) AS latest, least(issued_at, due_at) AS earliest
+      FROM invoices WHERE tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "is not null filter"
+    sql: |-
+      SELECT id FROM invoices WHERE tenant_id = $1 AND paid_at IS NOT NULL LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "is distinct from"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND status IS DISTINCT FROM 'paid' LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "boolean or within and"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND (status = 'paid' OR status = 'shipped') LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "not in literal list"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND status NOT IN ('void', 'test') LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "in literal list"
+    sql: |-
+      SELECT id, status FROM orders WHERE tenant_id = $1 AND status IN ('paid', 'shipped', 'delivered') LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "exists filtered subquery"
+    sql: |-
+      SELECT c.id, c.name FROM customers c
+      WHERE c.tenant_id = $1
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id AND o.status = 'paid')
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "not exists filtered"
+    sql: |-
+      SELECT c.id FROM customers c
+      WHERE c.tenant_id = $1
+        AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "in subquery filtered"
+    sql: |-
+      SELECT id, name FROM customers
+      WHERE tenant_id = $1
+        AND id IN (SELECT customer_id FROM orders WHERE tenant_id = $1 AND total_cents > 100000)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "scalar subquery filtered"
+    sql: |-
+      SELECT c.id, c.name,
+             (SELECT count(*) FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id) AS orders
+      FROM customers c WHERE c.tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "derived table filtered"
+    sql: |-
+      SELECT t.customer_id, t.spend FROM (
+        SELECT customer_id, sum(total_cents) AS spend FROM orders WHERE tenant_id = $1 GROUP BY customer_id
+      ) t
+      ORDER BY t.spend DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "above average orders"
+    sql: |-
+      SELECT id, total_cents FROM orders o
+      WHERE o.tenant_id = $1
+        AND o.total_cents > (SELECT avg(o2.total_cents) FROM orders o2 WHERE o2.tenant_id = $1)
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "any array literal"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND status = ANY (ARRAY['paid', 'shipped']) LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "lateral latest order filtered"
+    sql: |-
+      SELECT c.name, lo.id, lo.created_at
+      FROM customers c
+      CROSS JOIN LATERAL (
+        SELECT o.id, o.created_at FROM orders o
+        WHERE o.tenant_id = $1 AND o.customer_id = c.id
+        ORDER BY o.created_at DESC LIMIT 1
+      ) lo
+      WHERE c.tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, subquery]
+  - name: "cte simple"
+    sql: |-
+      WITH paid AS (
+        SELECT id, customer_id, total_cents FROM orders WHERE tenant_id = $1 AND status = 'paid'
+      )
+      SELECT customer_id, sum(total_cents) FROM paid GROUP BY customer_id LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "cte cohort first order month"
+    sql: |-
+      WITH first_orders AS (
+        SELECT customer_id, min(created_at) AS first_at
+        FROM orders WHERE tenant_id = $1 GROUP BY customer_id
+      )
+      SELECT date_trunc('month', first_at) AS cohort, count(*) AS customers
+      FROM first_orders GROUP BY 1 ORDER BY 1 LIMIT 36
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "cte cohort retention"
+    sql: |-
+      WITH firsts AS (
+        SELECT customer_id, date_trunc('month', min(created_at)) AS cohort
+        FROM orders WHERE tenant_id = $1 GROUP BY customer_id
+      ), activity AS (
+        SELECT o.customer_id, date_trunc('month', o.created_at) AS active_month
+        FROM orders o WHERE o.tenant_id = $1 GROUP BY 1, 2
+      )
+      SELECT f.cohort, a.active_month, count(*) AS active
+      FROM firsts f JOIN activity a ON a.customer_id = f.customer_id
+      GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "two ctes joined"
+    sql: |-
+      WITH rev AS (
+        SELECT customer_id, sum(total_cents) AS revenue FROM orders WHERE tenant_id = $1 GROUP BY 1
+      ), cust AS (
+        SELECT id, name FROM customers WHERE tenant_id = $1
+      )
+      SELECT cust.name, rev.revenue FROM cust JOIN rev ON rev.customer_id = cust.id
+      ORDER BY rev.revenue DESC LIMIT 25
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "cte with column list"
+    sql: |-
+      WITH m (month, revenue) AS (
+        SELECT date_trunc('month', created_at), sum(total_cents) FROM orders WHERE tenant_id = $1 GROUP BY 1
+      )
+      SELECT month, revenue FROM m ORDER BY month LIMIT 24
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "cte referenced twice"
+    sql: |-
+      WITH t AS (SELECT customer_id, total_cents FROM orders WHERE tenant_id = $1)
+      SELECT a.customer_id, count(*) FROM t a JOIN t b ON a.customer_id = b.customer_id GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "cte global plus tenant"
+    sql: |-
+      WITH usd AS (SELECT base, rate FROM exchange_rates WHERE quote = 'USD' AND as_of = CURRENT_DATE)
+      SELECT o.id, o.total_cents * usd.rate FROM orders o JOIN usd ON usd.base = o.currency
+      WHERE o.tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte]
+  - name: "union all filtered branches"
+    sql: |-
+      SELECT id, 'order' AS kind, created_at FROM orders WHERE tenant_id = $1
+      UNION ALL
+      SELECT id, 'invoice' AS kind, issued_at FROM invoices WHERE tenant_id = $1
+      ORDER BY created_at DESC
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop]
+  - name: "union distinct customer ids"
+    sql: |-
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      UNION
+      SELECT customer_id FROM invoices WHERE tenant_id = $1
+      LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop]
+  - name: "intersect filtered"
+    sql: |-
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      INTERSECT
+      SELECT customer_id FROM invoices WHERE tenant_id = $1 AND status = 'overdue'
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop]
+  - name: "except filtered"
+    sql: |-
+      SELECT id FROM customers WHERE tenant_id = $1
+      EXCEPT
+      SELECT customer_id FROM orders WHERE tenant_id = $1
+      LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop]
+  - name: "parenthesized union with limit"
+    sql: |-
+      (SELECT id FROM orders WHERE tenant_id = $1 ORDER BY total_cents DESC LIMIT 5)
+      UNION ALL
+      (SELECT id FROM orders WHERE tenant_id = $1 ORDER BY total_cents ASC LIMIT 5)
+      LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop]
+  - name: "json arrow on metadata"
+    sql: |-
+      SELECT id, metadata ->> 'industry' AS industry FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "json nested arrow"
+    sql: |-
+      SELECT id, metadata -> 'address' ->> 'city' AS city FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "json containment"
+    sql: |-
+      SELECT id, name FROM customers WHERE tenant_id = $1 AND metadata @> '{"vip": true}' LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "json group by key"
+    sql: |-
+      SELECT metadata ->> 'segment' AS segment, count(*) FROM customers WHERE tenant_id = $1 GROUP BY 1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "audit payload field"
+    sql: |-
+      SELECT action, payload ->> 'ip_country' AS country, count(*)
+      FROM audit_events WHERE tenant_id = $1 GROUP BY 1, 2 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "json key exists"
+    sql: |-
+      SELECT id FROM audit_events WHERE tenant_id = $1 AND payload ? 'error' LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "jsonb array length"
+    sql: |-
+      SELECT id, jsonb_array_length(metadata -> 'tags') AS tag_count FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "jsonb build object"
+    sql: |-
+      SELECT jsonb_build_object('id', id, 'status', status) AS doc FROM orders WHERE tenant_id = $1 LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "json path operator"
+    sql: |-
+      SELECT id, payload #>> '{request,path}' AS path FROM audit_events WHERE tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, json]
+  - name: "lower search"
+    sql: |-
+      SELECT id, name FROM customers WHERE tenant_id = $1 AND lower(name) LIKE '%acme%' LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "ilike search"
+    sql: |-
+      SELECT id, name FROM customers WHERE tenant_id = $1 AND name ILIKE 'jo%' LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "upper country"
+    sql: |-
+      SELECT upper(country) AS cc, count(*) FROM customers WHERE tenant_id = $1 GROUP BY 1 LIMIT 300
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "concat operator"
+    sql: |-
+      SELECT name || ' (' || country || ')' AS label FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "concat function"
+    sql: |-
+      SELECT concat(display_name, ' - ', role) FROM users WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "length and left"
+    sql: |-
+      SELECT left(name, 10) AS short_name, length(name) FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "split part sku"
+    sql: |-
+      SELECT split_part(product_sku, '-', 1) AS family, sum(quantity)
+      FROM order_items WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "replace and initcap"
+    sql: |-
+      SELECT initcap(replace(status, '_', ' ')) FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "string agg skus"
+    sql: |-
+      SELECT order_id, string_agg(product_sku, ', ' ORDER BY product_sku) AS skus
+      FROM order_items WHERE tenant_id = $1 GROUP BY order_id LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "substring from for"
+    sql: |-
+      SELECT SUBSTRING(product_sku FROM 1 FOR 3) AS prefix, count(*) FROM order_items WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string, special_syntax]
+  - name: "trim name"
+    sql: |-
+      SELECT TRIM(name) FROM customers WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string, special_syntax]
+  - name: "card last4 display"
+    sql: |-
+      SELECT id, '**** ' || card_last4 AS card FROM payments WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "round and abs math"
+    sql: |-
+      SELECT id, round(total_cents / 100.0, 2) AS dollars, abs(total_cents - 5000) AS distance
+      FROM orders WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "ceil floor"
+    sql: |-
+      SELECT ceil(avg(quantity)), floor(avg(quantity)) FROM order_items WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "line total arithmetic"
+    sql: |-
+      SELECT id, quantity * unit_price_cents - discount_cents AS line_total
+      FROM order_items WHERE tenant_id = $1 ORDER BY line_total DESC LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "modulo bucket"
+    sql: |-
+      SELECT id % 10 AS shard, count(*) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "numeric cast ratio"
+    sql: |-
+      SELECT sum(discount_cents)::numeric / NULLIF(sum(quantity * unit_price_cents), 0) AS discount_rate
+      FROM order_items WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "order by nulls last"
+    sql: |-
+      SELECT id, paid_at FROM invoices WHERE tenant_id = $1 ORDER BY paid_at DESC NULLS LAST LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "order by multiple"
+    sql: |-
+      SELECT id, status, total_cents FROM orders WHERE tenant_id = $1 ORDER BY status ASC, total_cents DESC LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "offset pagination"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 50 OFFSET 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "fetch first rows only"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 ORDER BY created_at DESC FETCH FIRST 10 ROWS ONLY
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "offset rows fetch next"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "limit exactly max"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "order by alias"
+    sql: |-
+      SELECT customer_id, count(*) AS n FROM orders WHERE tenant_id = $1 GROUP BY customer_id ORDER BY n DESC LIMIT 5
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, ordering]
+  - name: "trailing semicolon"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10;
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "line comment"
+    sql: |-
+      -- recent orders for the dashboard
+      SELECT id, created_at FROM orders WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "block comment"
+    sql: |-
+      SELECT /* the tenant's orders */ id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "mixed case keywords"
+    sql: |-
+      select Id, Status from Orders where Tenant_Id = $1 Order By Id Limit 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "upper case everything"
+    sql: |-
+      SELECT ID, STATUS FROM ORDERS WHERE TENANT_ID = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "extra whitespace and newlines"
+    sql: |-
+      SELECT
+          o.id ,
+          o.status
+
+      FROM
+          orders   o
+      WHERE
+          o.tenant_id   =   $1
+      LIMIT
+          10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "parenthesized tenant predicate"
+    sql: |-
+      SELECT id FROM orders WHERE (tenant_id = $1) AND (status = 'paid') LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "tenant predicate last conjunct"
+    sql: |-
+      SELECT id FROM orders WHERE status = 'paid' AND total_cents > 0 AND tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "tenant predicate reversed operands"
+    sql: |-
+      SELECT id FROM orders o WHERE $1 = o.tenant_id LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting, ambiguous]
+  - name: "double quoted lowercase identifiers"
+    sql: |-
+      SELECT "id", "status" FROM "orders" WHERE "tenant_id" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "repeated tenant predicate"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, formatting]
+  - name: "select constant with tenant table"
+    sql: |-
+      SELECT 1 AS one, id FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, basic]
+  - name: "recent audit events"
+    sql: |-
+      SELECT e.created_at, e.action, e.target FROM audit_events e
+      WHERE e.tenant_id = $1 AND e.created_at > now() - interval '1 day'
+      ORDER BY e.created_at DESC LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "user last login"
+    sql: |-
+      SELECT display_name, last_login_at FROM users WHERE tenant_id = $1 AND last_login_at < now() - interval '90 days' LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "customer order history"
+    sql: |-
+      SELECT o.id, o.status, o.total_cents, o.created_at
+      FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = 4711
+      ORDER BY o.created_at DESC LIMIT 25
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "invoice lookup by id"
+    sql: |-
+      SELECT id, status, amount_cents, due_at FROM invoices WHERE tenant_id = $1 AND id = 9001 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "refunds this quarter"
+    sql: |-
+      SELECT count(*), sum(total_cents) FROM orders
+      WHERE tenant_id = $1 AND status = 'refunded' AND created_at >= date_trunc('quarter', now())
+      LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "overdue invoices"
+    sql: |-
+      SELECT i.id, c.name, i.amount_cents, i.due_at
+      FROM invoices i JOIN customers c ON c.id = i.customer_id AND c.tenant_id = $1
+      WHERE i.tenant_id = $1 AND i.due_at < now() AND i.paid_at IS NULL
+      ORDER BY i.due_at LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, support]
+  - name: "bool and all paid"
+    sql: |-
+      SELECT customer_id, bool_and(status = 'paid') AS all_paid FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "array agg order ids"
+    sql: |-
+      SELECT customer_id, array_agg(id ORDER BY created_at) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "conversion rate"
+    sql: |-
+      SELECT round(100.0 * count(*) FILTER (WHERE status = 'paid') / NULLIF(count(*), 0), 1) AS paid_pct
+      FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "days to pay"
+    sql: |-
+      SELECT avg(paid_at::date - issued_at::date) AS avg_days_to_pay
+      FROM invoices WHERE tenant_id = $1 AND paid_at IS NOT NULL LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "arpu by plan"
+    sql: |-
+      SELECT c.plan, sum(o.total_cents) / NULLIF(count(DISTINCT c.id), 0) AS arpu
+      FROM customers c JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1 GROUP BY c.plan LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "repeat customers"
+    sql: |-
+      SELECT count(*) FROM (
+        SELECT customer_id FROM orders WHERE tenant_id = $1 GROUP BY customer_id HAVING count(*) > 1
+      ) r
+      LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "active users last 30 days"
+    sql: |-
+      SELECT count(DISTINCT actor_id) FROM audit_events
+      WHERE tenant_id = $1 AND created_at >= now() - interval '30 days' LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, kpi]
+  - name: "largest orders with customer"
+    sql: |-
+      SELECT o.id, o.total_cents, c.name, c.country
+      FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.tenant_id = $1 AND c.tenant_id = $1
+      ORDER BY o.total_cents DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join]
+  - name: "cross join global currencies"
+    sql: |-
+      SELECT o.status, cur.code, count(*)
+      FROM orders o CROSS JOIN currencies cur
+      WHERE o.tenant_id = $1 AND cur.code = o.currency
+      GROUP BY 1, 2 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, join, global]
+  - name: "cte feeding window"
+    sql: |-
+      WITH daily AS (
+        SELECT created_at::date AS d, sum(total_cents) AS rev FROM orders WHERE tenant_id = $1 GROUP BY 1
+      )
+      SELECT d, rev, sum(rev) OVER (ORDER BY d) AS cumulative FROM daily ORDER BY d LIMIT 365
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte, window]
+  - name: "exists inside cte"
+    sql: |-
+      WITH vip AS (
+        SELECT c.id FROM customers c
+        WHERE c.tenant_id = $1 AND EXISTS (
+          SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id AND o.total_cents > 100000)
+      )
+      SELECT count(*) FROM vip LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, cte, subquery]
+  - name: "union inside derived table"
+    sql: |-
+      SELECT kind, count(*) FROM (
+        SELECT 'order' AS kind FROM orders WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'payment' FROM payments WHERE tenant_id = $1
+      ) x
+      GROUP BY kind LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, setop, subquery]
+  - name: "payment method share"
+    sql: |-
+      SELECT method, sum(amount_cents) AS amt, round(100.0 * sum(amount_cents) / sum(sum(amount_cents)) OVER (), 2) AS share
+      FROM payments WHERE tenant_id = $1 GROUP BY method LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, window]
+  - name: "between numbers"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND total_cents BETWEEN 1000 AND 5000 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "not like"
+    sql: |-
+      SELECT id FROM order_items WHERE tenant_id = $1 AND product_sku NOT LIKE 'TEST-%' LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, string]
+  - name: "text cast of number"
+    sql: |-
+      SELECT id::text || '-' || status AS ref FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, math]
+  - name: "true boolean test"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND (total_cents > 0) IS TRUE LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, conditional]
+  - name: "group by rollup free multi column"
+    sql: |-
+      SELECT country, plan, count(*) FROM customers WHERE tenant_id = $1 GROUP BY country, plan ORDER BY 3 DESC LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [benign_analytics, groupby]

@@ -1,0 +1,16 @@
+# Runs on every pull request: a few minutes on one Postgres.
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: pr-smoke }
+environment: { postgres: [17], topology: embedded }
+fixture: saas_shared
+data: { scale: tiny, tenants: 8, skew: zipf(1.2), seed: 42 }
+workloads:
+  - benign: { queries: 200 }
+  - adversarial: { queries: 400 }
+expect:
+  escapes: 0
+  side_effects: 0
+  column_leaks: 0
+  false_positive_rate: { max: 0.10 }
+  min_executed: 50

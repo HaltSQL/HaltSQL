@@ -1,0 +1,260 @@
+# Threat class: identifier_confusion.
+# Policy: saas.yaml. Names are resolved from parser output exactly as Postgres does: unquoted identifiers fold to lower case, quoted ones keep case, U&"..." escapes are decoded by the parser. Meaning-preserving spellings must keep the verdict; spellings that name something else must be judged as that other thing.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: identifier_confusion
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "upper case table folds"
+    sql: |-
+      SELECT id FROM ORDERS WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, case_folding]
+  - name: "title case table folds"
+    sql: |-
+      SELECT Id FROM Orders WHERE Tenant_ID = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, case_folding]
+  - name: "upper schema and table fold"
+    sql: |-
+      SELECT id FROM APP.ORDERS WHERE TENANT_ID = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, case_folding]
+  - name: "quoted lowercase schema and table"
+    sql: |-
+      SELECT o.id FROM "app"."orders" o WHERE o."tenant_id" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, quoting]
+  - name: "quoted title case table is different relation"
+    sql: |-
+      SELECT id FROM "Orders" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "quoted upper case table is different relation"
+    sql: |-
+      SELECT id FROM "ORDERS" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "quoted upper case schema"
+    sql: |-
+      SELECT id FROM "APP".orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "unicode escape decodes to orders"
+    sql: |-
+      SELECT id FROM U&"\006Frders" WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape with uescape"
+    sql: |-
+      SELECT id FROM U&"!006Frders" UESCAPE '!' WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape tenant column"
+    sql: |-
+      SELECT id FROM orders o WHERE o.U&"tenant\005Fid" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape decodes to denied column"
+    sql: |-
+      SELECT U&"\0065mail" FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape decodes to ssn"
+    sql: |-
+      SELECT c.U&"\0073\0073\006E" FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape decodes to denied table"
+    sql: |-
+      SELECT secret FROM U&"api\005Fkeys" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape decodes to pg_class"
+    sql: |-
+      SELECT relname FROM U&"pg\005Fcatalog".U&"pg\005Fclass" LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, unicode_escape, system_catalogs]
+  - name: "unicode escape decodes to pg_sleep"
+    sql: |-
+      SELECT U&"pg\005Fsleep"(1) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, unicode_escape, function]
+  - name: "zero width space in table name"
+    sql: |-
+      SELECT id FROM U&"orders\200B" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, unicode]
+  - name: "accented look alike table"
+    sql: |-
+      SELECT id FROM "ordérs" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, unicode]
+  - name: "cyrillic look alike table"
+    sql: |-
+      SELECT id FROM "оrders" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, unicode]
+  - name: "trailing space in quoted table"
+    sql: |-
+      SELECT id FROM "orders " WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "comment splits identifier"
+    sql: |-
+      SELECT id FROM ord/**/ers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, comments]
+  - name: "upper case denied column folds to email"
+    sql: |-
+      SELECT EMAIL FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, case_folding]
+  - name: "quoted lowercase denied column"
+    sql: |-
+      SELECT "ssn" FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "quoted upper case column does not exist"
+    sql: |-
+      SELECT "Email" FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [identifier_confusion, quoting, ambiguous]
+  - name: "quoted upper case tenant column does not prove"
+    sql: |-
+      SELECT id FROM orders WHERE "TENANT_ID" = $1 LIMIT 10
+    expect: deny
+    tags: [identifier_confusion, quoting, tenancy, ambiguous]
+  - name: "bare user is current_user"
+    sql: |-
+      SELECT user FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, sql_value_function]
+  - name: "current_user in where"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 AND status = current_user LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, sql_value_function]
+  - name: "session_user"
+    sql: |-
+      SELECT session_user FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, sql_value_function]
+  - name: "current_role"
+    sql: |-
+      SELECT current_role FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, sql_value_function]
+  - name: "current_catalog"
+    sql: |-
+      SELECT current_catalog FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, sql_value_function]
+  - name: "upper case function name folds"
+    sql: |-
+      SELECT COUNT(*), LOWER(status) FROM orders WHERE tenant_id = $1 GROUP BY 2 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, case_folding, function]
+  - name: "quoted lowercase function name"
+    sql: |-
+      SELECT "count"(*) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, quoting, function]
+  - name: "quoted upper case function name is different function"
+    sql: |-
+      SELECT "COUNT"(*) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, quoting, function]
+  - name: "mixed case pg_sleep folds"
+    sql: |-
+      SELECT Pg_Sleep(1) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, case_folding, function]
+  - name: "alias named like other table reads customers email"
+    sql: |-
+      SELECT orders.email FROM customers orders WHERE orders.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]
+  - name: "alias named like other table tenant filter applies to customers"
+    sql: |-
+      SELECT orders.name FROM customers orders WHERE orders.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, alias]
+  - name: "alias swap between two tables"
+    sql: |-
+      SELECT c.id FROM orders c JOIN customers o ON o.id = c.customer_id WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [identifier_confusion, alias, tenancy]
+  - name: "output alias email in order by refers to output"
+    sql: |-
+      SELECT name AS email FROM customers WHERE tenant_id = $1 ORDER BY email LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, alias, ambiguous]
+  - name: "output alias email in where refers to real column"
+    sql: |-
+      SELECT name AS email FROM customers WHERE tenant_id = $1 AND email = 'x@y.z' LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]
+  - name: "output alias email in group by refers to real column"
+    sql: |-
+      SELECT name AS email, count(*) FROM customers WHERE tenant_id = $1 GROUP BY email LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]
+  - name: "order by real denied column with other alias"
+    sql: |-
+      SELECT name AS n FROM customers WHERE tenant_id = $1 ORDER BY email LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]
+  - name: "derived table column renamed to allowed name"
+    sql: |-
+      SELECT x.name FROM (SELECT email AS name FROM customers WHERE tenant_id = $1) x LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]
+  - name: "derived table alias column list renames email"
+    sql: |-
+      SELECT x.a FROM (SELECT ssn FROM customers WHERE tenant_id = $1) AS x(a) LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, alias]

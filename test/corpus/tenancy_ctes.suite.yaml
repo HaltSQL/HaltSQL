@@ -1,0 +1,212 @@
+# Threat class: tenant bypass through common table expressions (PLAN.md §6.3,
+# §6.4 "CTE names shadow tables"). Each CTE body is its own scope. A CTE named
+# like a real table shadows it for UNQUALIFIED references only; a
+# schema-qualified reference reaches the real table and needs its own proof.
+# Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_ctes }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: filtered cte
+    sql: |-
+      WITH recent AS (
+        SELECT id, customer_id, total_cents FROM orders
+        WHERE tenant_id = $1 AND created_at > now() - interval '30 days'
+      )
+      SELECT customer_id, sum(total_cents) FROM recent GROUP BY customer_id LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: unfiltered cte
+    sql: |-
+      WITH recent AS (SELECT id, customer_id, total_cents FROM orders)
+      SELECT customer_id, sum(total_cents) FROM recent GROUP BY customer_id LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: filter on cte output does not count
+    sql: |-
+      WITH all_orders AS (SELECT id, tenant_id FROM orders)
+      SELECT id FROM all_orders WHERE tenant_id = $1 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: two ctes both filtered
+    sql: |-
+      WITH o AS (SELECT id, customer_id FROM orders WHERE tenant_id = $1),
+           c AS (SELECT id, name FROM customers WHERE tenant_id = $1)
+      SELECT c.name, count(o.id) FROM c JOIN o ON o.customer_id = c.id GROUP BY c.name LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: second cte unfiltered
+    sql: |-
+      WITH o AS (SELECT id, customer_id FROM orders WHERE tenant_id = $1),
+           c AS (SELECT id, name FROM customers)
+      SELECT c.name, count(o.id) FROM c JOIN o ON o.customer_id = c.id GROUP BY c.name LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: cte unused but unfiltered
+    sql: |-
+      WITH leak AS (SELECT id FROM customers)
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes, ambiguous]
+  - name: cte filtered, main query joins unfiltered table
+    sql: |-
+      WITH o AS (SELECT id, customer_id FROM orders WHERE tenant_id = $1)
+      SELECT c.name FROM o JOIN customers c ON c.id = o.customer_id LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: cte named like real table, unqualified reference uses cte
+    sql: |-
+      WITH orders AS (SELECT id, status FROM app.orders WHERE tenant_id = $1)
+      SELECT id, status FROM orders LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte named like real table, schema-qualified bypass
+    sql: |-
+      WITH orders AS (SELECT id, status FROM app.orders WHERE tenant_id = $1)
+      SELECT id, status FROM app.orders LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte named like real table, join of cte and qualified table
+    sql: |-
+      WITH customers AS (SELECT id, name FROM app.customers WHERE tenant_id = $1)
+      SELECT c.name, x.name FROM customers c JOIN app.customers x ON x.id = c.id LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte shadowing global table with tenant data is fine
+    sql: |-
+      WITH currencies AS (SELECT DISTINCT currency AS code FROM orders WHERE tenant_id = $1)
+      SELECT code FROM currencies LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte named like real table, body itself unfiltered
+    sql: |-
+      WITH orders AS (SELECT id, status FROM app.orders)
+      SELECT id, status FROM orders LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte referencing itself name inside body is the real table
+    sql: |-
+      WITH orders AS (SELECT id FROM orders WHERE tenant_id = $1)
+      SELECT id FROM orders LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes, cte_shadowing]
+  - name: cte referenced twice
+    sql: |-
+      WITH t AS (SELECT customer_id, total_cents FROM orders WHERE tenant_id = $1)
+      SELECT a.customer_id FROM t a JOIN t b ON a.customer_id = b.customer_id AND a.total_cents < b.total_cents
+      LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: nested cte inside cte unfiltered
+    sql: |-
+      WITH outer_cte AS (
+        WITH inner_cte AS (SELECT id, tenant_id FROM invoices)
+        SELECT id FROM inner_cte WHERE tenant_id = $1
+      )
+      SELECT id FROM outer_cte LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: nested cte inside cte filtered
+    sql: |-
+      WITH outer_cte AS (
+        WITH inner_cte AS (SELECT id FROM invoices WHERE tenant_id = $1)
+        SELECT id FROM inner_cte
+      )
+      SELECT id FROM outer_cte LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: cte inside subquery unfiltered
+    sql: |-
+      SELECT s.id FROM (
+        WITH x AS (SELECT id FROM payments) SELECT id FROM x
+      ) s LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: cte with union branch unfiltered
+    sql: |-
+      WITH ids AS (
+        SELECT id FROM orders WHERE tenant_id = $1
+        UNION SELECT id FROM invoices
+      )
+      SELECT id FROM ids LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes, setops]
+  - name: recursive cte with unfiltered recursive term
+    sql: |-
+      WITH RECURSIVE chain AS (
+        SELECT id, actor_id FROM audit_events WHERE tenant_id = $1 AND id = 1
+        UNION ALL
+        SELECT e.id, e.actor_id FROM audit_events e JOIN chain ON e.actor_id = chain.id
+      )
+      SELECT id FROM chain LIMIT 20
+    expect: deny
+    tags: [tenancy_ctes, recursive, ambiguous]
+  - name: recursive cte with unfiltered base term
+    sql: |-
+      WITH RECURSIVE chain AS (
+        SELECT id, actor_id FROM audit_events WHERE id = 1
+        UNION ALL
+        SELECT e.id, e.actor_id FROM audit_events e JOIN chain ON e.actor_id = chain.id WHERE e.tenant_id = $1
+      )
+      SELECT id FROM chain LIMIT 20
+    expect: deny
+    tags: [tenancy_ctes, recursive, ambiguous]
+  - name: materialized cte unfiltered
+    sql: |-
+      WITH m AS MATERIALIZED (SELECT id FROM users)
+      SELECT id FROM m LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: materialized cte filtered
+    sql: |-
+      WITH m AS MATERIALIZED (SELECT id, display_name FROM users WHERE tenant_id = $1)
+      SELECT display_name FROM m ORDER BY display_name LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: cte with column aliases filtered
+    sql: |-
+      WITH spend (cust, cents) AS (
+        SELECT customer_id, sum(total_cents) FROM orders WHERE tenant_id = $1 GROUP BY customer_id
+      )
+      SELECT cust, cents FROM spend ORDER BY cents DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]
+  - name: cte filtered but main query exists-subquery unfiltered
+    sql: |-
+      WITH o AS (SELECT id, customer_id FROM orders WHERE tenant_id = $1)
+      SELECT id FROM o WHERE EXISTS (SELECT 1 FROM invoices i WHERE i.order_id = o.id) LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_ctes]
+  - name: cte joined to global table
+    sql: |-
+      WITH o AS (SELECT id, currency, total_cents FROM orders WHERE tenant_id = $1)
+      SELECT cur.name, sum(o.total_cents) FROM o JOIN currencies cur ON cur.code = o.currency
+      GROUP BY cur.name LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_ctes]

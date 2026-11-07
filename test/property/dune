@@ -1,0 +1,8 @@
+; QCheck properties over the saas fixture policy (PLAN.md §8.3).
+; Seeds are fixed in CI; override with HALTSQL_QCHECK_SEED / HALTSQL_QCHECK_COUNT.
+
+(test
+ (name test_property)
+ (libraries haltsql qcheck-core qcheck-alcotest alcotest yojson)
+ (deps
+  (source_tree ../fixtures)))

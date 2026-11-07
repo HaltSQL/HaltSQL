@@ -1,0 +1,27 @@
+; Owned binding to the vendored libpg_query (Postgres 17 grammar).
+; See vendor/libpg_query (BSD-3-Clause / PostgreSQL License) and ADR-0001.
+
+(rule
+ (targets libpg_query.a dllpg_query.so)
+ (deps
+  (source_tree %{project_root}/vendor/libpg_query))
+ (action
+  (no-infer
+   (progn
+    (chdir
+     %{project_root}/vendor/libpg_query
+     (run make -s -j8 build build_shared))
+    (copy %{project_root}/vendor/libpg_query/libpg_query.a libpg_query.a)
+    (system
+     "if [ -f %{project_root}/vendor/libpg_query/libpg_query.dylib ]; then cp %{project_root}/vendor/libpg_query/libpg_query.dylib dllpg_query.so; else cp %{project_root}/vendor/libpg_query/libpg_query.so dllpg_query.so; fi")))))
+
+(library
+ (name haltsql_pgquery)
+ (public_name haltsql.pgquery)
+ (modules pgquery_raw)
+ (foreign_archives pg_query)
+ (foreign_stubs
+  (language c)
+  (names pgquery_stubs)
+  (flags
+   (:standard -O2 -I%{project_root}/vendor/libpg_query))))

@@ -1,0 +1,76 @@
+name: Bug report
+description: Something does not work as documented (not a security bypass).
+title: "[bug] "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Is this a policy bypass?** If HaltSQL *allowed* a query that the policy should deny,
+        or failed open in any way, do not file it here. Report it privately as described in
+        [SECURITY.md](https://github.com/ardada2468/HaltSQL/blob/main/SECURITY.md).
+
+        Bugs where HaltSQL *denies* a query it should allow (false positives), crashes on a
+        policy file, or prints wrong output are welcome here.
+  - type: input
+    id: version
+    attributes:
+      label: HaltSQL version
+      description: Output of `haltsql version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: How are you running HaltSQL?
+      options:
+        - OCaml library
+        - CLI (haltsql)
+        - HTTP sidecar (haltsql-server)
+        - Docker image
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, architecture, and OCaml version if building from source.
+      placeholder: Ubuntu 24.04 amd64, OCaml 5.2.1
+  - type: textarea
+    id: policy
+    attributes:
+      label: Policy (minimized)
+      description: The smallest policy that reproduces the problem. Remove anything sensitive.
+      render: yaml
+  - type: textarea
+    id: input
+    attributes:
+      label: SQL and context
+      description: The exact SQL string and the context JSON.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: The verdict JSON (`--json`) or error output.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This is not a security bypass (HaltSQL did not allow something it should deny).
+          required: true
+        - label: I searched existing issues.
+          required: true

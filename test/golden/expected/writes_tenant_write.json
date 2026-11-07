@@ -1,0 +1,31 @@
+{
+  "sql": "UPDATE tickets SET tenant_id = 'globex' WHERE tenant_id = $1 AND id = 42",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_WRITE_DENIED",
+      "message": "column tenant_id of app.tickets may not be updated",
+      "rule": "writes.columns",
+      "loc": 0,
+      "hint": "Only these columns may be updated: status, priority, assignee_id, title, updated_at."
+    },
+    {
+      "code": "E_TENANT_WRITE",
+      "message": "UPDATE may not assign tenant column tenant_id of app.tickets",
+      "rule": "tenancy.write",
+      "loc": 0,
+      "hint": "Do not SET the tenant column; rows cannot be moved between tenants."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "writes",
+    "version": "sha256:a64b2ba7fea6874c5d5a34c6e4e939d3257ccef4452028edf4d9075e7092b8a4"
+  },
+  "statement_kind": "update",
+  "tables": [ "app.tickets" ],
+  "columns": [ "app.tickets.id", "app.tickets.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "8ce6f0c2091fc5b6",
+  "sql_sha256": "b95d64dd50a69d2e7b58efc2ccfe1ec932b61d0381674918a655694f8d012dab"
+}

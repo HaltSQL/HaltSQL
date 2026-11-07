@@ -1,0 +1,16 @@
+{
+  "sql": "SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas-literal",
+    "version": "sha256:3cadf16e091eebd8984df96b47388034e2e8cba13e15f5994646f78a68d68b5e"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id", "app.orders.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "53a2755a1ded78c5",
+  "sql_sha256": "23764575137d4bdc1b8b7a6d16d3c54f945d405d82b4658ea8e2e10ef594d91d"
+}

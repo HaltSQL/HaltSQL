@@ -1,0 +1,112 @@
+# Threat class: shadow mode rollout (PLAN.md §9). Verdicts are always
+# allowed=true; would-be denials are reported in shadow_reasons, which the suite
+# runner checks for `expect: deny`. Every rule family must still be evaluated
+# in shadow mode, so this suite mirrors core denials from the other classes.
+# NOTE: in shadow mode bind_params are only returned when there are no
+# (shadow) reasons, so allows assert bind as usual.
+# Policy: shadow.yaml (mode: shadow).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: shadow_mode }
+policy: ../fixtures/policies/shadow.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: clean query has no shadow reasons
+    sql: SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [shadow_mode]
+  - name: clean join has no shadow reasons
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [shadow_mode]
+  - name: global table query clean
+    sql: SELECT code, symbol FROM currencies LIMIT 100
+    expect: allow
+    bind: []
+    tags: [shadow_mode]
+  - name: missing tenant predicate reported
+    sql: SELECT id FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [shadow_mode, tenancy]
+  - name: or 1=1 reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR 1 = 1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [shadow_mode, tenancy]
+  - name: denied column reported
+    sql: SELECT id, email FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [shadow_mode, columns]
+  - name: denied table reported
+    sql: SELECT * FROM pg_catalog.pg_user LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [shadow_mode, tables]
+  - name: denied function reported
+    sql: SELECT pg_sleep(10) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [shadow_mode, functions]
+  - name: missing limit reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [shadow_mode, limit]
+  - name: limit too high reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5000
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [shadow_mode, limit]
+  - name: multi statement reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; DROP TABLE orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [shadow_mode, smuggling]
+  - name: ddl reported
+    sql: DROP TABLE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [shadow_mode, smuggling]
+  - name: parse error reported
+    sql: SELEC id FROM orders
+    expect: deny
+    codes: [E_PARSE]
+    tags: [shadow_mode, parse]
+  - name: data modifying cte reported
+    sql: WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING id) SELECT id FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [shadow_mode, dml_cte]
+  - name: regclass cast reported
+    sql: SELECT 'app.orders'::regclass LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [shadow_mode, casts]
+  - name: locking clause reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 FOR UPDATE
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: [shadow_mode, locking]
+  - name: unbound param reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $2 LIMIT 10
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [shadow_mode, params]
+  - name: missing context reported
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [shadow_mode, context]
+  - name: several violations all reported
+    sql: SELECT email, pg_sleep(1) FROM customers
+    expect: deny
+    codes: [E_COLUMN_DENIED, E_FUNCTION_DENIED, E_TENANT_MISSING, E_LIMIT_REQUIRED]
+    tags: [shadow_mode, multiple, ambiguous]

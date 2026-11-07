@@ -1,0 +1,11 @@
+# Same workload on every supported server version (needs `make up PROFILE=matrix`).
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: matrix-pg13-17 }
+environment: { postgres: [13, 14, 15, 16, 17], topology: embedded }
+fixture: saas_shared
+data: { scale: small, tenants: 20, seed: 13 }
+workloads:
+  - benign: { queries: 1000 }
+  - adversarial: { queries: 4000 }
+expect: { escapes: 0, side_effects: 0, column_leaks: 0, false_positive_rate: { max: 0.05 } }

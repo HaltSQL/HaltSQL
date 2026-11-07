@@ -1,0 +1,110 @@
+# Threat class: writes on a read-only policy (PLAN.md §3 "Statement smuggling",
+# "Data-modifying CTEs"). saas.yaml allows only SELECT: top-level writes are
+# E_STATEMENT_KIND, writes inside CTEs are E_DATA_MODIFYING_CTE.
+# Policy: saas.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: writes_disabled }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: insert
+    sql: INSERT INTO orders (tenant_id, status, total_cents) VALUES ($1, 'paid', 1)
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: update with proof
+    sql: UPDATE orders SET status = 'refunded' WHERE tenant_id = $1 AND id = 1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: delete with proof
+    sql: DELETE FROM orders WHERE tenant_id = $1 AND id = 1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: delete all
+    sql: DELETE FROM customers
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: update all
+    sql: UPDATE users SET role = 'admin'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: insert select
+    sql: INSERT INTO orders SELECT * FROM orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: merge
+    sql: |-
+      MERGE INTO orders o USING customers c ON o.customer_id = c.id
+      WHEN MATCHED THEN UPDATE SET status = 'x'
+    expect: deny
+    tags: [writes_disabled, ambiguous]
+  - name: delete cte returning star
+    sql: |-
+      WITH d AS (DELETE FROM orders WHERE tenant_id = $1 RETURNING *)
+      SELECT * FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: update cte
+    sql: |-
+      WITH u AS (UPDATE orders SET status = 'void' WHERE tenant_id = $1 RETURNING id)
+      SELECT count(*) FROM u LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: insert cte
+    sql: |-
+      WITH i AS (INSERT INTO orders (tenant_id, status) VALUES ($1, 'x') RETURNING id)
+      SELECT id FROM i LIMIT 1
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: unused delete cte still executes
+    sql: |-
+      WITH d AS (DELETE FROM audit_events WHERE tenant_id = $1)
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: delete cte nested in subquery cte
+    sql: |-
+      SELECT x.id FROM (
+        WITH d AS (DELETE FROM payments WHERE tenant_id = $1 RETURNING id) SELECT id FROM d
+      ) x LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: delete cte second of two
+    sql: |-
+      WITH a AS (SELECT id FROM orders WHERE tenant_id = $1),
+           b AS (DELETE FROM invoices WHERE tenant_id = $1 RETURNING id)
+      SELECT id FROM a LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: delete cte on unknown table
+    sql: |-
+      WITH d AS (DELETE FROM api_keys RETURNING id)
+      SELECT id FROM d LIMIT 10
+    expect: deny
+    codes: [E_DATA_MODIFYING_CTE]
+    tags: [writes_disabled, dml_cte]
+  - name: insert with cte select
+    sql: |-
+      WITH src AS (SELECT id FROM orders WHERE tenant_id = $1)
+      INSERT INTO orders (tenant_id, status) SELECT 'globex', 'x' FROM src
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]
+  - name: truncate
+    sql: TRUNCATE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [writes_disabled]

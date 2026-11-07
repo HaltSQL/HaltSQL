@@ -1,0 +1,21 @@
+{
+  "sql": "SELECT id, name FROM projects WHERE org_id = $1 AND workspace_id = $2 LIMIT 10",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "composite",
+    "version": "sha256:31505be72339317c38df2d8dc63a7b8eb5a689ba6586f894b1536e1dbf731ae0"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.projects" ],
+  "columns": [
+    "app.projects.id", "app.projects.name", "app.projects.org_id",
+    "app.projects.workspace_id"
+  ],
+  "bind_params": [
+    { "param": 1, "value": "o1" }, { "param": 2, "value": "w1" }
+  ],
+  "fingerprint": "e6c5471511bf5fb1",
+  "sql_sha256": "8b242a31bd717cdca3a48e8350e37d424f678136c7032ed14aaef6db0c3555bc"
+}

@@ -1,0 +1,107 @@
+# Threat class: tenant bypass with hierarchical tenants / tenant SETS
+# (PLAN.md §8.2). Context carries a list of allowed tenant ids; the proof is
+# `a.tenant_id = ANY($n)` and $n binds to the whole list.
+# Policy: hierarchical.yaml (bound mode).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_sets }
+policy: ../fixtures/policies/hierarchical.yaml
+defaults:
+  context: { tenant_ids: [acme, acme-eu, acme-us] }
+cases:
+  - name: any param binds the set
+    sql: SELECT a.id, a.name FROM accounts a WHERE a.tenant_id = ANY($1) LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: [acme, acme-eu, acme-us] }]
+    tags: [tenancy_sets]
+  - name: unqualified any
+    sql: SELECT id, balance_cents FROM accounts WHERE tenant_id = ANY($1) ORDER BY balance_cents DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: [acme, acme-eu, acme-us] }]
+    tags: [tenancy_sets]
+  - name: single child org context
+    sql: SELECT a.id FROM accounts a WHERE a.tenant_id = ANY($1) LIMIT 50
+    context: { tenant_ids: [acme-eu] }
+    expect: allow
+    bind: [{ param: 1, value: [acme-eu] }]
+    tags: [tenancy_sets]
+  - name: join both filtered with any
+    sql: |-
+      SELECT a.name, sum(t.amount_cents) AS net
+      FROM accounts a
+      JOIN transactions t ON t.account_id = a.id AND t.tenant_id = ANY($1)
+      WHERE a.tenant_id = ANY($1)
+      GROUP BY a.name ORDER BY net DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: [acme, acme-eu, acme-us] }]
+    tags: [tenancy_sets]
+  - name: join second table unfiltered
+    sql: |-
+      SELECT a.name, t.amount_cents FROM accounts a
+      JOIN transactions t ON t.account_id = a.id
+      WHERE a.tenant_id = ANY($1) LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets]
+  - name: no predicate
+    sql: SELECT id FROM transactions WHERE kind = 'refund' LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets]
+  - name: any with OR
+    sql: SELECT id FROM accounts WHERE tenant_id = ANY($1) OR balance_cents > 0 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets, or_bypass]
+  - name: scalar equality against a set context
+    sql: SELECT id FROM accounts WHERE tenant_id = $1 LIMIT 20
+    expect: deny
+    tags: [tenancy_sets, ambiguous]
+  - name: not equal all is not a proof
+    sql: SELECT id FROM accounts WHERE tenant_id <> ALL($1) LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets]
+  - name: any over literal array in bound mode
+    sql: SELECT id FROM accounts WHERE tenant_id = ANY(ARRAY['acme', 'globex']) LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_sets]
+  - name: IN literal list in bound mode
+    sql: SELECT id FROM accounts WHERE tenant_id IN ('acme', 'acme-eu') LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_sets]
+  - name: cast on column side with any
+    sql: SELECT id FROM accounts WHERE tenant_id::text = ANY($1) LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets, cast]
+  - name: subquery unfiltered with set context
+    sql: |-
+      SELECT a.id FROM accounts a WHERE a.tenant_id = ANY($1)
+        AND a.id IN (SELECT account_id FROM transactions WHERE amount_cents > 100000)
+      LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_sets]
+  - name: union both branches with any
+    sql: |-
+      SELECT id FROM accounts WHERE tenant_id = ANY($1)
+      UNION ALL
+      SELECT account_id FROM transactions WHERE tenant_id = ANY($1)
+      LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: [acme, acme-eu, acme-us] }]
+    tags: [tenancy_sets, setops]
+  - name: global table with set context
+    sql: SELECT * FROM currencies LIMIT 20
+    expect: allow
+    bind: []
+    tags: [tenancy_sets, ambiguous]
+  - name: missing set context
+    sql: SELECT id FROM accounts WHERE tenant_id = ANY($1) LIMIT 20
+    context: { tenant_id: acme }
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_sets, context]

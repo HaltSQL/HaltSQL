@@ -1,0 +1,16 @@
+; Verify-latency benchmark (plain Unix.gettimeofday loops; core_bench is not
+; installed). Run with `make bench` / `dune build @bench --force`, or directly:
+;   dune exec bench/bench.exe -- --root . --iters 20000 --json bench.json
+;   dune exec bench/bench.exe -- --root . --baseline bench.json --max-regress 0.10
+
+(executable
+ (name bench)
+ (libraries haltsql unix yojson))
+
+(rule
+ (alias bench)
+ (deps
+  (source_tree ../test/corpus)
+  (source_tree ../test/fixtures))
+ (action
+  (run %{exe:bench.exe} --root ..)))

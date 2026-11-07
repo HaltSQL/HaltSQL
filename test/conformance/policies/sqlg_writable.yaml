@@ -1,0 +1,37 @@
+# Conformance policy translated from sql-guardrail (MIT, (c) 2026 nickusevich)
+# https://github.com/nickusevich/sql-guardrail @ eadfb9d0c725f4960621a7c67c23219103710c5b
+# Source: tests/test_security.py::writable_policy and tests/unit/test_predicates.py::policy_tenant_rw (read_only: false). Their read_only=false allows every DML on every listed table; ours needs per-table writes.
+# Their `require_predicate: {column: account_id, op: "=", value: "${tenant_id}"}`
+# maps to our LITERAL tenancy mode (they compare SQL literals to the context
+# value); their `allow_columns`/`deny_columns` map to our `columns` allowlist
+# checked against the catalog snapshot ../catalogs/sqlg.json.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: sqlg-writable
+  owner: qa
+  description: "sql-guardrail writable_policy"
+dialect: postgres-17
+search_path: [public]
+catalog: ../catalogs/sqlg.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 10 }
+statements: { allow: [select, insert, update, delete] }
+tenancy:
+  mode: literal
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  public.orders:
+    columns: [id, product_name, account_id, total, status]
+    tenant_column: account_id
+    writes:
+      insert: true
+      update: [product_name, total, status]
+      delete: true
+  public.users:
+    columns: [id, name]
+    writes:
+      insert: true
+      update: [name]
+functions:
+  presets: [aggregates, math, string, datetime, conditional]
+mode: enforce

@@ -1,0 +1,23 @@
+{
+  "sql": "SELECT 1 LIMIT 1; DROP TABLE app.orders",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_MULTI_STATEMENT",
+      "message": "expected exactly one statement, found 2",
+      "rule": "statement.count",
+      "hint": "Send a single SQL statement with no semicolon-separated extras."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": null,
+  "tables": [],
+  "columns": [],
+  "bind_params": [],
+  "fingerprint": null,
+  "sql_sha256": "e32f46fefc0f2a369c675df3c8fb7445630642842700099c1286c95dc5cbfbf4"
+}

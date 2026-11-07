@@ -1,0 +1,33 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": {
+    "name": "saas-analytics",
+    "owner": "data-platform",
+    "description": "Read-only analytics over orders, customers and invoices"
+  },
+  "dialect": "postgres-17",
+  "search_path": ["app"],
+  "catalog": "../catalog/saas.snapshot.json",
+  "limits": { "max_bytes": 16384, "max_depth": 64, "max_nodes": 20000, "max_joins": 6 },
+  "statements": { "allow": ["select"] },
+  "require_limit": { "max": 1000 },
+  "tenancy": { "mode": "bound", "keys": { "tenant": "${ctx.tenant_id}" } },
+  "tables": {
+    "app.currencies": { "columns": "*" },
+    "app.customers": {
+      "columns": ["id", "tenant_id", "name", "country", "created_at"],
+      "tenant_column": "tenant_id"
+    },
+    "app.invoices": {
+      "columns": ["id", "tenant_id", "order_id", "amount_cents", "currency", "issued_at", "paid_at"],
+      "tenant_column": "tenant_id"
+    },
+    "app.orders": {
+      "columns": ["id", "tenant_id", "customer_id", "status", "total_cents", "currency", "created_at"],
+      "tenant_column": "tenant_id"
+    }
+  },
+  "functions": { "allow": ["upper", "initcap", "lower"], "presets": ["datetime", "math", "aggregates"] },
+  "mode": "enforce"
+}

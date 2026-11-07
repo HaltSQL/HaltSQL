@@ -1,0 +1,26 @@
+; haltsql-server tests: in-process servers on ephemeral ports (all endpoints,
+; auth, 413, hot reload, metrics, audit chain) plus a subprocess test of the
+; real binary (SIGHUP reload, SIGTERM shutdown, TLS refusal).
+
+(test
+ (name test_server)
+ (package haltsql-server)
+ (libraries
+  haltsql_server
+  haltsql
+  alcotest
+  str
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  lwt
+  lwt.unix
+  yojson
+  unix)
+ (deps
+  (source_tree fixtures))
+ (action
+  (setenv
+   HALTSQL_SERVER_BIN
+   %{dep:../../bin/server/main.exe}
+   (run %{test}))))

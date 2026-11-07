@@ -1,0 +1,43 @@
+# HaltSQL policy for the haltlab composite fixture (lab/schemas/composite.sql).
+# Tenant = (org_id, workspace_id). billing_accounts is org-scoped only.
+# Denied: members.email, documents.body, billing_accounts.card_token, and the
+# whole ws.api_keys table.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: haltlab-composite-workspace
+  owner: haltlab
+dialect: postgres-17
+search_path: [ws]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 500 }
+tenancy:
+  mode: bound
+  keys:
+    org: ${ctx.org_id}
+    workspace: ${ctx.workspace_id}
+tables:
+  ws.tags:
+    columns: "*"
+  ws.workspaces:
+    columns: [id, org_id, workspace_id, name, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  ws.members:
+    columns: [id, org_id, workspace_id, display_name, role, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  ws.projects:
+    columns: [id, org_id, workspace_id, name, status, budget_cents, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  ws.tasks:
+    columns: [id, org_id, workspace_id, project_id, assignee_id, title, status, priority, estimate_hours, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  ws.documents:
+    columns: [id, org_id, workspace_id, project_id, title, classification, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  ws.billing_accounts:
+    columns: [id, org_id, plan, seats, created_at]
+    tenant_columns: { org_id: org }
+functions:
+  allow: [count, sum, avg, min, max, coalesce, date_trunc, lower, upper, now, round]
+mode: enforce

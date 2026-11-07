@@ -1,0 +1,15 @@
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:18080
+  auth:
+    tokens:
+      - name: shop-agent
+        # sha256("shop-secret-token")
+        token_sha256: 49a959c110885c75afc29130f42e53da36757e1381bba1b83fcebfb56074e967
+        policy: shop
+policies:
+  - path: ./shop.yaml
+audit:
+  sinks: [{ type: stdout }]
+logging: { level: info, format: json }

@@ -1,0 +1,614 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://haltsql.dev/schemas/v1/config.schema.json",
+  "title": "HaltSQL runtime configuration",
+  "description": "How HaltSQL runs: listen address, TLS, auth tokens, policies, audit, logging. String values may use ${env:NAME} and ${file:/path} placeholders.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "description": "Document format version. Must be \"haltsql.dev/v1\".",
+      "const": "haltsql.dev/v1"
+    },
+    "kind": {
+      "description": "Document kind. Must be \"Config\".",
+      "const": "Config"
+    },
+    "server": {
+      "description": "HTTP sidecar settings.",
+      "type": "object",
+      "properties": {
+        "listen": {
+          "description": "Address as host:port. Default 127.0.0.1:8080. Env: HALTSQL_LISTEN.",
+          "type": "string"
+        },
+        "tls": {
+          "description": "TLS certificate and key (both or neither).",
+          "type": "object",
+          "properties": {
+            "cert": {
+              "description": "Path to the PEM certificate.",
+              "type": "string"
+            },
+            "key": {
+              "description": "Path to (or ${file:...} contents of) the PEM private key.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "auth": {
+          "description": "Bearer-token authentication.",
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "description": "Accepted tokens; each is pinned to one policy.",
+              "type": "array",
+              "items": {
+                "description": "One API token.",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Token name (shown in audit logs).",
+                    "type": "string"
+                  },
+                  "token_sha256": {
+                    "description": "Lower-case hex SHA-256 of the token (64 characters).",
+                    "type": "string"
+                  },
+                  "policy": {
+                    "description": "Name of the policy this token may use.",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "name", "token_sha256", "policy" ]
+              }
+            },
+            "allow_unauthenticated": {
+              "description": "Accept requests without a token (uses default_policy). Local development only. Env: HALTSQL_ALLOW_UNAUTHENTICATED.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "policies": {
+      "description": "Policies to load, from files or inline.",
+      "type": "array",
+      "items": {
+        "description": "A policy file or an inline policy.",
+        "oneOf": [
+          {
+            "description": "Policy file.",
+            "type": "object",
+            "properties": {
+              "path": {
+                "description": "Path to a policy file (YAML or JSON), relative to this config.",
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [ "path" ]
+          },
+          {
+            "description": "Inline policy.",
+            "type": "object",
+            "properties": {
+              "inline": {
+                "description": "An inline Policy document (apiVersion and kind optional).",
+                "type": "object",
+                "properties": {
+                  "apiVersion": {
+                    "description": "Document format version. Must be \"haltsql.dev/v1\".",
+                    "const": "haltsql.dev/v1"
+                  },
+                  "kind": {
+                    "description": "Document kind. Must be \"Policy\".",
+                    "const": "Policy"
+                  },
+                  "metadata": {
+                    "description": "Identification of the policy.",
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "description": "Policy name, referenced by Config tokens. Letters, digits, '.', '_', '-'.",
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                      },
+                      "owner": {
+                        "description": "Owning team or person.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "What the policy is for.",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "name" ]
+                  },
+                  "dialect": {
+                    "description": "SQL dialect: \"postgres\" or a version such as \"postgres-17\".",
+                    "type": "string",
+                    "pattern": "^postgres(-[0-9]{2})?$",
+                    "default": "postgres"
+                  },
+                  "search_path": {
+                    "description": "Schemas used to resolve unqualified table names, in order. The first entry also qualifies unqualified table keys. Default [public].",
+                    "type": "array",
+                    "items": {
+                      "description": "Schema name.",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "catalog": {
+                    "description": "Optional catalog snapshot: a path (relative to the policy file) or an inline snapshot.",
+                    "oneOf": [
+                      {
+                        "description": "Path to a snapshot file (YAML or JSON).",
+                        "type": "string"
+                      },
+                      {
+                        "description": "Inline snapshot.",
+                        "type": "object",
+                        "properties": {
+                          "apiVersion": {
+                            "description": "Document format version. Must be \"haltsql.dev/v1\".",
+                            "const": "haltsql.dev/v1"
+                          },
+                          "kind": {
+                            "description": "Document kind. Must be \"Catalog\".",
+                            "const": "Catalog"
+                          },
+                          "metadata": {
+                            "description": "Free-form information about the snapshot (source, time, tool version).",
+                            "type": "object"
+                          },
+                          "tables": {
+                            "description": "Tables keyed by \"schema.table\", written exactly as Postgres stores them (no case folding).",
+                            "type": "object",
+                            "additionalProperties": {
+                              "description": "One table of the snapshot.",
+                              "type": "object",
+                              "properties": {
+                                "columns": {
+                                  "description": "Complete column list of the table, in table order.",
+                                  "type": "array",
+                                  "items": {
+                                    "description": "A column name, or a name with its type.",
+                                    "oneOf": [
+                                      {
+                                        "description": "Column name.",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "description": "Column with optional type.",
+                                        "type": "object",
+                                        "properties": {
+                                          "name": {
+                                            "description": "Column name.",
+                                            "type": "string"
+                                          },
+                                          "type": {
+                                            "description": "Postgres type name, e.g. int8, text, uuid.",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "additionalProperties": false,
+                                        "required": [ "name" ]
+                                      }
+                                    ]
+                                  },
+                                  "minItems": 1
+                                }
+                              },
+                              "additionalProperties": false,
+                              "required": [ "columns" ]
+                            }
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [ "tables" ]
+                      }
+                    ]
+                  },
+                  "limits": {
+                    "description": "Size limits enforced before analysis.",
+                    "type": "object",
+                    "properties": {
+                      "max_bytes": {
+                        "description": "Maximum SQL length in bytes.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16777216,
+                        "default": 16384
+                      },
+                      "max_depth": {
+                        "description": "Maximum parse-tree nesting depth.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 64
+                      },
+                      "max_nodes": {
+                        "description": "Maximum parse-tree node count.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10000000,
+                        "default": 20000
+                      },
+                      "max_joins": {
+                        "description": "Maximum number of joins per statement.",
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 256,
+                        "default": 8
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "statements": {
+                    "description": "Statement kinds that may run.",
+                    "type": "object",
+                    "properties": {
+                      "allow": {
+                        "description": "Allowed statement kinds. Default [select].",
+                        "type": "array",
+                        "items": {
+                          "description": "Statement kind.",
+                          "enum": [ "select", "insert", "update", "delete" ]
+                        },
+                        "minItems": 1,
+                        "uniqueItems": true
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "allow" ]
+                  },
+                  "require_limit": {
+                    "description": "Require every SELECT to have a constant LIMIT no larger than max.",
+                    "type": "object",
+                    "properties": {
+                      "max": {
+                        "description": "Largest allowed LIMIT.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000000
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "max" ]
+                  },
+                  "tenancy": {
+                    "description": "Tenant isolation settings.",
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "description": "bound: tenant predicates compare to a $n parameter that HaltSQL binds (recommended). literal: they compare to a literal equal to the context value.",
+                        "enum": [ "bound", "literal" ],
+                        "default": "bound"
+                      },
+                      "keys": {
+                        "description": "Tenancy keys mapped to context placeholders, e.g. {tenant: \"${ctx.tenant_id}\"}.",
+                        "type": "object",
+                        "additionalProperties": {
+                          "description": "Context placeholder: \"${ctx.<field>}\", filled from the request context at verify time.",
+                          "type": "string",
+                          "pattern": "^\\$\\{ctx\\.[A-Za-z_][A-Za-z0-9_]*\\}$"
+                        }
+                      },
+                      "value": {
+                        "description": "Shorthand for keys: {tenant: <value>}.",
+                        "$ref": "#/$defs/ctx_placeholder"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "tables": {
+                    "description": "Allowed tables keyed by \"table\" or \"schema.table\". Quote names that need case: '\"MixedCase\".\"Orders\"'.",
+                    "type": "object",
+                    "additionalProperties": {
+                      "description": "Access rules for one table.",
+                      "type": "object",
+                      "properties": {
+                        "columns": {
+                          "description": "Readable columns: \"*\" or a list of names.",
+                          "oneOf": [
+                            {
+                              "description": "All columns of the table (needs a catalog snapshot to expand SELECT *).",
+                              "const": "*"
+                            },
+                            {
+                              "description": "Explicit column names. Unquoted names are lower-cased; use double quotes to keep case.",
+                              "type": "array",
+                              "items": {
+                                "description": "Column name.",
+                                "type": "string"
+                              },
+                              "minItems": 1,
+                              "uniqueItems": true
+                            }
+                          ]
+                        },
+                        "tenant_column": {
+                          "description": "Column that holds the tenant id. Shorthand for tenant_columns when tenancy defines exactly one key.",
+                          "type": "string"
+                        },
+                        "tenant_columns": {
+                          "description": "Tenant-scoping columns mapped to tenancy key names, e.g. {org_id: org, workspace_id: workspace}.",
+                          "type": "object",
+                          "additionalProperties": {
+                            "description": "Tenancy key name (from tenancy.keys).",
+                            "type": "string"
+                          }
+                        },
+                        "writes": {
+                          "description": "Writes allowed on this table (also require the statement kind in statements.allow).",
+                          "type": "object",
+                          "properties": {
+                            "insert": {
+                              "description": "Allow INSERT (tenant columns must be set to the tenant value).",
+                              "type": "boolean",
+                              "default": false
+                            },
+                            "update": {
+                              "description": "Allow UPDATE: \"*\", a list of updatable columns, or false.",
+                              "oneOf": [
+                                {
+                                  "description": "All columns except tenant columns.",
+                                  "const": "*"
+                                },
+                                {
+                                  "description": "Updatable columns (never tenant columns).",
+                                  "type": "array",
+                                  "items": {
+                                    "description": "Column name.",
+                                    "type": "string"
+                                  },
+                                  "minItems": 1
+                                },
+                                {
+                                  "description": "UPDATE not allowed.",
+                                  "const": false
+                                }
+                              ]
+                            },
+                            "delete": {
+                              "description": "Allow DELETE (needs the tenant predicate).",
+                              "type": "boolean",
+                              "default": false
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [ "columns" ]
+                    }
+                  },
+                  "functions": {
+                    "description": "Allowed functions (everything else is denied).",
+                    "type": "object",
+                    "properties": {
+                      "allow": {
+                        "description": "Function names, lower-case, optionally schema-qualified.",
+                        "type": "array",
+                        "items": {
+                          "description": "Function name.",
+                          "type": "string"
+                        }
+                      },
+                      "presets": {
+                        "description": "Built-in curated presets.",
+                        "type": "array",
+                        "items": {
+                          "description": "Preset name.",
+                          "enum": [
+                            "aggregates", "math", "string", "regex",
+                            "datetime", "json", "conditional", "window"
+                          ]
+                        },
+                        "uniqueItems": true
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "operators": {
+                    "description": "Allowed operators. Default: comparison, arithmetic, ||, LIKE/regex, JSON and array operators.",
+                    "type": "object",
+                    "properties": {
+                      "allow": {
+                        "description": "Replaces the default operator list.",
+                        "type": "array",
+                        "items": {
+                          "description": "Operator symbol.",
+                          "type": "string"
+                        }
+                      },
+                      "extend": {
+                        "description": "Adds operators to the defaults (or to allow).",
+                        "type": "array",
+                        "items": {
+                          "description": "Operator symbol.",
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "deny_casts": {
+                    "description": "Denied cast target types. Default: the reg* family and txid_snapshot.",
+                    "oneOf": [
+                      {
+                        "description": "Replaces the default list.",
+                        "type": "array",
+                        "items": {
+                          "description": "Type name.",
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "description": "Extends the default list.",
+                        "type": "object",
+                        "properties": {
+                          "extend": {
+                            "description": "Types added to the defaults.",
+                            "type": "array",
+                            "items": {
+                              "description": "Type name.",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "allow_explain": {
+                    "description": "Allow plain EXPLAIN (never ANALYZE) of an allowed statement.",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "mode": {
+                    "description": "enforce: deny violations. shadow: report violations but allow (for rollouts).",
+                    "enum": [ "enforce", "shadow" ],
+                    "default": "enforce"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "metadata" ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [ "inline" ]
+          }
+        ]
+      }
+    },
+    "default_policy": {
+      "description": "Policy used by unauthenticated requests. Env: HALTSQL_DEFAULT_POLICY.",
+      "type": "string"
+    },
+    "reload": {
+      "description": "Hot reload.",
+      "type": "object",
+      "properties": {
+        "watch": {
+          "description": "Reload policy files when they change.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "audit": {
+      "description": "Audit log.",
+      "type": "object",
+      "properties": {
+        "sinks": {
+          "description": "Where audit records go. Default [{type: stdout}].",
+          "type": "array",
+          "items": {
+            "description": "Audit sink.",
+            "oneOf": [
+              {
+                "description": "Standard output.",
+                "type": "object",
+                "properties": {
+                  "type": { "description": "Sink type.", "const": "stdout" }
+                },
+                "additionalProperties": false,
+                "required": [ "type" ]
+              },
+              {
+                "description": "JSON-lines file.",
+                "type": "object",
+                "properties": {
+                  "type": { "description": "Sink type.", "const": "file" },
+                  "path": {
+                    "description": "File path, relative to this config.",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "type", "path" ]
+              }
+            ]
+          }
+        },
+        "log_raw_sql": {
+          "description": "Include the raw SQL text in audit records.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "description": "Metrics and tracing.",
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "description": "Metrics.",
+          "type": "object",
+          "properties": {
+            "prometheus": {
+              "description": "Expose Prometheus metrics.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "otlp_endpoint": {
+          "description": "OTLP endpoint (accepted; reserved for a future release).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "logging": {
+      "description": "Process logs.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "Log level. Env: HALTSQL_LOG_LEVEL.",
+          "enum": [ "debug", "info", "warn", "error" ]
+        },
+        "format": {
+          "description": "Log format. Env: HALTSQL_LOG_FORMAT.",
+          "enum": [ "json", "text" ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "description": "Request limits.",
+      "type": "object",
+      "properties": {
+        "max_request_bytes": {
+          "description": "Maximum HTTP request body size.",
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 67108864,
+          "default": 1048576
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "required": [ "apiVersion", "kind" ],
+  "$defs": {
+    "ctx_placeholder": {
+      "description": "Context placeholder: \"${ctx.<field>}\", filled from the request context at verify time.",
+      "type": "string",
+      "pattern": "^\\$\\{ctx\\.[A-Za-z_][A-Za-z0-9_]*\\}$"
+    }
+  }
+}

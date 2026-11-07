@@ -1,0 +1,10 @@
+; Golden verdict snapshots. Regenerate after an intended change with:
+;   HALTSQL_GOLDEN_UPDATE=1 dune test --force test/golden
+; (writes test/golden/expected/*.json in the source tree; review the diff).
+
+(test
+ (name test_golden)
+ (libraries haltsql alcotest yojson)
+ (deps
+  (source_tree ../fixtures)
+  (source_tree expected)))

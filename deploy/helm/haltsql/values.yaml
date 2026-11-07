@@ -1,0 +1,138 @@
+# Default values for the haltsql chart.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/ardada2468/haltsql
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  # digest: sha256:...   # set to pin an exact (signed) image
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# haltsql-server settings rendered into the Config document (kind: Config).
+server:
+  port: 8080
+  maxRequestBytes: 1048576
+  allowUnauthenticated: false
+  defaultPolicy: ""
+  reloadWatch: true          # policies are mounted from a ConfigMap; kubelet updates trigger a reload
+  logLevel: info
+  logFormat: json
+  metrics: true
+  audit:
+    # Audit records go to stdout by default (collected by your log pipeline).
+    # Add {type: file, path: /var/log/haltsql/audit.jsonl} to also write a file
+    # (an emptyDir is mounted at /var/log/haltsql).
+    sinks:
+      - type: stdout
+    logRawSql: false
+
+# Bearer tokens. Only SHA-256 hashes are stored (in a Secret, injected into the
+# config through ${env:...} placeholders). Each token is pinned to one policy.
+#   printf '%s' "$TOKEN" | sha256sum
+tokens: []
+#  - name: analytics-agent
+#    sha256: 3f7c...e9
+#    policy: analytics-agent
+
+# Use an existing Secret instead of rendering one. It must contain one key per
+# token named HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`).
+existingTokenSecret: ""
+
+# Policies, keyed by file name. Each value is a full Policy document (YAML).
+policies: {}
+#  analytics-agent.yaml: |
+#    apiVersion: haltsql.dev/v1
+#    kind: Policy
+#    metadata: { name: analytics-agent }
+#    ...
+
+# Use an existing ConfigMap holding the policy files instead of `policies`.
+existingPolicyConfigMap: ""
+# File names (keys) in existingPolicyConfigMap to load.
+existingPolicyFiles: []
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  privileged: false
+  capabilities:
+    drop: [ALL]
+
+livenessProbe:
+  httpGet: { path: /healthz, port: http }
+  initialDelaySeconds: 2
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+readinessProbe:
+  httpGet: { path: /readyz, port: http }
+  initialDelaySeconds: 1
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 2
+
+terminationGracePeriodSeconds: 20
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+networkPolicy:
+  enabled: true
+  # Pods allowed to call haltsql (empty = any pod in the namespace).
+  ingressFrom: []
+  #  - podSelector: { matchLabels: { app: my-agent } }
+  # Allow Prometheus to scrape /metrics from this namespace selector.
+  metricsFrom: []
+  #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

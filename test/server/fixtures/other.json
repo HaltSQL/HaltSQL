@@ -1,0 +1,10 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": { "name": "other" },
+  "search_path": ["app"],
+  "statements": { "allow": ["select"] },
+  "tables": { "app.currencies": { "columns": "*" } },
+  "functions": { "presets": ["aggregates"] },
+  "mode": "shadow"
+}

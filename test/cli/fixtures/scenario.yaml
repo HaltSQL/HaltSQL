@@ -1,0 +1,3 @@
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: cli-scenario }

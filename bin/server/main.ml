@@ -1,0 +1,193 @@
+(* haltsql-server — HTTP sidecar for the HaltSQL policy firewall. *)
+
+open Cmdliner
+open Haltsql_server
+
+let audit_conv =
+  let parse = function
+    | "stdout" -> Ok `Stdout
+    | "none" -> Ok `None
+    | s when String.length s > 5 && String.sub s 0 5 = "file:" ->
+        Ok (`File (String.sub s 5 (String.length s - 5)))
+    | s ->
+        Error
+          (`Msg
+             (Printf.sprintf "invalid audit sink %S (expected stdout, none or file:PATH)"
+                s))
+  in
+  let print ppf = function
+    | `Stdout -> Format.pp_print_string ppf "stdout"
+    | `None -> Format.pp_print_string ppf "none"
+    | `File p -> Format.fprintf ppf "file:%s" p
+  in
+  Arg.conv (parse, print)
+
+let run config policies listen allow_unauth default_policy log_level log_format audit
+    log_raw_sql watch max_bytes no_metrics =
+  let overrides (c : Haltsql.Config.t) =
+    let c = match listen with Some l -> { c with listen = l } | None -> c in
+    let c = if allow_unauth then { c with allow_unauthenticated = true } else c in
+    let c =
+      match default_policy with Some d -> { c with default_policy = Some d } | None -> c
+    in
+    let c = match log_level with Some l -> { c with log_level = l } | None -> c in
+    let c = match log_format with Some f -> { c with log_format = f } | None -> c in
+    let c =
+      match audit with
+      | [] -> c
+      | sinks ->
+          {
+            c with
+            audit_sinks =
+              List.filter_map
+                (function
+                  | `None -> None
+                  | `Stdout -> Some Haltsql.Config.Audit_stdout
+                  | `File p -> Some (Haltsql.Config.Audit_file p))
+                sinks;
+          }
+    in
+    let c = if log_raw_sql then { c with log_raw_sql = true } else c in
+    let c = match watch with Some w -> { c with reload_watch = w } | None -> c in
+    let c =
+      match max_bytes with Some m -> { c with max_request_bytes = m } | None -> c
+    in
+    let c = if no_metrics then { c with metrics = false } else c in
+    c
+  in
+  if config = None && policies = [] then begin
+    prerr_endline "haltsql-server: pass --config FILE or at least one --policy FILE";
+    2
+  end
+  else
+    Server.main
+      ~sources:{ State.config_file = config; policy_files = policies; overrides }
+      ()
+
+let cmd =
+  let config =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "config" ] ~docv:"FILE"
+          ~doc:"Config document (kind: Config, YAML or JSON).")
+  in
+  let policies =
+    Arg.(
+      value & opt_all file []
+      & info [ "p"; "policy" ] ~docv:"FILE"
+          ~doc:
+            "Load a policy file (repeatable). Added to the policies from $(b,--config); \
+             a policy with the same name replaces the config's.")
+  in
+  let listen =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "listen" ] ~docv:"HOST:PORT"
+          ~doc:"Listen address (default 127.0.0.1:8080).")
+  in
+  let allow_unauth =
+    Arg.(
+      value & flag
+      & info [ "allow-unauthenticated" ]
+          ~doc:
+            "Accept requests without a bearer token (they use the default policy). Local \
+             development only.")
+  in
+  let default_policy =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "default-policy" ] ~docv:"NAME"
+          ~doc:"Policy used by unauthenticated requests.")
+  in
+  let log_level =
+    Arg.(
+      value
+      & opt
+          (some
+             (enum
+                [
+                  ("debug", "debug");
+                  ("info", "info");
+                  ("warn", "warn");
+                  ("error", "error");
+                ]))
+          None
+      & info [ "log-level" ] ~docv:"LEVEL" ~doc:"debug, info, warn or error.")
+  in
+  let log_format =
+    Arg.(
+      value
+      & opt (some (enum [ ("json", "json"); ("text", "text") ])) None
+      & info [ "log-format" ] ~docv:"FORMAT" ~doc:"json or text (logs go to stderr).")
+  in
+  let audit =
+    Arg.(
+      value & opt_all audit_conv []
+      & info [ "audit" ] ~docv:"SINK"
+          ~doc:
+            "Audit sink: $(b,stdout), $(b,file:PATH) or $(b,none) (repeatable; replaces \
+             the config's sinks).")
+  in
+  let log_raw_sql =
+    Arg.(
+      value & flag & info [ "log-raw-sql" ] ~doc:"Include the raw SQL in audit records.")
+  in
+  let watch =
+    Arg.(
+      value
+      & vflag None
+          [
+            ( Some true,
+              info [ "watch" ]
+                ~doc:"Reload when policy/config files change (polled every 2s)." );
+            ( Some false,
+              info [ "no-watch" ] ~doc:"Do not watch files (SIGHUP still reloads)." );
+          ])
+  in
+  let max_bytes =
+    Arg.(
+      value
+      & opt (some int) None
+      & info [ "max-request-bytes" ] ~docv:"N"
+          ~doc:"Maximum request body size (413 above).")
+  in
+  let no_metrics =
+    Arg.(value & flag & info [ "no-metrics" ] ~doc:"Disable GET /metrics.")
+  in
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "Serves POST /v1/verify, GET /v1/policies, /healthz, /readyz and /metrics. \
+         Settings precedence: command-line flags > HALTSQL_* environment variables > \
+         config file > defaults. SIGHUP reloads all policies (atomically; the last good \
+         set is kept on error). SIGTERM/SIGINT shut down gracefully. TLS is not built \
+         in: terminate TLS in a proxy or service mesh.";
+      `S Manpage.s_examples;
+      `Pre
+        "  haltsql-server --policy policy.yaml --listen 127.0.0.1:8080 \
+         --allow-unauthenticated";
+      `Noblank;
+      `Pre "  haltsql-server --config /etc/haltsql/config.yaml";
+      `S Manpage.s_exit_status;
+      `P
+        "0 after a graceful shutdown; 2 if the configuration cannot be loaded or the \
+         listener cannot start.";
+    ]
+  in
+  Cmd.v
+    (Cmd.info "haltsql-server" ~version:Haltsql.version
+       ~doc:"HTTP sidecar for the HaltSQL policy firewall" ~man)
+    Term.(
+      const run $ config $ policies $ listen $ allow_unauth $ default_policy $ log_level
+      $ log_format $ audit $ log_raw_sql $ watch $ max_bytes $ no_metrics)
+
+let () =
+  exit
+    (match Cmd.eval_value cmd with
+    | Ok (`Ok code) -> code
+    | Ok (`Help | `Version) -> 0
+    | Error _ -> 2)

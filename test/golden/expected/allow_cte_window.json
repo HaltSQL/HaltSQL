@@ -1,0 +1,18 @@
+{
+  "sql": "WITH m AS (SELECT date_trunc('month', created_at) AS month, sum(total_cents) AS rev FROM orders WHERE tenant_id = $1 GROUP BY 1) SELECT month, rev, lag(rev) OVER (ORDER BY month) AS prev FROM m ORDER BY month LIMIT 24",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [
+    "app.orders.created_at", "app.orders.tenant_id", "app.orders.total_cents"
+  ],
+  "bind_params": [ { "param": 1, "value": "acme" } ],
+  "fingerprint": "bbdcd6f0dac5f936",
+  "sql_sha256": "2ffce6e78c484b9ffdd28b8e616b63f93ab74d6fd4ae6d83d8ad6317db676b84"
+}

@@ -1,0 +1,22 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "TestSuite",
+  "metadata": {
+    "name": "json_twin",
+    "description": "Same cases as the YAML suites, run against the JSON twin of the saas policy (saas.json) and written as a JSON suite, to prove both formats behave identically."
+  },
+  "policy": "../fixtures/policies/saas.json",
+  "defaults": { "context": { "tenant_id": "acme" } },
+  "cases": [
+    { "name": "filtered select allowed", "sql": "SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 10", "expect": "allow", "bind": [ { "param": 1, "value": "acme" } ], "tags": ["json_twin"] },
+    { "name": "join report allowed", "sql": "SELECT c.name, count(*) FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 GROUP BY c.name LIMIT 20", "expect": "allow", "bind": [ { "param": 1, "value": "acme" } ], "tags": ["json_twin"] },
+    { "name": "global table allowed", "sql": "SELECT code, symbol FROM currencies LIMIT 10", "expect": "allow", "bind": [], "tags": ["json_twin"] },
+    { "name": "missing tenant filter", "sql": "SELECT id FROM orders LIMIT 10", "expect": "deny", "codes": ["E_TENANT_MISSING"], "tags": ["json_twin"] },
+    { "name": "pii column", "sql": "SELECT email FROM customers WHERE tenant_id = $1 LIMIT 10", "expect": "deny", "codes": ["E_COLUMN_DENIED"], "tags": ["json_twin"] },
+    { "name": "star expands to pii", "sql": "SELECT * FROM customers WHERE tenant_id = $1 LIMIT 10", "expect": "deny", "codes": ["E_COLUMN_DENIED"], "tags": ["json_twin"] },
+    { "name": "table not in policy", "sql": "SELECT id FROM api_keys WHERE tenant_id = $1 LIMIT 10", "expect": "deny", "codes": ["E_TABLE_DENIED"], "tags": ["json_twin"] },
+    { "name": "limit too high", "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1001", "expect": "deny", "codes": ["E_LIMIT_TOO_HIGH"], "tags": ["json_twin"] },
+    { "name": "pg_sleep", "sql": "SELECT pg_sleep(5) FROM orders WHERE tenant_id = $1 LIMIT 1", "expect": "deny", "codes": ["E_FUNCTION_DENIED"], "tags": ["json_twin"] },
+    { "name": "smuggled statement", "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1; DELETE FROM orders", "expect": "deny", "codes": ["E_MULTI_STATEMENT"], "tags": ["json_twin"] }
+  ]
+}

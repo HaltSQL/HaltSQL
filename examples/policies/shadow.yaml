@@ -1,0 +1,33 @@
+# A new policy rolled out in shadow mode: violations are reported in the
+# audit log but queries are still allowed. Switch mode to enforce once the
+# false-positive rate is acceptable.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: marketing-insights-shadow
+  owner: growth
+dialect: postgres
+search_path: [analytics]
+statements:
+  allow: [select]
+require_limit:
+  max: 10000
+tenancy:
+  mode: literal
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  campaigns:
+    columns: [id, tenant_id, name, channel, started_at, budget_cents]
+    tenant_column: tenant_id
+  '"CampaignEvents"':
+    columns: [id, tenant_id, campaign_id, '"EventType"', occurred_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates, datetime, json]
+operators:
+  extend: ["#-"]
+deny_casts:
+  extend: [oid]
+allow_explain: true
+mode: shadow

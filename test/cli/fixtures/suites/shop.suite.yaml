@@ -1,0 +1,22 @@
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: shop-basic }
+policy: ../shop.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: tenant filtered select is allowed
+    sql: SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy]
+  - name: missing tenant filter is denied
+    sql: SELECT id FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy]
+  - name: system catalog is denied
+    sql: SELECT usename FROM pg_catalog.pg_user LIMIT 1
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [tables]

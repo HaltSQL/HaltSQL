@@ -1,0 +1,202 @@
+# Threat class: star_and_whole_row.
+# Policy: saas.yaml. * / t.* / whole-row references expand against the catalog snapshot (catalogs/saas.json). They are allowed only when every real column is readable: orders (explicit list = full catalog list), order_items and currencies (columns: "*"). customers has PII columns, so any whole-row use of it is denied.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: star_and_whole_row
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "star on orders all columns allowed"
+    sql: |-
+      SELECT * FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, star]
+  - name: "star on order items columns star"
+    sql: |-
+      SELECT * FROM order_items WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, star]
+  - name: "star on currencies"
+    sql: |-
+      SELECT * FROM currencies LIMIT 10
+    expect: allow
+    bind: []
+    tags: [star_and_whole_row, star, global]
+  - name: "qualified star on orders"
+    sql: |-
+      SELECT o.* FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, star]
+  - name: "count star on customers"
+    sql: |-
+      SELECT count(*) FROM customers WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, count_star]
+  - name: "exists select star on customers is conservatively denied"
+    sql: |-
+      SELECT o.id FROM orders o WHERE o.tenant_id = $1 AND EXISTS (SELECT * FROM customers c WHERE c.tenant_id = $1 AND c.id = o.customer_id) LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, exists, ambiguous]
+  - name: "star on customers"
+    sql: |-
+      SELECT * FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star]
+  - name: "qualified star on customers"
+    sql: |-
+      SELECT c.* FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star]
+  - name: "star on users"
+    sql: |-
+      SELECT * FROM users WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star]
+  - name: "star on join including customers"
+    sql: |-
+      SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star, join]
+  - name: "orders star plus customers star"
+    sql: |-
+      SELECT o.*, c.* FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star, join]
+  - name: "orders star join customers allowed cols"
+    sql: |-
+      SELECT o.*, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, star, join]
+  - name: "whole row reference"
+    sql: |-
+      SELECT c FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "whole row by table name"
+    sql: |-
+      SELECT customers FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "row_to_json whole row"
+    sql: |-
+      SELECT row_to_json(c) FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "to_jsonb whole row"
+    sql: |-
+      SELECT to_jsonb(c) FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "json_agg whole row"
+    sql: |-
+      SELECT json_agg(c) FROM customers c WHERE c.tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "whole row cast to text"
+    sql: |-
+      SELECT c::text FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "row constructor of star"
+    sql: |-
+      SELECT ROW(c.*) FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "whole row in where comparison"
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND c::text LIKE '%078-05%' LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]
+  - name: "whole row in count"
+    sql: |-
+      SELECT count(c) FROM customers c WHERE c.tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row, ambiguous]
+  - name: "whole row field selection of denied column"
+    sql: |-
+      SELECT (c).email FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, indirection]
+  - name: "star through derived table"
+    sql: |-
+      SELECT x.* FROM (SELECT * FROM customers WHERE tenant_id = $1) x LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, subquery]
+  - name: "star through cte"
+    sql: |-
+      WITH c AS (SELECT * FROM customers WHERE tenant_id = $1) SELECT name FROM c LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, cte]
+  - name: "star outside cte of allowed columns"
+    sql: |-
+      WITH c AS (SELECT id, name FROM customers WHERE tenant_id = $1) SELECT * FROM c LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, cte]
+  - name: "star over derived table of allowed columns"
+    sql: |-
+      SELECT * FROM (SELECT id, country FROM customers WHERE tenant_id = $1) x LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [star_and_whole_row, subquery]
+  - name: "whole row of derived table hiding email"
+    sql: |-
+      SELECT row_to_json(x) FROM (SELECT id, email FROM customers WHERE tenant_id = $1) x LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, subquery]
+  - name: "row_to_json is excluded from the json preset"
+    sql: |-
+      SELECT row_to_json(o) FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [star_and_whole_row, whole_row, ambiguous]
+  - name: "star on users through union"
+    sql: |-
+      SELECT * FROM orders WHERE tenant_id = $1 UNION ALL SELECT * FROM users WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, setop]
+  - name: "star on invoices with internal notes"
+    sql: |-
+      SELECT * FROM invoices WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, star]
+  - name: "star on exchange rates explicit full list"
+    sql: |-
+      SELECT * FROM exchange_rates LIMIT 10
+    expect: allow
+    bind: []
+    tags: [star_and_whole_row, star, global]
+  - name: "whole row of payments"
+    sql: |-
+      SELECT p FROM payments p WHERE p.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [star_and_whole_row, whole_row]

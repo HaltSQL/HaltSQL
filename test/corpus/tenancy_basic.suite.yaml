@@ -1,0 +1,258 @@
+# Threat class: tenant bypass, basic predicate shapes (PLAN.md §3, §6.3).
+# Policy: saas.yaml (bound mode, tenant column tenant_id, ctx.tenant_id).
+# The proof is a top-level AND-chain conjunct `alias.tenant_id = $n` in the
+# relation's own scope; OR / NOT / CASE / casts on the column side break it.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_basic }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: qualified tenant predicate
+    sql: SELECT o.id, o.status FROM orders o WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: unqualified tenant predicate single table
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: table-name qualified predicate
+    sql: SELECT orders.id FROM orders WHERE orders.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: schema-qualified table with alias
+    sql: SELECT o.id FROM app.orders AS o WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: tenant predicate among other conjuncts
+    sql: |-
+      SELECT o.id, o.total_cents FROM orders o
+      WHERE o.status = 'paid' AND o.tenant_id = $1 AND o.total_cents > 1000
+      ORDER BY o.created_at DESC LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: parenthesized tenant conjunct
+    sql: SELECT o.id FROM orders o WHERE (o.tenant_id = $1) AND (o.status = 'open') LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: nested AND chain
+    sql: SELECT o.id FROM orders o WHERE (o.status = 'open' AND (o.tenant_id = $1 AND o.total_cents > 0)) LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: aggregate with tenant predicate
+    sql: |-
+      SELECT o.status, count(*) AS n, sum(o.total_cents) AS revenue
+      FROM orders o WHERE o.tenant_id = $1 GROUP BY o.status ORDER BY n DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: duplicated tenant predicate
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id = $1 AND o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic]
+  - name: tenant predicate with param 2
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id = $2 LIMIT 10
+    expect: allow
+    bind: [{ param: 2, value: acme }]
+    tags: [tenancy_basic, ambiguous]
+  - name: reversed operands
+    sql: SELECT o.id FROM orders o WHERE $1 = o.tenant_id LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_basic, ambiguous]
+  - name: different context value is what gets bound
+    sql: SELECT c.id, c.name FROM customers c WHERE c.tenant_id = $1 LIMIT 25
+    context: { tenant_id: globex }
+    expect: allow
+    bind: [{ param: 1, value: globex }]
+    tags: [tenancy_basic]
+  - name: global table needs no predicate
+    sql: SELECT code, name, symbol FROM currencies ORDER BY code LIMIT 100
+    expect: allow
+    bind: []
+    tags: [tenancy_basic]
+  - name: global exchange rates
+    sql: SELECT base, quote, rate FROM exchange_rates WHERE as_of = CURRENT_DATE LIMIT 100
+    expect: allow
+    bind: []
+    tags: [tenancy_basic]
+  - name: no where clause
+    sql: SELECT id, status FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: where without tenant predicate
+    sql: SELECT id FROM orders WHERE status = 'paid' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: OR 1=1
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR 1 = 1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: OR true
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR true LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: OR string tautology
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR 'a' = 'a' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: AND then OR precedence trick
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'paid' OR status = 'open' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: OR other tenant literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR tenant_id = 'globex' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: OR tenant_id is not null
+    sql: SELECT id FROM orders WHERE tenant_id = $1 OR tenant_id IS NOT NULL LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: OR nested inside AND chain
+    sql: SELECT id FROM orders WHERE status = 'paid' AND (tenant_id = $1 OR total_cents > 0) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass]
+  - name: both OR branches have tenant predicate
+    sql: SELECT id FROM orders WHERE (tenant_id = $1 AND status = 'a') OR (tenant_id = $1 AND status = 'b') LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, or_bypass, ambiguous]
+  - name: NOT not-equal
+    sql: SELECT id FROM orders WHERE NOT (tenant_id <> $1) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: double negation
+    sql: SELECT id FROM orders WHERE NOT (NOT (tenant_id = $1)) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: not equal tenant
+    sql: SELECT id FROM orders WHERE tenant_id <> $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: CASE wrapping predicate
+    sql: SELECT id FROM orders WHERE CASE WHEN tenant_id = $1 THEN true ELSE true END LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: coalesce wrapping predicate
+    sql: SELECT id FROM orders WHERE coalesce(tenant_id = $1, true) LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: predicate compared to itself
+    sql: SELECT id FROM orders WHERE tenant_id = tenant_id LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: predicate compared to other column
+    sql: SELECT id FROM orders WHERE tenant_id = status LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: literal in bound mode
+    sql: SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISMATCH]
+    tags: [tenancy_basic]
+  - name: cast on column side
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id::text = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, cast]
+  - name: CAST syntax on column side
+    sql: SELECT o.id FROM orders o WHERE CAST(o.tenant_id AS varchar) = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic, cast]
+  - name: function on column side
+    sql: SELECT o.id FROM orders o WHERE lower(o.tenant_id) = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: concatenation on column side
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id || '' = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: LIKE instead of equality
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id LIKE $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: IS NOT DISTINCT FROM
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id IS NOT DISTINCT FROM $1 LIMIT 10
+    expect: deny
+    tags: [tenancy_basic, ambiguous]
+  - name: greater-or-equal
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id >= $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: IN list with param
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id IN ($1, 'globex') LIMIT 10
+    expect: deny
+    tags: [tenancy_basic, ambiguous]
+  - name: BETWEEN on tenant column
+    sql: SELECT o.id FROM orders o WHERE o.tenant_id BETWEEN $1 AND 'zzzz' LIMIT 10
+    expect: deny
+    tags: [tenancy_basic, ambiguous]
+  - name: predicate on wrong column
+    sql: SELECT o.id FROM orders o WHERE o.customer_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: tenant predicate only in HAVING
+    sql: SELECT tenant_id, count(*) FROM orders GROUP BY tenant_id HAVING tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: tenant predicate in select list only
+    sql: SELECT id, tenant_id = $1 AS mine FROM orders LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_basic]
+  - name: missing context entirely
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    context: {}
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_basic, context]
+  - name: context has wrong key
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    context: { tenant: acme }
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_basic, context]
+  - name: context missing with customers
+    sql: SELECT c.id FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    context: { user_id: "42" }
+    expect: deny
+    codes: [E_CONTEXT_MISSING]
+    tags: [tenancy_basic, context]
+  - name: global table with empty context
+    sql: SELECT code FROM currencies LIMIT 10
+    context: {}
+    expect: allow
+    bind: []
+    tags: [tenancy_basic, context, ambiguous]

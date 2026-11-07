@@ -1,0 +1,11 @@
+# Deliberately wrong expectation: `haltsql test` must exit 1.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: shop-failing }
+policy: shop.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: wrong expectation
+    sql: SELECT id FROM orders LIMIT 10
+    expect: allow

@@ -1,0 +1,35 @@
+# Composite tenant key: every workspace-scoped row is identified by
+# (org_id, workspace_id). Org-level tables are scoped by org_id only.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: workspace-assistant
+  owner: collaboration
+dialect: postgres
+search_path: [public]
+statements:
+  allow: [select]
+require_limit:
+  max: 500
+tenancy:
+  mode: bound
+  keys:
+    org: ${ctx.org_id}
+    workspace: ${ctx.workspace_id}
+tables:
+  documents:
+    columns: [id, org_id, workspace_id, title, updated_at]
+    tenant_columns:
+      org_id: org
+      workspace_id: workspace
+  comments:
+    columns: [id, org_id, workspace_id, document_id, body, created_at]
+    tenant_columns:
+      org_id: org
+      workspace_id: workspace
+  members:
+    columns: [id, org_id, display_name, role]
+    tenant_columns:
+      org_id: org
+functions:
+  presets: [aggregates, string, datetime]

@@ -1,0 +1,14 @@
+; End-to-end tests of the `haltsql` CLI: runs the built binary as a subprocess
+; and checks stdout, stderr and exit codes.
+
+(test
+ (name test_cli)
+ (package haltsql)
+ (libraries alcotest unix yojson str)
+ (deps
+  (source_tree fixtures))
+ (action
+  (setenv
+   HALTSQL_BIN
+   %{dep:../../bin/haltsql/main.exe}
+   (run %{test}))))

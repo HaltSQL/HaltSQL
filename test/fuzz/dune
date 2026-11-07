@@ -1,0 +1,17 @@
+; Mutation fuzzer for Haltsql.verify and the YAML/JSON loaders (no AFL here).
+; `dune test` runs a short smoke pass; for a long run:
+;   HALTSQL_FUZZ_ITERS=1000000 dune test --force test/fuzz
+; Crashing inputs are minimized and written to test/fuzz/crashes/.
+
+(executable
+ (name fuzz)
+ (libraries haltsql unix yojson))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree ../corpus)
+  (source_tree ../conformance)
+  (source_tree ../fixtures))
+ (action
+  (run %{exe:fuzz.exe} --root ..)))

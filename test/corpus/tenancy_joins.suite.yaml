@@ -1,0 +1,305 @@
+# Threat class: tenant bypass through joins (PLAN.md §6.3). Proof may live in
+# the scope's WHERE, an INNER JOIN ON, or the ON of a LEFT JOIN where the
+# relation is the nullable side. LEFT JOIN ON never filters the preserved side.
+# Equality propagation (a.tenant_id = b.tenant_id) is NOT supported in v1.
+# Policy: saas.yaml (bound mode, max_joins 6).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: tenancy_joins }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: inner join both filtered in WHERE
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.tenant_id = $1 AND c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: inner join one filtered in ON
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: INNER JOIN keyword both in ON
+    sql: |-
+      SELECT o.id FROM orders o INNER JOIN invoices i
+        ON i.order_id = o.id AND i.tenant_id = $1 AND o.tenant_id = $1
+      LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, ambiguous]
+  - name: inner join second table unfiltered
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins]
+  - name: equality propagation not supported
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c
+        ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation in WHERE not supported
+    sql: |-
+      SELECT o.id FROM orders o, invoices i
+      WHERE i.order_id = o.id AND o.tenant_id = i.tenant_id AND i.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: USING tenant_id is not a proof
+    sql: |-
+      SELECT o.id FROM orders o JOIN invoices i USING (tenant_id)
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: NATURAL JOIN is not a proof
+    sql: SELECT o.id FROM orders o NATURAL JOIN order_items oi WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    tags: [tenancy_joins, ambiguous]
+  - name: three-way join all filtered
+    sql: |-
+      SELECT o.id, c.name, sum(oi.quantity * oi.unit_price_cents) AS gross
+      FROM orders o
+      JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+      JOIN order_items oi ON oi.order_id = o.id AND oi.tenant_id = $1
+      WHERE o.tenant_id = $1
+      GROUP BY o.id, c.name ORDER BY gross DESC LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: three-way join third unfiltered
+    sql: |-
+      SELECT o.id, c.name FROM orders o
+      JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+      JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.tenant_id = $1 LIMIT 20
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins]
+  - name: join with global table needs no predicate on it
+    sql: |-
+      SELECT o.id, cur.symbol FROM orders o JOIN currencies cur ON cur.code = o.currency
+      WHERE o.tenant_id = $1 LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: left join nullable side filtered in ON
+    sql: |-
+      SELECT c.id, count(o.id) AS n FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1 GROUP BY c.id LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, left_join]
+  - name: left join nullable side filtered in WHERE
+    sql: |-
+      SELECT c.id, o.id FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id
+      WHERE c.tenant_id = $1 AND o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, left_join]
+  - name: left join preserved side only filtered in ON
+    sql: |-
+      SELECT c.id, o.id FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND c.tenant_id = $1 AND o.tenant_id = $1
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, left_join]
+  - name: left join nullable side unfiltered
+    sql: |-
+      SELECT c.id, o.total_cents FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, left_join]
+  - name: LEFT OUTER JOIN spelled out, filtered properly
+    sql: |-
+      SELECT i.id, p.amount_cents FROM invoices i
+      LEFT OUTER JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      WHERE i.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, left_join]
+  - name: right join nullable side is left, filtered in ON
+    sql: |-
+      SELECT c.id, o.id FROM orders o
+      RIGHT JOIN customers c ON o.customer_id = c.id AND o.tenant_id = $1
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, right_join, ambiguous]
+  - name: right join preserved side only filtered in ON
+    sql: |-
+      SELECT c.id, o.id FROM orders o
+      RIGHT JOIN customers c ON o.customer_id = c.id AND c.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, right_join]
+  - name: right join left side unfiltered
+    sql: |-
+      SELECT c.id, o.id FROM orders o
+      RIGHT JOIN customers c ON o.customer_id = c.id
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, right_join]
+  - name: full join both filtered only in ON
+    sql: |-
+      SELECT c.id, o.id FROM customers c
+      FULL JOIN orders o ON o.customer_id = c.id AND c.tenant_id = $1 AND o.tenant_id = $1
+      LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, full_join]
+  - name: full join both filtered in WHERE
+    sql: |-
+      SELECT c.id, o.id FROM customers c
+      FULL JOIN orders o ON o.customer_id = c.id
+      WHERE c.tenant_id = $1 AND o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, full_join]
+  - name: cross join second unfiltered
+    sql: SELECT o.id, c.id FROM orders o CROSS JOIN customers c WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, cross_join]
+  - name: cross join both filtered in WHERE
+    sql: |-
+      SELECT o.id, c.id FROM orders o CROSS JOIN customers c
+      WHERE o.tenant_id = $1 AND c.tenant_id = $1 AND c.id = o.customer_id LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, cross_join]
+  - name: comma join both filtered
+    sql: |-
+      SELECT o.id, c.name FROM orders o, customers c
+      WHERE c.id = o.customer_id AND o.tenant_id = $1 AND c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, comma_join]
+  - name: comma join one unfiltered
+    sql: |-
+      SELECT o.id, c.name FROM orders o, customers c
+      WHERE c.id = o.customer_id AND o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, comma_join]
+  - name: self join manager style both filtered
+    sql: |-
+      SELECT u.display_name, m.display_name AS peer FROM users u
+      JOIN users m ON m.role = u.role AND m.id <> u.id AND m.tenant_id = $1
+      WHERE u.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, self_join]
+  - name: self join second copy unfiltered
+    sql: |-
+      SELECT u.display_name, m.display_name AS peer FROM users u
+      JOIN users m ON m.role = u.role AND m.id <> u.id
+      WHERE u.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, self_join]
+  - name: OR inside join ON breaks proof
+    sql: |-
+      SELECT o.id, c.name FROM orders o
+      JOIN customers c ON c.id = o.customer_id AND (c.tenant_id = $1 OR c.plan = 'free')
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, or_bypass]
+  - name: inner join ON filter for left table only
+    sql: |-
+      SELECT o.id FROM orders o JOIN order_items oi ON oi.order_id = o.id AND o.tenant_id = $1
+      WHERE oi.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, ambiguous]
+  - name: parenthesized nested join filtered
+    sql: |-
+      SELECT o.id FROM orders o
+      JOIN (invoices i JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1)
+        ON i.order_id = o.id AND i.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: parenthesized nested join inner unfiltered
+    sql: |-
+      SELECT o.id FROM orders o
+      JOIN (invoices i JOIN payments p ON p.invoice_id = i.id)
+        ON i.order_id = o.id AND i.tenant_id = $1
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins]
+  - name: lateral subquery filtered
+    sql: |-
+      SELECT c.id, last.total_cents FROM customers c
+      CROSS JOIN LATERAL (
+        SELECT o.total_cents FROM orders o
+        WHERE o.customer_id = c.id AND o.tenant_id = $1 ORDER BY o.created_at DESC LIMIT 1
+      ) last
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, lateral]
+  - name: lateral subquery unfiltered
+    sql: |-
+      SELECT c.id, last.total_cents FROM customers c
+      CROSS JOIN LATERAL (
+        SELECT o.total_cents FROM orders o WHERE o.customer_id = c.id ORDER BY o.created_at DESC LIMIT 1
+      ) last
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, lateral]
+  - name: lateral correlated tenant equality is not a proof
+    sql: |-
+      SELECT c.id, x.n FROM customers c,
+      LATERAL (SELECT count(*) AS n FROM orders o WHERE o.customer_id = c.id AND o.tenant_id = c.tenant_id) x
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, lateral, propagation]
+  - name: left join lateral filtered
+    sql: |-
+      SELECT c.id, x.n FROM customers c
+      LEFT JOIN LATERAL (SELECT count(*) AS n FROM invoices i WHERE i.customer_id = c.id AND i.tenant_id = $1) x ON true
+      WHERE c.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, lateral]
+  - name: four tenant tables all filtered
+    sql: |-
+      SELECT c.name, count(DISTINCT o.id) AS orders, sum(p.amount_cents) AS paid
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1
+      JOIN invoices i ON i.order_id = o.id AND i.tenant_id = $1
+      LEFT JOIN payments p ON p.invoice_id = i.id AND p.tenant_id = $1
+      WHERE c.tenant_id = $1
+      GROUP BY c.name ORDER BY paid DESC NULLS LAST LIMIT 25
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins]
+  - name: tenant predicates with different params
+    sql: |-
+      SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.tenant_id = $1 AND c.tenant_id = $2 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }, { param: 2, value: acme }]
+    tags: [tenancy_joins, ambiguous]

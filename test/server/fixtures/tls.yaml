@@ -1,0 +1,7 @@
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:18443
+  tls: { cert: /nonexistent/tls.crt, key: /nonexistent/tls.key }
+policies:
+  - path: ./shop.yaml

@@ -1,0 +1,19 @@
+{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": { "name": "shop", "owner": "cli-tests" },
+  "dialect": "postgres-17",
+  "search_path": ["app"],
+  "statements": { "allow": ["select"] },
+  "require_limit": { "max": 100 },
+  "tenancy": { "mode": "bound", "keys": { "tenant": "${ctx.tenant_id}" } },
+  "tables": {
+    "app.orders": {
+      "columns": ["id", "tenant_id", "status", "total_cents", "created_at"],
+      "tenant_column": "tenant_id"
+    },
+    "app.currencies": { "columns": "*" }
+  },
+  "functions": { "presets": ["aggregates"] },
+  "mode": "enforce"
+}

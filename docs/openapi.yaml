@@ -1,0 +1,329 @@
+openapi: 3.1.0
+info:
+  title: HaltSQL sidecar API
+  version: 0.1.0
+  summary: Verify LLM-generated PostgreSQL against a HaltSQL policy.
+  description: |
+    `haltsql-server` checks whether an exact SQL string is allowed for a caller
+    under a policy. It never rewrites SQL and never connects to the database.
+    Denials are returned as `200` verdicts with `allowed: false`. Clients must
+    treat any non-200 response, timeout, or connection error as a denial.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    url: https://github.com/ardada2468/HaltSQL
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local sidecar (default listen address)
+security:
+  - bearerAuth: []
+tags:
+  - name: verify
+  - name: policies
+  - name: operations
+paths:
+  /v1/verify:
+    post:
+      tags: [verify]
+      operationId: verify
+      summary: Verify one SQL string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+            examples:
+              bound:
+                value:
+                  sql: SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 50
+                  context: { tenant_id: acme }
+      responses:
+        "200":
+          description: Verdict (allowed or denied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Verdict"
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "405": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/policies:
+    get:
+      tags: [policies]
+      operationId: listPolicies
+      summary: List the policies the caller may use
+      responses:
+        "200":
+          description: Policies visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [policies]
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PolicySummary"
+        "401": { $ref: "#/components/responses/Error" }
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: readyz
+      summary: Readiness probe
+      security: []
+      responses:
+        "200":
+          description: At least one policy is loaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: No policy is loaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: metrics
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Static bearer token; the server stores only its SHA-256. Each token is pinned to one policy.
+  responses:
+    Error:
+      description: Request could not be processed. Treat as a denial.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    ContextValue:
+      oneOf:
+        - type: string
+        - type: integer
+        - type: array
+          items:
+            oneOf:
+              - type: string
+              - type: integer
+    VerifyRequest:
+      type: object
+      required: [sql]
+      additionalProperties: false
+      properties:
+        sql:
+          type: string
+          description: The exact SQL string to verify.
+        context:
+          type: object
+          description: Values from the caller's authenticated session. Never from the prompt or the SQL.
+          additionalProperties:
+            $ref: "#/components/schemas/ContextValue"
+          default: {}
+        policy:
+          type: string
+          description: Policy name. If a token is used, must equal the token's pinned policy.
+    ReasonCode:
+      type: string
+      description: |
+        Stable reason code. New codes may be added in minor releases; treat
+        unknown codes as a denial.
+      examples: [E_TENANT_MISSING]
+      pattern: "^E_[A-Z_]+$"
+      x-known-values:
+        - E_PARSE
+        - E_EMPTY
+        - E_LIMIT
+        - E_MULTI_STATEMENT
+        - E_STATEMENT_KIND
+        - E_DATA_MODIFYING_CTE
+        - E_TABLE_DENIED
+        - E_COLUMN_DENIED
+        - E_COLUMN_UNRESOLVED
+        - E_FUNCTION_DENIED
+        - E_OPERATOR_DENIED
+        - E_CAST_DENIED
+        - E_TENANT_MISSING
+        - E_TENANT_MISMATCH
+        - E_TENANT_WRITE
+        - E_CONTEXT_MISSING
+        - E_PARAM_UNBOUND
+        - E_LIMIT_REQUIRED
+        - E_LIMIT_TOO_HIGH
+        - E_LOCKING_CLAUSE
+        - E_SELECT_INTO
+        - E_JOIN_BUDGET
+        - E_WRITE_DENIED
+        - E_UNSUPPORTED
+        - E_INTERNAL
+    Reason:
+      type: object
+      required: [code, message, rule]
+      properties:
+        code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          description: Human-readable explanation. Not stable.
+        rule:
+          type: string
+          description: Identifier of the rule that produced the reason. Not stable.
+        loc:
+          type: integer
+          minimum: 0
+          description: Byte offset into the SQL string, when known.
+        hint:
+          type: string
+          description: Short instruction an LLM agent can follow to fix its query. Not stable.
+    BindParam:
+      type: object
+      required: [param, value]
+      properties:
+        param:
+          type: integer
+          minimum: 1
+          description: Placeholder number n of `$n`.
+        value:
+          description: Value the caller must bind; an array when the context value is a set.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+    Verdict:
+      type: object
+      required:
+        - allowed
+        - reasons
+        - shadow_reasons
+        - policy
+        - statement_kind
+        - tables
+        - columns
+        - bind_params
+        - fingerprint
+        - sql_sha256
+        - elapsed_us
+      properties:
+        allowed:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reason"
+        shadow_reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reason"
+        policy:
+          type: object
+          required: [name, version]
+          properties:
+            name:
+              type: string
+            version:
+              type: string
+              pattern: "^sha256:[0-9a-f]+$"
+        statement_kind:
+          type: ["string", "null"]
+          enum: [select, insert, update, delete, null]
+        tables:
+          type: array
+          items:
+            type: string
+        columns:
+          type: array
+          items:
+            type: string
+        bind_params:
+          type: array
+          items:
+            $ref: "#/components/schemas/BindParam"
+        fingerprint:
+          type: ["string", "null"]
+        sql_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        elapsed_us:
+          type: integer
+          minimum: 0
+    PolicySummary:
+      type: object
+      required: [name, version, mode]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        mode:
+          type: string
+          enum: [enforce, shadow]
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, not_ready]
+        policies:
+          type: integer
+          description: Number of loaded policies (readyz only).
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - BAD_REQUEST
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - POLICY_NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - PAYLOAD_TOO_LARGE
+                - INTERNAL
+                - NOT_READY
+                - POLICY_UNAVAILABLE
+                - AUDIT_UNAVAILABLE
+            message:
+              type: string

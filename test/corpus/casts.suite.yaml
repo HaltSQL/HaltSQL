@@ -1,0 +1,148 @@
+# Threat class: dangerous casts (PLAN.md §3 "Table and column escape").
+# Casts to reg* object-identifier types resolve catalog objects by name and are
+# denied (E_CAST_DENIED). Ordinary casts (int, text, numeric, date, interval,
+# jsonb) stay allowed.
+# Policy: saas.yaml (default deny_casts).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: casts }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: regclass literal cast
+    sql: SELECT 'acme'::regclass LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regclass of system table
+    sql: SELECT 'pg_catalog.pg_authid'::regclass LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regclass cast function syntax
+    sql: SELECT CAST('app.api_keys' AS regclass) LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regclass type-literal syntax
+    sql: SELECT regclass 'app.api_keys' LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: pg_catalog qualified regclass
+    sql: SELECT 'app.api_keys'::pg_catalog.regclass LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg, qualified]
+  - name: regclass in where clause
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND 'app.api_keys'::regclass IS NOT NULL LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regclass to oid to text chain
+    sql: SELECT 'app.api_keys'::regclass::oid::text LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regproc cast
+    sql: SELECT 'pg_sleep'::regproc LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regprocedure cast
+    sql: SELECT 'pg_read_file(text)'::regprocedure LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regtype cast
+    sql: SELECT 'int4'::regtype LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regnamespace cast
+    sql: SELECT 'pg_catalog'::regnamespace LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regrole cast
+    sql: SELECT 'postgres'::regrole LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regoper cast
+    sql: SELECT '+'::regoper LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regconfig cast
+    sql: SELECT 'english'::regconfig LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: regclass array cast
+    sql: SELECT '{app.api_keys}'::regclass[] LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg, array]
+  - name: regclass cast on column value
+    sql: SELECT status::regclass FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg]
+  - name: quoted regclass type name
+    sql: SELECT 'app.api_keys'::"regclass" LIMIT 1
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg, quoted]
+  - name: regclass inside subquery
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND id IN (SELECT 'app.orders'::regclass::oid::int8) LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts, reg, nested]
+  - name: int cast allowed
+    sql: SELECT id::int4, total_cents::numeric FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: text cast of scalar column allowed
+    sql: SELECT id::text FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: date cast allowed
+    sql: SELECT created_at::date, count(*) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: cast syntax allowed
+    sql: SELECT CAST(total_cents AS numeric(12, 2)) / 100 FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: interval literal allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at > now() - interval '7 days' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: jsonb cast allowed
+    sql: |-
+      SELECT id FROM audit_events WHERE tenant_id = $1 AND payload @> '{"a": 1}'::jsonb LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, benign]
+  - name: whole row cast to text leaks denied columns
+    sql: SELECT c::text FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [casts, whole_row]
+  - name: cast of tenant column does not prove tenancy
+    sql: SELECT id FROM orders WHERE tenant_id::text = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [casts, tenancy]
+  - name: oid cast is not a reg type
+    sql: SELECT id::oid FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts, ambiguous]

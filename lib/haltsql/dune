@@ -1,0 +1,12 @@
+(library
+ (name haltsql)
+ (public_name haltsql)
+ (libraries
+  haltsql.core
+  haltsql.parse
+  haltsql.load
+  haltsql.analyzer
+  digestif
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

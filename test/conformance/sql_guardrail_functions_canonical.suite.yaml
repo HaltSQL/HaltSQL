@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-functions-canonical
+  description: "allowed_functions: [date_trunc, to_char, json_agg, string_agg]"
+policy: policies/sqlg_fn_canonical.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "canonical name date_trunc('day', name)"
+    sql: "SELECT date_trunc('day', name) FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_canonical_aliases_allowlist_users_sql_name"]
+  - name: "canonical name to_char(id, '999')"
+    sql: "SELECT to_char(id, '999') FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_canonical_aliases_allowlist_users_sql_name"]
+  - name: "canonical name json_agg(id)"
+    sql: "SELECT json_agg(id) FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_canonical_aliases_allowlist_users_sql_name"]
+  - name: "canonical name string_agg(name, ',')"
+    sql: "SELECT string_agg(name, ',') FROM users LIMIT 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_canonical_aliases_allowlist_users_sql_name"]
+  - name: "unlisted count under canonical allowlist"
+    sql: "SELECT count(id) FROM users LIMIT 1"
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestFunctionAllowlist::test_canonical_aliases_allowlist_users_sql_name", "sqlg-adapted"]

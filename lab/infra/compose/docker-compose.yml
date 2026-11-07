@@ -1,0 +1,64 @@
+# haltlab databases. Postgres N is published on localhost:54NN.
+#   docker compose up -d                       # Postgres 17 only (default)
+#   docker compose --profile matrix up -d      # Postgres 13-17
+#   docker compose --profile chaos up -d       # + PgBouncer and Toxiproxy
+# Credentials are lab-only and never leave this machine.
+name: haltlab
+
+x-pg: &pg
+  environment:
+    POSTGRES_PASSWORD: haltlab
+    POSTGRES_INITDB_ARGS: "--auth-local=trust --auth-host=scram-sha-256"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+  tmpfs:
+    - /var/lib/postgresql/data
+  command: ["postgres", "-c", "fsync=off", "-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+
+services:
+  pg17:
+    <<: *pg
+    image: postgres:17-alpine
+    ports: ["127.0.0.1:5417:5432"]
+  pg16:
+    <<: *pg
+    image: postgres:16-alpine
+    profiles: [matrix]
+    ports: ["127.0.0.1:5416:5432"]
+  pg15:
+    <<: *pg
+    image: postgres:15-alpine
+    profiles: [matrix]
+    ports: ["127.0.0.1:5415:5432"]
+  pg14:
+    <<: *pg
+    image: postgres:14-alpine
+    profiles: [matrix]
+    ports: ["127.0.0.1:5414:5432"]
+  pg13:
+    <<: *pg
+    image: postgres:13-alpine
+    profiles: [matrix]
+    ports: ["127.0.0.1:5413:5432"]
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    profiles: [chaos]
+    depends_on:
+      pg17: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://postgres:haltlab@pg17:5432/postgres
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "500"
+    ports: ["127.0.0.1:6432:5432"]
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    profiles: [chaos]
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes: ["./toxiproxy.json:/config/toxiproxy.json:ro"]
+    ports: ["127.0.0.1:8474:8474", "127.0.0.1:25417:25417"]

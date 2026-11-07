@@ -1,0 +1,129 @@
+# haltsql-server as a sidecar next to an LLM agent. The agent calls
+# http://127.0.0.1:8080/v1/verify inside the pod (traffic never leaves the
+# pod, so no TLS is needed); a NetworkPolicy keeps other pods out.
+#
+# Create the token hash secret first (the agent gets the token, haltsql only
+# the hash):
+#   TOKEN="$(openssl rand -hex 32)"
+#   kubectl create secret generic analytics-agent-haltsql \
+#     --from-literal=token="$TOKEN" \
+#     --from-literal=token_sha256="$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analytics-agent-haltsql
+data:
+  config.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Config
+    server:
+      listen: 127.0.0.1:8080
+      auth:
+        tokens:
+          - name: analytics-agent
+            token_sha256: ${env:HALTSQL_TOKEN_SHA256}
+            policy: analytics-agent
+    policies:
+      - path: /etc/haltsql/policies/analytics-agent.yaml
+    reload: { watch: true }
+    audit:
+      sinks: [{ type: stdout }]
+      log_raw_sql: false
+    logging: { level: info, format: json }
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent, owner: data-platform }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_column: tenant_id
+      app.currencies:
+        columns: "*"
+    functions:
+      presets: [aggregates, datetime]
+    mode: enforce
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: analytics-agent }
+  template:
+    metadata:
+      labels: { app: analytics-agent }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: agent
+          image: example.com/analytics-agent:1.0.0     # your agent
+          env:
+            - name: HALTSQL_URL
+              value: http://127.0.0.1:8080
+            - name: HALTSQL_TOKEN
+              valueFrom: { secretKeyRef: { name: analytics-agent-haltsql, key: token } }
+        - name: haltsql
+          image: ghcr.io/ardada2468/haltsql:0.1.0
+          # Listens on all pod interfaces so the kubelet's httpGet probes can
+          # reach it; the NetworkPolicy below blocks other pods from port 8080,
+          # and every /v1 call needs a bearer token anyway.
+          args: ["--config", "/etc/haltsql/config.yaml", "--listen", "0.0.0.0:8080"]
+          env:
+            - name: HALTSQL_TOKEN_SHA256
+              valueFrom: { secretKeyRef: { name: analytics-agent-haltsql, key: token_sha256 } }
+          ports:
+            - { name: haltsql, containerPort: 8080 }
+          livenessProbe:  { httpGet: { path: /healthz, port: haltsql }, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz, port: haltsql }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - name: haltsql-config
+              mountPath: /etc/haltsql/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            # Mounted as a directory (not subPath) so ConfigMap updates reach
+            # the pod and reload.watch picks them up without a restart.
+            - name: haltsql-policies
+              mountPath: /etc/haltsql/policies
+              readOnly: true
+      volumes:
+        - name: haltsql-config
+          configMap: { name: analytics-agent-haltsql }
+        - name: haltsql-policies
+          configMap:
+            name: analytics-agent-haltsql
+            items:
+              - { key: analytics-agent.yaml, path: analytics-agent.yaml }
+---
+# Other pods may not reach the sidecar port. (Kubelet probes originate from
+# the node and are allowed by most CNIs; check yours.) Add the agent's own
+# serving ports to `ingress` if it serves traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analytics-agent-haltsql
+spec:
+  podSelector:
+    matchLabels: { app: analytics-agent }
+  policyTypes: [Ingress]
+  ingress: []

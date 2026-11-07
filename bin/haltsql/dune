@@ -1,0 +1,19 @@
+(executable
+ (name main)
+ (public_name haltsql)
+ (package haltsql)
+ (libraries haltsql cmdliner yojson unix)
+ (link_flags
+  (:include link_flags.sexp)))
+
+; Static linking is opt-in: `HALTSQL_STATIC=1 dune build --profile release`
+; (used by the Alpine/musl Docker builder). The default build stays dynamic.
+
+(rule
+ (targets link_flags.sexp)
+ (deps
+  (env_var HALTSQL_STATIC))
+ (action
+  (with-stdout-to
+   link_flags.sexp
+   (run %{ocaml} %{dep:../link_flags.ml}))))

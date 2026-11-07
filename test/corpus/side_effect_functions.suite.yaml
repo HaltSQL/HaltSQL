@@ -1,0 +1,241 @@
+# Threat class: hidden side effects in SELECT (PLAN.md §3): functions with
+# side effects or file/network/session access are never in a preset and are
+# denied by the function allowlist (deny by default).
+# Policy: saas.yaml (presets aggregates, math, string, datetime, json, window, conditional).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: side_effect_functions }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: pg_sleep in select list
+    sql: SELECT pg_sleep(10) FROM currencies LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: pg_sleep without from
+    sql: SELECT pg_sleep(5) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: pg_sleep in where
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND pg_sleep(1) IS NOT NULL LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: pg_sleep in case branch
+    sql: SELECT CASE WHEN status = 'paid' THEN pg_sleep(3) END FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos, blind]
+  - name: pg_sleep_for
+    sql: SELECT pg_sleep_for('5 minutes') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: pg_sleep_until
+    sql: SELECT pg_sleep_until('tomorrow') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: schema qualified pg_sleep
+    sql: SELECT pg_catalog.pg_sleep(10) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos, qualified]
+  - name: quoted pg_sleep
+    sql: SELECT "pg_sleep"(10) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos, quoted]
+  - name: pg_sleep in order by
+    sql: SELECT id FROM orders WHERE tenant_id = $1 ORDER BY pg_sleep(1) LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: pg_sleep inside subquery
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND id IN (SELECT pg_sleep(1)::int) LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dos]
+  - name: set_config
+    sql: SELECT set_config('app.tenant_id', 'globex', false) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, session]
+  - name: set_config in where
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND set_config('role', 'admin', true) = 'admin' LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, session]
+  - name: current_setting
+    sql: SELECT current_setting('app.tenant_id') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, session]
+  - name: nextval
+    sql: SELECT nextval('orders_id_seq') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, sequence]
+  - name: nextval alongside allowed columns
+    sql: SELECT id, nextval('orders_id_seq') FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, sequence]
+  - name: setval
+    sql: SELECT setval('orders_id_seq', 1) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, sequence]
+  - name: currval
+    sql: SELECT currval('orders_id_seq') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, sequence]
+  - name: dblink
+    sql: SELECT dblink('host=evil', 'SELECT 1') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, network]
+  - name: dblink_exec
+    sql: SELECT dblink_exec('dbname=prod', 'DROP TABLE orders') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, network]
+  - name: lo_import
+    sql: SELECT lo_import('/etc/passwd') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: lo_export
+    sql: SELECT lo_export(1234, '/tmp/x') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: lo_get
+    sql: SELECT lo_get(1234) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: pg_read_file
+    sql: SELECT pg_read_file('/etc/passwd') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: pg_read_binary_file
+    sql: SELECT pg_read_binary_file('postgresql.conf') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: pg_ls_dir
+    sql: SELECT pg_ls_dir('.') LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: pg_stat_file
+    sql: SELECT pg_stat_file('pg_hba.conf') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, file]
+  - name: pg_terminate_backend
+    sql: SELECT pg_terminate_backend(123) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, admin]
+  - name: pg_cancel_backend
+    sql: SELECT pg_cancel_backend(123) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, admin]
+  - name: pg_reload_conf
+    sql: SELECT pg_reload_conf() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, admin]
+  - name: pg_advisory_lock
+    sql: SELECT pg_advisory_lock(42) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, lock]
+  - name: pg_notify
+    sql: SELECT pg_notify('chan', 'payload') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions]
+  - name: txid_current
+    sql: SELECT txid_current() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions]
+  - name: query_to_xml runs arbitrary sql
+    sql: SELECT query_to_xml('SELECT * FROM customers', true, false, '') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dynamic_sql]
+  - name: query_to_xml with tenant row
+    sql: SELECT id, query_to_xml('DELETE FROM orders', true, false, '') FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, dynamic_sql]
+  - name: generate_series in from
+    sql: SELECT g FROM generate_series(1, 1000000000000) AS g LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, srf]
+  - name: generate_series in select list
+    sql: SELECT generate_series(1, 10) LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, srf]
+  - name: pg_logical_emit_message
+    sql: SELECT pg_logical_emit_message(true, 'x', 'y') LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions]
+  - name: pg_switch_wal
+    sql: SELECT pg_switch_wal() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, admin]
+  - name: version leaks server info
+    sql: SELECT version() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, recon]
+  - name: inet_server_addr
+    sql: SELECT inet_server_addr() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, recon]
+  - name: pg_backend_pid
+    sql: SELECT pg_backend_pid() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, recon]
+  - name: side effect function inside aggregate
+    sql: SELECT count(pg_sleep(1)) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, nested]
+  - name: side effect function in cte
+    sql: |-
+      WITH s AS (SELECT set_config('x', 'y', false) AS v)
+      SELECT v FROM s LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, nested]
+  - name: side effect function in join on
+    sql: |-
+      SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1
+        AND pg_sleep(1) IS NOT NULL
+      WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [side_effect_functions, nested]
+  - name: allowed function baseline
+    sql: SELECT count(*), max(total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [side_effect_functions, baseline]

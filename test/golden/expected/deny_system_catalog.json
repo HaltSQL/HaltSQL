@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT tablename FROM pg_catalog.pg_tables LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_TABLE_DENIED",
+      "message": "relation pg_catalog.pg_tables is not in the policy's table allowlist",
+      "rule": "tables.allowlist",
+      "loc": 22,
+      "hint": "Use only the tables listed in the policy."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [],
+  "columns": [],
+  "bind_params": [],
+  "fingerprint": "c34c4e7eca2f0bce",
+  "sql_sha256": "1308425c0b55c26a12a24343dc2167857e369b871f06bb21da08336251facd89"
+}

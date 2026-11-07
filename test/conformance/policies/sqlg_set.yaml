@@ -1,0 +1,28 @@
+# Conformance policy translated from sql-guardrail (MIT, (c) 2026 nickusevich)
+# https://github.com/nickusevich/sql-guardrail @ eadfb9d0c725f4960621a7c67c23219103710c5b
+# Source: tests/unit/test_predicates.py::test_in_predicate_for_admin_users and test_predicate_advanced.py::test_in_predicate_* (op: IN, value: ${tenant_ids}). Adapted to our BOUND set mode: `account_id = ANY($1)` with $1 bound to the context list.
+# Their `require_predicate: {column: account_id, op: "=", value: "${tenant_id}"}`
+# maps to our LITERAL tenancy mode (they compare SQL literals to the context
+# value); their `allow_columns`/`deny_columns` map to our `columns` allowlist
+# checked against the catalog snapshot ../catalogs/sqlg.json.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: sqlg-set
+  owner: qa
+  description: "tenant set (their op: IN)"
+dialect: postgres-17
+search_path: [public]
+catalog: ../catalogs/sqlg.json
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 10 }
+statements: { allow: [select] }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_ids}" }
+tables:
+  public.orders:
+    columns: [id, product_name, account_id, created_at, total]
+    tenant_column: account_id
+functions:
+  presets: [aggregates]
+mode: enforce

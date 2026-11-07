@@ -1,0 +1,16 @@
+; Implementation of haltsql-server, as a private library so test/server can
+; start the server in-process and reuse the audit-chain verifier.
+
+(library
+ (name haltsql_server)
+ (libraries
+  haltsql
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  http
+  lwt
+  lwt.unix
+  yojson
+  unix
+  digestif))

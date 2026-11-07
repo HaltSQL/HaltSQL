@@ -1,0 +1,35 @@
+# Composite tenant keys (PLAN.md §8.2): rows are scoped by org_id AND
+# workspace_id. Every occurrence of a fully scoped table needs BOTH
+# `a.org_id = $n` and `a.workspace_id = $m` (bound mode); app.org_members is
+# scoped by org only. Context: { org_id: ..., workspace_id: ... }.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: composite
+  owner: qa
+  description: Composite (org_id, workspace_id) tenant keys
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 500 }
+tenancy:
+  mode: bound
+  keys:
+    org: "${ctx.org_id}"
+    workspace: "${ctx.workspace_id}"
+tables:
+  app.projects:
+    columns: [id, org_id, workspace_id, name, status, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  app.tasks:
+    columns: [id, org_id, workspace_id, project_id, title, state, assignee_id, estimate_hours, created_at]
+    tenant_columns: { org_id: org, workspace_id: workspace }
+  app.org_members:
+    columns: [id, org_id, user_id, role, joined_at]
+    tenant_columns: { org_id: org }
+  app.plans:
+    columns: "*"
+functions:
+  presets: [aggregates, math, string, datetime, conditional]
+mode: enforce

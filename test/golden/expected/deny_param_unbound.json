@@ -1,0 +1,24 @@
+{
+  "sql": "SELECT id FROM orders WHERE tenant_id = $1 AND id = $2 LIMIT 10",
+  "allowed": false,
+  "reasons": [
+    {
+      "code": "E_PARAM_UNBOUND",
+      "message": "parameter $2 is not a tenant placeholder, so its value is unknown",
+      "rule": "params.unbound",
+      "loc": 52,
+      "hint": "Use $n placeholders only as the value of a tenant predicate (e.g. o.tenant_id = $1); write other values as literals."
+    }
+  ],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.orders" ],
+  "columns": [ "app.orders.id", "app.orders.tenant_id" ],
+  "bind_params": [],
+  "fingerprint": "91a673078c68c2e2",
+  "sql_sha256": "36f22ba0e81cb45660b632f24b8816c3ac95725a1c7b27430c72b8071ce896ac"
+}

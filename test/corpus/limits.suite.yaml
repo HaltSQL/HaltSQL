@@ -1,0 +1,191 @@
+# Threat class: limits.
+# Policy: saas.yaml. require_limit max 1000: the OUTERMOST select (or set operation) needs a constant LIMIT / FETCH FIRST <= 1000. LIMITs inside subqueries, CTEs or set-operation branches do not count.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: limits
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "missing limit"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits]
+  - name: "missing limit on aggregate"
+    sql: |-
+      SELECT count(*) FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits]
+  - name: "missing limit on global table"
+    sql: |-
+      SELECT code FROM currencies
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits]
+  - name: "limit one over max"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1001
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits]
+  - name: "limit huge"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 999999999999
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits]
+  - name: "limit exactly max"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits]
+  - name: "limit one"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits]
+  - name: "limit zero"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 0
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits]
+  - name: "fetch first within max"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 FETCH FIRST 100 ROWS ONLY
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, fetch]
+  - name: "fetch first over max"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 FETCH FIRST 5000 ROWS ONLY
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits, fetch]
+  - name: "fetch first row only implicit one"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 FETCH FIRST ROW ONLY
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, fetch, ambiguous]
+  - name: "offset without limit"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 OFFSET 10
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits, offset]
+  - name: "limit with large offset"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 OFFSET 100000
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, offset]
+  - name: "limit all"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT ALL
+    expect: deny
+    tags: [limits, ambiguous]
+  - name: "limit null"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT NULL
+    expect: deny
+    tags: [limits, ambiguous]
+  - name: "limit expression"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5 + 5
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits, non_constant]
+  - name: "limit scalar subquery"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT (SELECT 10)
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits, non_constant]
+  - name: "limit parameter"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT $2
+    expect: deny
+    codes: [E_PARAM_UNBOUND]
+    tags: [limits, param]
+  - name: "limit negative"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT -1
+    expect: deny
+    tags: [limits, ambiguous]
+  - name: "limit float"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10.5
+    expect: deny
+    tags: [limits, ambiguous]
+  - name: "limit only in subquery"
+    sql: |-
+      SELECT x.id FROM (SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10) x
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits, subquery]
+  - name: "limit only in cte"
+    sql: |-
+      WITH t AS (SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10) SELECT id FROM t
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits, cte]
+  - name: "limit in subquery not required"
+    sql: |-
+      SELECT x.id FROM (SELECT id FROM orders WHERE tenant_id = $1) x LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, subquery]
+  - name: "subquery limit above max is fine"
+    sql: |-
+      SELECT count(*) FROM (SELECT id FROM orders WHERE tenant_id = $1 LIMIT 50000) x LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, subquery]
+  - name: "cte without limit outer with limit"
+    sql: |-
+      WITH t AS (SELECT id FROM orders WHERE tenant_id = $1) SELECT id FROM t LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, cte]
+  - name: "set op outer limit"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 UNION ALL SELECT id FROM invoices WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, setop]
+  - name: "set op branch limits only"
+    sql: |-
+      (SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10) UNION ALL (SELECT id FROM invoices WHERE tenant_id = $1 LIMIT 10)
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits, setop]
+  - name: "set op outer limit too high"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 UNION SELECT id FROM invoices WHERE tenant_id = $1 LIMIT 5000
+    expect: deny
+    codes: [E_LIMIT_TOO_HIGH]
+    tags: [limits, setop]
+  - name: "limit in exists subquery only"
+    sql: |-
+      SELECT c.id FROM customers c WHERE c.tenant_id = $1 AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = $1 AND o.customer_id = c.id LIMIT 1)
+    expect: deny
+    codes: [E_LIMIT_REQUIRED]
+    tags: [limits, subquery]
+  - name: "limit as string literal"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT '10'
+    expect: deny
+    tags: [limits, ambiguous]
+  - name: "limit cast integer"
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10::bigint
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [limits, non_constant, ambiguous]

@@ -1,0 +1,6 @@
+(library
+ (name haltsql_load)
+ (public_name haltsql.load)
+ (libraries haltsql.core yojson yaml digestif)
+ (instrumentation
+  (backend bisect_ppx)))

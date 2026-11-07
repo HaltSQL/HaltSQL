@@ -1,0 +1,11 @@
+# Run with --fake-verifier allow: the allow-everything verifier MUST leak, so
+# this scenario expects escapes. If it reports zero, the oracles are broken.
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: oracle-selftest }
+environment: { postgres: [17] }
+fixture: saas_shared
+data: { scale: tiny, tenants: 6, seed: 1 }
+workloads:
+  - adversarial: { queries: 300 }
+expect: { escapes: null, side_effects: null, column_leaks: null }

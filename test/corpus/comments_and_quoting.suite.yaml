@@ -1,0 +1,221 @@
+# Threat class: comments and quoting in odd places (PLAN.md §8.3). HaltSQL
+# reads the real Postgres token stream, so: text inside strings, dollar quotes
+# and comments is inert (must stay ALLOWED when the query is otherwise valid);
+# predicates hidden inside comments do not count; nested /* */ comments nest
+# as in Postgres; a quote that really closes the string exposes a second
+# statement. libpg_query runs with standard_conforming_strings = on.
+# Policy: saas.yaml.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: comments_and_quoting }
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  # ---- inert text must stay allowed ----
+  - name: semicolon inside string literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'a;b' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: drop table inside string literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = '; DROP TABLE orders; --' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: or 1=1 inside string literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'x'' OR 1=1 --' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: doubled quote does not end string
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'x'' ; DROP TABLE orders; --' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: comment opener inside string
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = '/* not a comment' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: line comment marker inside string
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = '-- not a comment' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, string, false_positive_guard]
+  - name: escape string with backslash quote
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = E'x\' ; DROP TABLE orders; --' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, escape_string, false_positive_guard]
+  - name: escape string hex semicolon
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = E'\x3b' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, escape_string]
+  - name: escape string newline
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status <> E'a\nb' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, escape_string]
+  - name: unicode escape string literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = U&'\0070aid' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, unicode]
+  - name: dollar quoted literal
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $$paid$$ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, dollar_quote]
+  - name: tagged dollar quote with apostrophe
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $q$it's$q$ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, dollar_quote]
+  - name: dollar quote containing statement text
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $x$'; DROP TABLE orders; --$x$ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, dollar_quote, false_positive_guard]
+  - name: dollar quote containing param text is not a param
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $$ $2 $$ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, dollar_quote, params]
+  - name: dollar quote containing other tag
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $a$ $b$ ; $b$ $a$ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, dollar_quote]
+  - name: block comment between tokens
+    sql: SELECT /* columns */ id FROM /* table */ orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment]
+  - name: comments inside tenant predicate
+    sql: SELECT id FROM orders WHERE tenant_id /* a */ = /* b */ $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment, tenancy]
+  - name: trailing line comment
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 -- generated by agent
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment]
+  - name: line comment then newline continues query
+    sql: |-
+      SELECT id -- the id
+      FROM orders -- the table
+      WHERE tenant_id = $1 -- tenant filter
+      LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment]
+  - name: nested block comment fully closed
+    sql: SELECT id FROM orders /* outer /* inner */ still comment */ WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment, nested]
+  - name: comment containing semicolon and drop
+    sql: SELECT id FROM orders /* ; DROP TABLE orders; */ WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment, false_positive_guard]
+  - name: leading comment
+    sql: |-
+      /* agent: analytics v2 */
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment]
+  - name: quoted alias containing comment chars
+    sql: SELECT id AS "--", status AS "/*x*/" FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, identifier]
+  - name: quoted alias containing semicolon
+    sql: SELECT id AS "a;b" FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, identifier]
+  # ---- hidden predicates and smuggled statements ----
+  - name: tenant predicate inside block comment
+    sql: SELECT id FROM orders WHERE /* tenant_id = $1 AND */ status = 'paid' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, comment, tenancy]
+  - name: tenant predicate after line comment
+    sql: |-
+      SELECT id FROM orders WHERE status = 'paid' -- AND tenant_id = $1
+      LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, comment, tenancy]
+  - name: nested comment hides predicate that a naive scanner sees
+    sql: SELECT id FROM orders WHERE status = 'paid' /* /* */ AND tenant_id = $1 */ LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, comment, nested, tenancy]
+  - name: tenant predicate inside string literal
+    sql: SELECT id FROM orders WHERE status = 'x AND tenant_id = $1' LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, string, tenancy]
+  - name: tenant predicate inside dollar quote
+    sql: SELECT id FROM orders WHERE status = $$ AND tenant_id = $1 $$ LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, dollar_quote, tenancy]
+  - name: block comment then second statement
+    sql: SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 /* done */; DELETE FROM orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [comments_and_quoting, comment, multi]
+  - name: line comment does not swallow next line statement
+    sql: |-
+      SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10 -- harmless
+      ; DROP TABLE orders
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [comments_and_quoting, comment, multi]
+  - name: backslash does not escape in standard string
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'x\'; DROP TABLE orders; --' LIMIT 10
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [comments_and_quoting, string, multi]
+  - name: dollar quote closes then second statement
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = $$x$$ LIMIT 10; DROP TABLE orders; -- $$
+    expect: deny
+    codes: [E_MULTI_STATEMENT]
+    tags: [comments_and_quoting, dollar_quote, multi]
+  - name: comment between dollar and digit
+    sql: SELECT id FROM orders WHERE tenant_id = $/**/1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [comments_and_quoting, comment, parse]
+  - name: numeric dollar tag is not a dollar quote
+    sql: SELECT $1$abc$1$ LIMIT 1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [comments_and_quoting, dollar_quote, parse]
+  - name: comment hides or 1=1 that is inert
+    sql: SELECT id FROM orders WHERE tenant_id = $1 /* OR 1=1 */ LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment, false_positive_guard]
+  - name: comment splits or 1=1 that is real
+    sql: SELECT id FROM orders WHERE tenant_id = $1 /* x */ OR /* y */ 1 = 1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [comments_and_quoting, comment, tenancy]
+  - name: denied function name hidden by comment is inert
+    sql: SELECT id /* , pg_sleep(10) */ FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [comments_and_quoting, comment, false_positive_guard]
+  - name: function name split by comment still a call
+    sql: SELECT pg_sleep /* x */ (10) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [comments_and_quoting, comment, function]

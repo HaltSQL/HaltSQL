@@ -1,0 +1,133 @@
+# Threat class: identifier_confusion_mixed_case.
+# Policy: mixed_case.yaml. app."Customers" (quoted, case-preserved) is allowed; app.customers (unquoted fold) exists in the catalog but is NOT in the policy. Reserved words used as column names must be quoted (or follow a dot).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: identifier_confusion_mixed_case
+policy: ../fixtures/policies/mixed_case.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: "unquoted Customers folds to customers"
+    sql: |-
+      SELECT "Id" FROM Customers WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, case_folding]
+  - name: "quoted lowercase customers"
+    sql: |-
+      SELECT id FROM "customers" WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "quoted upper CUSTOMERS"
+    sql: |-
+      SELECT "Id" FROM "CUSTOMERS" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, quoting]
+  - name: "exact quoted Customers"
+    sql: |-
+      SELECT "Id" FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, quoting]
+  - name: "unicode escape Customers"
+    sql: |-
+      SELECT "Id" FROM U&"\0043ustomers" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unicode escape FullName column"
+    sql: |-
+      SELECT U&"Full\004Eame" FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, unicode_escape]
+  - name: "unquoted FullName folds to unknown column"
+    sql: |-
+      SELECT FullName FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    tags: [identifier_confusion, case_folding, ambiguous]
+  - name: "unquoted tenant column folds to unknown column"
+    sql: |-
+      SELECT "Id" FROM "Customers" WHERE TenantId = $1 LIMIT 10
+    expect: deny
+    tags: [identifier_confusion, case_folding, tenancy, ambiguous]
+  - name: "SSN in catalog but not policy"
+    sql: |-
+      SELECT "SSN" FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, column]
+  - name: "star on Customers expands to SSN"
+    sql: |-
+      SELECT * FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [identifier_confusion, star]
+  - name: "star on OrderItems all allowed"
+    sql: |-
+      SELECT * FROM "OrderItems" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, star]
+  - name: "unquoted reserved column is parse error"
+    sql: |-
+      SELECT order FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [identifier_confusion, reserved_word]
+  - name: "reserved column after dot is valid"
+    sql: |-
+      SELECT c.order FROM "Customers" c WHERE c."TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, reserved_word]
+  - name: "bare user is current_user not the column"
+    sql: |-
+      SELECT user FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [identifier_confusion, reserved_word, sql_value_function]
+  - name: "qualified user is the column"
+    sql: |-
+      SELECT c.user FROM "Customers" c WHERE c."TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, reserved_word]
+  - name: "quoted user is the column"
+    sql: |-
+      SELECT "user" FROM "Customers" WHERE "TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, reserved_word]
+  - name: "reserved select column after dot"
+    sql: |-
+      SELECT oi.select, oi.from FROM "OrderItems" oi WHERE oi."TenantId" = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [identifier_confusion, reserved_word]
+  - name: "unquoted group column parse error"
+    sql: |-
+      SELECT group FROM events WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [identifier_confusion, reserved_word]
+  - name: "quoted Group is unknown column"
+    sql: |-
+      SELECT "Group" FROM events WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    tags: [identifier_confusion, quoting, ambiguous]
+  - name: "customers lowercase secret via unquoted name"
+    sql: |-
+      SELECT secret FROM app.CUSTOMERS WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [identifier_confusion, case_folding]
+  - name: "mixed tables join one unfiltered"
+    sql: |-
+      SELECT c."FullName" FROM "Customers" c JOIN "OrderItems" oi ON oi."CustomerId" = c."Id" WHERE c."TenantId" = $1 LIMIT 10
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [identifier_confusion, tenancy]

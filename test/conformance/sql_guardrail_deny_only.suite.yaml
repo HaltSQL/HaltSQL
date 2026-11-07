@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-deny-only
+  description: "users with only deny_columns: [password_hash]"
+policy: policies/sqlg_deny_only.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "quoted uppercase is an unknown column: \"PASSWORD_HASH\" FR"
+    sql: "SELECT \"PASSWORD_HASH\" FROM users LIMIT 1"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_quoted_uppercase_denied_column_blocked", "differs-code"]
+  - name: "quoted uppercase is an unknown column: \"Password_Hash\" FR"
+    sql: "SELECT \"Password_Hash\" FROM users LIMIT 1"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_quoted_uppercase_denied_column_blocked", "differs-code"]
+  - name: "quoted uppercase is an unknown column: u.\"PASSWORD_HASH\" "
+    sql: "SELECT u.\"PASSWORD_HASH\" FROM users u LIMIT 1"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_quoted_uppercase_denied_column_blocked", "differs-code"]
+  - name: "denied column"
+    sql: "SELECT password_hash FROM users"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestPublicApi::test_has_category_shortcut"]
+  - name: "allowed column"
+    sql: "SELECT id FROM users"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestPublicApi::test_has_category_shortcut"]
+  - name: "other non-denied columns readable"
+    sql: "SELECT id, name, ssn, email FROM users"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_quoted_uppercase_denied_column_blocked", "sqlg-adapted"]
+  - name: "star includes the denied column"
+    sql: "SELECT * FROM users"
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestCategoricalBans::test_quoted_uppercase_denied_column_blocked", "sqlg-adapted"]

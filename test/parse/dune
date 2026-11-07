@@ -1,0 +1,4 @@
+(test
+ (name test_parse)
+ (modules test_parse ast_debug)
+ (libraries haltsql.parse haltsql.core alcotest))

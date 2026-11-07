@@ -1,0 +1,16 @@
+{
+  "sql": "SELECT code, symbol FROM currencies ORDER BY code LIMIT 50",
+  "allowed": true,
+  "reasons": [],
+  "shadow_reasons": [],
+  "policy": {
+    "name": "saas",
+    "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+  },
+  "statement_kind": "select",
+  "tables": [ "app.currencies" ],
+  "columns": [ "app.currencies.code", "app.currencies.symbol" ],
+  "bind_params": [],
+  "fingerprint": "6682556d579c9134",
+  "sql_sha256": "0eb828aa3b5c5c6834b9741d6b83c98270124f7e975368f129f989a73d325cb6"
+}

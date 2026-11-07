@@ -1,0 +1,6 @@
+(library
+ (name haltsql_analyzer)
+ (public_name haltsql.analyzer)
+ (libraries haltsql.core)
+ (instrumentation
+  (backend bisect_ppx)))

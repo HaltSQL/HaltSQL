@@ -1,0 +1,169 @@
+# ---------------------------------------------------------------------------
+# Conformance cases ported from sql-guardrail
+#   Source:  https://github.com/nickusevich/sql-guardrail
+#   Commit:  eadfb9d0c725f4960621a7c67c23219103710c5b
+#   License: MIT -- Copyright (c) 2026 nickusevich
+#            (Permission is hereby granted, free of charge, to any person
+#             obtaining a copy of this software ... The above copyright notice
+#             and this permission notice shall be included in all copies or
+#             substantial portions of the Software.)
+# The SQL strings below are taken from that project's tests (tests/malicious,
+# tests/benign, tests/test_corpus.py, tests/test_security.py, tests/unit/*);
+# each case's `sqlg:<file>::<test>` tag names the original test. Expected
+# verdicts follow HALTSQL semantics (PLAN.md section 6). Cases tagged `differs`
+# have a different outcome from sql-guardrail, `differs-code` the same outcome
+# for a different reason; cases tagged `sqlg-adapted` change the SQL slightly
+# (noted in the case name); cases tagged `ambiguous` exercise behaviour
+# HaltSQL's spec leaves open. See README.md.
+# GENERATED from the ported data; regenerate rather than hand-editing.
+# ---------------------------------------------------------------------------
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: sqlg-writes
+  description: "sql-guardrail DML cases under writable_policy (read_only: false)"
+policy: policies/sqlg_writable.yaml
+defaults:
+  context: {"tenant_id":"42"}
+cases:
+  - name: "DML missing tenant predicate: DELETE FROM orders WHERE id = 1"
+    sql: "DELETE FROM orders WHERE id = 1"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_missing_tenant_predicate_blocked"]
+  - name: "DML missing tenant predicate: UPDATE orders SET total = 0 WHERE id = 1"
+    sql: "UPDATE orders SET total = 0 WHERE id = 1"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_missing_tenant_predicate_blocked"]
+  - name: "DML with USING/FROM missing tenant predicate: DELETE FROM orders USING users"
+    sql: "DELETE FROM orders USING users WHERE orders.id = users.id"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_missing_tenant_predicate_blocked", "ambiguous"]
+  - name: "DML with USING/FROM missing tenant predicate: UPDATE orders o SET total = 0 "
+    sql: "UPDATE orders o SET total = 0 FROM users u WHERE o.id = u.id"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_missing_tenant_predicate_blocked", "ambiguous"]
+  - name: "DML with tenant predicate: DELETE FROM orders W"
+    sql: "DELETE FROM orders WHERE account_id = 42 AND id = 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_with_tenant_predicate_allowed"]
+  - name: "DML with tenant predicate: UPDATE orders SET to"
+    sql: "UPDATE orders SET total = 0 WHERE account_id = 42 AND id = 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTenantIsolation::test_dml_with_tenant_predicate_allowed"]
+  - name: "INSERT VALUES sets tenant column to the context value"
+    sql: "INSERT INTO orders (id, account_id) VALUES (1, 42)"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_insert_values_does_not_falsely_trigger_require_predicate"]
+  - name: "sqlg-adapted INSERT VALUES with another tenant"
+    sql: "INSERT INTO orders (id, account_id) VALUES (1, 99)"
+    expect: deny
+    codes: [E_TENANT_WRITE]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_insert_values_does_not_falsely_trigger_require_predicate", "sqlg-adapted", "differs"]
+  - name: "INSERT ... SELECT is unsupported"
+    sql: "INSERT INTO orders (id, account_id) SELECT id, account_id FROM orders WHERE account_id = 42"
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_insert_select_does_not_double_flag", "differs"]
+  - name: "UPDATE without WHERE"
+    sql: "UPDATE orders SET status = 1"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_update_still_enforces_require_predicate"]
+  - name: "DELETE without WHERE"
+    sql: "DELETE FROM orders"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_delete_still_enforces_require_predicate"]
+  - name: "MERGE ON 1=1"
+    sql: "MERGE INTO orders o USING (SELECT 1 AS x) s ON 1=1 WHEN MATCHED THEN UPDATE SET status = 'x'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_predicates.py::test_merge_on_always_true_is_flagged", "differs-code"]
+  - name: "MERGE WHEN tautology 1"
+    sql: "MERGE INTO users u USING orders o ON u.id = o.account_id WHEN MATCHED AND 1=1 THEN UPDATE SET name = 'x'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_merge_when_clause_tautology_caught", "differs-code"]
+  - name: "MERGE WHEN tautology 2"
+    sql: "MERGE INTO users u USING orders o ON u.id = o.account_id WHEN NOT MATCHED AND 1=1 THEN INSERT (id, name) VALUES (1, 'x')"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_merge_when_clause_tautology_caught", "differs-code"]
+  - name: "MERGE WHEN tautology 3"
+    sql: "MERGE INTO users u USING orders o ON u.id = o.account_id WHEN MATCHED AND (u.id IS NULL OR u.id IS NOT NULL) THEN UPDATE SET name = 'x'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_merge_when_clause_tautology_caught", "differs-code"]
+  - name: "legit MERGE is still denied (MERGE unsupported)"
+    sql: "MERGE INTO users u USING orders o ON u.id = o.account_id WHEN MATCHED AND u.id > 0 THEN UPDATE SET name = 'x'"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestTautologies::test_legit_merge_when_predicate_not_flagged", "differs"]
+  - name: "INSERT into a non-readable column"
+    sql: "INSERT INTO users(password_hash) VALUES ('x')"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/malicious/dml_insert_deny_column.sql", "differs-code"]
+  - name: "INSERT with a denied column among allowed ones"
+    sql: "INSERT INTO users (id, password_hash) VALUES (1, 'pwn')"
+    expect: deny
+    tags: ["conformance", "sqlg:tests/test_security.py::TestIdentifiers::test_catchall_no_double_flag_on_insert_target", "differs-code"]
+  - name: "UPDATE correlated subquery on the target leaves inner alias unproven"
+    sql: "UPDATE orders SET total = total + 1 WHERE account_id = 42 AND id = (SELECT max(id) FROM orders o WHERE o.account_id = orders.account_id)"
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: ["conformance", "sqlg:tests/test_security.py::TestOuterScopeAliasResolution::test_update_correlated_subquery_resolves_dml_target"]
+  - name: "UPDATE with tenant predicate is allowed when writes are on"
+    sql: "UPDATE orders SET total = 0 WHERE account_id = 42;"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/malicious/write_disguised_as_select.sql", "sqlg-adapted"]
+  - name: "locks are denied even when writes are allowed"
+    sql: "SELECT id FROM orders WHERE id = 1 FOR UPDATE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_locks_allowed_when_writes_allowed", "differs"]
+  - name: "lock FOR UPDATE with tenant predicate"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id = 1 FOR UPDATE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_locks_blocked_under_readonly", "sqlg-adapted"]
+  - name: "lock FOR SHARE with tenant predicate"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id = 1 FOR SHARE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_locks_blocked_under_readonly", "sqlg-adapted"]
+  - name: "lock FOR NO KEY UPDATE with tenant predicate"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id = 1 FOR NO KEY UPDATE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_locks_blocked_under_readonly", "sqlg-adapted"]
+  - name: "lock FOR KEY SHARE with tenant predicate"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id = 1 FOR KEY SHARE"
+    expect: deny
+    codes: [E_LOCKING_CLAUSE]
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_locks_blocked_under_readonly", "sqlg-adapted"]
+  - name: "plain select no lock"
+    sql: "SELECT id FROM orders WHERE account_id = 42 AND id = 1"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_locks.py::test_plain_select_no_lock_violation", "sqlg-adapted"]
+  - name: "DML under read_only=false: DELETE with predicate"
+    sql: "DELETE FROM orders WHERE account_id = 42 AND id = 2"
+    expect: allow
+    bind: []
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_dml_under_read_only_false_is_allowed", "sqlg-adapted"]
+  - name: "CREATE TABLE rejected even with writes"
+    sql: "CREATE TABLE x (id int)"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_create_table_is_rejected_even_under_read_only_false"]
+  - name: "DROP TABLE rejected even with writes"
+    sql: "DROP TABLE orders"
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: ["conformance", "sqlg:tests/unit/test_preflight.py::test_drop_table_is_rejected_even_under_read_only_false"]
