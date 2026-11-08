@@ -1,0 +1,123 @@
+# Azure Container Apps: agent + haltsql-server sidecar + OpenTelemetry
+# Collector sidecar in one app. All containers of a replica share localhost.
+#
+#   az containerapp create -g <RG> -n analytics-agent --yaml app.yaml
+#
+# Replace every REPLACE_* value. Prerequisites (see docs/deploy-azure.md):
+#   - a workload-profiles environment with VNet integration (internal),
+#   - a user-assigned managed identity with "Key Vault Secrets User" on the
+#     vault and "AcrPull" on the registry,
+#   - Key Vault secrets: haltsql-agent-token (raw bearer token, for the agent),
+#     haltsql-token-sha256 (its SHA-256, for haltsql) and
+#     appinsights-connection-string,
+#   - the haltsql image built from ./Dockerfile with CONFIG=sidecar.yaml.
+location: REPLACE_LOCATION
+name: analytics-agent
+type: Microsoft.App/containerApps
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-analytics-agent: {}
+properties:
+  managedEnvironmentId: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.App/managedEnvironments/cae-agents
+  workloadProfileName: Consumption
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: false                # reachable only inside the VNet
+      targetPort: 8000               # the AGENT's port; haltsql is never exposed
+      transport: http
+      allowInsecure: false
+    registries:
+      - server: REPLACE_ACR.azurecr.io
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-analytics-agent
+    secrets:
+      # Key Vault references: the platform reads them with the managed
+      # identity. haltsql itself never calls Key Vault.
+      - name: haltsql-agent-token
+        keyVaultUrl: https://REPLACE_KV.vault.azure.net/secrets/haltsql-agent-token
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-analytics-agent
+      - name: haltsql-token-sha256
+        keyVaultUrl: https://REPLACE_KV.vault.azure.net/secrets/haltsql-token-sha256
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-analytics-agent
+      - name: appinsights-connection-string
+        keyVaultUrl: https://REPLACE_KV.vault.azure.net/secrets/appinsights-connection-string
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-analytics-agent
+      # Not sensitive: the collector's config, mounted as a file.
+      - name: otelcol-config
+        value: |
+          receivers:
+            otlp:
+              protocols:
+                http:
+                  endpoint: 127.0.0.1:4318   # haltsql-server speaks OTLP/HTTP (JSON)
+          processors:
+            batch: {}
+          exporters:
+            azuremonitor:
+              connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+          service:
+            pipelines:
+              traces:  { receivers: [otlp], processors: [batch], exporters: [azuremonitor] }
+              metrics: { receivers: [otlp], processors: [batch], exporters: [azuremonitor] }
+  template:
+    containers:
+      - name: agent
+        image: REPLACE_ACR.azurecr.io/analytics-agent:1.0.0
+        env:
+          - name: HALTSQL_URL
+            value: http://localhost:8080
+          - name: HALTSQL_TOKEN
+            secretRef: haltsql-agent-token
+        resources: { cpu: 0.5, memory: 1Gi }
+
+      - name: haltsql
+        image: REPLACE_ACR.azurecr.io/haltsql-analytics:1.0.0   # built from ./Dockerfile
+        args:
+          - --config
+          - /etc/haltsql/config.yaml
+          - --listen
+          - 127.0.0.1:8080             # verify API: loopback only
+          - --health-listen
+          - 0.0.0.0:8081               # probes: /healthz and /readyz only
+        resources: { cpu: 0.25, memory: 0.5Gi }
+        probes:
+          - type: Liveness
+            httpGet: { path: /healthz, port: 8081 }
+            periodSeconds: 10
+            failureThreshold: 3
+          - type: Readiness
+            httpGet: { path: /readyz, port: 8081 }
+            periodSeconds: 5
+            failureThreshold: 2
+        volumeMounts:
+          - volumeName: haltsql-secrets
+            mountPath: /mnt/secrets
+
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.111.0    # pin a current release
+        args: ["--config=/etc/otelcol/config.yaml"]
+        env:
+          - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+            secretRef: appinsights-connection-string
+        resources: { cpu: 0.25, memory: 0.5Gi }
+        volumeMounts:
+          - volumeName: otelcol-config
+            mountPath: /etc/otelcol
+
+    volumes:
+      # Only the hash reaches the haltsql container; the raw token only the agent.
+      - name: haltsql-secrets
+        storageType: Secret
+        secrets:
+          - secretRef: haltsql-token-sha256
+            path: haltsql-token-sha256
+      - name: otelcol-config
+        storageType: Secret
+        secrets:
+          - secretRef: otelcol-config
+            path: config.yaml
+
+    scale:
+      minReplicas: 2                 # >= 2 for zone-redundant environments
+      maxReplicas: 10

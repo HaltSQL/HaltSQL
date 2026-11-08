@@ -1,0 +1,13 @@
+# Derived image for haltsql-proxy on ECS: the official image plus the proxy
+# config, policies and the Amazon RDS CA bundle (public, not a secret).
+#
+#   curl -fsSLo deploy/cloud/aws/ecs/rds-global-bundle.pem \
+#     https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+#   docker build -f deploy/cloud/aws/ecs/Dockerfile.proxy -t haltsql-proxy-config:2026-11-08 deploy/cloud/aws/ecs
+ARG HALTSQL_IMAGE=ghcr.io/ardada2468/haltsql:0.1.0
+FROM ${HALTSQL_IMAGE}
+COPY proxy.yaml /etc/haltsql/proxy.yaml
+COPY policies/ /etc/haltsql/policies/
+COPY rds-global-bundle.pem /etc/haltsql/rds-global-bundle.pem
+ENTRYPOINT ["/usr/local/bin/haltsql-proxy"]
+CMD ["run", "-c", "/etc/haltsql/proxy.yaml"]

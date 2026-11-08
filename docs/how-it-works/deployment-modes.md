@@ -31,13 +31,13 @@ fills in, or from the generated SQL.
 
 ```mermaid
 flowchart LR
-  user["End user"] -->|"logs in"| app["Application session"]
-  app -->|"tenant_id from the session"| ctx["Context"]
-  llm["LLM"] -->|"generated SQL only"| sql["SQL string"]
-  ctx --> verify["Haltsql.verify"]
-  sql --> verify
-  pol["Policy (YAML/JSON)"] --> verify
-  verify --> verdict["Verdict<br/>allowed, reasons, bind_params"]
+    user["End user"] -->|"logs in"| app["Application session"]
+    app -->|"tenant_id from the session"| ctx["Context"]
+    llm["LLM"] -->|"generated SQL only"| sql["SQL string"]
+    ctx --> verify["Haltsql.verify"]
+    sql --> verify
+    pol["Policy (YAML/JSON)"] --> verify
+    verify --> verdict["Verdict<br/>allowed, reasons, bind_params"]
 ```
 
 If the model could set the context, a bound tenancy policy would prove the
@@ -69,13 +69,13 @@ JSON lines on stdin and writes one verdict per line, which is how the Python
 
 ```mermaid
 flowchart LR
-  subgraph proc["Your process (trusted)"]
-    agent["Agent code"] -->|"sql + context"| lib["Haltsql.verify<br/>(in process)"]
-    lib -->|"verdict"| agent
-    agent -->|"if allowed: same SQL<br/>+ bind_params"| driver["Postgres driver"]
-  end
-  llm["LLM (untrusted)"] -->|"SQL text"| agent
-  driver --> pg[("PostgreSQL")]
+    subgraph proc["Your process (trusted)"]
+        agent["Agent code"] -->|"sql + context"| lib["Haltsql.verify<br/>(in process)"]
+        lib -->|"verdict"| agent
+        agent -->|"if allowed: same SQL<br/>+ bind_params"| driver["Postgres driver"]
+    end
+    llm["LLM (untrusted)"] -->|"SQL text"| agent
+    driver --> pg[("PostgreSQL")]
 ```
 
 Your code owns every step after the verdict: refusing a denied query, running
@@ -91,20 +91,20 @@ library produces. The server never connects to a database.
 
 ```mermaid
 sequenceDiagram
-  participant LLM
-  participant Agent as Agent (app code)
-  participant HS as haltsql-server
-  participant PG as PostgreSQL
-  LLM->>Agent: generated SQL
-  Agent->>HS: POST /v1/verify with sql and context, Bearer token
-  HS->>HS: authenticate caller, pick pinned policy, verify, write audit
-  HS-->>Agent: 200 verdict (allowed or denied)
-  alt allowed and sql_sha256 matches
-    Agent->>PG: exactly the verified SQL, bind_params as positional params
-    PG-->>Agent: rows
-  else denied, non-200, or timeout
-    Agent-->>LLM: reasons (codes and hints), query not run
-  end
+    participant LLM
+    participant Agent as Agent (app code)
+    participant HS as haltsql-server
+    participant PG as PostgreSQL
+    LLM->>Agent: generated SQL
+    Agent->>HS: POST /v1/verify with sql and context, Bearer token
+    HS->>HS: authenticate caller, pick pinned policy, verify, write audit
+    HS-->>Agent: 200 verdict (allowed or denied)
+    alt allowed and sql_sha256 matches
+        Agent->>PG: exactly the verified SQL, bind_params as positional params
+        PG-->>Agent: rows
+    else denied, non-200, or timeout
+        Agent-->>LLM: reasons (codes and hints), query not run
+    end
 ```
 
 Trust boundaries in this mode:
@@ -131,18 +131,18 @@ show the full manifests.
 
 ```mermaid
 flowchart TB
-  subgraph pod["Agent pod"]
-    agent["agent container<br/>HALTSQL_URL=http://127.0.0.1:8080<br/>HALTSQL_TOKEN from Secret"]
-    hs["haltsql container<br/>haltsql-server --config"]
-    agent -->|"POST /v1/verify (loopback)"| hs
-  end
-  cm["ConfigMap<br/>config.yaml + policies"] -->|"mounted, reload.watch"| hs
-  sec["Secret<br/>token SHA-256 hashes"] -->|"mounted"| hs
-  kubelet["kubelet"] -->|"/healthz, /readyz"| hs
-  prom["Prometheus"] -->|"/metrics"| hs
-  np["NetworkPolicy<br/>no ingress from other pods"] -.-> pod
-  agent -->|"verified SQL only"| pg[("PostgreSQL<br/>restricted role + RLS")]
-  hs -->|"audit JSON lines"| logs["stdout / log pipeline"]
+    subgraph pod["Agent pod"]
+        agent["agent container<br/>HALTSQL_URL=http://127.0.0.1:8080<br/>HALTSQL_TOKEN from Secret"]
+        hs["haltsql container<br/>haltsql-server --config"]
+        agent -->|"POST /v1/verify (loopback)"| hs
+    end
+    cm["ConfigMap<br/>config.yaml + policies"] -->|"mounted, reload.watch"| hs
+    sec["Secret<br/>token SHA-256 hashes"] -->|"mounted"| hs
+    kubelet["kubelet"] -->|"/healthz, /readyz"| hs
+    prom["Prometheus"] -->|"/metrics"| hs
+    np["NetworkPolicy<br/>no ingress from other pods"] -.-> pod
+    agent -->|"verified SQL only"| pg[("PostgreSQL<br/>restricted role + RLS")]
+    hs -->|"audit JSON lines"| logs["stdout / log pipeline"]
 ```
 
 Points worth knowing:
@@ -168,17 +168,17 @@ every `Query` and `Parse`, and overwrites tenancy parameters in every `Bind`.
 
 ```mermaid
 flowchart LR
-  subgraph untrusted["Untrusted side"]
-    client["Agent, BI tool, any driver<br/>(libpq, JDBC, psycopg, pgx)"]
-  end
-  subgraph proxy["haltsql-proxy (trusted)"]
-    auth["Auth: SCRAM user or cert identity<br/>gives policy + context"]
-    enf["Every Query and Parse: verify<br/>Every Bind: tenancy params replaced"]
-    auth --> enf
-  end
-  client -->|"TLS, proxy user"| auth
-  enf -->|"TLS, service credentials<br/>verified SQL byte for byte"| pg[("PostgreSQL")]
-  cfg["proxy.yaml<br/>users, policies, contexts"] --> auth
+    subgraph untrusted["Untrusted side"]
+        client["Agent, BI tool, any driver<br/>(libpq, JDBC, psycopg, pgx)"]
+    end
+    subgraph proxy["haltsql-proxy (trusted)"]
+        auth["Auth: SCRAM user or cert identity<br/>gives policy + context"]
+        enf["Every Query and Parse: verify<br/>Every Bind: tenancy params replaced"]
+        auth --> enf
+    end
+    client -->|"TLS, proxy user"| auth
+    enf -->|"TLS, service credentials<br/>verified SQL byte for byte"| pg[("PostgreSQL")]
+    cfg["proxy.yaml<br/>users, policies, contexts"] --> auth
 ```
 
 What changes compared to the sidecar:
@@ -214,15 +214,15 @@ The Python helper (`clients/python/src/haltsql/guard.py`: `execute`,
 
 ```mermaid
 flowchart TD
-  start["execute(conn, sql, context)"] --> v["Verify sql with context<br/>(sidecar or local CLI)"]
-  v -->|"call failed"| unavail["Raise HaltSQLUnavailable<br/>nothing runs"]
-  v --> chk{"verdict.allowed and<br/>sql_sha256 matches sql?"}
-  chk -->|"sha256 mismatch"| unavail
-  chk -->|"denied"| denied["Raise QueryDenied<br/>with reasons"]
-  chk -->|"yes"| tx["Open transaction<br/>READ ONLY for SELECT by default"]
-  tx --> set["Optional statement_timeout and<br/>set_config(name, value, true)"]
-  set --> run["Send the same str object<br/>with verdict.bind_args() as positional params"]
-  run --> res["GuardedResult<br/>rows, columns, truncated, verdict"]
+    start["execute(conn, sql, context)"] --> v["Verify sql with context<br/>(sidecar or local CLI)"]
+    v -->|"call failed"| unavail["Raise HaltSQLUnavailable<br/>nothing runs"]
+    v --> chk{"verdict.allowed and<br/>sql_sha256 matches sql?"}
+    chk -->|"sha256 mismatch"| unavail
+    chk -->|"denied"| denied["Raise QueryDenied<br/>with reasons"]
+    chk -->|"yes"| tx["Open transaction<br/>READ ONLY for SELECT by default"]
+    tx --> set["Optional statement_timeout and<br/>set_config(name, value, true)"]
+    set --> run["Send the same str object<br/>with verdict.bind_args() as positional params"]
+    run --> res["GuardedResult<br/>rows, columns, truncated, verdict"]
 ```
 
 Why each step exists:
@@ -247,21 +247,21 @@ its own context in a tokens file.
 
 ```mermaid
 sequenceDiagram
-  participant Model as LLM client
-  participant MCP as haltsql-mcp
-  participant HS as haltsql-server or local CLI
-  participant PG as PostgreSQL
-  Model->>MCP: tool query with sql only
-  MCP->>MCP: context from launch config or token, not from the model
-  MCP->>HS: verify sql with that context
-  HS-->>MCP: verdict
-  alt allowed and hash matches
-    MCP->>PG: same SQL with bind args, read-only, statement_timeout, row cap
-    PG-->>MCP: rows
-    MCP-->>Model: allowed true, rows
-  else denied
-    MCP-->>Model: allowed false, reasons
-  end
+    participant Model as LLM client
+    participant MCP as haltsql-mcp
+    participant HS as haltsql-server or local CLI
+    participant PG as PostgreSQL
+    Model->>MCP: tool query with sql only
+    MCP->>MCP: context from launch config or token, not from the model
+    MCP->>HS: verify sql with that context
+    HS-->>MCP: verdict
+    alt allowed and hash matches
+        MCP->>PG: same SQL with bind args, read-only, statement_timeout, row cap
+        PG-->>MCP: rows
+        MCP-->>Model: allowed true, rows
+    else denied
+        MCP-->>Model: allowed false, reasons
+    end
 ```
 
 ## Comparison

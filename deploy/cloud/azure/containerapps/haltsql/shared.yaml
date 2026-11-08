@@ -1,0 +1,50 @@
+# haltsql-server config for the Container Apps SHARED SERVICE pattern
+# (shared-service.yaml): one internal-ingress app that many agent apps call.
+#
+# Callers authenticate with Microsoft Entra ID access tokens (OIDC/JWT). Each
+# agent runs as its own user-assigned managed identity and requests a token
+# for the 'haltsql' app registration (scope api://<HALTSQL_APP_CLIENT_ID>/.default).
+# The app registration must issue v2.0 access tokens
+# (api.requestedAccessTokenVersion = 2), otherwise `iss` is
+# https://sts.windows.net/<tenant>/ and the issuer below does not match.
+#
+# One provider entry per agent: all share the issuer; `required_claims.azp`
+# (the caller's client id) selects the entry and pins the policy. haltsql
+# tries every provider with a matching issuer, in order.
+#
+# Replace REPLACE_TENANT_ID, REPLACE_HALTSQL_APP_CLIENT_ID and
+# REPLACE_AGENT_MI_CLIENT_ID (GUIDs).
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 0.0.0.0:8080         # Container Apps ingress terminates TLS in front
+  auth:
+    allow_unauthenticated: false
+    oidc:
+      - name: entra-analytics-agent
+        issuer: https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0
+        audiences: [REPLACE_HALTSQL_APP_CLIENT_ID]
+        algorithms: [RS256]
+        policy: analytics-agent
+        required_claims:
+          azp: REPLACE_AGENT_MI_CLIENT_ID
+          roles: SQL.Verify
+        # Managed-identity tokens carry no end-user tenant; the agent passes
+        # it in the request body. Prefer context_claims when your IdP can put
+        # the tenant in the token.
+        request_context_fields: [tenant_id]
+policies:
+  - path: /etc/haltsql/policies/analytics-agent.yaml
+audit:
+  sinks:
+    - type: stdout
+  log_raw_sql: false
+telemetry:
+  metrics:
+    prometheus: true
+  otlp:
+    endpoint: http://localhost:4318
+    service_name: haltsql-shared
+logging:
+  level: info
+  format: json

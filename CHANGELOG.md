@@ -10,7 +10,29 @@ even before 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- Parsing after `fork()` no longer hangs: the libpg_query worker pool is
+  reset in the child with `pthread_atfork`.
+- A very long unknown key in a policy or config no longer allocates a large
+  edit-distance matrix for its "did you mean" hint.
+- Concurrent reloads (SIGHUP and the file watcher) are serialized, and each
+  request uses one consistent policy snapshot.
+- The container image builds again on Alpine 3.24 (`gmp-static`), and the
+  Helm chart's NetworkPolicy no longer blocks the egress that OIDC, secret
+  providers, cloud audit sinks and OTLP need.
+- `haltsql-proxy` command-line errors exit `2` (a missing option exited 124).
+
 ### Added
+- `haltsql-server` flags `--max-connections`, `--request-timeout`,
+  `--idle-timeout` and `--shutdown-timeout`; `/readyz` reports
+  `"draining": true` during shutdown; new gauge
+  `haltsql_http_open_connections`.
+- Cloud deployment guides for [AWS](docs/deploy-aws.md),
+  [Google Cloud](docs/deploy-gcp.md) and [Azure](docs/deploy-azure.md), with
+  reference manifests in `deploy/cloud/` and architecture diagrams generated
+  with mingrammer/diagrams (`make diagrams`).
+- TLS/mTLS options in every SDK (custom CA, client certificates) and a
+  response-size cap in the Python SDK.
 - **haltsql-server: built-in TLS 1.2/1.3 and mTLS** (`server.tls`), with
   certificate hot reload, client-certificate identities (SPIFFE ID or CN) with
   static tenant context, and `--health-listen` for a plain probe port.
@@ -58,6 +80,13 @@ even before 1.0.
   proxy parity scenario.
 
 ### Changed
+- Requires `x509 >= 1.2` (was `< 1.2`).
+- Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,
+  configurable NetworkPolicy egress, extra env/volumes/containers, zone
+  spreading, `podMonitoring` for GKE managed Prometheus, and `server.port` is
+  honored. Requires Kubernetes 1.27+.
+- Release and CI workflows pin actions by commit SHA; the Dockerfile pins
+  base images by digest and the opam-repository commit.
 - `telemetry.otlp_endpoint` must now be an `http(s)` URL. It was previously
   unused, and now drives OTLP export.
 - An unknown `--default-policy` value now fails server startup (exit 2)
@@ -67,8 +96,26 @@ even before 1.0.
   The `haltsql` opam package now also depends on lwt, cohttp and tls,
   because the CLI links the cloud, bundle, RLS and catalog tools. The core
   libraries themselves have no network dependencies.
+- Docs: every diagram is now Mermaid (rendered by GitHub and the docs site),
+  the README shows where HaltSQL sits, `CONTRIBUTING.md` documents the OCaml
+  style and conventions, and the docs index links every page, including the
+  new AWS, Google Cloud and Azure deployment guides.
 
 ### Security
+- **haltsql-proxy no longer prints TLS private keys in errors.** A `tls.key`
+  written as `${file:...}` was opened as a path, and the load error echoed the
+  PEM. Certificate and key errors now never include the configured value, and
+  `tls.cert` / `tls.key` accept inline PEM as well as a path.
+- **haltsql-server resource limits**: an oversized declared body is rejected
+  with 413 before it is read (it was fully drained first), unread bodies are
+  drained only up to the cap, and new request/idle timeouts, a 64 KiB header
+  cap and `--max-connections` close slowloris-style gaps.
+- **Bounded outbound I/O**: the cloud HTTP client (Vault, AWS/GCP secret
+  managers, IMDS, STS, S3/GCS sinks) now enforces its size cap on chunked
+  responses, and it, the OIDC JWKS fetch and the OTLP exporter close their
+  connections on every error path. The proxy's upstream TLS negotiation and
+  cancel requests are bounded by `connect_timeout`.
+- `AUTH_UNAVAILABLE` responses no longer include internal OIDC fetch errors.
 - Analyzer: a tenant placeholder used anywhere besides its tenant predicate is
   now denied (`E_PARAM_UNBOUND`, rule `params.tenant_reuse`). Before,
   `WHERE $1::float8 IS NOT NULL AND tenant_id = $1` was allowed. PostgreSQL

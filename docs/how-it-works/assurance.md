@@ -160,13 +160,13 @@ flowchart TD
     DATA --> WL["generate workloads:<br/>benign, adversarial, replay"]
     WL --> V["haltsql verify --policy P --batch"]
     V --> SPLIT{"verdict"}
-    SPLIT -- denied --> FP["counted: false positives<br/>if the intent was benign"]
-    SPLIT -- allowed --> OR["execute under every oracle"]
+    SPLIT -->|"denied"| FP["counted: false positives<br/>if the intent was benign"]
+    SPLIT -->|"allowed"| OR["execute under every oracle"]
     OR --> M["metrics: escapes, column leaks,<br/>side effects, latency, FP rate"]
     FP --> M
     M --> EXP{"meets the scenario's<br/>expect block?"}
-    EXP -- no --> FAIL["exit non-zero"]
-    EXP -- yes --> PASS["exit zero"]
+    EXP -->|"no"| FAIL["exit non-zero"]
+    EXP -->|"yes"| PASS["exit zero"]
     M --> REP["report.md, report.json,<br/>new_corpus_cases.yaml for each escape"]
     REP --> DROP["drop the database<br/>(unless --keep-db)"]
 ```
@@ -202,28 +202,28 @@ are set with `set_config(..., true)`, and the query is run under three roles:
 flowchart TD
     A["BEGIN REPEATABLE READ READ ONLY<br/>statement_timeout, tenancy settings,<br/>SAVEPOINT"] --> O["run as haltlab_owner<br/>with the verdict's bind_params"]
     O --> T{"transaction<br/>still open?"}
-    T -- no --> SE1["side effect:<br/>transaction control escaped"]
-    T -- yes --> OK{"owner run result"}
-    OK -- "SQLSTATE 25006" --> SE2["side effect: write attempted"]
-    OK -- "SQLSTATE 57014" --> TO["timeout"]
-    OK -- "other error" --> EE["execution error<br/>(not an escape)"]
-    OK -- "ok" --> SET{"settings changed?"}
-    SET -- yes --> SE3["side effect: setting changed"]
-    SET -- no --> HT{"rows contain another tenant's<br/>or a denied column's marker?"}
+    T -->|"no"| SE1["side effect:<br/>transaction control escaped"]
+    T -->|"yes"| OK{"owner run result"}
+    OK -->|"SQLSTATE 25006"| SE2["side effect: write attempted"]
+    OK -->|"SQLSTATE 57014"| TO["timeout"]
+    OK -->|"other error"| EE["execution error<br/>(not an escape)"]
+    OK -->|"ok"| SET{"settings changed?"}
+    SET -->|"yes"| SE3["side effect: setting changed"]
+    SET -->|"no"| HT{"rows contain another tenant's<br/>or a denied column's marker?"}
     SE3 --> HT
-    HT -- yes --> ESC1["escape: honeytoken"]
-    HT -- no --> RLS["run as haltlab_rls"]
+    HT -->|"yes"| ESC1["escape: honeytoken"]
+    HT -->|"no"| RLS["run as haltlab_rls"]
     ESC1 --> RLS
     RLS --> D{"owner rows minus RLS rows<br/>non-empty? (skipped for EXPLAIN)"}
-    D -- yes --> ESC2["escape: RLS differential"]
-    D -- no --> COLS["run as haltlab_cols"]
+    D -->|"yes"| ESC2["escape: RLS differential"]
+    D -->|"no"| COLS["run as haltlab_cols"]
     ESC2 --> COLS
     EE --> COLS
     SE2 --> COLS
     TO --> COLS
     COLS --> P{"SQLSTATE 42501?"}
-    P -- yes --> ESC3["escape: column leak"]
-    P -- no --> FIN["ROLLBACK, then check for<br/>leftover advisory locks"]
+    P -->|"yes"| ESC3["escape: column leak"]
+    P -->|"no"| FIN["ROLLBACK, then check for<br/>leftover advisory locks"]
     ESC3 --> FIN
 ```
 
@@ -289,16 +289,16 @@ flowchart LR
     FMT --> BT["build-test: dune test<br/>ubuntu and macOS,<br/>OCaml 5.2 and 5.4"]
     FMT --> COV["coverage: bisect_ppx"]
     FMT --> PGI["postgres-integration:<br/>rlsgen and catalog_tools<br/>against Postgres 17"]
-    PR --> SDK["Python, TypeScript,<br/>Go and Java SDK jobs"]
-    PR --> ACT["policy-ci-action:<br/>action and GitLab tests,<br/>shellcheck, dogfood"]
-    PR --> LABPR["lab.yml on lib/ or lab/ changes:<br/>unit tests, oracle self-test,<br/>pr-smoke, proxy parity"]
+    FMT --> SDK["Python, TypeScript,<br/>Go and Java SDK jobs"]
+    FMT --> ACT["policy-ci-action:<br/>action and GitLab tests,<br/>shellcheck, dogfood"]
+    PR --> LABPR["lab.yml, on PRs touching lib/ or lab/:<br/>unit tests, oracle self-test,<br/>pr-smoke, proxy parity"]
     NIGHT["nightly 03:17 UTC"] --> LABN["lab.yml: nightly saas, composite,<br/>hierarchical, erp, PG 13 to 17 matrix"]
     WEEK["weekly and on PRs"] --> SEC["security.yml: dependency review,<br/>Trivy image and config scans"]
 ```
 
 | Workflow | When | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | Pushes to `main`, every PR, and on demand | Formatting, build and `dune test` on a 2 x 2 OS and OCaml matrix, coverage, Postgres integration, SDK jobs, policy-CI action self-test |
+| `.github/workflows/ci.yml` | Pushes to `main`, every PR, and on demand | Formatting first; every other job waits for it: build and `dune test` on a 2 x 2 OS and OCaml matrix, coverage, Postgres integration, SDK jobs, policy-CI action self-test |
 | `.github/workflows/lab.yml` | Nightly, on PRs touching `lab/`, `lib/` or the workflow, and on demand | Lab unit tests, the oracle self-test, scenarios (`pr-smoke` on PRs, the nightly set and the version matrix on schedule), proxy parity and proxy integration tests; reports uploaded as artifacts |
 | `.github/workflows/security.yml` | Every PR, weekly (Mondays), and on demand | Dependency review, Trivy image and configuration scans |
 | `.github/workflows/pages.yml` | Pushes to `main` and PRs touching `docs/` or `website/`, and on demand | Builds this docs site; deploys it to GitHub Pages from `main` |

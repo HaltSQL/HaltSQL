@@ -1,0 +1,94 @@
+{
+  "family": "haltsql",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::111122223333:role/haltsql-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::111122223333:role/haltsql-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "haltsql",
+      "image": "111122223333.dkr.ecr.eu-west-1.amazonaws.com/haltsql-config@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "essential": true,
+      "user": "65532:65532",
+      "readonlyRootFilesystem": true,
+      "portMappings": [
+        { "name": "https", "containerPort": 8443, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "HALTSQL_LISTEN", "value": "0.0.0.0:8443" },
+        { "name": "HALTSQL_LOG_FORMAT", "value": "json" }
+      ],
+      "secrets": [
+        {
+          "name": "HALTSQL_TOKEN_ANALYTICS_AGENT_SHA256",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/tokens-AbCdEf:analytics-agent::"
+        },
+        {
+          "name": "HALTSQL_TOKEN_SUPPORT_BOT_SHA256",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/tokens-AbCdEf:support-bot::"
+        },
+        {
+          "name": "HALTSQL_TLS_CERT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/tls-GhIjKl:cert::"
+        },
+        {
+          "name": "HALTSQL_TLS_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/tls-GhIjKl:key::"
+        }
+      ],
+      "mountPoints": [
+        { "sourceVolume": "tmp", "containerPath": "/tmp", "readOnly": false }
+      ],
+      "dependsOn": [
+        { "containerName": "adot-collector", "condition": "START" }
+      ],
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "haltsql",
+          "mode": "blocking"
+        }
+      }
+    },
+    {
+      "name": "adot-collector",
+      "image": "public.ecr.aws/aws-observability/aws-otel-collector:latest",
+      "essential": false,
+      "command": ["--config=/etc/ecs/ecs-amp-xray.yaml"],
+      "environment": [
+        { "name": "AWS_REGION", "value": "eu-west-1" },
+        {
+          "name": "AWS_PROMETHEUS_ENDPOINT",
+          "value": "https://aps-workspaces.eu-west-1.amazonaws.com/workspaces/ws-00000000-0000-0000-0000-000000000000/api/v1/remote_write"
+        }
+      ],
+      "healthCheck": {
+        "command": ["/healthcheck"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "adot"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    { "name": "tmp" }
+  ]
+}

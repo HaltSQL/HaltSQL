@@ -1,0 +1,126 @@
+# Helm values overlay: haltsql-server as a shared service on Amazon EKS.
+#
+#   helm upgrade --install haltsql deploy/helm/haltsql -n haltsql --create-namespace \
+#     -f deploy/cloud/aws/eks/values-eks.yaml \
+#     --set-file 'policies.analytics-agent\.yaml=policies/analytics-agent.yaml'
+#   kubectl apply -n haltsql -f deploy/cloud/aws/eks/networkpolicy-shared.yaml
+#
+# Replace 111122223333, eu-west-1, corp-haltsql-audit and the token hash
+# Secret before use. See docs/deploy-aws.md.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/ardada2468/haltsql
+  # Pin the exact, signed image in production (cosign verify, see docs/deployment.md).
+  # digest: sha256:...
+
+serviceAccount:
+  create: true
+  name: haltsql
+  # IRSA: the EKS pod identity webhook injects AWS_ROLE_ARN and
+  # AWS_WEB_IDENTITY_TOKEN_FILE, which `credentials.source: web_identity` reads.
+  # The role's trust policy must name system:serviceaccount:haltsql:haltsql
+  # (deploy/cloud/aws/iam/irsa-trust-policy.json).
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/haltsql-audit
+    eks.amazonaws.com/sts-regional-endpoints: "true"
+  # The webhook mounts its own projected token for STS; the Kubernetes API
+  # token stays unmounted.
+  automountServiceAccountToken: false
+
+server:
+  port: 8080
+  reloadWatch: true
+  logLevel: info
+  logFormat: json
+  metrics: true
+  audit:
+    sinks:
+      # Hash-chained, create-only, WORM objects in S3. The bucket must have
+      # Object Lock enabled (deploy/cloud/aws/terraform).
+      - type: s3
+        bucket: corp-haltsql-audit
+        region: eu-west-1
+        prefix: haltsql/audit/
+        object_lock: { mode: COMPLIANCE, retain_days: 365 }
+        batch: { max_records: 500, max_seconds: 10 }
+        credentials: { source: web_identity }
+        # The chart mounts an emptyDir at /var/log/haltsql. It survives
+        # container restarts (the chain continues), not pod deletion.
+        spool_dir: /var/log/haltsql/spool
+        on_error: fail_closed
+    logRawSql: false
+
+# Static tokens: keep the hashes out of values files. With
+# existingTokenSecret the chart only needs each token's name and policy; the
+# Secret (synced from Secrets Manager, for example with External Secrets
+# Operator) holds one key per token, HALTSQL_TOKEN_<i>_SHA256, in list order.
+# (values.schema.json still requires `sha256`; with existingTokenSecret the
+# value is not rendered, so a placeholder is fine. Changing it rolls the pods.)
+tokens:
+  - name: analytics-agent
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    policy: analytics-agent
+existingTokenSecret: haltsql-token-hashes
+
+# Or, instead of static tokens, accept JWTs from your IdP:
+# oidc:
+#   - name: corp-idp
+#     issuer: https://login.corp.example/oauth2/default
+#     audiences: [haltsql]
+#     policy_claim: haltsql_policy
+#     allowed_policies: [analytics-agent]
+#     context_claims: { tenant_id: "https://corp.example/tenant" }
+
+# Built-in TLS from a cert-manager Certificate (for example issued by AWS
+# Private CA through aws-privateca-issuer). Probes move to port 8081.
+tls:
+  enabled: true
+  secretName: haltsql-tls
+  clientAuth: none
+  minVersion: "1.3"
+  healthPort: 8081
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests: { cpu: 250m, memory: 128Mi }
+  limits: { memory: 512Mi }
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 60
+
+# The chart's NetworkPolicy denies all egress, which would block STS, S3 and
+# (with OIDC) the JWKS fetch, and with on_error: fail_closed every request
+# would then get 503. Disable it and apply networkpolicy-shared.yaml instead.
+networkPolicy:
+  enabled: false
+
+serviceMonitor:
+  enabled: false      # true with the Prometheus Operator; or scrape with ADOT / AMP
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: haltsql
+        app.kubernetes.io/instance: haltsql
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: haltsql
+        app.kubernetes.io/instance: haltsql

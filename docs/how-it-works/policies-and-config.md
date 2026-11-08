@@ -31,22 +31,22 @@ source positions. Then a kind-specific decoder validates and compiles it.
 ```mermaid
 flowchart TD
     F["file on disk"] --> EXT{"extension"}
-    EXT -- ".yaml or .yml" --> Y["YAML event stream (libyaml)<br/>typed with the YAML 1.2 core schema"]
-    EXT -- ".json" --> J["strict RFC 8259 JSON reader"]
+    EXT -->|".yaml or .yml"| Y["YAML event stream (libyaml)<br/>typed with the YAML 1.2 core schema"]
+    EXT -->|".json"| J["strict RFC 8259 JSON reader"]
     Y --> LIM["safety limits:<br/>4 MiB, depth 64, one document,<br/>no tags, alias expansion capped,<br/>duplicate keys rejected"]
     J --> LIM
     LIM --> T["JSON tree plus key-path positions"]
     T --> K{"kind"}
-    K -- Policy --> P["Policy_load<br/>unknown keys, placeholders,<br/>presets, catalog checks"]
-    K -- Config --> C["Config<br/>two-pass secret resolution"]
-    K -- TestSuite --> TS["Test_suite"]
-    K -- Catalog --> CA["Catalog_load"]
+    K -->|"Policy"| P["Policy_load<br/>unknown keys, placeholders,<br/>presets, catalog checks"]
+    K -->|"Config"| C["Config<br/>two-pass secret resolution"]
+    K -->|"TestSuite"| TS["Test_suite"]
+    K -->|"Catalog"| CA["Catalog_load"]
     P --> V["compiled Policy.t<br/>version = sha256 of normalized JSON"]
     C --> CT["Config.t with compiled policies"]
     TS --> TT["Test_suite.t"]
     CA --> CC["Catalog.t"]
-    P -. "any error" .-> E["all errors at once:<br/>file:line:col: key.path: message"]
-    C -. "any error" .-> E
+    P -.->|"any error"| E["all errors at once:<br/>file:line:col: key.path: message"]
+    C -.->|"any error"| E
 ```
 
 The decoders collect errors instead of stopping at the first one, so one run

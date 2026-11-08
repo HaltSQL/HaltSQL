@@ -1,0 +1,96 @@
+# Azure Container Apps: haltsql-server as a SHARED SERVICE behind internal
+# ingress. Agent apps in the same environment call
+#   https://haltsql.internal.<ENVIRONMENT_DEFAULT_DOMAIN>/v1/verify
+# with a Microsoft Entra ID access token (see haltsql/shared.yaml).
+#
+#   az containerapp create -g <RG> -n haltsql --yaml shared-service.yaml
+#
+# TLS: Container Apps ingress terminates HTTPS and forwards plain HTTP to
+# port 8080 inside the environment. Turn on peer-to-peer encryption on the
+# environment if traffic inside the environment must also be encrypted:
+#   az containerapp env update -g <RG> -n cae-agents --enable-peer-to-peer-encryption
+#
+# The haltsql container needs no secrets: OIDC needs only the public JWKS of
+# login.microsoftonline.com (outbound HTTPS must be allowed by your firewall).
+location: REPLACE_LOCATION
+name: haltsql
+type: Microsoft.App/containerApps
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql: {}
+properties:
+  managedEnvironmentId: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.App/managedEnvironments/cae-agents
+  workloadProfileName: Consumption
+  configuration:
+    activeRevisionsMode: Multiple    # canary new policy images with traffic splitting
+    ingress:
+      external: false                # internal to the environment / VNet only
+      targetPort: 8080
+      transport: http
+      allowInsecure: false           # HTTP is redirected to HTTPS
+      traffic:
+        - latestRevision: true
+          weight: 100
+    registries:
+      - server: REPLACE_ACR.azurecr.io
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql
+    secrets:
+      - name: appinsights-connection-string
+        keyVaultUrl: https://REPLACE_KV.vault.azure.net/secrets/appinsights-connection-string
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql
+      - name: otelcol-config
+        value: |
+          receivers:
+            otlp:
+              protocols:
+                http:
+                  endpoint: 127.0.0.1:4318
+          processors:
+            batch: {}
+          exporters:
+            azuremonitor:
+              connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+          service:
+            pipelines:
+              traces:  { receivers: [otlp], processors: [batch], exporters: [azuremonitor] }
+              metrics: { receivers: [otlp], processors: [batch], exporters: [azuremonitor] }
+  template:
+    containers:
+      - name: haltsql
+        image: REPLACE_ACR.azurecr.io/haltsql-shared:1.0.0   # ./Dockerfile with CONFIG=shared.yaml
+        args: ["--config", "/etc/haltsql/config.yaml", "--listen", "0.0.0.0:8080"]
+        resources: { cpu: 0.5, memory: 1Gi }
+        probes:
+          - type: Liveness
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          - type: Readiness
+            httpGet: { path: /readyz, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 2
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.111.0    # pin a current release
+        args: ["--config=/etc/otelcol/config.yaml"]
+        env:
+          - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+            secretRef: appinsights-connection-string
+        resources: { cpu: 0.5, memory: 1Gi }
+        volumeMounts:
+          - volumeName: otelcol-config
+            mountPath: /etc/otelcol
+    volumes:
+      - name: otelcol-config
+        storageType: Secret
+        secrets:
+          - secretRef: otelcol-config
+            path: config.yaml
+    scale:
+      minReplicas: 2                 # never scale a policy firewall to zero
+      maxReplicas: 10
+      rules:
+        - name: http-concurrency
+          http:
+            metadata:
+              concurrentRequests: "200"

@@ -1,0 +1,15 @@
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: analytics-agent, owner: data-platform }
+search_path: [app]
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, status, total_cents, created_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates, datetime]

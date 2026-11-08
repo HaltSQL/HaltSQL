@@ -1,0 +1,46 @@
+# haltsql-proxy config for ECS Fargate behind an internal NLB, in front of
+# Amazon RDS / Aurora PostgreSQL. Baked into a derived image together with the
+# policies and the RDS CA bundle (Dockerfile.proxy). The upstream password and
+# SCRAM verifier arrive as environment variables injected by ECS from Secrets
+# Manager. tls.cert / tls.key must be *files* for the proxy, so a short-lived
+# init container in the task writes them (mode 0600) to a task-scoped volume
+# (proxy-task-definition.json).
+apiVersion: haltsql.dev/v1
+kind: ProxyConfig
+listen: 0.0.0.0:6432
+tls:
+  # The NLB passes TCP through (Postgres negotiates TLS in-band, after an
+  # SSLRequest), so clients see this certificate; issue it from AWS Private CA
+  # for the NLB's DNS name.
+  cert: /run/haltsql-secrets/tls.crt
+  key: /run/haltsql-secrets/tls.key
+  client_auth: none
+  required: true
+upstream:
+  host: app-db.cluster-abcdefghijkl.eu-west-1.rds.amazonaws.com
+  port: 5432
+  database: app
+  user: haltsql_service             # least-privilege role, RLS on
+  password: ${env:UPSTREAM_PASSWORD}
+  tls:
+    mode: verify-full
+    ca: ./rds-global-bundle.pem     # https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+policies:
+  - path: ./policies/analytics-agent.yaml
+auth:
+  method: scram
+  users:
+    - name: analytics-agent
+      scram_verifier: ${env:SCRAM_VERIFIER_ANALYTICS_AGENT}
+      policy: analytics-agent
+      context: { tenant_id: acme }
+limits:
+  max_connections: 200
+  idle_timeout_seconds: 300
+deny_sqlstate: "42501"
+audit:
+  type: stdout
+  log_raw_sql: false
+logging:
+  level: info
+shutdown_grace_seconds: 20

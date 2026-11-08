@@ -1,0 +1,86 @@
+{
+  "family": "haltsql-proxy",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::111122223333:role/haltsql-proxy-ecs-execution",
+  "containerDefinitions": [
+    {
+      "name": "write-tls-files",
+      "image": "public.ecr.aws/docker/library/busybox:stable",
+      "essential": false,
+      "user": "0",
+      "entryPoint": ["sh", "-c"],
+      "command": [
+        "umask 077 && printf '%s\\n' \"$PROXY_TLS_CERT\" > /run/haltsql-secrets/tls.crt && printf '%s\\n' \"$PROXY_TLS_KEY\" > /run/haltsql-secrets/tls.key && chown 65532:65532 /run/haltsql-secrets/tls.crt /run/haltsql-secrets/tls.key"
+      ],
+      "secrets": [
+        {
+          "name": "PROXY_TLS_CERT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/proxy-tls-MnOpQr:cert::"
+        },
+        {
+          "name": "PROXY_TLS_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/proxy-tls-MnOpQr:key::"
+        }
+      ],
+      "mountPoints": [
+        { "sourceVolume": "tls", "containerPath": "/run/haltsql-secrets", "readOnly": false }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql-proxy",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "init"
+        }
+      }
+    },
+    {
+      "name": "haltsql-proxy",
+      "image": "111122223333.dkr.ecr.eu-west-1.amazonaws.com/haltsql-proxy-config@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "essential": true,
+      "user": "65532:65532",
+      "readonlyRootFilesystem": true,
+      "entryPoint": ["/usr/local/bin/haltsql-proxy"],
+      "command": ["run", "-c", "/etc/haltsql/proxy.yaml", "--listen", "0.0.0.0:6432"],
+      "portMappings": [
+        { "name": "postgres", "containerPort": 6432, "protocol": "tcp" }
+      ],
+      "secrets": [
+        {
+          "name": "UPSTREAM_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/proxy-upstream-StUvWx:password::"
+        },
+        {
+          "name": "SCRAM_VERIFIER_ANALYTICS_AGENT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/proxy-users-YzAbCd:analytics-agent::"
+        }
+      ],
+      "mountPoints": [
+        { "sourceVolume": "tls", "containerPath": "/run/haltsql-secrets", "readOnly": true }
+      ],
+      "dependsOn": [
+        { "containerName": "write-tls-files", "condition": "SUCCESS" }
+      ],
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql-proxy",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "proxy",
+          "mode": "blocking"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    { "name": "tls" }
+  ]
+}

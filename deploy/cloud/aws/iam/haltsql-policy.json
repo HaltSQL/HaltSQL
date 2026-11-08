@@ -1,0 +1,40 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteAuditObjectsUnderPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:PutObjectRetention"
+      ],
+      "Resource": "arn:aws:s3:::corp-haltsql-audit/haltsql/audit/*"
+    },
+    {
+      "Sid": "ReadHaltsqlSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": [
+        "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/tokens-??????",
+        "arn:aws:secretsmanager:eu-west-1:111122223333:secret:prod/haltsql/otel-??????"
+      ]
+    },
+    {
+      "Sid": "UseCustomerManagedKeyViaS3AndSecretsManager",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "arn:aws:kms:eu-west-1:111122223333:key/00000000-0000-0000-0000-000000000000",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.eu-west-1.amazonaws.com",
+            "secretsmanager.eu-west-1.amazonaws.com"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -53,7 +53,7 @@ Explainers with diagrams, from the big picture down to the code:
 
 ## Operating HaltSQL
 
-- [Deployment](deployment.md): Docker, Kubernetes sidecar, systemd, verifying releases.
+- [Deployment](deployment.md): deployment shapes, Docker, Kubernetes sidecar, systemd, verifying releases.
 - [Authentication and TLS](authentication.md): built-in TLS 1.2/1.3, mTLS
   identities, OIDC/JWT callers, and claim-derived tenant context.
 - [Secrets](secrets.md): `${vault:...}`, `${aws-sm:...}` and `${gcp-sm:...}` config placeholders.
@@ -66,6 +66,15 @@ Explainers with diagrams, from the big picture down to the code:
 - [Schema and PII import](schema-and-pii.md): `haltsql schema pull|import` and `haltsql policy draft`.
 - [Integrations](integrations.md): official SDKs, agent tool wrappers, MCP.
 - [Testing](testing.md): policy tests in CI, the attack corpus, and the enterprise lab.
+
+## Deploying to the cloud
+
+Reference architectures, IAM, and ready-to-edit manifests for each cloud. Start
+with [Deployment](deployment.md) for the shapes they share.
+
+- [AWS](deploy-aws.md): EKS sidecar with IRSA, ECS Fargate shared service, proxy in front of RDS.
+- [Google Cloud](deploy-gcp.md): GKE sidecar with Workload Identity, Cloud Run, proxy in front of Cloud SQL.
+- [Azure](deploy-azure.md): AKS sidecar with Workload Identity, Container Apps, proxy in front of Flexible Server.
 
 ## Project
 
@@ -93,5 +102,7 @@ Everything HaltSQL reads is YAML or JSON with `apiVersion: haltsql.dev/v1` and a
 | `ProxyConfig` | How `haltsql-proxy` runs | [proxy.md](proxy.md) |
 | `PolicyBundle` | Signed set of policies (canonical JSON + `.sig`) | [policy-bundles.md](policy-bundles.md) |
 
-`haltsql validate FILE...` checks any of them, and `haltsql schema export`
-writes JSON Schemas for editor autocomplete.
+`haltsql validate FILE...` checks `Policy`, `Config`, `TestSuite`, `Catalog`
+and `Scenario` documents; `haltsql-proxy validate --config FILE` checks a
+`ProxyConfig`, and `haltsql bundle verify` checks a `PolicyBundle`.
+`haltsql schema export` writes JSON Schemas for editor autocomplete.

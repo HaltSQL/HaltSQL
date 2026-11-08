@@ -54,24 +54,24 @@ This is the decision HaltSQL makes for each (occurrence, tenant column) pair.
 ```mermaid
 flowchart TD
     A["Occurrence of a tenant-scoped table<br/>and one of its tenant columns"] --> B{"Context has a value<br/>for the tenancy key?"}
-    B -- "no, or empty list" --> X1["E_CONTEXT_MISSING"]
-    B -- yes --> C["Collect candidate locations:<br/>scope WHERE plus join ON quals<br/>that may filter this occurrence"]
+    B -->|"no, or empty list"| X1["E_CONTEXT_MISSING"]
+    B -->|"yes"| C["Collect candidate locations:<br/>scope WHERE plus join ON quals<br/>that may filter this occurrence"]
     C --> D["Split each location into<br/>top-level AND conjuncts"]
     D --> E{"Any conjunct compares<br/>this exact column with = , = ANY or IN?"}
-    E -- no --> X2["E_TENANT_MISSING"]
-    E -- yes --> F{"Cast or COLLATE<br/>on the column side?"}
-    F -- yes --> X2
-    F -- no --> G{"Policy mode"}
-    G -- bound --> H{"Value side is a placeholder?"}
-    H -- "literal" --> X3["E_TENANT_MISMATCH<br/>(literal in bound mode)"]
-    H -- "placeholder, single value" --> P1["Proof: bind the placeholder<br/>to the context value"]
-    H -- "= $n with a list context" --> X2
-    H -- "= ANY placeholder" --> P2["Proof: bind the placeholder<br/>to the whole list"]
-    G -- literal --> L{"Value side is a literal?"}
-    L -- "placeholder" --> X2
-    L -- "literal" --> M{"Equals the context value exactly,<br/>or is in the set?"}
-    M -- yes --> P3["Proof, nothing to bind"]
-    M -- no --> X4["E_TENANT_MISMATCH"]
+    E -->|"no"| X2["E_TENANT_MISSING"]
+    E -->|"yes"| F{"Cast or COLLATE<br/>on the column side?"}
+    F -->|"yes"| X2
+    F -->|"no"| G{"Policy mode"}
+    G -->|"bound"| H{"Value side is a placeholder?"}
+    H -->|"literal"| X3["E_TENANT_MISMATCH<br/>(literal in bound mode)"]
+    H -->|"placeholder, single value"| P1["Proof: bind the placeholder<br/>to the context value"]
+    H -->|"= $n with a list context"| X2
+    H -->|"= ANY placeholder"| P2["Proof: bind the placeholder<br/>to the whole list"]
+    G -->|"literal"| L{"Value side is a literal?"}
+    L -->|"placeholder"| X2
+    L -->|"literal"| M{"Equals the context value exactly,<br/>or is in the set?"}
+    M -->|"yes"| P3["Proof, nothing to bind"]
+    M -->|"no"| X4["E_TENANT_MISMATCH"]
 ```
 
 A few details in that chart are deliberate.
@@ -147,9 +147,9 @@ flowchart TD
         AGG["count(*), max(tenant_id)<br/>over every tenant's rows"]
     end
     IO --> AGG
-    AGG -- "one row, already mixed" --> X
+    AGG -->|"one row, already mixed"| X
     X --> OW
-    OW -. "not a candidate location for orders" .-> IO
+    OW -.->|"not a candidate location for orders"| IO
 ```
 
 ```sql
@@ -224,10 +224,10 @@ flowchart LR
     end
     ON["ON o.customer_id = c.id<br/>AND o.tenant_id = $1<br/>AND c.tenant_id = $1"]
     WH["WHERE c.tenant_id = $1"]
-    ON -- "proves" --> O
-    ON -. "cannot prove" .-> C
-    WH -- "proves" --> C
-    WH -- "also proves" --> O
+    ON -->|"proves"| O
+    ON -.->|"cannot prove"| C
+    WH -->|"proves"| C
+    WH -->|"also proves"| O
 ```
 
 Why can the `ON` of a `LEFT JOIN` not prove the left table? Because an outer
@@ -393,13 +393,13 @@ through the tenant comparison itself. The same applies to `status = $1`,
 ```mermaid
 flowchart TD
     S["Every $n in the query,<br/>with its source location"] --> Q1{"Is $n bound by<br/>any tenant proof?"}
-    Q1 -- no --> U["E_PARAM_UNBOUND<br/>rule params.unbound"]
-    Q1 -- yes --> Q2{"Is this exact location<br/>one of the proof locations?"}
-    Q2 -- yes --> OK["fine"]
-    Q2 -- no --> R["E_PARAM_UNBOUND<br/>rule params.tenant_reuse"]
+    Q1 -->|"no"| U["E_PARAM_UNBOUND<br/>rule params.unbound"]
+    Q1 -->|"yes"| Q2{"Is this exact location<br/>one of the proof locations?"}
+    Q2 -->|"yes"| OK["fine"]
+    Q2 -->|"no"| R["E_PARAM_UNBOUND<br/>rule params.tenant_reuse"]
     OK --> Q3{"One value per $n?"}
-    Q3 -- no --> M["E_TENANT_MISMATCH<br/>rule tenancy.param_conflict"]
-    Q3 -- yes --> B["bind_params in the verdict"]
+    Q3 -->|"no"| M["E_TENANT_MISMATCH<br/>rule tenancy.param_conflict"]
+    Q3 -->|"yes"| B["bind_params in the verdict"]
 ```
 
 ## INSERT, UPDATE and DELETE

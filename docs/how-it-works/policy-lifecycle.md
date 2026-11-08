@@ -20,8 +20,8 @@ flowchart TD
     DRAFT --> REVIEW["human review and edits<br/>in a pull request"]
     REVIEW --> SUITE["TestSuite files<br/>allow and deny cases"]
     SUITE --> CI["policy CI:<br/>validate, lint-policy, test"]
-    CI -- "fails" --> REVIEW
-    CI -- "passes on main" --> BUILD["haltsql bundle build<br/>deterministic, canonical"]
+    CI -->|"fails"| REVIEW
+    CI -->|"passes on main"| BUILD["haltsql bundle build<br/>deterministic, canonical"]
     BUILD --> SIGN["haltsql bundle sign<br/>Ed25519 key from a CI secret"]
     SIGN --> DIST["distribute: copy, OCI, S3, ..."]
     DIST --> SRV["haltsql-server verifies and loads<br/>(hot reload, last good set kept)"]
@@ -109,8 +109,9 @@ that behave differently than intended. A bundle is built only after all three
 pass.
 
 The project dogfoods the action in its own CI (`policy-ci-action` job in
-`.github/workflows/ci.yml`): it runs the action against `examples/policies`
-and `examples/suites` and builds and signs a bundle with a throwaway key.
+`.github/workflows/ci.yml`): it runs the action against the YAML policies in
+`examples/policies` and the suites in `examples/suites`, then builds and signs
+a bundle with a throwaway key.
 
 ## 4. Build and sign a bundle
 

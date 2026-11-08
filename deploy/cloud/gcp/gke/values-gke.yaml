@@ -1,0 +1,139 @@
+# Helm values for a shared haltsql-server on GKE (deploy/helm/haltsql).
+#
+#   helm upgrade --install haltsql deploy/helm/haltsql -n haltsql --create-namespace \
+#     -f deploy/cloud/gcp/gke/values-gke.yaml \
+#     --set-file 'policies.analytics-agent\.yaml=policies/analytics-agent.yaml'
+#   kubectl apply -n haltsql -f deploy/cloud/gcp/gke/shared-extras.yaml
+#
+# Callers authenticate with Google-signed ID tokens (audience "haltsql") fetched
+# from their own metadata server, so there is no shared secret to distribute.
+# Replace every REPLACE_ME value. Create the GCP side with
+# ../iam/setup.sh gke-shared.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/ardada2468/haltsql
+  tag: "0.1.0"
+  digest: ""          # pin the exact, cosign-verified image in production
+
+serviceAccount:
+  create: true
+  name: haltsql
+  annotations:
+    # Workload Identity: this KSA impersonates the GSA. Bind it with
+    # roles/iam.workloadIdentityUser for
+    # serviceAccount:REPLACE_ME_PROJECT.svc.id.goog[haltsql/haltsql].
+    iam.gke.io/gcp-service-account: haltsql-server@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+  # The GKE metadata server identifies the pod without its Kubernetes token.
+  automountServiceAccountToken: false
+
+server:
+  # Keep 8080: the image sets HALTSQL_LISTEN=0.0.0.0:8080, which outranks the
+  # listen address the chart writes into the config. The Service exposes 8443.
+  port: 8080
+  logLevel: info
+  logFormat: json
+  metrics: true
+  reloadWatch: true
+  audit:
+    sinks:
+      - type: stdout                 # operational copy in Cloud Logging
+      - type: gcs                    # compliance copy, WORM via bucket retention
+        bucket: REPLACE_ME_PROJECT-haltsql-audit
+        prefix: haltsql/audit/shared/
+        credentials: { source: metadata }
+        # The chart mounts an emptyDir at /var/log/haltsql: the chain survives
+        # container restarts, not pod deletion (see docs/audit-sinks.md).
+        spool_dir: /var/log/haltsql/gcs-spool
+        on_error: fail_closed
+    logRawSql: false
+  extraConfig:
+    telemetry:
+      otlp:
+        endpoint: http://otel-collector.observability.svc.cluster.local:4318
+        service_name: haltsql
+        traces: true
+        metrics: false               # metrics come from the PodMonitoring scrape
+
+# Built-in TLS. The Secret (tls.crt, tls.key) can come from cert-manager with a
+# Google CAS issuer or any internal CA. Probes move to plain-HTTP port 8081.
+tls:
+  enabled: true
+  secretName: haltsql-tls
+  clientAuth: none
+  minVersion: "1.3"
+  healthPort: 8081
+
+# Google-signed ID tokens. One entry per calling service account: the same
+# issuer may appear several times, and entries are tried in order until one
+# accepts the token. Pin each on `sub`, the GSA's numeric unique ID
+# (gcloud iam service-accounts describe EMAIL --format='value(uniqueId)'),
+# which every Google ID token carries; `email` is only present when the
+# caller asks the metadata server for format=full.
+oidc:
+  - name: google-analytics-agent
+    issuer: https://accounts.google.com
+    audiences: [haltsql]
+    algorithms: [RS256]
+    policy: analytics-agent
+    required_claims:
+      sub: "REPLACE_ME_ANALYTICS_AGENT_GSA_UNIQUE_ID"
+    # Google ID tokens carry no tenant: the calling service supplies it from
+    # its authenticated session, as with static tokens.
+    request_context_fields: [tenant_id]
+
+tokens: []
+
+service:
+  type: ClusterIP
+  port: 8443
+  # For callers outside the cluster but inside the VPC, use an internal
+  # passthrough Network Load Balancer (TLS still terminates in haltsql):
+  # type: LoadBalancer
+  # annotations:
+  #   networking.gke.io/load-balancer-type: "Internal"
+
+resources:
+  requests: { cpu: 100m, memory: 64Mi }
+  limits: { memory: 256Mi }
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: agents }
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: gmp-system }
+  egress:
+    allowHTTPS: true      # GCS, accounts.google.com discovery + JWKS
+    allowDNS: true
+    extraRules:
+      # GKE metadata server (Workload Identity tokens): 169.254.169.252:988 on
+      # GKE 1.21+, 169.254.169.254:80 on Dataplane V2 clusters.
+      - to: [{ ipBlock: { cidr: 169.254.169.252/32 } }]
+        ports: [{ port: 988, protocol: TCP }]
+      - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+        ports: [{ port: 80, protocol: TCP }]
+      - to:
+          - namespaceSelector:
+              matchLabels: { kubernetes.io/metadata.name: observability }
+            podSelector:
+              matchLabels: { app: otel-collector }
+        ports: [{ port: 4318, protocol: TCP }]
+
+# The chart's ServiceMonitor needs the Prometheus Operator CRDs. On GKE with
+# Managed Prometheus, use the PodMonitoring in shared-extras.yaml instead.
+serviceMonitor:
+  enabled: false

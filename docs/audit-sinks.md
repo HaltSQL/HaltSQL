@@ -80,7 +80,7 @@ and `Object_sink`.
 | Mode | While uploads fail | Recovery |
 |---|---|---|
 | `fail_closed` (default) | After an upload has failed every attempt (3 by default, with backoff), the sink reports **unhealthy**. Every audit write is refused and `/v1/verify` answers **503**. No request is ever served without its audit record. | The background loop retries the held objects every `batch.max_seconds`. The first success makes the sink healthy again. |
-| `buffer` | Writes keep succeeding while failed objects wait, up to `max_buffer_records` records (default 100 000). At the bound, writes are refused (503). Records are **never silently dropped**. | Same background retry; the buffer drains in order. |
+| `buffer` | Writes keep succeeding while failed objects wait, up to 100 000 waiting records (the `?max_buffer_records` argument of the library's `S3_sink.create` / `Gcs_sink.create`; it is not a config-file key). At the bound, writes are refused (503). Records are **never silently dropped**. | Same background retry; the buffer drains in order. |
 
 Records accepted into a batch but not yet uploaded live in memory. To make
 them survive a crash, give the sink a **spool directory** (`spool_dir` in the

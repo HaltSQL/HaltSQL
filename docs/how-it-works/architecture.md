@@ -104,7 +104,7 @@ files).
 flowchart TD
     subgraph bins["Executables"]
         CLI["bin/haltsql"]
-        SRV["bin/server"]
+        SRV["bin/server<br/>(+ bin/server/lib)"]
         PRX["bin/proxy"]
     end
 
@@ -140,6 +140,7 @@ flowchart TD
     SRV --> CLOUD
     SRV --> BUN
     PRX --> WIRE
+    PRX --> FAC
     WIRE --> FAC
     AUTH --> FAC
     TEL --> LOAD

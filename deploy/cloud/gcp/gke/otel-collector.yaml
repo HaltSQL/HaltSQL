@@ -1,0 +1,105 @@
+# OpenTelemetry Collector that receives haltsql-server's OTLP/HTTP (JSON) spans
+# and writes them to Cloud Trace. haltsql cannot send to Google's endpoints
+# directly: they need a short-lived Google access token, and
+# telemetry.otlp.headers are static.
+#
+# The collector's KSA impersonates the GSA haltsql-otel, which has
+# roles/cloudtrace.agent (and roles/monitoring.metricWriter if you add a
+# metrics pipeline). Create it with ../iam/setup.sh collector.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+  annotations:
+    iam.gke.io/gcp-service-account: haltsql-otel@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+      resourcedetection:
+        detectors: [env, gcp]
+        timeout: 5s
+      batch: {}
+    exporters:
+      googlecloud: {}              # Cloud Trace; project from the metadata server
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, batch]
+          exporters: [googlecloud]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: otel-collector }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      serviceAccountName: otel-collector
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.164.0   # pin; mirror to Artifact Registry
+          args: ["--config=/etc/otelcol/config.yaml"]
+          ports:
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: health, containerPort: 13133 }
+          readinessProbe: { httpGet: { path: /, port: health } }
+          livenessProbe: { httpGet: { path: /, port: health } }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: otel-collector }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }

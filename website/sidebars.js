@@ -53,7 +53,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Operations',
-      items: ['deployment', 'authentication', 'secrets', 'audit-sinks', 'observability'],
+      items: ['deployment', 'deploy-aws', 'deploy-gcp', 'deploy-azure', 'authentication', 'secrets', 'audit-sinks', 'observability'],
     },
     {
       type: 'category',

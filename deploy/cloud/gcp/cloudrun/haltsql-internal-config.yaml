@@ -1,0 +1,54 @@
+# haltsql-server config for the shared, internal Cloud Run service
+# (service-internal.yaml). Stored in Secret Manager as haltsql-internal-config.
+#
+# Two layers of authentication:
+#   1. Cloud Run IAM: callers need roles/run.invoker and send a Google ID token
+#      for the service URL in X-Serverless-Authorization.
+#   2. haltsql: callers send a second Google ID token, audience "haltsql", in
+#      Authorization. Each provider entry below pins one calling service
+#      account (by its numeric unique ID, the token's `sub`) to one policy.
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  auth:
+    oidc:
+      - name: google-analytics-agent
+        issuer: https://accounts.google.com
+        audiences: [haltsql]
+        algorithms: [RS256]
+        policy: analytics-agent
+        required_claims:
+          sub: "REPLACE_ME_ANALYTICS_AGENT_SA_UNIQUE_ID"
+        request_context_fields: [tenant_id]
+      - name: google-support-bot
+        issuer: https://accounts.google.com
+        audiences: [haltsql]
+        algorithms: [RS256]
+        policy: support-bot
+        required_claims:
+          sub: "REPLACE_ME_SUPPORT_BOT_SA_UNIQUE_ID"
+        request_context_fields: [tenant_id]
+policies:
+  # A signed bundle on a read-only Cloud Storage volume. The signature file
+  # (prod.haltsqlbundle.sig) sits next to it. The public key is in this
+  # config, not in the bucket, so whoever can write the bucket cannot also
+  # replace the key.
+  - bundle: /etc/haltsql/bundles/prod.haltsqlbundle
+    public_keys:
+      - "REPLACE_ME_BASE64_ED25519_PUBLIC_KEY"
+reload: { watch: false }            # roll out policy changes as new revisions
+audit:
+  sinks:
+    - type: stdout                  # operational copy in Cloud Logging
+    - type: gcs
+      bucket: REPLACE_ME_PROJECT-haltsql-audit
+      prefix: haltsql/audit/cloud-run/shared/
+      credentials: { source: metadata }
+      spool_dir: /var/spool/haltsql
+      batch: { max_records: 500, max_seconds: 5 }
+      on_error: fail_closed
+  log_raw_sql: false
+telemetry:
+  metrics: { prometheus: true }
+logging: { level: info, format: json }
+limits: { max_request_bytes: 262144 }
