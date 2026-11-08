@@ -687,10 +687,19 @@ let test_draft_options () =
 
 (* ------------------------------------------------------------ CLI *)
 
-let run_proc prog args =
+(* [env]: extra variables; inherited FAKE_CATALOG_* variables are dropped. *)
+let run_proc ?(env = []) prog args =
   let argv = Array.of_list (prog :: args) in
   let out_r, out_w = Unix.pipe () and err_r, err_w = Unix.pipe () in
-  let pid = Unix.create_process prog argv Unix.stdin out_w err_w in
+  let environment =
+    Array.append
+      (Array.of_list
+         (List.filter
+            (fun kv -> not (String.starts_with ~prefix:"FAKE_CATALOG_" kv))
+            (Array.to_list (Unix.environment ()))))
+      (Array.of_list (List.map (fun (k, v) -> k ^ "=" ^ v) env))
+  in
+  let pid = Unix.create_process_env prog argv environment Unix.stdin out_w err_w in
   Unix.close out_w;
   Unix.close err_w;
   let read_all fd =
@@ -710,7 +719,120 @@ let run_proc prog args =
 
 let abs p = if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p
 let cli args = run_proc (abs (Sys.getenv "SCHEMA_CLI")) args
+let cli_env env args = run_proc ~env (abs (Sys.getenv "SCHEMA_CLI")) args
 let haltsql args = run_proc (abs (Sys.getenv "HALTSQL_BIN")) args
+
+(* ------------------------------------------------------------ non-authoritative *)
+
+let load_errors = function
+  | Ok _ -> Alcotest.fail "expected a load error"
+  | Error es -> String.concat "; " (List.map Load_error.to_string es)
+
+let policy_yaml catalog =
+  Printf.sprintf
+    "apiVersion: haltsql.dev/v1\n\
+     kind: Policy\n\
+     metadata: {name: p}\n\
+     search_path: [app]\n\
+     catalog: %s\n\
+     tables:\n\
+    \  app.currencies: {columns: [code, name]}\n"
+    catalog
+
+(* (a) A policy whose catalog: is a non-authoritative snapshot does not load. *)
+let test_non_authoritative_refused () =
+  let dir = tmpdir () in
+  let snap, _ = sample_snapshot () in
+  let fetched = { snap with authoritative = false } in
+  write
+    (Filename.concat dir "fetched.json")
+    (Yojson.Safe.pretty_to_string (Snap.to_json fetched));
+  write
+    (Filename.concat dir "pulled.json")
+    (Yojson.Safe.pretty_to_string (Snap.to_json snap));
+  let load y =
+    Policy_load.of_string ~file:"p.yaml" ~base_dir:dir Docload.Yaml (policy_yaml y)
+  in
+  let m = load_errors (load "fetched.json") in
+  check_contains "refused" m "not authoritative";
+  check_contains "hint" m "haltsql schema pull";
+  check_contains "path" m "metadata.authoritative";
+  (match load "pulled.json" with
+  | Ok _ -> ()
+  | Error es ->
+      Alcotest.failf "pulled: %s" (String.concat "; " (List.map Load_error.to_string es)));
+  (* Inline catalogs too, and the flag must be a boolean. *)
+  let inline v =
+    Printf.sprintf
+      "{metadata: {authoritative: %s}, tables: {app.currencies: {columns: [{name: code, \
+       type: text}, {name: name, type: text}]}}}"
+      v
+  in
+  check_contains "inline refused"
+    (load_errors (load (inline "false")))
+    "not authoritative";
+  check_contains "not a bool" (load_errors (load (inline "\"no\""))) "boolean";
+  ignore
+    (get_ok "inline true" (Result.map_error (fun _ -> "error") (load (inline "true"))));
+  (* Pulled snapshots are unchanged: no authoritative key at all. *)
+  check_not_contains "pulled has no flag"
+    (Yojson.Safe.to_string (Snap.to_json snap))
+    "authoritative";
+  let code, out, err = haltsql [ "validate"; Filename.concat dir "fetched.json" ] in
+  Alcotest.(check bool) "validate fails" true (code <> 0);
+  check_contains "validate msg" (out ^ err) "haltsql schema pull"
+
+(* (b) A draft from a non-authoritative snapshot has no catalog:, and SELECT * is
+   denied while explicit allowed columns are not. *)
+let test_draft_non_authoritative () =
+  let snap, _ = sample_snapshot () in
+  let snap = { snap with authoritative = false } in
+  let dir = tmpdir () in
+  let cfg =
+    {
+      (Draft.default_config ~tenant_column:"tenant_id" ~catalog_ref:"") with
+      name = "fetched-draft";
+    }
+  in
+  let r = get_ok "draft" (Draft.draft ~base_dir:dir cfg snap sample_pii) in
+  let y = r.yaml in
+  check_not_contains "no catalog key" y "\ncatalog:";
+  check_contains "header" y
+    "# Structure: from a data catalog (`haltsql schema fetch`), NOT from the database.\n";
+  check_contains "header star" y "SELECT *, t.* and whole-row references";
+  check_contains "columns still drafted" y
+    "  app.customers:\n    columns: [id, tenant_id, name, country, created_at]\n";
+  let path = Filename.concat dir "p.yaml" in
+  write path y;
+  let p =
+    match Policy_load.of_file path with
+    | Ok p -> p
+    | Error es ->
+        Alcotest.failf "load: %s" (String.concat "; " (List.map Load_error.to_string es))
+  in
+  let star = "SELECT * FROM app.customers WHERE tenant_id = $1 LIMIT 10" in
+  Alcotest.(check (list string))
+    "star denied" [ "E_COLUMN_DENIED" ]
+    (List.sort_uniq compare (codes (Haltsql.verify p ctx star)));
+  (* Even on a table with nothing excluded: the column list may be incomplete. *)
+  let v = Haltsql.verify p ctx "SELECT * FROM app.currencies LIMIT 5" in
+  Alcotest.(check (list string)) "global star denied" [ "E_COLUMN_DENIED" ] (codes v);
+  let v =
+    Haltsql.verify p ctx
+      "SELECT id, name FROM app.customers WHERE tenant_id = $1 LIMIT 10"
+  in
+  Alcotest.(check bool) "explicit allowed" true v.allowed;
+  (* The same through `haltsql verify`. *)
+  let verify sql =
+    haltsql [ "verify"; "-p"; path; "-c"; {|{"tenant_id": "acme"}|}; "-s"; sql; "--json" ]
+  in
+  let code, out, _ = verify star in
+  Alcotest.(check int) "cli star exit" 1 code;
+  check_contains "cli star reason" out "E_COLUMN_DENIED";
+  let code, _, _ =
+    verify "SELECT id, name FROM app.customers WHERE tenant_id = $1 LIMIT 10"
+  in
+  Alcotest.(check int) "cli explicit exit" 0 code
 
 let test_cli_import () =
   let dir = tmpdir () in
@@ -846,7 +968,12 @@ let test_cli_help () =
       let code, out, _ = cli (args @ [ "--help=plain" ]) in
       Alcotest.(check int) "help exit" 0 code;
       check_contains "examples" out "EXAMPLES")
-    [ [ "schema"; "pull" ]; [ "schema"; "import" ]; [ "policy"; "draft" ] ]
+    [
+      [ "schema"; "pull" ];
+      [ "schema"; "import" ];
+      [ "schema"; "fetch" ];
+      [ "policy"; "draft" ];
+    ]
 
 let test_cli_pull_errors () =
   (* Nothing listens on port 1: connection error, exit 2, password never printed. *)
@@ -871,6 +998,153 @@ let test_cli_pull_errors () =
   Alcotest.(check int) "bad dsn exit" 2 code;
   check_contains "bad dsn" err "unknown DSN parameter \"bogus\"";
   check_not_contains "no password" err "sup3rs3cretpw"
+
+let test_cli_fetch () =
+  let dir = tmpdir () in
+  let pii = Filename.concat dir "pii.json"
+  and snap = Filename.concat dir "out/fetched.json" in
+  let env = [ ("FAKE_CATALOG_DOC", abs (ex "dbt_manifest.json")) ] in
+  let fetch ?(env = env) args =
+    cli_env env ([ "schema"; "fetch"; "--from"; "fake" ] @ args)
+  in
+  let code, stdout, err =
+    fetch
+      [
+        "--url";
+        "https://catalog.example.com/api/";
+        "--schema";
+        "app";
+        "--database";
+        "saas";
+        "-o";
+        pii;
+        "--snapshot-out";
+        snap;
+        "--json";
+      ]
+  in
+  Alcotest.(check int) "exit" 0 code;
+  check_contains "no-token warning" err "FAKE_CATALOG_TOKEN is not set";
+  let j = Yojson.Safe.from_string stdout in
+  let field k = match j with `Assoc kvs -> List.assoc_opt k kvs | _ -> None in
+  Alcotest.(check (option string))
+    "summary source" (Some "fake")
+    (Option.map Yojson.Safe.Util.to_string (field "source"));
+  Alcotest.(check (option string))
+    "summary snapshot" (Some snap)
+    (Option.map Yojson.Safe.Util.to_string (field "snapshot"));
+  Alcotest.(check (option int))
+    "pii columns" (Some 8)
+    (Option.map Yojson.Safe.Util.to_int (field "pii_columns"));
+  let m = read pii in
+  check_contains "manifest source" m {|"source": "fake"|};
+  check_contains "manifest url" m {|"url": "https://catalog.example.com/api/"|};
+  check_contains "manifest generated_by" m {|"generated_by": "haltsql schema fetch"|};
+  ignore (get_ok "manifest loads" (Pii.of_file pii));
+  let s = read snap in
+  check_contains "snapshot flag" s {|"authoritative": false|};
+  (match Catalog_load.of_file snap with
+  | Ok _ -> Alcotest.fail "fetched snapshot loads as a policy catalog"
+  | Error _ -> ());
+  (* policy draft accepts it, warns, and drafts without catalog: *)
+  let policy = Filename.concat dir "policy.yaml" in
+  let code, _, err =
+    cli
+      [
+        "policy";
+        "draft";
+        "--catalog";
+        snap;
+        "--pii";
+        pii;
+        "--tenant-column";
+        "tenant_id";
+        "--schema";
+        "app";
+        "-o";
+        policy;
+      ]
+  in
+  Alcotest.(check int) "draft exit" 0 code;
+  check_contains "draft warning" err "non-authoritative snapshot";
+  let y = read policy in
+  check_not_contains "no catalog:" y "\ncatalog:";
+  let verify sql =
+    haltsql [ "verify"; "-p"; policy; "-c"; {|{"tenant_id": "acme"}|}; "-s"; sql ]
+  in
+  let code, _, _ = verify "SELECT * FROM app.customers WHERE tenant_id = $1 LIMIT 5" in
+  Alcotest.(check int) "star denied" 1 code;
+  let code, _, _ = verify "SELECT id FROM app.customers WHERE tenant_id = $1 LIMIT 5" in
+  Alcotest.(check int) "explicit allowed" 0 code;
+  (* stdout manifest, token from a file *)
+  let tf = Filename.concat dir "token" in
+  write tf "  tok-FILE-SECRET\n";
+  Unix.chmod tf 0o600;
+  let code, stdout, err =
+    fetch [ "--url"; "https://catalog.example.com"; "--token-file"; tf ]
+  in
+  Alcotest.(check int) "stdout exit" 0 code;
+  check_not_contains "no warning" err "not set";
+  check_not_contains "token not printed" (stdout ^ err) "tok-FILE-SECRET";
+  ignore (get_ok "stdout manifest" (Pii.of_json (Yojson.Safe.from_string stdout)));
+  (* usage errors: exit 2 *)
+  let expect2 what args msg =
+    let code, _, err = fetch args in
+    Alcotest.(check int) (what ^ " exit") 2 code;
+    check_contains what err msg
+  in
+  expect2 "http" [ "--url"; "http://catalog.example.com" ] "use https";
+  expect2 "token env unset"
+    [ "--url"; "https://c.example.com"; "--token-env"; "HALTSQL_TEST_UNSET_VAR" ]
+    "HALTSQL_TEST_UNSET_VAR";
+  expect2 "both token sources"
+    [ "--url"; "https://c.example.com"; "--token-env"; "X"; "--token-file"; tf ]
+    "mutually exclusive";
+  write tf "\n";
+  expect2 "empty token file"
+    [ "--url"; "https://c.example.com"; "--token-file"; tf ]
+    "empty";
+  expect2 "timeout" [ "--url"; "https://c.example.com"; "--timeout"; "0" ] "--timeout";
+  expect2 "max pages"
+    [ "--url"; "https://c.example.com"; "--max-pages"; "0" ]
+    "--max-pages";
+  (* network failure: exit 2, the token never printed *)
+  let code, _, err =
+    fetch
+      ~env:[ ("FAKE_CATALOG_TOKEN", "tok-ENV-SECRET") ]
+      [ "--url"; "http://127.0.0.1:1" ]
+  in
+  Alcotest.(check int) "network exit" 2 code;
+  check_contains "network msg" err "schema fetch from http://127.0.0.1:1 (fake) failed";
+  check_not_contains "network token" err "tok-ENV-SECRET";
+  (* a document without column metadata: exit 1 *)
+  let empty = Filename.concat dir "empty.json" in
+  write empty {|{"nodes": {}}|};
+  let code, _, _ =
+    fetch ~env:[ ("FAKE_CATALOG_DOC", empty) ] [ "--url"; "https://c.example.com" ]
+  in
+  Alcotest.(check int) "no metadata exit" 1 code;
+  (* unknown provider; and the real build, which has no providers yet *)
+  let code, _, err =
+    cli [ "schema"; "fetch"; "--from"; "nope"; "--url"; "https://c.example.com" ]
+  in
+  Alcotest.(check int) "unknown exit" 2 code;
+  check_contains "unknown msg" err "available: fake";
+  let code, _, err =
+    cli
+      [
+        "schema-noproviders";
+        "fetch";
+        "--from";
+        "openmetadata";
+        "--url";
+        "https://c.example.com";
+      ]
+  in
+  Alcotest.(check int) "none exit" 2 code;
+  check_contains "none msg" err
+    "no live catalog providers are built into this haltsql yet";
+  check_contains "none hint" err "haltsql schema import"
 
 (* ------------------------------------------------------------ fake servers *)
 
@@ -1387,6 +1661,8 @@ let () =
               tc "relative path" test_relative_path;
               tc "draft" test_draft;
               tc "options" test_draft_options;
+              tc "non-authoritative refused" test_non_authoritative_refused;
+              tc "non-authoritative draft" test_draft_non_authoritative;
             ] );
           ( "cli",
             [
@@ -1394,6 +1670,7 @@ let () =
               tc "draft+lint" test_cli_draft_and_lint;
               tc "help" test_cli_help;
               tc "pull errors" test_cli_pull_errors;
+              tc "fetch" test_cli_fetch;
             ] );
           ( "protocol",
             [

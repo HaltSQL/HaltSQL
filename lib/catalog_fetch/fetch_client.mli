@@ -27,7 +27,11 @@ val base_url : t -> Uri.t
 val get_json :
   t -> ?query:(string * string) list -> string -> (Yojson.Safe.t, string) result Lwt.t
 (** [get_json t path]: GET [base_url ^ path] with [Accept: application/json]. Non-2xx
-    statuses, non-JSON bodies and transport failures are [Error]s. *)
+    statuses, non-JSON bodies and transport failures are [Error]s.
+
+    [path] must start with ['/'] (not ["//"]) and is used as given, so percent-encode name
+    segments yourself ({!Haltsql_cloud.Http.pct_encode}); [query] values are encoded for
+    you. Redirects are not followed. An empty 2xx body is [`Null]. *)
 
 val post_json :
   t ->
@@ -45,7 +49,8 @@ val paginate :
 (** [paginate t ~what page] calls [page None], then [page (Some cursor)] with each
     returned cursor until a page returns [None], concatenating the items in order. Fails
     (naming [what]) when a cursor repeats or more than [max_pages] pages are requested, so
-    a misbehaving server cannot loop forever. *)
+    a misbehaving server cannot loop forever. An empty cursor ([Some ""]) also ends the
+    listing. *)
 
 val request_count : t -> int
 (** HTTP requests sent so far through this client. *)

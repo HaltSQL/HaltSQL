@@ -198,17 +198,25 @@ haltsql config show --config FILE
 (`--effective` is accepted for compatibility; the output is always the merged
 result.)
 
-## haltsql schema pull / schema import
+## haltsql schema pull / schema import / schema fetch
 
 Snapshot a live Postgres catalog into a `Catalog` document (`schema pull`,
-read-only, TLS and SCRAM-SHA-256), and import PII labels from dbt, DataHub,
-Unity Catalog, Atlan or Collibra exports (`schema import`). See
+read-only, TLS and SCRAM-SHA-256), import PII labels from dbt, DataHub,
+Unity Catalog, Atlan or Collibra exports (`schema import`), or fetch them from
+a live data catalog API (`schema fetch`; the token comes from an environment
+variable or a file, never the command line). See
 [schema-and-pii.md](schema-and-pii.md).
 
 ```
 haltsql schema pull --dsn postgres://... -o catalog.json
 haltsql schema import --from dbt|datahub|unity|atlan|collibra FILE -o pii.json
+haltsql schema fetch --from PROVIDER --url https://... [--token-env VAR | --token-file FILE] \
+    [--service S] [--database D] [--schema S]... -o pii.json [--snapshot-out fetched.json]
 ```
+
+`--snapshot-out` writes a *non-authoritative* snapshot (`metadata.authoritative:
+false`): `policy draft` accepts it and drafts without `catalog:` (so `SELECT *`
+stays denied), and a policy `catalog:` refuses it.
 
 ## haltsql policy draft
 

@@ -11,6 +11,17 @@ even before 1.0.
 ## [Unreleased]
 
 ### Added
+- **`haltsql schema fetch`**: PII labels from a live data catalog API over
+  HTTPS (new `haltsql.catalog_fetch` library: bearer auth with the token from
+  `--token-env`/`--token-file`, never the command line; bounded pagination;
+  error messages without response bodies or tokens). Providers are added
+  separately; see [schema-and-pii.md](docs/schema-and-pii.md#haltsql-schema-fetch-live).
+  `--snapshot-out` writes the catalog's view of the tables as a
+  **non-authoritative** snapshot (`metadata.authoritative: false`, untyped
+  columns).
+- `haltsql policy draft` accepts a non-authoritative snapshot: the draft then
+  has no `catalog:` reference and a header comment explaining that `SELECT *`
+  stays denied.
 - `haltsql-server` flags `--max-connections`, `--request-timeout`,
   `--idle-timeout` and `--shutdown-timeout`; `/readyz` reports
   `"draining": true` during shutdown; new gauge
@@ -377,6 +388,12 @@ These were found while integrating the unreleased features above.
 - `haltsql-proxy` command-line errors exit `2` (a missing option exited 124).
 
 ### Security
+- The catalog loader refuses a snapshot marked `metadata.authoritative:
+  false` (written by `haltsql schema fetch --snapshot-out`) as a policy
+  `catalog:`, file or inline: a data catalog can lag behind the database, and
+  the analyzer trusts a catalog as the complete column and relation list
+  (`SELECT *` expansion, `search_path` shadowing). Pulled snapshots are
+  unchanged.
 - **haltsql-proxy no longer prints TLS private keys in errors.** A `tls.key`
   written as `${file:...}` was opened as a path, and the load error echoed the
   PEM. Certificate and key errors now never include the configured value, and

@@ -85,7 +85,14 @@ let build ?database ?server_version ~schemas rows =
       if not (List.exists (fun (tb : Catalog.table) -> String.equal tb.schema s) tables)
       then warn "schema %s has no relations (or does not exist)" (Snapshot.render_ident s))
     schemas;
-  ( { Snapshot.catalog = { Catalog.tables }; relkinds; database; server_version; schemas },
+  ( {
+      Snapshot.catalog = { Catalog.tables };
+      relkinds;
+      database;
+      server_version;
+      schemas;
+      authoritative = true;
+    },
     List.rev !warnings )
 
 let row_of_db (r : Pg_wire.row) =

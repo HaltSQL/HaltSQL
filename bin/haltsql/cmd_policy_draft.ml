@@ -21,10 +21,18 @@ let draft ~catalog ~pii ~tenant_column ~tenancy_key ~context_field ~schemas ~out
       if not (Sys.file_exists catalog) then
         Common.usage "catalog file not found: %s" catalog;
       let snap =
-        match Ct.Snapshot.of_file catalog with
+        (* A non-authoritative snapshot (haltsql schema fetch) is accepted here: the
+           drafter only uses it to choose column lists and then emits no catalog:. *)
+        match Ct.Snapshot.of_file ~allow_non_authoritative:true catalog with
         | Ok s -> s
         | Error e -> Common.usage "cannot load catalog %s:\n%s" catalog e
       in
+      if not snap.authoritative then
+        prerr_endline
+          ("haltsql: warning: " ^ catalog
+         ^ " is a non-authoritative snapshot from a data catalog: the draft has no \
+            catalog: reference, so SELECT * stays denied (use haltsql schema pull for an \
+            authoritative snapshot)");
       let manifests =
         List.map
           (fun f ->
@@ -115,7 +123,10 @@ let draft_cmd =
       required
       & opt (some string) None
       & info [ "catalog" ] ~docv:"FILE"
-          ~doc:"Catalog snapshot (from $(b,haltsql schema pull)).")
+          ~doc:
+            "Catalog snapshot (from $(b,haltsql schema pull)), or a non-authoritative \
+             snapshot from $(b,haltsql schema fetch --snapshot-out) (the draft then has \
+             no catalog: and SELECT * stays denied).")
   in
   let pii =
     Arg.(

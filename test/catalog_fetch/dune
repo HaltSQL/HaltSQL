@@ -1,0 +1,25 @@
+; haltsql.catalog_fetch tests: the HTTP plumbing shared by the live catalog providers
+; (bearer auth, path prefixes, pagination guards, error hygiene) against an in-process
+; fake server on 127.0.0.1, and Catalog_fetch.run / catalog_snapshot with a fake
+; provider registered locally. Provider modules have their own tests.
+
+(copy_files#
+ (files ../cloud/fake_http.ml))
+
+(test
+ (name test_catalog_fetch)
+ (modules test_catalog_fetch fake_http)
+ (package haltsql)
+ (libraries
+  haltsql
+  haltsql.catalog_tools
+  haltsql.catalog_fetch
+  alcotest
+  cohttp
+  cohttp-lwt
+  cohttp-lwt-unix
+  uri
+  lwt
+  lwt.unix
+  yojson
+  unix))

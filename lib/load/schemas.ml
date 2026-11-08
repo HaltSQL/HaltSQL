@@ -103,8 +103,10 @@ let catalog_props ~with_header =
        ("apiVersion", api_version);
        ("kind", kind "Catalog");
        ( "metadata",
-         free_obj "Free-form information about the snapshot (source, time, tool version)."
-       );
+         free_obj
+           "Free-form information about the snapshot (source, time, tool version). \
+            `authoritative: false` marks a data catalog's view written by `haltsql \
+            schema fetch`; it is refused as a policy catalog." );
      ]
    else [])
   @ [ ("tables", catalog_tables) ]

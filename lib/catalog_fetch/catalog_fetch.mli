@@ -41,6 +41,28 @@ val run :
   (result, string) Stdlib.result Lwt.t
 (** Fetches and imports. Fails when the provider fails or returns no column metadata. *)
 
+val fetch :
+  (module Provider.S) ->
+  Fetch_client.t ->
+  Provider.filter ->
+  (Provider.fetched, string) Stdlib.result Lwt.t
+(** The provider's [fetch], with any exception it raises turned into an [Error] (keeping
+    only the exception's message, never a JSON value it may carry). The first half of
+    {!run}; the CLI calls it separately to tell network failures from documents without
+    column metadata. *)
+
+val import_fetched :
+  ?config:Pii.Matcher.config ->
+  Fetch_client.t ->
+  Provider.fetched ->
+  (result, string) Stdlib.result
+(** The second half of {!run}: {!Haltsql_catalog_tools.Pii_import.import} on the fetched
+    document; warnings are the provider's followed by the importer's; [requests] is
+    {!Fetch_client.request_count}. Fails when the document has no column metadata. *)
+
 val catalog_snapshot : database:string option -> Provider.table list -> Snapshot.t
 (** A non-authoritative snapshot of the catalog's view: every column untyped,
-    [authoritative = false]. *)
+    [authoritative = false], every relation a [Table], [schemas] the schemas of the
+    tables. Tables with an empty schema or name, empty column names and tables left with
+    no column are dropped, and repeated tables/columns are merged, so the result always
+    loads with [Snapshot.of_json ~allow_non_authoritative:true]. *)
