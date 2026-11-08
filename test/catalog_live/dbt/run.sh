@@ -6,7 +6,9 @@
 #   target/manifest.json and target/catalog.json -> diff against the expected
 #   manifests -> schema pull -> policy draft --no-name-heuristics -> verify that
 #   SELECT * and every PII column are denied (and allowed in the negative
-#   control drafted without the dbt manifest).
+#   control drafted without the dbt manifest) -> haltlab tier 3 (lab/catalogs:
+#   adversarial SQL with honeytoken/column-privilege oracles, positive run and
+#   empty-manifest negative control; SKIP_TIER3=1 skips it).
 #
 # Environment (defaults match the haltlab compose Postgres on 127.0.0.1:5417):
 #   DBT_PG_HOST DBT_PG_PORT DBT_PG_USER DBT_PG_PASSWORD DBT_PG_DBNAME
@@ -186,11 +188,18 @@ sys.exit(1 if bad else 0)
 EOF
 echo "PASS: $pii_count dbt PII columns denied with the dbt manifest and allowed without it"
 
-TIER3=$ROOT/lab/harness/tier3.sh
-if [ -x "$TIER3" ]; then
-  step "haltlab tier 3 (adversarial SQL against Postgres)"
-  "$TIER3" --pii "$WORK/pii-manifest.json" --pii "$WORK/pii-catalog.json"
+if [ "${SKIP_TIER3:-}" = 1 ]; then
+  echo "(haltlab tier 3 skipped: SKIP_TIER3=1)"
 else
-  echo "(haltlab tier 3 harness not present; skipped)"
+  # lab/catalogs: fresh saas_shared database, draft --no-name-heuristics from the
+  # manifest, adversarial + targeted SQL with honeytoken and column-privilege
+  # oracles (0 leaks), and the empty-manifest negative control (every tagged
+  # column must leak). Model relations (analytics.*) are not in that fixture and
+  # are listed as ignored; the source tables (app.*) are what it checks.
+  step "haltlab tier 3: positive run + negative control"
+  export HALTSQL_BIN
+  export HALTLAB_DSN=${HALTLAB_DSN:-postgresql://$DBT_PG_USER:$DBT_PG_PASSWORD@$DBT_PG_HOST:$DBT_PG_PORT/postgres}
+  make -C "$ROOT/lab" catalog-tier3 \
+    PII="$WORK/pii-manifest.json $WORK/pii-catalog.json" FIXTURE=saas_shared MODE=both
 fi
 echo "work dir: $WORK"

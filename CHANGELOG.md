@@ -27,7 +27,8 @@ even before 1.0.
   dbt project over the `saas_shared` fixture and `run.sh` (dbt build + docs
   generate, `schema import --from dbt` on `manifest.json` and `catalog.json`
   diffed against expected manifests, `schema pull`, `policy draft
-  --no-name-heuristics`, `verify`); new weekly/manual `dbt` job in
+  --no-name-heuristics`, `verify`, then the haltlab tier-3 check with its
+  empty-manifest negative control); new weekly/manual `dbt` job in
   `.github/workflows/catalog-live.yml`. Trimmed real artifacts are in
   `examples/metadata/dbt_manifest_1_12.json` and `dbt_catalog_1_12.json`.
 - `haltsql-server` flags `--max-connections`, `--request-timeout`,

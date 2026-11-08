@@ -168,7 +168,7 @@ against the sample exports only.
 
 | Integration | Validated against | How |
 |---|---|---|
-| dbt Core (`manifest.json`, `catalog.json`) | dbt-core 1.12.6 / dbt-postgres 1.11.0, PostgreSQL 17 | [`test/catalog_live/dbt/run.sh`](../test/catalog_live/dbt/run.sh): a real dbt project over `saas_shared` (sources, a view and an aliased table in a custom schema) declaring PII with column `meta`, nested `meta`, `tags`, `config.meta`/`config.tags`, `policy_tags` and descriptions, plus non-PII tags/meta that must not match. All 11 PII columns are denied, `SELECT *` is denied, the drafted `app.*` column lists equal `lab/policies/saas_shared.yaml`, and a draft without the manifest allows them (negative control). |
+| dbt Core (`manifest.json`, `catalog.json`) | dbt-core 1.12.6 / dbt-postgres 1.11.0, PostgreSQL 17 | [`test/catalog_live/dbt/run.sh`](../test/catalog_live/dbt/run.sh): a real dbt project over `saas_shared` (sources, a view and an aliased table in a custom schema) declaring PII with column `meta`, nested `meta`, `tags`, `config.meta`/`config.tags`, `policy_tags` and descriptions, plus non-PII tags/meta that must not match. All 11 PII columns are denied, `SELECT *` is denied, the drafted `app.*` column lists equal `lab/policies/saas_shared.yaml`, and a draft without the manifest allows them (negative control). The haltlab tier-3 check ([`lab/catalogs`](../lab/catalogs/README.md)) then runs 900 benign, adversarial and targeted queries against real Postgres: 0 column leaks with the dbt manifest, and all 7 tagged `app.*` columns seen leaking with an empty manifest. |
 
 dbt Cloud (Discovery API) is not covered by these file-based importers.
 
