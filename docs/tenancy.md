@@ -309,8 +309,8 @@ conjuncts is planned for a later release.
 When writes are enabled for a table:
 
 - `INSERT` must set every tenant column to the tenant value in every row of
-  `VALUES`. `INSERT ... SELECT` is allowed only if the source query passes the
-  same proof. Otherwise `E_TENANT_WRITE`.
+  `VALUES`, otherwise `E_TENANT_WRITE`. `INSERT ... SELECT` is not supported
+  and is denied (`E_UNSUPPORTED`).
 - `UPDATE` may never assign a tenant column (`E_TENANT_WRITE`) and needs a
   tenant predicate in its `WHERE` (`E_TENANT_MISSING`). Tables in
   `UPDATE ... FROM` need their own predicates.

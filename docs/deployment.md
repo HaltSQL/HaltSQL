@@ -11,9 +11,10 @@ HaltSQL runs in one of three shapes:
 In every shape, the database-side controls in
 [defense-in-depth.md](defense-in-depth.md) still apply.
 
-**TLS:** `haltsql-server` 0.1.0 has no built-in TLS and refuses to start if
-`server.tls` is configured. Bind it to `127.0.0.1` (sidecar), or terminate TLS
-in a proxy or service mesh in front of it.
+**TLS:** `haltsql-server` has built-in TLS 1.2/1.3 and optional mTLS
+(`server.tls`, see [authentication.md](authentication.md)). As a sidecar bound
+to `127.0.0.1` it can also run without TLS, or behind a proxy or service mesh
+that terminates TLS.
 
 ## Docker
 

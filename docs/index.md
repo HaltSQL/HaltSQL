@@ -13,6 +13,18 @@ These docs describe version **0.1.0** (pre-1.0).
 - [CLI reference](cli.md): every `haltsql` command, flag, and exit code.
 - [HTTP API](http-api.md): the `haltsql-server` sidecar ([OpenAPI 3.1](openapi.yaml)).
 
+## How it works
+
+Explainers with diagrams, from the big picture down to the code:
+
+- [Architecture](how-it-works/architecture.md): components and where HaltSQL sits in your stack.
+- [The verification pipeline](how-it-works/verification-pipeline.md): one `verify` call, end to end.
+- [The parser](how-it-works/parser.md) and [the analyzer](how-it-works/analyzer.md): from SQL text to typed AST to reasons.
+- [The tenancy proof](how-it-works/tenancy-proof.md): what must be proven before a tenant table is read.
+- [Policies and config](how-it-works/policies-and-config.md) and [the policy lifecycle](how-it-works/policy-lifecycle.md): loading, testing, signing, rolling out.
+- [Deployment modes](how-it-works/deployment-modes.md), [inside the proxy](how-it-works/proxy-internals.md) and [inside the server](how-it-works/server-internals.md).
+- [How HaltSQL is tested](how-it-works/assurance.md): the test suites, attack corpus and enterprise lab.
+
 ## Client SDKs and agent integrations
 
 - [Python SDK](sdk-python.md): sync/async clients, guarded execution for
