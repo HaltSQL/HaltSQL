@@ -19,6 +19,22 @@ helper that runs exactly the verified string with `bind_params`:
 | LlamaIndex | [`integrations/llamaindex`](../integrations/llamaindex) | [README](../integrations/llamaindex/README.md) |
 | Vanna | [`integrations/vanna`](../integrations/vanna) | [README](../integrations/vanna/README.md) |
 
+The four language SDKs share the same transport defaults:
+
+| | Python | TypeScript | Go | Java |
+|---|---|---|---|---|
+| Timeout per attempt | 2 s | 5 s | 5 s | 5 s |
+| Retries (after the first attempt) | 2 (`max_attempts=3`) | 2 | 2 | 2 |
+| Retried on | connection errors, timeouts, 502/503/504 | network errors, timeouts, 503 | connection errors, timeouts, 503 | connection errors, timeouts, 503 |
+| Private CA / mutual TLS | `verify=`, `cert=` | undici `dispatcher` | `WithTLSConfig` | `sslContext()` |
+| `User-Agent` | `haltsql-python/<v>` | `haltsql-client-js/<v>` | `haltsql-client-go/<v>` | `haltsql-client-java/<v>` |
+
+In all of them TLS certificate verification is on by default, redirects are
+never followed, responses over 8 MiB are rejected, backoff is exponential with
+jitter and capped (also capping `Retry-After`), and the bearer token never
+appears in error messages or string representations. One client instance is
+safe to share across threads or concurrent requests and reuses connections.
+
 Clients can check their behaviour against the shared request/verdict vectors
 in [`clients/testvectors`](../clients/testvectors). Drivers that cannot be
 changed at all can connect through [haltsql-proxy](proxy.md) instead.

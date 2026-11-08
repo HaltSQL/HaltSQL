@@ -286,6 +286,48 @@ describe("input validation", () => {
     assert.throws(() => new HaltSQLClient({ baseUrl: "http://h", token: "" }), HaltSQLUsageError);
     assert.throws(() => new HaltSQLClient({ baseUrl: "http://h", timeoutMs: 0 }), HaltSQLUsageError);
     assert.throws(() => new HaltSQLClient({ baseUrl: "http://h", headers: { Authorization: "x" } }), HaltSQLUsageError);
+    assert.throws(() => new HaltSQLClient({ baseUrl: "http://h", headers: { "X-A": "a\r\nX-Evil: 1" } }), HaltSQLUsageError);
+    assert.throws(() => new HaltSQLClient({ baseUrl: "http://h", headers: { "bad header": "x" } }), HaltSQLUsageError);
+  });
+
+  test("invalid requestId is a usage error and nothing is sent", async () => {
+    let calls = 0;
+    const c = new HaltSQLClient({ baseUrl: "http://h", fetch: async () => { calls++; throw new Error("unreachable"); } });
+    for (const requestId of ["", "a\r\nb", "x".repeat(201), "caf\u00e9"]) {
+      await assert.rejects(c.verify("SELECT 1", {}, { requestId }), HaltSQLUsageError);
+    }
+    assert.equal(calls, 0);
+  });
+
+  test("dispatcher and default headers reach fetch; user-agent carries the version", async () => {
+    const seen = [];
+    const dispatcher = { tag: "custom-agent" };
+    const fetchSpy = async (url, init) => {
+      seen.push(init);
+      return new Response(JSON.stringify({ error: { code: "UNAUTHORIZED", message: "x" } }), { status: 401 });
+    };
+    const c = new HaltSQLClient({ baseUrl: "https://sidecar", fetch: fetchSpy, dispatcher });
+    await assert.rejects(c.verify("SELECT 1"), HaltSQLHttpError);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].dispatcher, dispatcher);
+    assert.equal(seen[0].redirect, "manual");
+    assert.ok(seen[0].signal instanceof AbortSignal, "every call carries a timeout signal");
+    assert.match(seen[0].headers["user-agent"], /^haltsql-client-js\/\d+\.\d+\.\d+/);
+    const c2 = new HaltSQLClient({ baseUrl: "https://sidecar", fetch: fetchSpy });
+    await assert.rejects(c2.verify("SELECT 1"), HaltSQLHttpError);
+    assert.equal("dispatcher" in seen[1], false);
+  });
+
+  test("a rejected fetch never leaks the token through the error", async () => {
+    const token = "tok-should-not-leak";
+    const c = new HaltSQLClient({
+      baseUrl: "https://sidecar", token, maxRetries: 0,
+      fetch: async (_u, init) => { throw new TypeError("fetch failed"); },
+    });
+    const e = await c.verify("SELECT 1").catch((x) => x);
+    assert.ok(e instanceof HaltSQLTransportError);
+    assert.equal(e.allowed, false);
+    assert.ok(!inspect(e, { depth: 5 }).includes(token));
   });
 
   test("bad context values are rejected before sending", async () => {

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import ssl
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Union
@@ -23,10 +24,19 @@ from ._version import __version__
 from .errors import HaltSQLRequestError, HaltSQLUnavailable
 from .models import Context, PolicyInfo, Verdict, validate_context
 
-__all__ = ["RetryPolicy", "HaltSQLClient", "AsyncHaltSQLClient"]
+__all__ = ["RetryPolicy", "HaltSQLClient", "AsyncHaltSQLClient", "TLSVerify", "TLSCert"]
 
 _RETRY_STATUSES = frozenset({502, 503, 504})
 _USER_AGENT = f"haltsql-python/{__version__}"
+_DEFAULT_MAX_RESPONSE_BYTES = 8 << 20
+
+#: What ``verify=`` accepts: ``True`` (system CAs, the default), a CA bundle
+#: path, or a ready :class:`ssl.SSLContext`. ``False`` disables certificate
+#: verification and is only for local testing.
+TLSVerify = Union[bool, str, "os.PathLike[str]", ssl.SSLContext]
+#: What ``cert=`` accepts for mutual TLS: a PEM file holding certificate and
+#: key, or ``(cert_file, key_file)``.
+TLSCert = Union[str, "os.PathLike[str]", "tuple[str, str]"]
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,49 @@ def _check_token(token: Optional[str]) -> Optional[str]:
     return token
 
 
+def _ssl_context(verify: Any, cert: Any) -> Union[bool, ssl.SSLContext]:
+    """Build the ``verify=`` value for httpx.
+
+    An :class:`ssl.SSLContext` is built here (instead of passing paths through)
+    so that custom CA bundles and client certificates behave the same on every
+    supported httpx version.
+    """
+    if isinstance(verify, ssl.SSLContext):
+        if cert is not None:
+            raise ValueError("pass the client certificate inside the SSLContext, not via cert=")
+        return verify
+    if verify is False:
+        if cert is not None:
+            raise ValueError("cert= requires certificate verification (verify must not be False)")
+        return False
+    if verify is True and cert is None:
+        return True
+    if verify is True:
+        ctx = ssl.create_default_context()
+    elif isinstance(verify, (str, os.PathLike)):
+        ctx = ssl.create_default_context(cafile=os.fspath(verify))
+    else:
+        raise TypeError("verify must be a bool, a CA bundle path, or an ssl.SSLContext")
+    if cert is not None:
+        if isinstance(cert, tuple):
+            if len(cert) != 2:
+                raise ValueError("cert must be a path or a (cert_file, key_file) tuple")
+            ctx.load_cert_chain(os.fspath(cert[0]), os.fspath(cert[1]))
+        else:
+            ctx.load_cert_chain(os.fspath(cert))
+    return ctx
+
+
+def _http_client_kwargs(
+    http_client: Any, transport: Any, verify: Any, cert: Any
+) -> Dict[str, Any]:
+    if http_client is not None and (verify is not True or cert is not None):
+        raise ValueError("configure TLS on the http_client you pass, not via verify=/cert=")
+    if http_client is not None and transport is not None:
+        raise ValueError("pass either transport= or http_client=, not both")
+    return {"verify": _ssl_context(verify, cert)} if http_client is None else {}
+
+
 def _retry_after(resp: httpx.Response) -> Optional[float]:
     value = resp.headers.get("retry-after")
     if value is None:
@@ -119,7 +172,11 @@ class _Base:
         retry: Optional[RetryPolicy],
         policy: Optional[str],
         verify_sql_hash: bool,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
+        if not isinstance(max_response_bytes, int) or max_response_bytes <= 0:
+            raise ValueError("max_response_bytes must be a positive integer")
+        self.max_response_bytes = max_response_bytes
         self.base_url = _check_base_url(base_url)
         self._token = _check_token(token)
         self.timeout = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
@@ -153,6 +210,38 @@ class _Base:
                 raise ValueError("policy must be a non-empty string")
             body["policy"] = pol
         return body
+
+    def _too_large(self, resp: httpx.Response) -> HaltSQLUnavailable:
+        return HaltSQLUnavailable(
+            f"haltsql response larger than {self.max_response_bytes} bytes",
+            status=resp.status_code,
+            request_id=resp.headers.get("x-request-id"),
+        )
+
+    def _declared_too_large(self, resp: httpx.Response) -> bool:
+        cl = resp.headers.get("content-length")
+        return cl is not None and cl.isdigit() and int(cl) > self.max_response_bytes
+
+    @staticmethod
+    def _buffered(resp: httpx.Response, chunks: List[bytes]) -> httpx.Response:
+        # ``chunks`` are already decoded; drop the encoding headers so httpx
+        # does not try to decode them a second time.
+        headers = [
+            (k, v)
+            for k, v in resp.headers.multi_items()
+            if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+        ]
+        return httpx.Response(
+            resp.status_code, headers=headers, content=b"".join(chunks), request=resp.request
+        )
+
+    @staticmethod
+    def _unavailable(attempts: int, last: Optional[BaseException]) -> HaltSQLUnavailable:
+        # Only the exception *type* is reported: httpx exceptions carry the
+        # request (and so the Authorization header) and are never chained.
+        return HaltSQLUnavailable(
+            f"haltsql unavailable after {attempts} attempt(s): {type(last).__name__}"
+        )
 
     @staticmethod
     def _raise_for_status(resp: httpx.Response) -> None:
@@ -227,12 +316,22 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_kwargs() -> Dict[str, Any]:
-    return {
+    kw: Dict[str, Any] = {
         "base_url": os.environ.get("HALTSQL_URL") or "http://127.0.0.1:8080",
         "token": os.environ.get("HALTSQL_TOKEN") or None,
         "timeout": _env_float("HALTSQL_TIMEOUT", 2.0),
         "policy": os.environ.get("HALTSQL_POLICY") or None,
     }
+    ca = os.environ.get("HALTSQL_CA_FILE")
+    if ca:
+        kw["verify"] = ca
+    cert = os.environ.get("HALTSQL_CLIENT_CERT")
+    key = os.environ.get("HALTSQL_CLIENT_KEY")
+    if key and not cert:
+        raise ValueError("HALTSQL_CLIENT_KEY is set without HALTSQL_CLIENT_CERT")
+    if cert:
+        kw["cert"] = (cert, key) if key else cert
+    return kw
 
 
 class HaltSQLClient(_Base):
@@ -252,9 +351,18 @@ class HaltSQLClient(_Base):
         policy: Default policy name to send (optional with a token).
         verify_sql_hash: Check that each verdict's ``sql_sha256`` matches the
             SQL sent (default on; leave it on).
+        verify: TLS server verification: ``True`` (system CAs, default), a CA
+            bundle path for a private CA, or an :class:`ssl.SSLContext`.
+        cert: Client certificate for mutual TLS: a PEM path (cert + key) or
+            ``(cert_file, key_file)``.
+        max_response_bytes: Largest response body accepted (default 8 MiB);
+            a larger one raises :class:`HaltSQLUnavailable`.
         transport: Custom ``httpx`` transport (tests, proxies).
         http_client: A preconfigured ``httpx.Client``; it is not closed by
-            :meth:`close`.
+            :meth:`close`. Configure TLS and proxies on it directly.
+
+    One client keeps a pool of keep-alive connections and is safe to share
+    between threads; create it once and reuse it.
     """
 
     def __init__(
@@ -268,15 +376,24 @@ class HaltSQLClient(_Base):
         verify_sql_hash: bool = True,
         transport: Optional[httpx.BaseTransport] = None,
         http_client: Optional[httpx.Client] = None,
+        verify: TLSVerify = True,
+        cert: Optional[TLSCert] = None,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
-        super().__init__(base_url, token, timeout, retry, policy, verify_sql_hash)
+        super().__init__(
+            base_url, token, timeout, retry, policy, verify_sql_hash, max_response_bytes
+        )
+        tls = _http_client_kwargs(http_client, transport, verify, cert)
         self._owns_client = http_client is None
-        self._http = http_client or httpx.Client(timeout=self.timeout, transport=transport)
+        self._http = http_client or httpx.Client(
+            timeout=self.timeout, transport=transport, follow_redirects=False, **tls
+        )
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "HaltSQLClient":
         """Build a client from ``HALTSQL_URL``, ``HALTSQL_TOKEN``,
-        ``HALTSQL_TIMEOUT`` (seconds) and ``HALTSQL_POLICY``."""
+        ``HALTSQL_TIMEOUT`` (seconds), ``HALTSQL_POLICY``, and for TLS
+        ``HALTSQL_CA_FILE``, ``HALTSQL_CLIENT_CERT`` and ``HALTSQL_CLIENT_KEY``."""
         kw = _env_kwargs()
         kw.update(overrides)
         return cls(**kw)
@@ -311,21 +428,37 @@ class HaltSQLClient(_Base):
                 )
             resp = None
             try:
-                resp = self._http.request(
-                    method, url, json=json, headers=headers, timeout=self.timeout
-                )
+                resp = self._once(method, url, json, headers)
             except httpx.TransportError as e:  # connect/read errors and timeouts
                 last = e
                 continue
+            except httpx.HTTPError as e:  # anything else from httpx: not retried
+                raise self._unavailable(attempt, e) from None
             if resp.status_code in retry_statuses and attempt < self.retry.max_attempts:
                 continue
             return resp
         if resp is not None:
             return resp
-        raise HaltSQLUnavailable(
-            f"haltsql unavailable after {self.retry.max_attempts} attempt(s): "
-            f"{type(last).__name__}"
-        )
+        raise self._unavailable(self.retry.max_attempts, last)
+
+    def _once(
+        self, method: str, url: str, json: Optional[Mapping[str, Any]], headers: Dict[str, str]
+    ) -> httpx.Response:
+        req = self._http.build_request(method, url, json=json, headers=headers, timeout=self.timeout)
+        resp = self._http.send(req, stream=True)
+        try:
+            if self._declared_too_large(resp):
+                raise self._too_large(resp)
+            chunks: List[bytes] = []
+            size = 0
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > self.max_response_bytes:
+                    raise self._too_large(resp)
+                chunks.append(chunk)
+        finally:
+            resp.close()
+        return self._buffered(resp, chunks)
 
     def verify(
         self,
@@ -408,10 +541,18 @@ class AsyncHaltSQLClient(_Base):
         verify_sql_hash: bool = True,
         transport: Optional[httpx.AsyncBaseTransport] = None,
         http_client: Optional[httpx.AsyncClient] = None,
+        verify: TLSVerify = True,
+        cert: Optional[TLSCert] = None,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
-        super().__init__(base_url, token, timeout, retry, policy, verify_sql_hash)
+        super().__init__(
+            base_url, token, timeout, retry, policy, verify_sql_hash, max_response_bytes
+        )
+        tls = _http_client_kwargs(http_client, transport, verify, cert)
         self._owns_client = http_client is None
-        self._http = http_client or httpx.AsyncClient(timeout=self.timeout, transport=transport)
+        self._http = http_client or httpx.AsyncClient(
+            timeout=self.timeout, transport=transport, follow_redirects=False, **tls
+        )
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "AsyncHaltSQLClient":
@@ -450,21 +591,37 @@ class AsyncHaltSQLClient(_Base):
                 )
             resp = None
             try:
-                resp = await self._http.request(
-                    method, url, json=json, headers=headers, timeout=self.timeout
-                )
+                resp = await self._once(method, url, json, headers)
             except httpx.TransportError as e:
                 last = e
                 continue
+            except httpx.HTTPError as e:
+                raise self._unavailable(attempt, e) from None
             if resp.status_code in retry_statuses and attempt < self.retry.max_attempts:
                 continue
             return resp
         if resp is not None:
             return resp
-        raise HaltSQLUnavailable(
-            f"haltsql unavailable after {self.retry.max_attempts} attempt(s): "
-            f"{type(last).__name__}"
-        )
+        raise self._unavailable(self.retry.max_attempts, last)
+
+    async def _once(
+        self, method: str, url: str, json: Optional[Mapping[str, Any]], headers: Dict[str, str]
+    ) -> httpx.Response:
+        req = self._http.build_request(method, url, json=json, headers=headers, timeout=self.timeout)
+        resp = await self._http.send(req, stream=True)
+        try:
+            if self._declared_too_large(resp):
+                raise self._too_large(resp)
+            chunks: List[bytes] = []
+            size = 0
+            async for chunk in resp.aiter_bytes():
+                size += len(chunk)
+                if size > self.max_response_bytes:
+                    raise self._too_large(resp)
+                chunks.append(chunk)
+        finally:
+            await resp.aclose()
+        return self._buffered(resp, chunks)
 
     async def verify(
         self,

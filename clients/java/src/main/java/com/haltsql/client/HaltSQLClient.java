@@ -19,9 +19,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 
 /**
- * Client for the HaltSQL sidecar HTTP API. Thread-safe; create one and reuse it.
+ * Client for the HaltSQL sidecar HTTP API. Thread-safe; create one and reuse it (the underlying
+ * {@link HttpClient} pools keep-alive connections).
  *
  * <p>Fail-closed contract: {@link #verify} returns only a strictly validated verdict from an HTTP
  * 200 response. Every other outcome (non-200, timeout, connection error, malformed body, a
@@ -58,13 +61,17 @@ public final class HaltSQLClient {
     this.maxDelayMs = b.maxDelayMs;
     this.maxResponseBytes = b.maxResponseBytes;
     this.checkSqlHash = b.checkSqlHash;
-    this.http =
-        b.httpClient != null
-            ? b.httpClient
-            : HttpClient.newBuilder()
-                .connectTimeout(b.timeout)
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
+    if (b.httpClient != null) {
+      this.http = b.httpClient;
+    } else {
+      HttpClient.Builder hb =
+          HttpClient.newBuilder()
+              .connectTimeout(b.timeout)
+              .followRedirects(HttpClient.Redirect.NEVER);
+      if (b.sslContext != null) hb.sslContext(b.sslContext);
+      if (b.sslParameters != null) hb.sslParameters(b.sslParameters);
+      this.http = hb.build();
+    }
   }
 
   /** Starts a builder for the sidecar at {@code baseUrl} (e.g. {@code http://127.0.0.1:8080}). */
@@ -83,6 +90,8 @@ public final class HaltSQLClient {
     private int maxResponseBytes = 8 << 20;
     private boolean checkSqlHash = true;
     private HttpClient httpClient;
+    private SSLContext sslContext;
+    private SSLParameters sslParameters;
 
     private Builder(String baseUrl) throws HaltSQLException {
       URI u;
@@ -127,6 +136,7 @@ public final class HaltSQLClient {
      */
     public Builder retries(int maxRetries, Duration baseDelay, Duration maxDelay)
         throws HaltSQLException {
+      if (baseDelay == null || maxDelay == null) throw usage("retry delays must not be null");
       if (maxRetries < 0 || baseDelay.isNegative() || maxDelay.isNegative()) {
         throw usage("retry settings must be non-negative");
       }
@@ -155,6 +165,9 @@ public final class HaltSQLClient {
      */
     public Builder httpClient(HttpClient c) throws HaltSQLException {
       if (c == null) throw usage("httpClient must not be null");
+      if (sslContext != null || sslParameters != null) {
+        throw usage("configure TLS on the httpClient you pass, not via sslContext()");
+      }
       if (c.followRedirects() != HttpClient.Redirect.NEVER) {
         throw usage("httpClient must use HttpClient.Redirect.NEVER");
       }
@@ -162,9 +175,38 @@ public final class HaltSQLClient {
       return this;
     }
 
+    /**
+     * TLS context for an {@code https} sidecar: a trust store with a private CA, and a key
+     * manager with a client certificate for mutual TLS. Without it the JVM default trust store
+     * is used. Certificate and host-name verification stay on. Not combinable with
+     * {@link #httpClient}.
+     */
+    public Builder sslContext(SSLContext ctx) throws HaltSQLException {
+      if (ctx == null) throw usage("sslContext must not be null");
+      if (httpClient != null) throw usage("configure TLS on the httpClient you passed instead");
+      this.sslContext = ctx;
+      return this;
+    }
+
+    /**
+     * TLS parameters (protocols, cipher suites) used with {@link #sslContext}. Not combinable
+     * with {@link #httpClient}.
+     */
+    public Builder sslParameters(SSLParameters params) throws HaltSQLException {
+      if (params == null) throw usage("sslParameters must not be null");
+      if (httpClient != null) throw usage("configure TLS on the httpClient you passed instead");
+      this.sslParameters = params;
+      return this;
+    }
+
     public HaltSQLClient build() {
       return new HaltSQLClient(this);
     }
+  }
+
+  /** The underlying HTTP client (package-private, for tests). */
+  HttpClient httpClient() {
+    return http;
   }
 
   @Override

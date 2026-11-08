@@ -120,6 +120,19 @@ def test_settings_validation(tmp_path):
     assert "'t'" not in repr(s)  # token not in repr
 
 
+def test_settings_tls_to_sidecar(tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("x")
+    s = settings_from_args([], env={"HALTSQL_CA_FILE": str(ca)})
+    assert s.haltsql_ca_file == str(ca)
+    with pytest.raises(ConfigError, match="file not found"):
+        settings_from_args([], env={"HALTSQL_CA_FILE": str(tmp_path / "missing.pem")})
+    with pytest.raises(ConfigError, match="HALTSQL_CLIENT_CERT"):
+        settings_from_args([], env={"HALTSQL_CLIENT_KEY": str(ca)})
+    s = settings_from_args([], env={"HALTSQL_CLIENT_CERT": str(ca), "HALTSQL_CLIENT_KEY": str(ca)})
+    assert s.haltsql_client_key == str(ca) and "haltsql_client_key" not in repr(s)
+
+
 def test_main_exits_2_on_config_error(capsys):
     from haltsql_mcp import main
 

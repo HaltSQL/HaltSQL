@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,8 @@ import (
 // Version is the SDK version, sent in the User-Agent header.
 const Version = "0.1.0"
 
-// Client talks to one haltsql-server. It is safe for concurrent use.
+// Client talks to one haltsql-server. It is safe for concurrent use; create
+// one per sidecar and share it so keep-alive connections are reused.
 type Client struct {
 	baseURL      string
 	token        string
@@ -86,6 +88,35 @@ func WithHTTPClient(h *http.Client) Option {
 		}
 		cp := *h
 		c.hc = &cp
+		return nil
+	}
+}
+
+// WithTLSConfig sets the TLS configuration used to reach an https sidecar:
+// RootCAs for a private CA, Certificates for mutual TLS, ServerName, and so
+// on. The config is cloned. It replaces the transport with a clone of
+// http.DefaultTransport (keep-alive pooling, proxy from the environment)
+// using this config, so apply it after WithHTTPClient if you use both.
+// Certificate verification stays on unless cfg.InsecureSkipVerify is set,
+// which this option refuses.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(c *Client) error {
+		if cfg == nil {
+			return usageErr("tls config must not be nil")
+		}
+		if cfg.InsecureSkipVerify {
+			return usageErr("tls config must not set InsecureSkipVerify")
+		}
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return usageErr("http.DefaultTransport is not an *http.Transport")
+		}
+		t := base.Clone()
+		t.TLSClientConfig = cfg.Clone()
+		if c.hc == nil {
+			c.hc = &http.Client{}
+		}
+		c.hc.Transport = t
 		return nil
 	}
 }
@@ -163,6 +194,9 @@ func (c *Client) Verify(ctx context.Context, sqlText string, vctx Context, opts 
 	}
 	if !utf8Valid(sqlText) {
 		return nil, usageErr("sql must be valid UTF-8")
+	}
+	if o.requestID != "" && !validRequestID(o.requestID) {
+		return nil, usageErr("request id must be at most 200 printable ASCII characters")
 	}
 	req := struct {
 		SQL     string          `json:"sql"`
@@ -401,4 +435,16 @@ func httpError(res *rawResponse) *Error {
 		}
 	}
 	return e
+}
+
+func validRequestID(id string) bool {
+	if len(id) > 200 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x20 || id[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }

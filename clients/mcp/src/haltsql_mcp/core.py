@@ -214,6 +214,8 @@ class HaltSQLTools:
             raise ToolFailure(f"verification refused ({e.code}); the query was not executed") from None
         except HaltSQLUnavailable:
             raise ToolFailure("verification is unavailable; the query was not executed") from None
+        except Exception:  # noqa: BLE001 - any other failure also means deny
+            raise ToolFailure("verification failed; the query was not executed") from None
         if not isinstance(result, Verdict) or not result.matches_sql(sql):
             raise ToolFailure("verification returned an invalid verdict; the query was not executed")
         return result

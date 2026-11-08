@@ -63,6 +63,17 @@ async def test_sidecar_down_fails_closed():
         await t.query(OK)
 
 
+async def test_unexpected_verifier_exception_fails_closed_without_details():
+    class Broken:
+        async def verify(self, sql, ctx=None):
+            raise RuntimeError("secret internal detail")
+
+    t = HaltSQLTools(Broken(), lambda: {"tenant_id": "a"}, connect=never_connect)
+    with pytest.raises(ToolFailure, match="verification failed; the query was not executed") as ei:
+        await t.query(OK)
+    assert "secret" not in str(ei.value)
+
+
 async def test_real_http_client_against_dead_port_fails_closed():
     client = AsyncHaltSQLClient("http://127.0.0.1:9", retry=RetryPolicy(max_attempts=1))
     t = HaltSQLTools(client, lambda: {"tenant_id": "a"}, connect=never_connect)

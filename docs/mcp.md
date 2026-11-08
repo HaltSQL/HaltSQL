@@ -22,9 +22,10 @@ pip install ./clients/python ./clients/mcp     # Python 3.10+
 | `list_tables` | none | Tables and columns the policy allows, which are tenant-scoped, and guidance on writing tenant predicates. Needs a policy file. |
 | `describe_policy` | none | `/v1/policies` (name, version, mode) plus the policy's rules from the policy file: statements, LIMIT rule, tenancy mode and key names, tables, functions. |
 
-All tools are annotated read-only. Infrastructure failures (sidecar down,
-database errors) are MCP tool errors; denials are normal results so the agent
-can fix its SQL.
+All tools are annotated read-only. Infrastructure failures (sidecar down, TLS
+errors, malformed verdicts, database errors) are MCP tool errors and nothing
+runs; their messages never include the sidecar token or internal exception
+details. Denials are normal results so the agent can fix its SQL.
 
 ## Tenant context
 
@@ -65,7 +66,10 @@ Flags override environment variables.
 | `HALTSQL_URL` | `--haltsql-url` | `http://127.0.0.1:8080` | Sidecar URL. |
 | `HALTSQL_TOKEN` | | none | Sidecar bearer token (pinned to one policy there). |
 | `HALTSQL_POLICY` | `--policy` | none | Policy name to send to the sidecar. |
-| `HALTSQL_TIMEOUT` | | `2` | Sidecar timeout per attempt, seconds. |
+| `HALTSQL_TIMEOUT` | | `2` | Sidecar timeout per attempt, seconds (3 attempts, bounded backoff). |
+| `HALTSQL_CA_FILE` | | system CAs | CA bundle for an `https` sidecar with a private CA. |
+| `HALTSQL_CLIENT_CERT` | | none | Client certificate (PEM; may also hold the key) for mutual TLS to the sidecar. |
+| `HALTSQL_CLIENT_KEY` | | none | Private key for `HALTSQL_CLIENT_CERT` when it is a separate file. |
 | `HALTSQL_MCP_LOCAL_POLICY` | `--local-policy` | none | Verify with the local `haltsql` CLI and this policy instead of a sidecar. |
 | `HALTSQL_BIN` | | `haltsql` on `PATH` | CLI used in local mode (and to read YAML policies without PyYAML). |
 | `HALTSQL_MCP_DATABASE_URL` (or `DATABASE_URL`) | `--database-url` | none | libpq DSN. Without it, `query` is disabled. |
