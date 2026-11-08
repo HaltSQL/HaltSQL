@@ -1,11 +1,9 @@
-(* End-to-end tests for built-in TLS, mTLS identities and OIDC in
-   haltsql-server.
+(** End-to-end tests for built-in TLS, mTLS identities and OIDC in haltsql-server.
 
-   Everything is generated in-test: a CA, server and client certificates
-   (x509), RSA/EC signing keys, and a fake OIDC issuer (discovery + JWKS over
-   plain HTTP, allowed with allow_insecure_http) served in-process. Requests
-   are written as raw HTTP/1.1 over a tls-lwt client so the tests control the
-   client certificate and TLS versions. *)
+    Everything is generated in-test: a CA, server and client certificates (x509), RSA/EC
+    signing keys, and a fake OIDC issuer (discovery + JWKS over plain HTTP, allowed with
+    allow_insecure_http) served in-process. Requests are written as raw HTTP/1.1 over a
+    tls-lwt client so the tests control the client certificate and TLS versions. *)
 
 open Lwt.Syntax
 open Haltsql_server

@@ -1,4 +1,4 @@
-(* Unit tests for haltsql.pgwire: codecs, SCRAM, config, enforcement, statement state. *)
+(** Unit tests for haltsql.pgwire: codecs, SCRAM, config, enforcement, statement state. *)
 
 open Haltsql_pgwire
 open Lwt.Syntax

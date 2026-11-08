@@ -1,6 +1,6 @@
-(* Bearer-token authentication. Tokens are stored as SHA-256 hex digests;
-   comparison is constant-time and always scans every configured token so
-   timing does not reveal which (or whether a) token matched. *)
+(** Bearer-token authentication. Tokens are stored as SHA-256 hex digests; comparison is
+    constant-time and always scans every configured token so timing does not reveal which
+    (or whether a) token matched. *)
 
 open Haltsql
 

@@ -1,6 +1,5 @@
-(* Server state: static settings, the hot-reloadable snapshot (policies,
-   tokens, OIDC providers, mTLS identities, TLS material), audit sinks, and
-   the reload logic. *)
+(** Server state: static settings, the hot-reloadable snapshot (policies, tokens, OIDC
+    providers, mTLS identities, TLS material), audit sinks, and the reload logic. *)
 
 open Haltsql
 module Oidc_client = Haltsql_auth.Oidc_client
@@ -35,6 +34,8 @@ type t = {
       (** current TLS configuration; [Some] iff TLS was configured at startup *)
   sinks : Audit.sink list;
   started : float;
+  mutable draining : bool;
+  reload_lock : Lwt_mutex.t;
 }
 
 (* ---- integration hooks (set by the integrator before [Server.main]) ---- *)
@@ -306,6 +307,8 @@ let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.
     tls;
     sinks = open_sinks cfg;
     started = Unix.gettimeofday ();
+    draining = false;
+    reload_lock = Lwt_mutex.create ();
   }
 
 let close t = List.iter Audit.close t.sinks
@@ -376,19 +379,26 @@ let reload ?(reason = "manual") ?resolver t =
    providers are prefetched asynchronously first, with a fresh cache, so
    rotated secrets are picked up. *)
 let reload_lwt ?reason t =
-  match (t.sources.config_file, !secret_prefetch) with
-  | Some f, Some prefetch -> (
-      match Config.secrets_of_file f with
-      | Error _ -> Lwt.return (reload ?reason t) (* reports the located errors *)
-      | Ok secrets ->
-          Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
-              Lwt.return (reload ?reason ~resolver t)))
-  | _ -> Lwt.return (reload ?reason t)
+  (* Serialised: a SIGHUP and a file-change reload must not interleave, or a
+     slower reload holding older prefetched secrets could finish last and
+     replace a newer snapshot. *)
+  Lwt_mutex.with_lock t.reload_lock (fun () ->
+      match (t.sources.config_file, !secret_prefetch) with
+      | Some f, Some prefetch -> (
+          match Config.secrets_of_file f with
+          | Error _ -> Lwt.return (reload ?reason t) (* reports the located errors *)
+          | Ok secrets ->
+              Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
+                  Lwt.return (reload ?reason ~resolver t)))
+      | _ -> Lwt.return (reload ?reason t))
 
 let changed t = List.exists (fun (f, sg) -> signature f <> sg) t.signatures
-let find_policy t name = List.assoc_opt name t.snap.policies
+let snapshot_find_policy (snap : snapshot) name = List.assoc_opt name snap.policies
 
-let default_policy t =
-  match t.snap.default_policy with
+let snapshot_default_policy (snap : snapshot) =
+  match snap.default_policy with
   | Some n -> Some n
-  | None -> ( match t.snap.policies with [ (n, _) ] -> Some n | _ -> None)
+  | None -> ( match snap.policies with [ (n, _) ] -> Some n | _ -> None)
+
+let find_policy t name = snapshot_find_policy t.snap name
+let default_policy t = snapshot_default_policy t.snap

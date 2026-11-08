@@ -1,4 +1,5 @@
-(* Listener, signals, hot-reload watcher and lifecycle for haltsql-server. *)
+(** Listener, connection limits, signals, hot-reload watcher and process lifecycle for
+    haltsql-server. See server.mli. *)
 
 open Lwt.Syntax
 
@@ -43,6 +44,7 @@ let bind_listen listen =
       Lwt_unix.set_close_on_exec fd;
       (try Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (addr, port))
        with Unix.Unix_error (e, _, _) ->
+         (try Unix.close (Lwt_unix.unix_file_descr fd) with Unix.Unix_error _ -> ());
          raise
            (Startup_error
               (Printf.sprintf "cannot bind %s: %s" listen (Unix.error_message e))));
@@ -83,13 +85,57 @@ let rec watch_loop (st : State.t) ~interval ~stop =
       in
       watch_loop st ~interval ~stop
 
+(* ---- connection limits ---- *)
+
+type limits = {
+  max_connections : int;
+  request_timeout : float;
+  idle_timeout : float;
+  max_header_bytes : int;
+  shutdown_timeout : float;
+}
+
+let default_limits =
+  {
+    max_connections = 1024;
+    request_timeout = 30.;
+    idle_timeout = 60.;
+    max_header_bytes = 65536;
+    shutdown_timeout = 15.;
+  }
+
+(* The health listener gets its own small connection budget, so probes keep
+   working while the main listener is saturated. *)
+let health_max_connections = 64
+
+let validate_limits l =
+  let check ok msg = if ok then [] else [ msg ] in
+  match
+    check (l.max_connections >= 1) "max connections must be at least 1"
+    @ check (l.request_timeout > 0.) "request timeout must be positive"
+    @ check (l.idle_timeout > 0.) "idle timeout must be positive"
+    @ check (l.max_header_bytes >= 1024) "max header bytes must be at least 1024"
+    @ check (l.shutdown_timeout >= 0.) "shutdown timeout must not be negative"
+  with
+  | [] -> Ok ()
+  | errs -> Error (String.concat "; " errs)
+
 (* ---- HTTP over plain TCP or TLS ----
 
    cohttp's server is instantiated over its Unix IO module with our own
    connection type, so handlers see the verified client identity of TLS
    connections. We run our own accept loop: each connection gets the TLS
    configuration current at accept time (certificates reload without a
-   restart). *)
+   restart).
+
+   cohttp has no timeouts or size limits of its own, so the byte streams it
+   reads from and writes to are wrapped (see [channels]):
+   - between requests a connection may stay silent for [idle_timeout];
+   - once the first byte of a request arrives, its head and body must arrive
+     within [request_timeout], and the head may not exceed [max_header_bytes]
+     (slowloris, unbounded headers);
+   - a write that makes no progress for [idle_timeout] fails.
+   On any of these the connection is closed. *)
 
 module Io = struct
   include (
@@ -104,31 +150,166 @@ module Srv = Cohttp_lwt.Make_server (Io)
 let handshake_timeout = 10.0
 let close_quietly fd = Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
 
+let shutdown_quietly fd =
+  try Lwt_unix.shutdown fd Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ()
+
 let on_conn_exn = function
-  | Unix.Unix_error ((Unix.EPIPE | Unix.ECONNRESET | Unix.EBADF), _, _) -> ()
-  | Tls_lwt.Tls_alert _ | Tls_lwt.Tls_failure _ | End_of_file -> ()
+  | Unix.Unix_error
+      ((Unix.EPIPE | Unix.ECONNRESET | Unix.EBADF | Unix.ENOTCONN | Unix.ETIMEDOUT), _, _)
+    ->
+      ()
+  | Tls_lwt.Tls_alert _ | Tls_lwt.Tls_failure _ | End_of_file | Lwt_io.Channel_closed _ ->
+      ()
   | e -> Log.warn "connection error" ~fields:[ ("error", `String (Printexc.to_string e)) ]
 
-let serve_plain spec fd remote =
-  let ic = Lwt_io.of_fd ~close:(fun () -> Lwt.return_unit) ~mode:Lwt_io.input fd in
-  let oc = Lwt_io.of_fd ~close:(fun () -> Lwt.return_unit) ~mode:Lwt_io.output fd in
+(* Where a connection is in its request cycle, as seen by its reads. *)
+type phase =
+  | Idle  (** between requests: waiting for the first byte of the next one *)
+  | Reading_head of { deadline : float; mutable bytes : int }
+  | In_handler of { deadline : float }  (** the handler runs and may read the body *)
+  | Responding  (** the handler returned; the response is being written *)
+
+type tracked = {
+  fd : Lwt_unix.file_descr;
+  mutable conn : Conn.t;
+  mutable phase : phase;
+  mutable waiting : bool;
+      (** blocked reading for the next request: nothing is in flight, so the connection
+          may be closed when draining *)
+  mutable oc : Lwt_io.output_channel option;
+}
+
+(* The open connections of one listener. *)
+type registry = {
+  conns : (int, tracked) Hashtbl.t;
+  mutable next_id : int;
+  changed : unit Lwt_condition.t;  (** broadcast when a connection closes *)
+}
+
+let new_registry () =
+  { conns = Hashtbl.create 64; next_id = 0; changed = Lwt_condition.create () }
+
+exception Timed_out
+
+let with_timeout secs f =
+  if secs <= 0. then Lwt.fail Timed_out
+  else
+    Lwt.pick
+      [
+        f ();
+        (let* () = Lwt_unix.sleep secs in
+         Lwt.fail Timed_out);
+      ]
+
+(* Wraps raw [read]/[write] functions into Lwt_io channels that enforce the
+   limits for connection [t]. A read that times out or overruns the header cap
+   stops input and shuts the socket down, which ends the connection. *)
+let channels ~limits (t : tracked) ~read ~write =
+  let kill () =
+    Conn.discard_input t.conn;
+    shutdown_quietly t.fd
+  in
+  let read_into buf off len =
+    if Conn.input_discarded t.conn then Lwt.return 0
+    else
+      let now = Unix.gettimeofday () in
+      let between_requests =
+        match t.phase with Idle | Responding -> true | _ -> false
+      in
+      let timeout =
+        match t.phase with
+        | Idle | Responding -> limits.idle_timeout
+        | Reading_head { deadline; _ } | In_handler { deadline } -> deadline -. now
+      in
+      t.waiting <- between_requests;
+      Lwt.catch
+        (fun () ->
+          let* n = with_timeout timeout (fun () -> read buf off len) in
+          t.waiting <- false;
+          (if n > 0 then
+             match t.phase with
+             | Idle | Responding ->
+                 t.phase <-
+                   Reading_head
+                     {
+                       deadline = Unix.gettimeofday () +. limits.request_timeout;
+                       bytes = n;
+                     }
+             | Reading_head h -> h.bytes <- h.bytes + n
+             | In_handler _ -> ());
+          match t.phase with
+          | Reading_head { bytes; _ } when bytes > limits.max_header_bytes ->
+              Log.info "request head too large; closing connection"
+                ~fields:[ ("remote", `String t.conn.remote) ];
+              kill ();
+              Lwt.return 0
+          | _ -> Lwt.return n)
+        (fun e ->
+          t.waiting <- false;
+          (match e with
+          | Timed_out ->
+              Log.debug
+                (if between_requests then "idle connection timed out"
+                 else "request timed out; closing connection")
+                ~fields:[ ("remote", `String t.conn.remote) ]
+          | _ -> ());
+          kill ();
+          Lwt.return 0)
+  in
+  let write_from buf off len =
+    Lwt.catch
+      (fun () -> with_timeout limits.idle_timeout (fun () -> write buf off len))
+      (function
+        | Timed_out ->
+            kill ();
+            Lwt.fail (Unix.Unix_error (Unix.ETIMEDOUT, "write", ""))
+        | e -> Lwt.fail e)
+  in
+  let ic = Lwt_io.make ~mode:Lwt_io.input read_into in
+  let oc = Lwt_io.make ~mode:Lwt_io.output write_from in
+  t.oc <- Some oc;
+  (ic, oc)
+
+(* The cohttp server for connection [t]: marks the request cycle around the
+   handler so reads know whether they wait for a new request or read a body. *)
+let spec_for ~limits (t : tracked) callback =
+  Srv.make
+    ~callback:(fun conn req body ->
+      t.phase <- In_handler { deadline = Unix.gettimeofday () +. limits.request_timeout };
+      Lwt.finalize
+        (fun () -> callback conn req body)
+        (fun () ->
+          t.phase <- Responding;
+          Lwt.return_unit))
+    ()
+
+let flush_quietly oc =
+  Lwt.catch
+    (fun () -> with_timeout 1.0 (fun () -> Lwt_io.flush oc))
+    (fun _ -> Lwt.return_unit)
+
+let serve_conn ~limits ~callback (t : tracked) ~read ~write =
+  let ic, oc = channels ~limits t ~read ~write in
   Lwt.finalize
     (fun () ->
-      Srv.callback spec (Conn.plain remote)
+      Srv.callback (spec_for ~limits t callback) t.conn
         (Cohttp_lwt_unix.Private.Input_channel.create ic)
         oc)
-    (fun () ->
-      let* () = Lwt.catch (fun () -> Lwt_io.flush oc) (fun _ -> Lwt.return_unit) in
-      close_quietly fd)
+    (fun () -> flush_quietly oc)
 
-let serve_tls spec tls_cfg fd remote =
+let serve_plain ~limits ~callback t =
+  serve_conn ~limits ~callback t
+    ~read:(fun buf off len -> Lwt_bytes.read t.fd buf off len)
+    ~write:(fun buf off len -> Lwt_bytes.write t.fd buf off len)
+
+let serve_tls ~limits ~callback tls_cfg (t : tracked) =
   let* session =
     Lwt.catch
       (fun () ->
         Lwt.pick
           [
-            (let* t = Tls_lwt.Unix.server_of_fd tls_cfg fd in
-             Lwt.return_ok t);
+            (let* s = Tls_lwt.Unix.server_of_fd tls_cfg t.fd in
+             Lwt.return_ok s);
             (let* () = Lwt_unix.sleep handshake_timeout in
              Lwt.return_error "TLS handshake timed out");
           ])
@@ -137,73 +318,193 @@ let serve_tls spec tls_cfg fd remote =
   match session with
   | Error e ->
       Log.debug "TLS handshake failed"
-        ~fields:[ ("remote", `String remote); ("error", `String e) ];
-      close_quietly fd
-  | Ok t ->
+        ~fields:[ ("remote", `String t.conn.remote); ("error", `String e) ];
+      Lwt.return_unit
+  | Ok s ->
       let peer =
-        Option.map Haltsql_auth.Mtls.peer_of_certificate (Tls_setup.peer_certificate t)
+        Option.map Haltsql_auth.Mtls.peer_of_certificate (Tls_setup.peer_certificate s)
       in
-      let ic, oc = Tls_lwt.of_t t in
+      t.conn <- Conn.make ~remote:t.conn.remote ~tls:true ~peer;
       Lwt.finalize
         (fun () ->
-          Srv.callback spec
-            { Conn.remote; tls = true; peer }
-            (Cohttp_lwt_unix.Private.Input_channel.create ic)
-            oc)
+          serve_conn ~limits ~callback t
+            ~read:(fun buf off len -> Tls_lwt.Unix.read_bytes s buf off len)
+            ~write:(fun buf off len ->
+              let* () = Tls_lwt.Unix.write_bytes s buf off len in
+              Lwt.return len))
         (fun () ->
-          let* () = Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit) in
-          let* () = Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) in
-          close_quietly fd)
+          Lwt.catch
+            (fun () -> with_timeout 1.0 (fun () -> Tls_lwt.Unix.close s))
+            (fun _ -> Lwt.return_unit))
 
-(* Accepts connections on [fd] until [stop]; [tls ()] gives the TLS config to
-   use for a new connection (None: plain HTTP). *)
-let accept_loop ~spec ~tls fd ~stop =
-  let stopped = ref false in
-  let rec loop () =
+(* Blocks until [reg] has room for another connection, or [stop]. *)
+let rec wait_for_capacity reg ~max ~stop ~warned =
+  if Hashtbl.length reg.conns < max then Lwt.return `Ready
+  else begin
+    if not !warned then begin
+      warned := true;
+      Log.warn "connection limit reached; new connections wait in the listen backlog"
+        ~fields:[ ("max_connections", `Int max) ]
+    end;
     let* r =
       Lwt.pick
         [
+          (let* () = Lwt_condition.wait reg.changed in
+           Lwt.return `Changed);
           (let* () = stop in
            Lwt.return `Stop);
-          Lwt.catch
-            (fun () ->
-              let* c, addr = Lwt_unix.accept fd in
-              Lwt.return (`Conn (c, addr)))
-            (fun e -> Lwt.return (`Error e));
         ]
     in
     match r with
+    | `Stop -> Lwt.return `Stop
+    | `Changed -> wait_for_capacity reg ~max ~stop ~warned
+  end
+
+(* Accepts connections on [fd] until [stop]; [tls ()] gives the TLS config to
+   use for a new connection (None: plain HTTP). At most [max] connections are
+   open at once: beyond that the loop stops accepting (backpressure through
+   the kernel's listen backlog) rather than accepting and refusing. *)
+let accept_loop ~limits ~max ~callback ~tls ?(on_change = ignore) reg fd ~stop =
+  let stopped = ref false in
+  let warned = ref false in
+  let register c remote =
+    let id = reg.next_id in
+    reg.next_id <- id + 1;
+    let t =
+      { fd = c; conn = Conn.plain remote; phase = Idle; waiting = false; oc = None }
+    in
+    Hashtbl.replace reg.conns id t;
+    on_change (Hashtbl.length reg.conns);
+    (id, t)
+  in
+  let unregister id =
+    Hashtbl.remove reg.conns id;
+    on_change (Hashtbl.length reg.conns);
+    Lwt_condition.broadcast reg.changed ()
+  in
+  let rec loop () =
+    let* cap = wait_for_capacity reg ~max ~stop ~warned in
+    match cap with
     | `Stop ->
         stopped := true;
         Lwt.return_unit
-    | `Error Lwt.Canceled when !stopped -> Lwt.return_unit
-    | `Error e ->
-        Log.warn "accept failed" ~fields:[ ("error", `String (Printexc.to_string e)) ];
-        let* () = Lwt_unix.sleep 0.05 in
-        loop ()
-    | `Conn (c, addr) ->
-        (try Lwt_unix.set_close_on_exec c with _ -> ());
-        (try Lwt_unix.setsockopt c Unix.TCP_NODELAY true with _ -> ());
-        let remote = Conn.string_of_sockaddr addr in
-        Lwt.async (fun () ->
-            Lwt.catch
-              (fun () ->
-                match tls () with
-                | None -> serve_plain spec c remote
-                | Some cfg -> serve_tls spec cfg c remote)
-              (fun e ->
-                on_conn_exn e;
-                close_quietly c));
-        loop ()
+    | `Ready -> (
+        if Hashtbl.length reg.conns < max / 2 then warned := false;
+        let* r =
+          Lwt.pick
+            [
+              (let* () = stop in
+               Lwt.return `Stop);
+              Lwt.catch
+                (fun () ->
+                  let* c, addr = Lwt_unix.accept fd in
+                  Lwt.return (`Conn (c, addr)))
+                (fun e -> Lwt.return (`Error e));
+            ]
+        in
+        match r with
+        | `Stop ->
+            stopped := true;
+            Lwt.return_unit
+        | `Error Lwt.Canceled when !stopped -> Lwt.return_unit
+        | `Error e ->
+            (* e.g. EMFILE: back off instead of spinning *)
+            Log.warn "accept failed" ~fields:[ ("error", `String (Printexc.to_string e)) ];
+            let* () = Lwt_unix.sleep 0.05 in
+            loop ()
+        | `Conn (c, addr) ->
+            (try Lwt_unix.set_close_on_exec c with Unix.Unix_error _ -> ());
+            (try Lwt_unix.setsockopt c Unix.TCP_NODELAY true
+             with Unix.Unix_error _ -> ());
+            let id, t = register c (Conn.string_of_sockaddr addr) in
+            Lwt.async (fun () ->
+                Lwt.finalize
+                  (fun () ->
+                    Lwt.catch
+                      (fun () ->
+                        match tls () with
+                        | None -> serve_plain ~limits ~callback t
+                        | Some cfg -> serve_tls ~limits ~callback cfg t)
+                      (fun e ->
+                        on_conn_exn e;
+                        Lwt.return_unit))
+                  (fun () ->
+                    let* () = close_quietly c in
+                    unregister id;
+                    Lwt.return_unit));
+            loop ())
   in
   Lwt.finalize loop (fun () -> close_quietly fd)
 
-(* Runs the server on an already-bound socket until [stop] resolves.
-   [health_fd]: an optional extra plain-HTTP listener serving only /healthz
-   and /readyz (e.g. for kubelet probes when the main port requires client
-   certificates). *)
-let serve ?(watch_interval = 2.0) ?health_fd (st : State.t) fd ~stop =
-  let spec = Srv.make ~callback:(Http.callback st) () in
+(* Closes connections that have nothing in flight (blocked waiting for their
+   next request). Their last response is flushed first. *)
+let close_idle reg =
+  Hashtbl.iter
+    (fun _ t ->
+      if t.waiting then begin
+        t.waiting <- false;
+        Conn.discard_input t.conn;
+        Lwt.async (fun () ->
+            let* () =
+              match t.oc with Some oc -> flush_quietly oc | None -> Lwt.return_unit
+            in
+            shutdown_quietly t.fd;
+            Lwt.return_unit)
+      end)
+    reg.conns
+
+(* Graceful drain after the listeners closed: idle keep-alive connections are
+   closed now; in-flight requests get up to [timeout] seconds to complete (their
+   responses carry "connection: close", so their connections end afterwards);
+   whatever is left is then closed forcibly. *)
+let drain reg ~timeout =
+  let rec wait_empty () =
+    close_idle reg;
+    if Hashtbl.length reg.conns = 0 then Lwt.return_unit
+    else
+      let* () = Lwt_condition.wait reg.changed in
+      wait_empty ()
+  in
+  let n = Hashtbl.length reg.conns in
+  if n = 0 then Lwt.return_unit
+  else begin
+    Log.info "draining connections"
+      ~fields:[ ("open_connections", `Int n); ("timeout_s", `Float timeout) ];
+    let* () =
+      Lwt.pick
+        [
+          wait_empty ();
+          (let* () = Lwt_unix.sleep timeout in
+           Lwt.return_unit);
+        ]
+    in
+    let left = Hashtbl.length reg.conns in
+    if left = 0 then Lwt.return_unit
+    else begin
+      Log.warn "shutdown timeout reached; closing remaining connections"
+        ~fields:[ ("open_connections", `Int left) ];
+      Hashtbl.iter
+        (fun _ t ->
+          Conn.discard_input t.conn;
+          shutdown_quietly t.fd)
+        reg.conns;
+      Lwt.pick
+        [
+          wait_empty ();
+          (let* () = Lwt_unix.sleep 1.0 in
+           Lwt.return_unit);
+        ]
+    end
+  end
+
+(* Runs the server on an already-bound socket until [stop] resolves, then
+   drains. [health_fd]: an optional extra plain-HTTP listener serving only
+   /healthz and /readyz (e.g. for kubelet probes when the main port requires
+   client certificates). *)
+let serve ?(watch_interval = 2.0) ?health_fd ?(limits = default_limits) (st : State.t) fd
+    ~stop =
+  let reg = new_registry () in
+  let health_reg = new_registry () in
   let watcher =
     if st.cfg.reload_watch then watch_loop st ~interval:watch_interval ~stop
     else Lwt.return_unit
@@ -212,26 +513,46 @@ let serve ?(watch_interval = 2.0) ?health_fd (st : State.t) fd ~stop =
     match health_fd with
     | None -> Lwt.return_unit
     | Some hfd ->
-        let hspec = Srv.make ~callback:(Http.callback ~health_only:true st) () in
-        accept_loop ~spec:hspec ~tls:(fun () -> None) hfd ~stop
+        accept_loop ~limits ~max:health_max_connections
+          ~callback:(Http.callback ~health_only:true st)
+          ~tls:(fun () -> None)
+          health_reg hfd ~stop
   in
-  let main = accept_loop ~spec ~tls:(fun () -> st.tls) fd ~stop in
-  Lwt.join [ main; health; watcher ]
+  let main =
+    accept_loop ~limits ~max:limits.max_connections ~callback:(Http.callback st)
+      ~tls:(fun () -> st.tls)
+      ~on_change:Metrics.set_open_connections reg fd ~stop
+  in
+  let draining =
+    let* () = stop in
+    (* Readiness turns 503 and responses carry "connection: close" from now on. *)
+    st.draining <- true;
+    Lwt.return_unit
+  in
+  let* () = Lwt.join [ main; health; watcher; draining ] in
+  Lwt.join
+    [
+      drain reg ~timeout:limits.shutdown_timeout;
+      drain health_reg ~timeout:(Float.min 1.0 limits.shutdown_timeout);
+    ]
 
 (* Full process lifecycle. Returns the exit code. *)
-let main ?health_listen ~(sources : State.sources) () =
+let main ?health_listen ?(limits = default_limits) ~(sources : State.sources) () =
   Integrations.install ();
   Haltsql_auth.Oidc_client.set_logger (fun lvl msg fields ->
       let fields = List.map (fun (k, v) -> (k, `String v)) fields in
       match lvl with `Info -> Log.info msg ~fields | `Warn -> Log.warn msg ~fields);
-  match State.load sources with
-  | Error errs ->
+  match (validate_limits limits, State.load sources) with
+  | Error e, _ ->
+      Log.error "invalid connection limits" ~fields:[ ("error", `String e) ];
+      2
+  | Ok (), Error errs ->
       List.iter
         (fun e ->
           Log.error "failed to load configuration" ~fields:[ ("error", `String e) ])
         errs;
       2
-  | Ok cfg -> (
+  | Ok (), Ok cfg -> (
       Log.setup ~level:cfg.log_level ~format:cfg.log_format;
       match
         check_auth cfg;
@@ -275,6 +596,12 @@ let main ?health_listen ~(sources : State.sources) () =
                      let* _ = State.reload_lwt ~reason:"SIGHUP" st in
                      Lwt.return_unit)));
           (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
+          (* A bug in one connection's handler must never take the process
+             down: log it and carry on. *)
+          (Lwt.async_exception_hook :=
+             fun e ->
+               Log.error "unhandled exception"
+                 ~fields:[ ("error", `String (Printexc.to_string e)) ]);
           Log.info "haltsql-server listening"
             ~fields:
               ([
@@ -297,6 +624,8 @@ let main ?health_listen ~(sources : State.sources) () =
                      | _ -> "none") );
                  ("oidc_providers", `Int (List.length cfg.oidc));
                  ("mtls_identities", `Int (List.length cfg.mtls));
+                 ("max_connections", `Int limits.max_connections);
+                 ("max_request_bytes", `Int cfg.max_request_bytes);
                ]
               @
               match health with
@@ -310,9 +639,7 @@ let main ?health_listen ~(sources : State.sources) () =
                   Lwt.return_unit))
             (Haltsql_auth.Oidc_client.providers st.snap.oidc);
           Lwt_main.run
-            (let* () = serve ?health_fd:(Option.map fst health) st fd ~stop in
-             (* Give in-flight responses a moment to flush. *)
-             let* () = Lwt_unix.sleep 0.2 in
+            (let* () = serve ?health_fd:(Option.map fst health) ~limits st fd ~stop in
              (* Final flush of batching audit sinks and the OTLP exporter. *)
              let* () =
                Lwt_list.iter_s

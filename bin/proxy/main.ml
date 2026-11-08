@@ -1,7 +1,16 @@
-(* haltsql-proxy: PostgreSQL wire-protocol firewall in front of a real database.
-   Every statement is verified with Haltsql.verify under the session's policy before it
-   reaches the server; bound tenancy parameters are overwritten with the session's
-   context. See docs/proxy.md. *)
+(** [haltsql-proxy]: PostgreSQL wire-protocol firewall in front of a real database.
+
+    Every statement is verified with [Haltsql.verify] under the session's policy before it
+    reaches the server; bound tenancy parameters are overwritten with the session's
+    context. See docs/proxy.md.
+
+    This file is command-line parsing only; the listener (connection limit
+    [limits.max_connections], [idle_timeout], [auth_timeout], graceful shutdown within
+    [shutdown_grace_seconds]) is [Haltsql_pgwire.Server].
+
+    Exit codes: 0 success (or graceful shutdown), 1 invalid configuration or input, 2
+    usage errors, unreadable files, or a listener that cannot start. Errors go to stderr.
+*)
 
 open Cmdliner
 open Haltsql_pgwire
@@ -9,6 +18,16 @@ open Haltsql_pgwire
 let exit_ok = 0
 let exit_invalid = 1
 let exit_usage = 2
+
+let exits =
+  [
+    Cmd.Exit.info exit_ok ~doc:"on success; for $(b,run), after a graceful shutdown.";
+    Cmd.Exit.info exit_invalid ~doc:"when the configuration (or the input) is invalid.";
+    Cmd.Exit.info exit_usage
+      ~doc:
+        "on usage errors, when a file cannot be read, or when the listener cannot start \
+         (e.g. the address is in use).";
+  ]
 
 let print_errors errs =
   List.iter
@@ -74,9 +93,14 @@ let run config listen log_level =
                ignore (Lwt_unix.on_signal Sys.sigint stop);
                Server.wait srv);
             exit_ok
-          with Failure m ->
-            prerr_endline ("haltsql-proxy: " ^ m);
-            exit_usage))
+          with
+          | Failure m ->
+              prerr_endline ("haltsql-proxy: " ^ m);
+              exit_usage
+          | Unix.Unix_error (e, f, _) ->
+              prerr_endline
+                (Printf.sprintf "haltsql-proxy: %s: %s" f (Unix.error_message e));
+              exit_usage))
 
 let run_cmd =
   let listen =
@@ -120,7 +144,7 @@ let run_cmd =
     ]
   in
   Cmd.v
-    (Cmd.info "run" ~doc:"Run the proxy." ~man)
+    (Cmd.info "run" ~doc:"Run the proxy." ~man ~exits)
     Term.(const run $ config_arg $ listen $ log_level)
 
 (* ------------------------------------------------------------- validate *)
@@ -161,7 +185,7 @@ let validate_cmd =
     ]
   in
   Cmd.v
-    (Cmd.info "validate" ~doc:"Validate a ProxyConfig." ~man)
+    (Cmd.info "validate" ~doc:"Validate a ProxyConfig." ~man ~exits)
     Term.(const validate $ config_arg $ json)
 
 (* ------------------------------------------------------- scram-verifier *)
@@ -209,7 +233,7 @@ let scram_cmd =
     ]
   in
   Cmd.v
-    (Cmd.info "scram-verifier" ~doc:"Generate a SCRAM-SHA-256 verifier." ~man)
+    (Cmd.info "scram-verifier" ~doc:"Generate a SCRAM-SHA-256 verifier." ~man ~exits)
     Term.(const scram_verifier $ iterations)
 
 let () =
@@ -225,7 +249,12 @@ let () =
   in
   let info =
     Cmd.info "haltsql-proxy" ~version:Haltsql.version
-      ~doc:"PostgreSQL firewall for LLM-generated SQL" ~man
+      ~doc:"PostgreSQL firewall for LLM-generated SQL" ~man ~exits
   in
+  (* Every command-line error is a usage error (2), like the other HaltSQL
+     executables; cmdliner's own default would be 124 for some of them. *)
   exit
-    (Cmd.eval' ~term_err:exit_usage (Cmd.group info [ run_cmd; validate_cmd; scram_cmd ]))
+    (match Cmd.eval_value (Cmd.group info [ run_cmd; validate_cmd; scram_cmd ]) with
+    | Ok (`Ok code) -> code
+    | Ok (`Help | `Version) -> exit_ok
+    | Error (`Parse | `Term | `Exn) -> exit_usage)

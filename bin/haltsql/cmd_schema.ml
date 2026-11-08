@@ -1,7 +1,7 @@
-(* haltsql schema pull / schema import.
+(** haltsql schema pull / schema import.
 
-   [cmds] holds the two subcommands; they belong in the existing [schema] group next to
-   [schema export] (see main.ml). *)
+    [cmds] holds the two subcommands; they belong in the existing [schema] group next to
+    [schema export] (see main.ml). *)
 
 open Cmdliner
 module Ct = Haltsql_catalog_tools

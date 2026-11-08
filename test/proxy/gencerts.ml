@@ -1,9 +1,11 @@
-(* Test helper: writes a throwaway PKI into DIR (argv.(1)):
-     ca.pem                 test CA
-     server.pem/.key        server cert for localhost / 127.0.0.1, signed by ca
-     client.pem/.key        client cert CN=agent-cert, SAN URI spiffe://haltsql.test/agent
-     rogue.pem/.key         client cert CN=agent-cert signed by an unrelated CA
-   Keys are ECDSA P-256. Never use outside tests. *)
+(** Test helper: writes a throwaway PKI into DIR ([argv.(1)]):
+    {v
+    ca.pem            test CA
+    server.pem/.key   server cert for localhost / 127.0.0.1, signed by ca
+    client.pem/.key   client cert CN=agent-cert, SAN URI spiffe://haltsql.test/agent
+    rogue.pem/.key    client cert CN=agent-cert signed by an unrelated CA
+    v}
+    Keys are ECDSA P-256. Never use outside tests. *)
 
 let ok = function Ok x -> x | Error (`Msg m) -> failwith m
 
