@@ -106,7 +106,11 @@ done
 
 log "trivy config --severity HIGH,CRITICAL ($TRIVY_IMAGE)"
 mkdir -p "$WORK/trivy-cache"
-if docker run --rm -v "$TF_ROOT:/src:ro" -v "$WORK/trivy-cache:/cache" "$TRIVY_IMAGE" \
+# Run as the invoking user: as root, trivy fills the cache with root-owned
+# files (the checks bundle it downloads) that the EXIT trap cannot delete on a
+# non-root CI runner, which fails the script after every check has passed.
+if docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$TF_ROOT:/src:ro" -v "$WORK/trivy-cache:/cache" "$TRIVY_IMAGE" \
   config --cache-dir /cache --quiet --severity HIGH,CRITICAL --exit-code 1 \
   --skip-dirs '**/.terraform' /src >"$WORK/trivy.log" 2>&1; then
   grep -E 'Tests:|Failures:' "$WORK/trivy.log" | head -5 || true
