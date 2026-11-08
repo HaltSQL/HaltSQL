@@ -1,0 +1,212 @@
+# Lean DataHub stack for HaltSQL's live catalog validation.
+#
+# Derived from the official quickstart compose at the v1.8.0 tag
+# https://raw.githubusercontent.com/datahub-project/datahub/v1.8.0/docker/quickstart/docker-compose.quickstart-profile.yml
+# with: every DataHub image pinned to v1.8.0, the datahub-actions container and all
+# ${HOME} bind mounts removed, metadata service authentication ON (so a Personal Access
+# Token is required and accepted), and no host ports except GMS and the frontend, both
+# on 127.0.0.1.
+#
+#   DH_GMS_PORT=8596 DH_FRONTEND_PORT=9596 docker compose -p haltsql-dh up -d --wait
+#   docker compose -p haltsql-dh down -v
+#
+# Credentials and signing keys are lab-only values that never leave this machine. About
+# 4 GiB of memory.
+name: haltsql-dh
+
+x-token-env: &token-env
+  DATAHUB_SYSTEM_CLIENT_ID: __datahub_system
+  DATAHUB_SYSTEM_CLIENT_SECRET: JohnSnowKnowsNothing
+  DATAHUB_TOKEN_SERVICE_SALT: haltsql-lab-salt
+  DATAHUB_TOKEN_SERVICE_SIGNING_KEY: haltsql-lab-signing-key-0123456789abcdef
+
+x-storage-env: &storage-env
+  EBEAN_DATASOURCE_DRIVER: com.mysql.jdbc.Driver
+  EBEAN_DATASOURCE_HOST: mysql:3306
+  EBEAN_DATASOURCE_PASSWORD: datahub
+  EBEAN_DATASOURCE_URL: jdbc:mysql://mysql:3306/datahub?verifyServerCertificate=false&useSSL=true&useUnicode=yes&characterEncoding=UTF-8&enabledTLSProtocols=TLSv1.2
+  EBEAN_DATASOURCE_USERNAME: root
+  ELASTICSEARCH_HOST: search
+  ELASTICSEARCH_IMPLEMENTATION: opensearch
+  ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX: "true"
+  ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX: "true"
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_PROTOCOL: http
+  ELASTICSEARCH_USE_SSL: "false"
+  ENTITY_REGISTRY_CONFIG_PATH: /datahub/datahub-gms/resources/entity-registry.yml
+  ENTITY_VERSIONING_ENABLED: "true"
+  GRAPH_SERVICE_IMPL: elasticsearch
+  KAFKA_BOOTSTRAP_SERVER: broker:29092
+  KAFKA_SCHEMAREGISTRY_URL: http://datahub-gms:8080/schema-registry/api/
+  SCHEMA_REGISTRY_TYPE: INTERNAL
+  VIEW_AUTHORIZATION_ENABLED: "false"
+  ZDU_STAGE_10: "true"
+  ZDU_STAGE_20: "true"
+
+services:
+  mysql:
+    image: mysql:8.2
+    hostname: mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --default-authentication-plugin=caching_sha2_password
+    environment:
+      MYSQL_DATABASE: datahub
+      MYSQL_PASSWORD: datahub
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ROOT_PASSWORD: datahub
+      MYSQL_USER: datahub
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h mysql -u $$MYSQL_USER --password=$$MYSQL_PASSWORD"]
+      timeout: 10s
+      interval: 2s
+      retries: 5
+      start_period: 20s
+    restart: on-failure
+    volumes:
+      - mysqldata:/var/lib/mysql
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.3
+    hostname: search
+    environment:
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms768m -Xmx1024m -Dlog4j2.formatMsgNoLookups=true
+      discovery.type: single-node
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail 'http://search:9200/_cluster/health?wait_for_status=yellow&timeout=0s'"]
+      timeout: 15s
+      interval: 5s
+      retries: 20
+      start_period: 1m0s
+    volumes:
+      - osdata:/usr/share/opensearch/data
+
+  kafka-broker:
+    image: confluentinc/cp-kafka:8.2.2
+    hostname: broker
+    command:
+      - /bin/bash
+      - -c
+      - |
+        file_path="/var/lib/kafka/data/clusterID"
+        if [ ! -f "$$file_path" ]; then
+           /bin/kafka-storage random-uuid > $$file_path
+           kafka-storage format --ignore-formatted -t $$(cat "$$file_path") -c /etc/kafka/kafka.properties
+        fi
+        export CLUSTER_ID=$$(cat "$$file_path")
+        /etc/confluent/docker/run
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: BROKER://broker:29092,EXTERNAL://localhost:9092
+      KAFKA_BROKER_ID: "1"
+      KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:39092
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+      KAFKA_INTER_BROKER_LISTENER_NAME: BROKER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,BROKER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: BROKER://broker:29092,EXTERNAL://broker:9092,CONTROLLER://broker:39092
+      KAFKA_LOG4J_LOGGERS: org.apache.kafka.image.loader.MetadataLoader=WARN
+      KAFKA_MAX_MESSAGE_BYTES: "5242880"
+      KAFKA_MESSAGE_MAX_BYTES: "5242880"
+      KAFKA_NODE_ID: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_PROCESS_ROLES: controller, broker
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server broker:29092 >/dev/null 2>&1"]
+      timeout: 10s
+      interval: 5s
+      retries: 12
+      start_period: 1m0s
+    volumes:
+      - broker:/var/lib/kafka/data
+
+  system-update:
+    image: acryldata/datahub-upgrade:v1.8.0
+    hostname: datahub-system-update
+    command: ["-u", "SystemUpdate"]
+    depends_on:
+      kafka-broker: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+    environment:
+      <<: [*storage-env, *token-env]
+      BACKFILL_BROWSE_PATHS_V2: "true"
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: "8080"
+      DATAHUB_PRECREATE_TOPICS: "true"
+      DATAHUB_SQL_SETUP_ENABLED: "true"
+      ELASTICSEARCH_BUILD_INDICES_CLONE_INDICES: "false"
+      ELASTICSEARCH_INDEX_BUILDER_REFRESH_INTERVAL_SECONDS: "3"
+      PARTITIONS: "3"
+      REPROCESS_DEFAULT_BROWSE_PATHS_V2: "false"
+      SCHEMA_REGISTRY_SYSTEM_UPDATE: "true"
+      SPRING_KAFKA_PROPERTIES_AUTO_REGISTER_SCHEMAS: "true"
+      SPRING_KAFKA_PROPERTIES_USE_LATEST_VERSION: "true"
+      USE_CONFLUENT_SCHEMA_REGISTRY: "false"
+
+  datahub-gms:
+    image: acryldata/datahub-gms:v1.8.0
+    hostname: datahub-gms
+    depends_on:
+      system-update: { condition: service_completed_successfully }
+    environment:
+      <<: [*storage-env, *token-env]
+      METADATA_SERVICE_AUTH_ENABLED: "true"
+      ALTERNATE_MCP_VALIDATION: "true"
+      CONFIG_ENTITY_REGISTRY_USE_OPTIMIZED_LOADING: "true"
+      DATAHUB_SERVER_TYPE: quickstart
+      DATAHUB_TELEMETRY_ENABLED: "false"
+      ELASTICSEARCH_LIMIT_RESULTS_STRICT: "true"
+      ENTITY_SERVICE_ENABLE_RETENTION: "true"
+      ES_BULK_REFRESH_POLICY: NONE
+      GRAPH_SERVICE_DIFF_MODE_ENABLED: "true"
+      JAVA_OPTS: -Xms1g -Xmx1g
+      MAE_CONSUMER_ENABLED: "true"
+      MCE_CONSUMER_ENABLED: "true"
+      MCL_CONSUMER_BATCH_ENABLED: "true"
+      MCP_CONSUMER_BATCH_ENABLED: "true"
+      PE_CONSUMER_ENABLED: "true"
+      POLICY_CACHE_REFRESH_INTERVAL_SECONDS: "120"
+      SERVER_SHUTDOWN_MODE: immediate
+      STRICT_URN_VALIDATION_ENABLED: "true"
+      UI_INGESTION_ENABLED: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail http://datahub-gms:8080/health"]
+      timeout: 5s
+      interval: 3s
+      retries: 10
+      start_period: 3m0s
+    ports:
+      - "127.0.0.1:${DH_GMS_PORT:-8596}:8080"
+
+  datahub-frontend:
+    image: acryldata/datahub-frontend-react:v1.8.0
+    hostname: datahub-frontend-react
+    depends_on:
+      datahub-gms: { condition: service_healthy }
+    environment:
+      <<: *token-env
+      METADATA_SERVICE_AUTH_ENABLED: "true"
+      DATAHUB_APP_VERSION: v1.8.0
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: "8080"
+      DATAHUB_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      DATAHUB_TRACKING_TOPIC: DataHubUsageEvent_v1
+      KAFKA_BOOTSTRAP_SERVER: broker:29092
+      JAVA_OPTS: -Xms512m -Xmx512m -Dhttp.port=9002 -Dconfig.file=datahub-frontend/conf/application.conf -Djava.security.auth.login.config=datahub-frontend/conf/jaas.conf -Dlogback.configurationFile=datahub-frontend/conf/logback.xml -Dlogback.debug=false -Dpidfile.path=/dev/null
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail http://localhost:9002/admin"]
+      timeout: 5s
+      interval: 3s
+      retries: 20
+      start_period: 1m0s
+    ports:
+      - "127.0.0.1:${DH_FRONTEND_PORT:-9596}:9002"
+
+volumes:
+  mysqldata:
+  osdata:
+  broker:
