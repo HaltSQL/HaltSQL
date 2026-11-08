@@ -8,7 +8,7 @@
 
 .heroGrid {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   gap: 3rem;
   align-items: center;
 }
@@ -115,7 +115,9 @@
 
 .twoCol {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): let a column shrink below its longest code line, so code
+     blocks scroll inside their own box instead of widening the page. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 2rem;
   align-items: start;
 }
@@ -123,9 +125,16 @@
 @media (max-width: 996px) {
   .heroGrid,
   .twoCol {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .title {
     font-size: 2.3rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .buttons :global(.button) {
+    width: 100%;
+    white-space: normal;
   }
 }

@@ -26,13 +26,16 @@ tables:
     columns: [id, tenant_id, name, created_at]   # email and phone stay hidden
     tenant_column: tenant_id`;
 
-const cliExample = `haltsql verify --policy policy.yaml --context '{"tenant_id":"acme"}' \\
-  --sql 'SELECT status, count(*) FROM orders WHERE tenant_id = $1 GROUP BY status LIMIT 100'
-# exit 0: allowed. HaltSQL tells you to bind $1 = 'acme'.
+const cliExample = `haltsql verify --policy policy.yaml \\
+  --context '{"tenant_id":"acme"}' \\
+  --sql 'SELECT status, count(*) FROM orders
+         WHERE tenant_id = $1 GROUP BY status LIMIT 100'
+# exit 0: allowed, bind $1 = 'acme'
 
-haltsql verify --policy policy.yaml --context '{"tenant_id":"acme"}' \\
+haltsql verify --policy policy.yaml \\
+  --context '{"tenant_id":"acme"}' \\
   --sql 'SELECT email FROM customers LIMIT 10'
-# exit 1: E_COLUMN_DENIED, E_TENANT_MISSING (with a hint the agent can follow)`;
+# exit 1: E_COLUMN_DENIED, E_TENANT_MISSING`;
 
 const pythonExample = `from haltsql import HaltSQLClient, guard
 
