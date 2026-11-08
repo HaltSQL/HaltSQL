@@ -7,7 +7,7 @@ name = "haltsql-langgraph"
 version = "0.1.0"
 description = "HaltSQL verified read-only SQL tool (ToolNode) and retry-on-deny graph for LangGraph"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["haltsql[psycopg]>=0.1.0", "langgraph>=1.2,<1.3", "langgraph-prebuilt>=1.1,<1.2", "langchain-core>=1.6,<2"]
 

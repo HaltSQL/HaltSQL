@@ -107,7 +107,7 @@ role), which comes from the host application's session.
 | Unknown nodes | Compile error in the analyzer (no wildcard `_ ->` arms in rule code) | New node types force a review |
 | Concurrency | OCaml 5 domains plus Eio for the server and proxy | Parallel verification with no GIL |
 | Policy and config format | YAML **or** JSON, treated the same, with a published JSON Schema (§6.6) | Matches sql-guardrail's ergonomics; YAML for people, JSON for generated files and tools |
-| License | Apache-2.0 | Patent grant; enterprise-friendly. sql-guardrail is MIT, so attribute any ported tests |
+| License | MIT | Simple and permissive (see ADR-0006); sql-guardrail is also MIT, so attribute any ported tests |
 
 ---
 

@@ -7,7 +7,7 @@ name = "haltsql-langchain"
 version = "0.1.0"
 description = "HaltSQL guard for LangChain SQL tools and SQLDatabase"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = ["haltsql[psycopg]>=0.1.0"]
 

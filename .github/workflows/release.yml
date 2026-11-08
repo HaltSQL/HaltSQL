@@ -155,7 +155,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
           labels: |
             org.opencontainers.image.title=haltsql
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=MIT
 
       - name: Build and smoke-test the amd64 image before pushing
         run: |

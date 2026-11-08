@@ -1,4 +1,4 @@
-# ADR-0006: Deny-only external policy (OPA) and an opt-in admin API
+# ADR-0007: Deny-only external policy (OPA) and an opt-in admin API
 
 - **Status:** Accepted
 - **Date:** 2026-11-08

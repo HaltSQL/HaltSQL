@@ -1,7 +1,7 @@
 # HaltSQL
 
 [![CI](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Status: pre-1.0](https://img.shields.io/badge/status-0.1.0%20preview-orange.svg)
 
 **A policy firewall for LLM-generated PostgreSQL.**
@@ -223,5 +223,5 @@ Please do not report vulnerabilities or policy bypasses in public issues. See
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy
+MIT License. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy
 design is inspired by the MIT-licensed sql-guardrail project.

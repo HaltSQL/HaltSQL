@@ -6,7 +6,7 @@ description:
   "HaltSQL verifies that an exact SQL string is allowed for a caller under a declarative policy (tables, columns, functions, limits, tenant isolation) using the real PostgreSQL parser. It never rewrites SQL and never connects to the database."
 maintainer: ["Arnav Dadarya"]
 authors: ["Arnav Dadarya"]
-license: "Apache-2.0"
+license: "MIT"
 tags: ["sql" "postgres" "security" "llm" "policy" "firewall"]
 homepage: "https://github.com/ardada2468/HaltSQL"
 doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"

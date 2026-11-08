@@ -33,7 +33,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="haltsql-operator" \
       org.opencontainers.image.description="Kubernetes operator for HaltSQL" \
       org.opencontainers.image.source="https://github.com/ardada2468/HaltSQL" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="MIT"
 COPY --from=builder /out/manager /manager
 COPY --from=haltsql /usr/local/bin/haltsql /usr/local/bin/haltsql
 USER 65532:65532

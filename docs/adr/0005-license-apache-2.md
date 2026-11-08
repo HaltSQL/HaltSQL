@@ -1,6 +1,6 @@
 # ADR-0005: License HaltSQL under Apache-2.0
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0006](0006-license-mit.md)
 - **Date:** 2026-11-07
 - **Deciders:** Arnav Dadarya
 - **Related:** PLAN.md §4; [LICENSE](../../LICENSE); [NOTICE](../../NOTICE)

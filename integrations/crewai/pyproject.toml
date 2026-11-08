@@ -7,7 +7,7 @@ name = "haltsql-crewai"
 version = "0.1.0"
 description = "HaltSQL verified read-only SQL tool for CrewAI"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.10,<3.14"
 dependencies = ["haltsql[psycopg]>=0.1.0", "crewai>=1.15,<1.16"]
 

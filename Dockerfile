@@ -96,7 +96,7 @@ FROM ${RUNTIME_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="haltsql" \
       org.opencontainers.image.description="Policy firewall for LLM-generated PostgreSQL" \
       org.opencontainers.image.source="https://github.com/ardada2468/HaltSQL" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="MIT"
 COPY --from=builder /home/opam/out/bin/haltsql /usr/local/bin/haltsql
 COPY --from=builder /home/opam/out/bin/haltsql-server /usr/local/bin/haltsql-server
 COPY --from=builder /home/opam/out/bin/haltsql-proxy /usr/local/bin/haltsql-proxy

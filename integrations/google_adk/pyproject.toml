@@ -7,7 +7,7 @@ name = "haltsql-google-adk"
 version = "0.1.0"
 description = "HaltSQL verified read-only SQL tool and tool guard for the Google Agent Development Kit"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["haltsql[psycopg]>=0.1.0", "google-adk>=2.9,<2.10"]
 

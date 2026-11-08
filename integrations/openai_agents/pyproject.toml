@@ -7,7 +7,7 @@ name = "haltsql-openai-agents"
 version = "0.1.0"
 description = "HaltSQL verified read-only SQL tool and tool guardrail for the OpenAI Agents SDK"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["haltsql[psycopg]>=0.1.0", "openai-agents>=0.22,<0.23"]
 
