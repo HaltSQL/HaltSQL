@@ -22,19 +22,26 @@ type t = entry list
 (** Sorted by (schema, table, column); one entry per column. *)
 
 val empty : t
+(** No entries. *)
 
 val add : t -> entry -> t
 (** Adds or merges (union of classifications and sources). *)
 
 val merge : t list -> t
+(** Union of several manifests (entries for the same column are merged). *)
 
 val find : t -> schema:string -> table:string -> column:string -> entry option
 (** ASCII case-insensitive on every part: catalogs exported from other engines often
     upper-case names, and over-matching only ever excludes more columns. *)
 
 val to_json : ?metadata:(string * Yojson.Safe.t) list -> t -> Yojson.Safe.t
+(** The file format above, with an optional [metadata] object. *)
+
 val of_json : Yojson.Safe.t -> (t, string) result
+(** Parses the file format above; unknown members are errors. *)
+
 val of_file : string -> (t, string) result
+(** {!of_json} on a file's contents. *)
 
 (** Matching of tool labels (tags, classifications, glossary terms) against configured PII
     terms. *)
@@ -49,6 +56,7 @@ module Matcher : sig
        ssn; secret]. *)
 
   val default : config
+  (** {!default_terms} for both tags and glossary terms. *)
 
   val tokens : string -> string list
   (** Lower-cased words: split on every non-alphanumeric byte and on camelCase boundaries.

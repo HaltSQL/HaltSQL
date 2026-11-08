@@ -18,4 +18,9 @@ val create :
 (** [auth] defaults to {!Gcp_auth.default} (created on first use). *)
 
 val resource_name : project:string option -> string -> (string, string) result
+(** The full [projects/P/secrets/S/versions/V] name of a reference; every segment must be
+    [A-Za-z0-9_-], at most 255 bytes. *)
+
 val get : t -> string -> (string, string) result Lwt.t
+(** [get t "<name>[#<json-key>]"]: the secret payload, or one key of it when it is a JSON
+    object. Errors never contain the secret value or the token. *)

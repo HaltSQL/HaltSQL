@@ -1,3 +1,6 @@
+(** GCP OAuth2 access tokens (metadata server or service-account JWT); see gcp_auth.mli.
+*)
+
 open Lwt.Infix
 
 let default_scope = "https://www.googleapis.com/auth/cloud-platform"

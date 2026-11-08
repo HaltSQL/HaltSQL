@@ -1,4 +1,4 @@
-(* Structured logs and audit sink; see plog.mli. *)
+(** Structured logs and audit sink; see plog.mli. *)
 
 type level = Debug | Info | Warn | Error
 

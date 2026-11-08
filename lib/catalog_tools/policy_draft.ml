@@ -1,4 +1,4 @@
-(* Starter policy drafting (see policy_draft.mli). *)
+(** Starter policy drafting (see policy_draft.mli). *)
 
 open Haltsql_core
 

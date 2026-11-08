@@ -1,4 +1,4 @@
-(* Upstream connections; see upstream.mli. *)
+(** Upstream connections; see upstream.mli. *)
 
 open Lwt.Syntax
 open Proxy_config
@@ -177,9 +177,11 @@ let wrap_errors f =
 let connect (u : upstream) ~application_name =
   wrap_errors (fun () ->
       let* fd = tcp_connect u in
+      (* The SSLRequest answer and the TLS handshake are bounded too: a peer that
+         accepts the TCP connection and then stalls must not pin the session. *)
       let* io =
         Lwt.catch
-          (fun () -> negotiate u fd)
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
           (fun e ->
             let* () =
               Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
@@ -208,22 +210,38 @@ let send_cancel (u : upstream) ~pid ~key =
   Lwt.catch
     (fun () ->
       let* fd = tcp_connect u in
-      let* io = negotiate u fd in
-      let* () = Io.write io (Wire.encode_cancel ~pid ~key) in
-      (* the server closes the connection after processing the request *)
-      let* () =
+      let* io =
         Lwt.catch
-          (fun () ->
-            Lwt_unix.with_timeout 2. (fun () ->
-                let* _ = Io.read_byte io in
-                Lwt.return_unit))
-          (fun _ -> Lwt.return_unit)
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
+          (fun e ->
+            let* () =
+              Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
+            in
+            Lwt.fail e)
       in
-      Io.close io)
+      Lwt.finalize
+        (fun () ->
+          let* () =
+            Lwt_unix.with_timeout u.connect_timeout (fun () ->
+                Io.write io (Wire.encode_cancel ~pid ~key))
+          in
+          (* the server closes the connection after processing the request *)
+          Lwt.catch
+            (fun () ->
+              Lwt_unix.with_timeout 2. (fun () ->
+                  let* _ = Io.read_byte io in
+                  Lwt.return_unit))
+            (fun _ -> Lwt.return_unit))
+        (fun () -> Io.close io))
     (fun e ->
       Plog.log Plog.Warn "cancel request to upstream failed"
         [
           ( "error",
-            `String (match e with Upstream_error m -> m | e -> Printexc.to_string e) );
+            `String
+              (match e with
+              | Upstream_error m -> m
+              | Lwt_unix.Timeout -> "timed out"
+              | Unix.Unix_error (err, _, _) -> Unix.error_message err
+              | e -> Printexc.to_string e) );
         ];
       Lwt.return_unit)

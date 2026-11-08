@@ -15,6 +15,8 @@ type value =
 type attrs = (string * value) list
 
 val any_value : value -> Yojson.Safe.t
+(** An OTLP [AnyValue] object (integers are encoded as JSON strings, as OTLP/JSON requires
+    for int64). *)
 
 val attributes : attrs -> Yojson.Safe.t
 (** A list of [KeyValue] objects. *)

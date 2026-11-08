@@ -1,3 +1,5 @@
+(** Hash-chained audit records; see audit_chain.mli. *)
+
 let genesis = String.make 64 '0'
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
 

@@ -1,4 +1,4 @@
-(* SQL quoting that matches PostgreSQL's quote_ident / quote_literal. *)
+(** SQL quoting that matches PostgreSQL's quote_ident / quote_literal. *)
 
 (* Every keyword of the PostgreSQL 17 grammar whose category is not
    UNRESERVED_KEYWORD (reserved, column-name and type/function-name keywords).

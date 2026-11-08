@@ -1,3 +1,5 @@
+(** Canonical JSON for signed bundles; see canonical.mli. *)
+
 let rec normalize_at path (j : Yojson.Safe.t) : (Yojson.Safe.t, string) result =
   match j with
   | `Null | `Bool _ | `String _ | `Int _ -> Ok j

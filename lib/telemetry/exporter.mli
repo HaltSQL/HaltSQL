@@ -61,6 +61,7 @@ val of_config :
 (** [noop] for [None]. *)
 
 val enabled : t -> bool
+(** [false] for the no-op exporter. *)
 
 val start : t -> unit
 (** Starts the background export loop (idempotent). *)
@@ -86,7 +87,10 @@ val start_span :
     unsampled spans are never exported). Default kind [Internal]. *)
 
 val set_attribute : span -> string -> Otlp_json.value -> unit
+(** Adds or replaces an attribute. *)
+
 val set_status : span -> Otlp_json.status -> unit
+(** Sets the span status. *)
 
 val end_span : t -> span -> unit
 (** Ends the span and enqueues it (idempotent; never blocks). *)
@@ -95,7 +99,10 @@ val traceparent : span -> Traceparent.t
 (** This span's context, for a response [traceparent] header or downstream calls. *)
 
 val span_trace_id : span -> string
+(** 32 lower-case hex characters. *)
+
 val span_id : span -> string
+(** 16 lower-case hex characters. *)
 
 val start_verify : t -> ?traceparent:string -> unit -> span
 (** A [SERVER] span named [haltsql.verify]. [traceparent] is the raw incoming header; an
@@ -129,6 +136,7 @@ val gauge_set :
   string ->
   float ->
   unit
+(** Records the latest value of a gauge. *)
 
 val histogram_record :
   t ->
@@ -178,6 +186,7 @@ type stats = {
 }
 
 val stats : t -> stats
+(** Counters for monitoring and tests. *)
 
 (** {1 Helpers (exposed for tests)} *)
 

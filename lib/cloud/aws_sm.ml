@@ -1,3 +1,5 @@
+(** AWS Secrets Manager resolver; see aws_sm.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 

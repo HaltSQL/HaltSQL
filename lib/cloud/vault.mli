@@ -20,6 +20,7 @@
 type t
 
 val create : ?now:(unit -> float) -> ?timeout:float -> Haltsql_load.Config.vault -> t
+(** No IO until the first {!read}; [timeout] (default 10 s) bounds each HTTP request. *)
 
 val read : t -> string -> (string, string) result Lwt.t
 (** [read t "secret/app#token"]. *)

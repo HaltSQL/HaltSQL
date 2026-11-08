@@ -21,7 +21,7 @@
  (name test_pgwire_unit)
  (package haltsql-proxy)
  (modules test_pgwire_unit)
- (libraries haltsql_pgwire haltsql alcotest yojson)
+ (libraries haltsql_pgwire haltsql alcotest yojson lwt lwt.unix unix x509)
  (deps
   (source_tree fixtures)))
 

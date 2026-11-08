@@ -1,4 +1,4 @@
-(* PostgreSQL protocol v3 codecs; see wire.mli. *)
+(** PostgreSQL protocol v3 codecs; see wire.mli. *)
 
 exception Malformed of string
 

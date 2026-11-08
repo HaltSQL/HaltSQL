@@ -33,6 +33,7 @@ val relkind_to_string : relkind -> string
     ["foreign table"], ["sequence"]. *)
 
 val relkind_of_string : string -> relkind option
+(** Parses a relation kind as written in snapshots. *)
 
 type t = {
   catalog : Catalog.t;  (** tables sorted by (schema, name), byte order *)
@@ -54,7 +55,10 @@ val parse_table_key : string -> (string * string, string) result
     verbatim (snapshot convention). *)
 
 val relkind : t -> schema:string -> name:string -> relkind option
+(** The kind of a relation in the snapshot, if present. *)
+
 val to_json : t -> Yojson.Safe.t
+(** The snapshot document (accepted back by {!of_json}). *)
 
 val of_json : ?file:string -> Yojson.Safe.t -> (t, string) result
 (** Loads the tables with {!Haltsql_load.Catalog_load.of_json} (so every rule of the
@@ -62,3 +66,4 @@ val of_json : ?file:string -> Yojson.Safe.t -> (t, string) result
     error. *)
 
 val of_file : string -> (t, string) result
+(** {!of_json} on a file's contents. *)

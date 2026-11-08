@@ -1,6 +1,6 @@
-(* gzip = header + DEFLATE + CRC-32/ISIZE trailer. The compressor uses only
-   fixed-Huffman blocks (one block for the whole input) with a hash-chain LZ77
-   matcher; the inflater follows the structure of zlib's "puff". *)
+(** gzip = header + DEFLATE + CRC-32/ISIZE trailer. The compressor uses only fixed-Huffman
+    blocks (one block for the whole input) with a hash-chain LZ77 matcher; the inflater
+    follows the structure of zlib's "puff". *)
 
 let crc_table =
   lazy

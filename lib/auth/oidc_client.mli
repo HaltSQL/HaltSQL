@@ -46,12 +46,16 @@ val provider :
     the first verification or {!refresh}. *)
 
 val config : provider -> Haltsql.Config.oidc_provider
+(** The provider's configuration. *)
 
 val refresh : provider -> (int, string) result Lwt.t
 (** Fetches (discovery if needed, then) the JWKS now; [Ok n] is the number of usable keys.
     Useful to warm the cache at startup. *)
 
 val verify : provider -> string -> (Oidc.identity, Jwt.error) result Lwt.t
+(** Verifies a token with the cached keys, refreshing them as described in the module
+    description. Never fails the promise: transport problems become
+    [Error (Keys_unavailable _)]. *)
 
 (** {1 Several providers} *)
 
@@ -59,13 +63,17 @@ type registry
 
 val registry :
   ?fetch:fetch -> ?now:(unit -> float) -> Haltsql.Config.oidc_provider list -> registry
+(** One {!type-provider} per configuration entry, sharing [fetch] and [now]. *)
 
 val update : registry -> Haltsql.Config.oidc_provider list -> registry
 (** A registry for a new provider list that keeps the key caches of providers whose
     configuration is unchanged (used on hot reload). *)
 
 val providers : registry -> provider list
+(** The providers, in configuration order. *)
+
 val is_empty : registry -> bool
+(** [true] when no provider is configured. *)
 
 val authenticate :
   registry ->

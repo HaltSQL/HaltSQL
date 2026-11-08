@@ -1,4 +1,4 @@
-(* Authenticated context + permitted request-body context. *)
+(** Authenticated context + permitted request-body context. *)
 
 module Context = Haltsql.Context
 

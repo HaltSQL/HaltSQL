@@ -1,3 +1,5 @@
+(** Strict canonical standard base64 (RFC 4648, padded); see b64.mli. *)
+
 let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 let encode s =

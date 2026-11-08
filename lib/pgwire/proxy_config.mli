@@ -12,6 +12,9 @@ type client_auth = Client_cert_none | Client_cert_optional | Client_cert_require
 
 type client_tls = {
   certificates : X509.Certificate.t list * X509.Private_key.t;
+      (** from [tls.cert] / [tls.key]: each is a path to a PEM file or inline PEM (a value
+          containing [-----BEGIN], e.g. the expansion of [${file:...}]). Load errors never
+          echo the configured value or key bytes. *)
   client_ca : X509.Certificate.t list;  (** empty when not configured *)
   client_auth : client_auth;
   tls_required : bool;
@@ -75,8 +78,13 @@ val of_json :
   ?env:(string -> string option) ->
   Yojson.Safe.t ->
   (t, Load_error.t list) result
+(** Decodes and validates a ProxyConfig document, collecting every error. Relative paths
+    resolve against [base_dir]; [${env:...}] and [${file:...}] placeholders are expanded
+    with [env]. *)
 
 val of_file : ?env:(string -> string option) -> string -> (t, Load_error.t list) result
+(** {!of_json} on a YAML or JSON file; relative paths resolve against the file's
+    directory. *)
 
 val to_json_redacted : t -> Yojson.Safe.t
 (** Effective configuration with secrets (password, verifiers, keys) redacted. *)

@@ -1,3 +1,5 @@
+(** HashiCorp Vault KV v2 resolver; see vault.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 
