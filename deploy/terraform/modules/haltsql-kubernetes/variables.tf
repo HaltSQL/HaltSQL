@@ -386,6 +386,14 @@ variable "bundle_sources" {
     )])
     error_message = "bundle_sources[*].auth must be {token} or {username, password}. Use $${env:...} placeholders, never literal secrets."
   }
+  validation {
+    # values end up in the ConfigMap and the Helm values: only placeholders, which
+    # haltsql-server resolves at runtime, never the secret itself
+    condition = alltrue([for b in var.bundle_sources : b.auth == null || alltrue([
+      for k, v in coalesce(b.auth, {}) : can(regex("^\\$\\{(env|file|vault|aws-sm|gcp-sm):[^}]+\\}$", v))
+    ])])
+    error_message = "bundle_sources[*].auth values must each be one placeholder ($${env:...}, $${file:...}, $${vault:...}, $${aws-sm:...} or $${gcp-sm:...}); literal credentials would be stored in the ConfigMap and the Helm values."
+  }
 }
 
 variable "config" {

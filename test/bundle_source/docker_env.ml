@@ -401,15 +401,20 @@ let start_https () =
        ]
        [])
 
-(* oras in a container, talking to the anonymous registry through the host. *)
+(* oras in a container that shares the anonymous registry's network namespace, so it
+   reaches the registry as [oras_anon_registry]. Going through the host
+   (host.docker.internal) does not work on Linux: the registry port is published on
+   127.0.0.1 only, which the host gateway address cannot reach. *)
+let oras_anon_registry = "localhost:5000"
+
 let oras ~workdir args =
   ensure_image oras_image;
   run "docker"
     ([
        "run";
        "--rm";
-       "--add-host";
-       "host.docker.internal:host-gateway";
+       "--network";
+       "container:" ^ prefix ^ "reg-anon";
        "-v";
        workdir ^ ":/workspace";
        "-w";

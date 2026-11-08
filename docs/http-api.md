@@ -165,7 +165,7 @@ identity the client certificate matched. Anonymous callers never match.
   "bundle_sources": [
     {
       "source": "oci:ghcr.io/corp/haltsql-policies:prod",
-      "current": { "bundle": "prod", "version": "1.4.0", "signed_by": "a1b2c3d4e5f60718",
+      "current": { "bundle": "prod", "version": "1.4.0", "signed_by": "sha256:a1b2c3d4...",
                    "revision": "sha256:9c0e...", "origin": "source", "policies": ["remote-saas"] },
       "checks": 87, "last_success": "2026-11-07T10:42:01.004Z", "last_error": null
     }

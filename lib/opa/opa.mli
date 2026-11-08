@@ -92,8 +92,8 @@ val apply :
   outcome ->
   Haltsql.Verdict.t
 (** Combines HaltSQL's verdict with OPA's outcome. A denying outcome ([Denied],
-    [Failed_closed]) on an allowed verdict sets [allowed = false] and appends
-    {!reasons_of_outcome} to [reasons] in enforce mode, or appends them to
+    [Failed_closed]) on an allowed verdict sets [allowed = false], clears [bind_params]
+    and appends {!reasons_of_outcome} to [reasons] in enforce mode, or appends them to
     [shadow_reasons] (leaving [allowed] true) in shadow mode. Every other combination
     returns the verdict unchanged; in particular [apply] never sets [allowed] to [true].
 *)

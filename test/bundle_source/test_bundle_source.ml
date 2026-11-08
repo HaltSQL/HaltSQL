@@ -180,7 +180,32 @@ let test_oci_ref () =
     (ok_or_fail "base" (S.Oci_ref.base_url ~plain_http:false (ok "ghcr.io/corp/p:v1")));
   Alcotest.(check string)
     "loopback http" "http://localhost:5000"
-    (ok_or_fail "base" (S.Oci_ref.base_url ~plain_http:true (ok "localhost:5000/p:v1")))
+    (ok_or_fail "base" (S.Oci_ref.base_url ~plain_http:true (ok "localhost:5000/p:v1")));
+  (* regression: only literal loopback addresses count, never DNS names that start
+     with "127." *)
+  List.iter
+    (fun (h, expected) ->
+      Alcotest.(check bool)
+        ("oci loopback " ^ h) expected
+        (S.Oci_ref.is_loopback (ok (h ^ ":5000/p:v1")));
+      let u = Uri.of_string (Printf.sprintf "http://%s:8080/b.haltsqlbundle" h) in
+      Alcotest.(check bool)
+        ("redirect/url http " ^ h) expected
+        (Result.is_ok (S.Http_fetch.check_url ~what:"redirect target" u)))
+    [
+      ("127.0.0.1", true);
+      ("127.255.0.9", true);
+      ("localhost", true);
+      ("127.attacker.example", false);
+      ("127.example.com", false);
+      ("127.0.0.1.nip.io", false);
+      ("127.0.0.256", false);
+      ("127.1", false);
+      ("128.0.0.1", false);
+    ];
+  match S.Oci_ref.base_url ~plain_http:true (ok "127.evil.example:5000/p:v1") with
+  | Ok _ -> Alcotest.fail "plain HTTP to 127.evil.example must be refused"
+  | Error _ -> ()
 
 let test_www_auth () =
   let cs =
@@ -1012,7 +1037,7 @@ let test_oras_compat () =
   let dir = tmp_dir "oras" in
   let _ = write_bundle dir "prod.haltsqlbundle" (Lazy.force v2) (sign (Lazy.force v2)) in
   Unix.chmod dir 0o777;
-  let host_ref = Printf.sprintf "host.docker.internal:%d/haltsql/oras:v2" D.port_anon in
+  let host_ref = D.oras_anon_registry ^ "/haltsql/oras:v2" in
   (match
      D.oras ~workdir:dir
        [
@@ -1045,7 +1070,7 @@ let test_oras_compat () =
        [
          "pull";
          "--plain-http";
-         Printf.sprintf "host.docker.internal:%d/haltsql/oras:from-haltsql" D.port_anon;
+         D.oras_anon_registry ^ "/haltsql/oras:from-haltsql";
          "-o";
          "pulled";
        ]

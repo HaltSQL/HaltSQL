@@ -632,8 +632,7 @@ let parse_url s : (url, string) result =
                 }
           | _ -> Error "invalid host or port in URL")
 
-let is_loopback host =
-  host = "localhost" || host = "::1" || starts_with ~prefix:"127." host
+let is_loopback = Haltsql_core.Loopback.is_host
 
 (* [http]: what to do with plain http. *)
 let url_j ?(no_query = false) ctx ~(http : [ `Allow | `Loopback_only | `Deny of string ])

@@ -477,6 +477,26 @@ let columns =
 
 (* ===================================================================== F/G/H *)
 let p_myfn = policy ~functions:("myschema.fn" :: default_functions) ()
+
+(* A hand-written allowlist cannot enable functions that run a SQL string themselves:
+   the analyzer never sees the tables of that string (regression: ts_rewrite). *)
+let p_dynsql =
+  policy
+    ~functions:
+      ([
+         "ts_rewrite";
+         "to_tsquery";
+         "ts_stat";
+         "query_to_xml";
+         "table_to_xml";
+         "cursor_to_xml";
+         "database_to_xml";
+         "schema_to_xml";
+         "dblink";
+       ]
+      @ default_functions)
+    ()
+
 let p_eq_only = policy ~operators:[ "=" ] ()
 let p_regex = policy ~operators:[ "="; "~"; "!~" ] ()
 
@@ -493,6 +513,22 @@ let functions =
     t "coldeflist unsupported" "SELECT * FROM dblink('x', 'y') AS t(a int)"
       [ E_UNSUPPORTED ];
     t "lo_import" "SELECT lo_import('/etc/passwd')" [ E_FUNCTION_DENIED ];
+    t "ts_rewrite allowlisted still denied" ~policy:p_dynsql
+      "SELECT ts_rewrite(to_tsquery('a'), 'SELECT to_tsquery(''a''), to_tsquery(code) \
+       FROM currencies')"
+      [ E_FUNCTION_DENIED ];
+    t "pg_catalog.ts_rewrite allowlisted still denied" ~policy:p_dynsql
+      "SELECT pg_catalog.ts_rewrite(to_tsquery('a'), 'SELECT 1')" [ E_FUNCTION_DENIED ];
+    t "ts_stat allowlisted still denied" ~policy:p_dynsql
+      "SELECT * FROM ts_stat('SELECT 1') LIMIT 1" [ E_FUNCTION_DENIED ];
+    t "query_to_xml allowlisted still denied" ~policy:p_dynsql
+      "SELECT query_to_xml('SELECT 1', true, false, '')" [ E_FUNCTION_DENIED ];
+    t "table_to_xml allowlisted still denied" ~policy:p_dynsql
+      "SELECT table_to_xml('app.notes', true, false, '')" [ E_FUNCTION_DENIED ];
+    t "dblink allowlisted still denied" ~policy:p_dynsql "SELECT dblink('x', 'y')"
+      [ E_FUNCTION_DENIED ];
+    t "to_tsquery allowlisted is allowed" ~policy:p_dynsql
+      "SELECT to_tsquery(code) FROM currencies" [];
     t "pg_read_file" "SELECT pg_read_file('/etc/passwd')" [ E_FUNCTION_DENIED ];
     t "function in where" "SELECT code FROM currencies WHERE pg_sleep(10) IS NOT NULL"
       [ E_FUNCTION_DENIED ];

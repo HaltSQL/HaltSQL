@@ -89,8 +89,24 @@ let count_sub s sub =
   in
   go 0 0
 
+(* The environment for a child process: the inherited one with [overrides] on top.
+   Inherited entries whose name is overridden are dropped. Appending duplicates is not
+   enough: getenv returns the first match, so an inherited AWS_ACCESS_KEY_ID would win
+   over the test's own MinIO key. *)
+let child_env overrides =
+  let name kv =
+    match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv
+  in
+  let names = Array.to_list (Array.map name overrides) in
+  let inherited =
+    List.filter
+      (fun kv -> not (List.mem (name kv) names))
+      (Array.to_list (Unix.environment ()))
+  in
+  Array.append (Array.of_list inherited) overrides
+
 let run_capture ?(env = [||]) argv =
-  let env = Array.append (Unix.environment ()) env in
+  let env = child_env env in
   let ic, oc, ec = Unix.open_process_args_full argv.(0) argv env in
   close_out oc;
   let out = In_channel.input_all ic in
@@ -271,9 +287,7 @@ let start_proxy ?(env = [||]) ~tmp name cfg =
   let log = Filename.concat tmp (name ^ ".log") in
   let out = Unix.openfile log [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600 in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-  let env =
-    Array.concat [ Unix.environment (); [| "PROXY_UPSTREAM_PW=" ^ upstream_pw |]; env ]
-  in
+  let env = child_env (Array.append [| "PROXY_UPSTREAM_PW=" ^ upstream_pw |] env) in
   let pid =
     Unix.create_process_env bin
       [| bin; "run"; "-c"; cfg_path; "--listen"; Printf.sprintf "127.0.0.1:%d" port |]
@@ -811,9 +825,38 @@ let t_s3_sink () =
             "5 records in 3 objects" true
             (contains out "OK, 5 records in 3 objects"))
 
+(* Regression: an inherited variable must not shadow a test's override (the MinIO
+   verify step failed with InvalidAccessKeyId when the developer had AWS keys set). *)
+let t_child_env_overrides () =
+  let var = "HALTSQL_TEST_CHILD_ENV" in
+  Unix.putenv var "inherited";
+  let st, out, _ =
+    run_capture
+      ~env:[| var ^ "=override" |]
+      [| "/bin/sh"; "-c"; "printf %s \"$" ^ var ^ "\"" |]
+  in
+  Alcotest.(check bool) "exit 0" true (st = Unix.WEXITED 0);
+  Alcotest.(check string) "override wins" "override" out;
+  Alcotest.(check int)
+    "one entry" 1
+    (Array.length
+       (Array.of_list
+          (List.filter
+             (fun kv -> String.starts_with ~prefix:(var ^ "=") kv)
+             (Array.to_list (child_env [| var ^ "=override" |])))))
+
 let () =
+  let helpers =
+    ( "helpers",
+      [
+        Alcotest.test_case "child env overrides inherited values" `Quick
+          t_child_env_overrides;
+      ] )
+  in
   let tests =
-    match skip_reason with
+    helpers
+    ::
+    (match skip_reason with
     | Some r ->
         [ ("skipped", [ Alcotest.test_case r `Quick (fun () -> Alcotest.skip ()) ]) ]
     | None ->
@@ -838,6 +881,6 @@ let () =
               Alcotest.test_case "audit sinks are kept across reloads" `Quick
                 t_reload_keeps_audit_sinks;
             ] );
-        ]
+        ])
   in
   Alcotest.run "proxy-audit" tests

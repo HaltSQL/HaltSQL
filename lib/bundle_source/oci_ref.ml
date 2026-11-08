@@ -171,9 +171,7 @@ let reference r =
   | None, Some t -> t
   | None, None -> invalid_arg "Oci_ref.reference: no tag or digest"
 
-let is_loopback r =
-  r.host = "localhost" || r.host = "::1"
-  || (String.length r.host > 4 && String.sub r.host 0 4 = "127.")
+let is_loopback r = Haltsql_core.Loopback.is_host r.host
 
 let base_url ~plain_http r =
   if plain_http then

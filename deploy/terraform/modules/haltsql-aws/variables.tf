@@ -205,7 +205,7 @@ variable "runtime_secret_arns" {
 }
 
 variable "s3_bundle_objects" {
-  description = "S3 objects holding signed policy bundles (bundle_source.s3). The task role gets s3:GetObject on exactly these keys."
+  description = "S3 objects holding signed policy bundles (bundle_source.s3). The task role gets s3:GetObject on exactly these keys and their detached signatures (key.sig)."
   type = list(object({
     bucket = string
     key    = string

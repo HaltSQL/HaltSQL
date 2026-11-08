@@ -156,6 +156,13 @@ let unsafe_exact =
     "row_to_json";
     "version";
     "ts_stat";
+    "ts_rewrite";
+    "brin_summarize_new_values";
+    "brin_summarize_range";
+    "brin_desummarize_range";
+    "gin_clean_pending_list";
+    "setseed";
+    "getpgusername";
     "xpath";
     "xpath_exists";
     "dblink";

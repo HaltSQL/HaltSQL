@@ -612,6 +612,102 @@ let test_engine_background () =
     "closed refuses" true
     (Result.is_error (Stream_sink.write s (fields 9)))
 
+(* ---- the documented verifier (verify_chain.py) on exports ---- *)
+
+let sealed ?(prev = Haltsql_cloud.Audit_chain.genesis) ~tag n =
+  let rec go acc prev i =
+    if i >= n then List.rev acc
+    else
+      let line, h =
+        Haltsql_cloud.Audit_chain.seal ~prev
+          (Siem_testlib.record i [ ("run", `String tag) ])
+      in
+      go (line :: acc) h (i + 1)
+  in
+  go [] prev 0
+
+let py mode ?(any_start = false) text =
+  let tmp = Filename.temp_file "haltsql-verify-chain" ".txt" in
+  Siem_testlib.write_file tmp text;
+  let code, out =
+    Siem_testlib.run_python "verify_chain.py"
+      ((mode :: (if any_start then [ "--any-start" ] else [])) @ [ tmp ])
+  in
+  Sys.remove tmp;
+  (code, out)
+
+let has_line out l = List.mem l (String.split_on_char '\n' out)
+
+let kafka_tsv lines =
+  String.concat "" (List.map (fun l -> "haltsql/h/r\t" ^ l ^ "\n") lines)
+
+(* An Elasticsearch export: _source documents (searchable fields + event.original),
+   _id = hash. *)
+let es_export lines =
+  Yojson.Safe.to_string
+    (`List
+       (List.map
+          (fun l ->
+            match Yojson.Safe.from_string l with
+            | `Assoc kv as j ->
+                let h = Yojson.Safe.Util.(to_string (member "hash" j)) in
+                `Assoc
+                  [
+                    ("_id", `String h);
+                    ( "_source",
+                      `Assoc (kv @ [ ("event", `Assoc [ ("original", `String l) ]) ]) );
+                  ]
+            | _ -> assert false)
+          lines))
+
+(* Regression: a produce request retried after the broker stored it repeats a whole
+   batch; the verifier promised to skip such re-deliveries but failed on them. *)
+let test_verify_chain_kafka_redelivery () =
+  let l = sealed ~tag:"k" 10 in
+  let range a b = List.filteri (fun i _ -> i >= a && i < b) l in
+  let code, out = py "kafka" (kafka_tsv (range 0 8 @ range 3 8 @ range 8 10)) in
+  Alcotest.(check int) ("replayed batch verifies: " ^ out) 0 code;
+  Alcotest.(check bool) "10 records" true (has_line out "OK: 10 records in 1 chain(s)");
+  let code, _ = py "kafka" (kafka_tsv (range 0 8 @ range 3 8 @ range 9 10)) in
+  Alcotest.(check int) "a deletion after a replay fails" 1 code;
+  let code, _ = py "kafka" (kafka_tsv (range 3 10)) in
+  Alcotest.(check int) "mid-stream start fails" 1 code;
+  let code, _ = py "kafka" ~any_start:true (kafka_tsv (range 3 10)) in
+  Alcotest.(check int) "mid-stream start with --any-start" 0 code
+
+(* Regression: every server run (and every replica) writes a chain from genesis into
+   the same index; the verifier called that a fork. *)
+let test_verify_chain_es_runs () =
+  let r1 = sealed ~tag:"run1" 5 and r2 = sealed ~tag:"run2" 3 in
+  let code, out = py "es" (es_export (r1 @ r2)) in
+  Alcotest.(check int) ("two runs verify: " ^ out) 0 code;
+  Alcotest.(check bool)
+    "8 records, 2 chains" true
+    (has_line out "OK: 8 records in 2 chain(s)");
+  (* a real fork: two records claim the same non-genesis prev_hash *)
+  let h2 = Option.get (Haltsql_cloud.Audit_chain.hash_of_line (List.nth r1 1)) in
+  let fork = sealed ~prev:h2 ~tag:"fork" 1 in
+  let code, out = py "es" (es_export (r1 @ fork)) in
+  Alcotest.(check int) "fork fails" 1 code;
+  Alcotest.(check bool)
+    "fork reported" true
+    (let sub = "fork" in
+     let n = String.length sub in
+     let rec go i =
+       i + n <= String.length out && (String.sub out i n = sub || go (i + 1))
+     in
+     go 0)
+
+(* Regression: a document deleted in the middle of a chain split it in two and the
+   verifier still exited 0. *)
+let test_verify_chain_es_deleted () =
+  let l = sealed ~tag:"d" 5 in
+  let without_3 = List.filteri (fun i _ -> i <> 2) l in
+  let code, _ = py "es" (es_export without_3) in
+  Alcotest.(check int) "deleted document fails" 1 code;
+  let code, _ = py "es" ~any_start:true (es_export without_3) in
+  Alcotest.(check int) "--any-start accepts a mid-chain export" 0 code
+
 let () =
   Alcotest.run "siem-unit"
     [
@@ -648,5 +744,13 @@ let () =
           Alcotest.test_case "buffer bound" `Quick test_engine_buffer_bound;
           Alcotest.test_case "drop" `Quick test_engine_drop;
           Alcotest.test_case "background flush" `Quick test_engine_background;
+        ] );
+      ( "verify_chain.py",
+        [
+          Alcotest.test_case "kafka: re-delivered batch" `Quick
+            test_verify_chain_kafka_redelivery;
+          Alcotest.test_case "es: several runs from genesis" `Quick
+            test_verify_chain_es_runs;
+          Alcotest.test_case "es: deleted document" `Quick test_verify_chain_es_deleted;
         ] );
     ]

@@ -219,7 +219,9 @@ column name against the schema.
 ### E_FUNCTION_DENIED
 
 A function is not in `functions.allow` or an enabled preset. This includes
-aggregates, window functions, and set-returning functions in `FROM`.
+aggregates, window functions, and set-returning functions in `FROM`. Functions
+that run a SQL string themselves (`ts_rewrite`, `ts_stat`, `query_to_xml`,
+`dblink`, ...) are denied even when allowlisted (rule `functions.dynamic_sql`).
 
 ```sql
 SELECT pg_sleep(10)

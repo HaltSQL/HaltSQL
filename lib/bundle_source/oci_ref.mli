@@ -27,7 +27,8 @@ val reference : t -> string
     the tag. *)
 
 val is_loopback : t -> bool
-(** [localhost], [127.x.x.x] or [::1]. *)
+(** {!Haltsql_core.Loopback.is_host} of the registry host: [localhost], a literal
+    127.0.0.0/8 IPv4 address or [::1]. *)
 
 val base_url : plain_http:bool -> t -> (string, string) result
 (** [https://registry], or [http://registry] when [plain_http] (refused unless

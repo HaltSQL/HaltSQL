@@ -86,6 +86,59 @@ jobs:
         if: always()
         run: docker ps -a --filter name=haltsql- --format '{{.Names}} {{.Status}}'
 
+  e2e:
+    name: E2E
+    # The end-to-end suite (test/e2e, docs/testing.md#end-to-end-suite): the
+    # real services in Docker Compose, the real binaries, a pytest driver.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql, haltsql-server and haltsql-proxy
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run (stack up, pytest; nothing may skip)
+        run: |
+          unset HALTSQL_SKIP_DOCKER
+          export HALTSQL_E2E_REQUIRE=1
+          set -o pipefail
+          make e2e KEEP=1 E2E_ARGS="--junitxml=$RUNNER_TEMP/e2e-junit.xml --basetemp=$RUNNER_TEMP/e2e" 2>&1 | tee "$RUNNER_TEMP/e2e.log"
+          if grep -E '^SKIPPED |[0-9]+ skipped' "$RUNNER_TEMP/e2e.log"; then
+            echo "::error::an e2e test skipped"
+            exit 1
+          fi
+
+      - name: Service logs
+        if: failure()
+        run: test/e2e/stack.sh logs --tail 300
+
+      - name: Upload haltsql process logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e/**/*.log
+            ${{ runner.temp }}/e2e-junit.xml
+          if-no-files-found: ignore
+
+      - name: Stop the stack
+        if: always()
+        run: test/e2e/stack.sh down
+
   operator:
     name: Operator (Go unit + envtest)
     runs-on: ubuntu-latest

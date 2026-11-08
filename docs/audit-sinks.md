@@ -396,11 +396,16 @@ The documents carry no sequence number. The verifier links them by
   `event.original` itself verifies; enrich into a separate index, or relax
   the check in your copy of the script.
 
-Each process run is one chain from genesis. A chain that starts elsewhere
-follows a record that is missing from the export: a record dropped for a
-mapping error, a deleted document, or a time range that cuts the chain. For
-more than 10 000 documents, page with `search_after` and pass the hits as a
-JSON list.
+Each process run is one chain from genesis, so an index written by several
+runs (restarts) or replicas holds several chains from genesis; the verifier
+follows each one. Two records claiming the same non-genesis `prev_hash` are a
+fork and fail. A chain that starts anywhere else follows a record that is
+missing from the export: a record dropped for a mapping error, a deleted
+document, or a time range that cuts the chain. That makes the verifier exit
+with status 1. For an export that is expected to begin mid-chain (a time
+range), pass `--any-start`: `python3 verify_chain.py es --any-start day.json`.
+For more than 10 000 documents, page with `search_after` and pass the hits as
+a JSON list.
 
 To make deletion impossible, give the HaltSQL key only `create_doc`, and put
 the index under an ILM policy without a delete phase. Or snapshot it to a
@@ -447,18 +452,30 @@ what audit shipping needs:
   dropped and counted with `reason="too_large"`.
 - **TLS** uses the same tls-lwt stack as the rest of HaltSQL. The broker
   certificate and host name are verified against the system roots or
-  `tls.ca_file`. An optional client certificate (`cert_file` + `key_file`)
-  enables mTLS.
+  `tls.ca_file`. A broker name that is neither an IP address nor a valid DNS
+  host name (for example `kafka_1`: `_` is not allowed in host names) cannot
+  be checked, so the sink refuses to connect to it; this applies to the
+  configured brokers and to the leaders they advertise. An optional client
+  certificate (`cert_file` + `key_file`) enables mTLS; the test suite runs it
+  against a broker with `ssl.client.auth=required`.
 - **SASL**: `PLAIN`, `SCRAM-SHA-256` and `SCRAM-SHA-512` (RFC 5802 / RFC
   7677). With SCRAM, the broker's final signature is verified: a broker that
   does not prove it knows the password is refused. Passwords never appear in
-  logs or errors.
+  logs or errors. `PLAIN` without TLS is only allowed to loopback brokers
+  (`localhost`, `::1`, a literal 127.0.0.0/8 address), and the rule is applied
+  to every connection: a leader that the bootstrap broker advertises at a
+  non-loopback address is refused instead of receiving the password in clear
+  text.
 
 **Delivery is at least once.** There is no idempotent producer. When a
 request times out after the broker stored the batch, the batch is sent
-again. The partition then holds the same records twice: same `hash`, at
-adjacent offsets. Verifiers skip a record whose hash equals the previous
-one.
+again. The partition then holds the same records twice: the whole batch can
+follow itself (offsets 3-7 repeated at 8-12, for example), and nothing on the
+sink side shows it. `verify_chain.py kafka` skips an exact re-delivery of a
+record it has already seen (same `hash`, content verified) and keeps linking
+from the last new record. `haltsql audit verify` reports such copies as
+`duplicate_record` errors unless you pass `--allow-redelivery`, which makes
+them warnings; missing, reordered or modified records still fail either way.
 
 **Limits.**
 
@@ -497,8 +514,8 @@ python3 verify_chain.py kafka audit.tsv
 Message values are the exact bytes HaltSQL hashed, so the verifier hashes
 them as they are (no re-serialization). With several partitions, read them
 all: each chain lives in one partition, in offset order. Records deleted by
-retention make a chain start mid-stream. The verifier reports that and
-verifies from there. Use `cleanup.policy=delete` with a long `retention.ms`,
+retention make a chain start mid-stream. The verifier then exits with status
+1 (records before the chain are missing); `--any-start` verifies from there. Use `cleanup.policy=delete` with a long `retention.ms`,
 or tiered storage, for audit topics. Never use compaction: it keeps one
 record per key, and every record of a chain has the same key.
 

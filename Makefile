@@ -15,7 +15,7 @@ LAB = $(LAB_DIR)/run.sh
 endif
 
 .DEFAULT_GOAL := build
-.PHONY: help deps build test fmt fmt-check coverage bench lab-up lab-down lab-run docker smoke clean
+.PHONY: help deps build test fmt fmt-check coverage bench lab-up lab-down lab-run docker smoke e2e e2e-up e2e-down clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -65,6 +65,16 @@ docker: ## Build the container image locally (also tagged haltsql-local:dev for 
 
 smoke: ## Smoke-test the haltsql-local:dev image (scripts/docker-smoke.sh; run `make docker` first)
 	scripts/docker-smoke.sh
+
+e2e: ## End-to-end suite (test/e2e): stack up, pytest, stack down; KEEP=1 keeps the stack, E2E_ARGS for pytest
+	$(DUNE) build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+	KEEP=$(KEEP) test/e2e/stack.sh run $(E2E_ARGS)
+
+e2e-up: ## Start the end-to-end stack (Docker Compose project haltsql-e2e) and leave it running
+	test/e2e/stack.sh up
+
+e2e-down: ## Stop the end-to-end stack and delete its volumes
+	test/e2e/stack.sh down
 
 clean: ## Remove build and coverage outputs
 	$(DUNE) clean

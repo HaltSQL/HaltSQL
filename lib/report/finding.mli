@@ -5,7 +5,8 @@ type t =
   | Column of { table : string; column : string }
       (** [columns.denied]: [table] is ["schema.name"] as the analyzer prints it *)
   | Column_star of string  (** [columns.star]: [*] / whole-row reference on a table *)
-  | Function of string  (** [functions.allowlist]: ["f"] or ["schema.f"] *)
+  | Function of string
+      (** [functions.allowlist] or [functions.dynamic_sql]: ["f"] or ["schema.f"] *)
   | Sql_value_function of string  (** [functions.sql_value]: CURRENT_USER, ... *)
   | Table of { schema : string option; name : string }
       (** [tables.allowlist]: a relation outside the allowlist; [schema = None] when the

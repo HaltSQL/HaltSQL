@@ -19,6 +19,9 @@
    - an elasticsearch audit sink (opensearchproject/opensearch) as the only sink:
      every verdict is indexed and queried back.
 
+   Two bundle sources updated while a reload waits on a real Vault (paused) both
+   take effect.
+
    Host ports 18400-18409; containers are named haltsql-wiring-*. Docker tests
    skip with a message when Docker is unavailable (or HALTSQL_SKIP_DOCKER=1). *)
 
@@ -89,6 +92,11 @@ let request ?token ?body ?(meth = `GET) port path =
   with
   | Ok r -> r
   | Error e -> Alcotest.failf "%s: %s" path e
+
+let request_url ?(headers = []) url =
+  match run (Http.request ~timeout:20. ~headers `GET (Uri.of_string url)) with
+  | Ok r -> r
+  | Error e -> Alcotest.failf "%s: %s" url e
 
 let starts = ref 0
 
@@ -694,6 +702,266 @@ let bundle_group_refs () =
         (contains (request p "/metrics").body
            "haltsql_policy_reload_total{result=\"error\"}"))
 
+(* ---- a bundle refused at startup never replaces the cached last good one ---- *)
+
+(* Regression: at startup, a freshly fetched bundle was cached before the server's
+   own checks ran. When those refused it (here: it drops the policy a token names),
+   startup failed AND the cache now held the refused bundle (the good one deleted),
+   so every later restart failed too, even with the source down or back on the good
+   version (refused as a rollback). Real registry:2. *)
+let push_named ~dir ~key ~version names =
+  let files =
+    List.map
+      (fun n ->
+        let f = Filename.concat dir (Printf.sprintf "%s-%s.yaml" n version) in
+        write_file f (policy n);
+        f)
+      names
+  in
+  let bundle = Filename.concat dir (Printf.sprintf "prod-%s.haltsqlbundle" version) in
+  ignore
+    (cli_ok
+       (("bundle" :: "build" :: files)
+       @ [ "--name"; "prod"; "--bundle-version"; version; "-o"; bundle ]));
+  ignore (cli_ok [ "bundle"; "sign"; bundle; "--key"; key ]);
+  ignore (cli_ok [ "bundle"; "push"; "--oci"; reference; "--plain-http"; bundle ])
+
+let bundle_refused_at_startup () =
+  ok_or_fail (Docker_util.ensure_image "registry:2");
+  ok_or_fail
+    (Docker_util.start ~name:registry_container
+       [ "-p"; Printf.sprintf "127.0.0.1:%d:5000" registry_port; "registry:2" ]);
+  wait_until "registry to start" (fun () ->
+      match
+        run (Http.request ~timeout:2. `GET (Uri.of_string (base registry_port ^ "/v2/")))
+      with
+      | Ok { status = 200; _ } -> true
+      | _ -> false);
+  let dir = tmpdir "refused" in
+  let key = Filename.concat dir "release.key" in
+  ignore (cli_ok [ "bundle"; "keygen"; "-o"; key ]);
+  let cache = Filename.concat dir "cache" in
+  let config = bundle_config ~dir ~cache ~key in
+  (* run 1: 1.0.0 has remote-shop, which the token names; it is cached *)
+  push_named ~dir ~key ~version:"1.0.0" [ "shop" ];
+  with_server ~dir ~port:bundle_server_port config (fun s ->
+      Alcotest.(check string) "run 1: 1.0.0" "1.0.0" (current_version s.port));
+  (* run 2: the validly signed 2.0.0 drops remote-shop. The server refuses it and
+     starts from the cached 1.0.0, reporting why. *)
+  push_named ~dir ~key ~version:"2.0.0" [ "other" ];
+  with_server ~dir ~port:bundle_server_port config (fun s ->
+      let p = s.port in
+      let st = source_status p in
+      Alcotest.(check string) "run 2: still 1.0.0" "1.0.0" (current_version p);
+      Alcotest.(check string)
+        "run 2: from the cache" "cache"
+        (str (member "origin" (member "current" st)));
+      (match member "last_error" st with
+      | `Null -> Alcotest.fail "run 2: the refusal is not reported"
+      | e ->
+          Alcotest.(check string)
+            "run 2: refused" "bundle_source_rejected"
+            (str (member "code" e));
+          Alcotest.(check bool)
+            "run 2: names the missing policy" true
+            (contains (str (member "message" e)) "remote-shop"));
+      let _, v = verify p "SELECT id FROM orders" in
+      Alcotest.(check bool) "run 2: 1.0.0 enforced" true (member "allowed" v = `Bool true);
+      Alcotest.(check bool)
+        "run 2: warned" true
+        (contains (read_file s.log) "starting from the cached last good bundle");
+      (* a running poll offers 2.0.0 again and refuses it again *)
+      let checks () = int (member "checks" (source_status p)) in
+      let c0 = checks () in
+      wait_until ~timeout:45. "another poll" (fun () -> checks () > c0);
+      Alcotest.(check string) "run 2: poll keeps 1.0.0" "1.0.0" (current_version p));
+  (* run 3: the source is down; the cache still holds the good 1.0.0 *)
+  ignore (docker [ "stop"; "-t"; "1"; registry_container ]);
+  with_server ~dir ~port:bundle_server_port config (fun s ->
+      Alcotest.(check string) "run 3: cached 1.0.0" "1.0.0" (current_version s.port);
+      let _, v = verify s.port "SELECT id FROM orders" in
+      Alcotest.(check bool) "run 3: enforced" true (member "allowed" v = `Bool true))
+
+(* ---- two sources updated while a reload waits on a real secret provider ---- *)
+
+(* Regression: each bundle-source reload used to compute its candidate policy set
+   before waiting on the secret prefetch. With a ${vault:} placeholder in the config
+   and two sources updated at once, the reload that finished last put the other
+   source's OLD policies back, while that source's status reported the new version
+   and later polls saw nothing to apply. Real Vault (paused to hold both reloads in
+   the prefetch) and real registry:2. *)
+
+let vault_port = 18409
+let vault_container = "haltsql-wiring-vault"
+let vault_token = "haltsql-wiring-root"
+let pair_reference repo = Printf.sprintf "localhost:%d/haltsql/%s:prod" registry_port repo
+
+let push_pair ~dir ~key ~repo ~version ~extra_columns =
+  let pol = Filename.concat dir (Printf.sprintf "%s-%s.yaml" repo version) in
+  write_file pol (policy ~extra_columns "shop");
+  let bundle = Filename.concat dir (Printf.sprintf "%s-%s.haltsqlbundle" repo version) in
+  ignore
+    (cli_ok
+       [
+         "bundle"; "build"; pol; "--name"; repo; "--bundle-version"; version; "-o"; bundle;
+       ]);
+  ignore (cli_ok [ "bundle"; "sign"; bundle; "--key"; key ]);
+  ignore
+    (cli_ok [ "bundle"; "push"; "--oci"; pair_reference repo; "--plain-http"; bundle ])
+
+let pair_config ~dir ~key =
+  Printf.sprintf
+    {|apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:%d
+  auth:
+    tokens:
+      - { name: agent, token_sha256: %s, policy: a-shop }
+      - { name: agentb, token_sha256: "${vault:secret/data/haltsql/wiring#sha}", policy: b-shop }
+  admin: { enabled: true, callers: [token:agent] }
+secrets:
+  vault:
+    address: http://127.0.0.1:%d
+    auth: { method: token, token: "${env:HALTSQL_WIRING_VAULT_TOKEN}" }
+policies:
+  - bundle_source: { oci: %s, plain_http: true }
+    public_keys: [%s.pub]
+    name_prefix: a-
+    poll_interval_s: 10
+    cache_dir: %s/cache-a
+  - bundle_source: { oci: %s, plain_http: true }
+    public_keys: [%s.pub]
+    name_prefix: b-
+    poll_interval_s: 10
+    cache_dir: %s/cache-b
+audit:
+  sinks:
+    - { type: file, path: %s/audit.jsonl }
+|}
+    bundle_server_port (sha256_hex "agent-token") vault_port (pair_reference "pa") key dir
+    (pair_reference "pb") key dir dir
+
+let vault_request ?body meth path =
+  match
+    run
+      (Http.request ~timeout:5.
+         ~headers:[ ("x-vault-token", vault_token) ]
+         ?body meth
+         (Uri.of_string (base vault_port ^ path)))
+  with
+  | Ok r -> r
+  | Error e -> Alcotest.failf "vault %s: %s" path e
+
+let source_versions p =
+  let r = request ~token:"agent-token" p "/v1/admin/status" in
+  match member "bundle_sources" (Yojson.Safe.from_string r.body) with
+  | `List l ->
+      List.map
+        (fun s ->
+          ( str (member "source" s),
+            match member "current" s with
+            | `Null -> "none"
+            | c -> str (member "version" c) ))
+        l
+  | j -> Alcotest.failf "bundle_sources: %s" (Yojson.Safe.to_string j)
+
+(* Digests of the bundle and signature layers [repo:prod] points at now. *)
+let layer_digests repo =
+  let r =
+    request_url
+      ~headers:[ ("accept", "application/vnd.oci.image.manifest.v1+json") ]
+      (Printf.sprintf "%s/v2/haltsql/%s/manifests/prod" (base registry_port) repo)
+  in
+  match member "layers" (Yojson.Safe.from_string r.body) with
+  | `List ls -> List.map (fun l -> str (member "digest" l)) ls
+  | j -> Alcotest.failf "manifest layers: %s" (Yojson.Safe.to_string j)
+
+(* true once the registry logged a GET of one of [digests] (a poller downloading
+   exactly that bundle). *)
+let registry_fetched repo digests =
+  match Docker_util.run_capture [ "logs"; registry_container ] with
+  | Error _ -> false
+  | Ok out ->
+      List.exists
+        (fun l ->
+          List.exists
+            (fun d -> contains l (Printf.sprintf "GET /v2/haltsql/%s/blobs/%s" repo d))
+            digests)
+        (String.split_on_char '\n' out)
+
+let bundle_sources_concurrent () =
+  ok_or_fail (Docker_util.ensure_image "registry:2");
+  ok_or_fail (Docker_util.ensure_image "hashicorp/vault:1.17");
+  ok_or_fail
+    (Docker_util.start ~name:registry_container
+       [ "-p"; Printf.sprintf "127.0.0.1:%d:5000" registry_port; "registry:2" ]);
+  ok_or_fail
+    (Docker_util.start ~name:vault_container
+       [
+         "--cap-add=IPC_LOCK";
+         "-e";
+         "VAULT_DEV_ROOT_TOKEN_ID=" ^ vault_token;
+         "-p";
+         Printf.sprintf "127.0.0.1:%d:8200" vault_port;
+         "hashicorp/vault:1.17";
+       ]);
+  wait_until "registry to start" (fun () ->
+      match
+        run (Http.request ~timeout:2. `GET (Uri.of_string (base registry_port ^ "/v2/")))
+      with
+      | Ok { status = 200; _ } -> true
+      | _ -> false);
+  wait_until "vault to start" (fun () ->
+      match
+        run
+          (Http.request ~timeout:2. `GET
+             (Uri.of_string (base vault_port ^ "/v1/sys/health")))
+      with
+      | Ok { status = 200; _ } -> true
+      | _ -> false);
+  let r =
+    vault_request `POST "/v1/secret/data/haltsql/wiring"
+      ~body:
+        (Yojson.Safe.to_string
+           (`Assoc [ ("data", `Assoc [ ("sha", `String (sha256_hex "agentb-token")) ]) ]))
+  in
+  Alcotest.(check int) "vault secret written" 200 r.status;
+  Unix.putenv "HALTSQL_WIRING_VAULT_TOKEN" vault_token;
+  let dir = tmpdir "pair" in
+  let key = Filename.concat dir "release.key" in
+  ignore (cli_ok [ "bundle"; "keygen"; "-o"; key ]);
+  push_pair ~dir ~key ~repo:"pa" ~version:"1.0.0" ~extra_columns:[];
+  push_pair ~dir ~key ~repo:"pb" ~version:"1.0.0" ~extra_columns:[];
+  with_server ~dir ~port:bundle_server_port (pair_config ~dir ~key) (fun s ->
+      let p = s.port in
+      let both v = List.for_all (fun (_, x) -> x = v) (source_versions p) in
+      Alcotest.(check bool) "both at 1.0.0" true (both "1.0.0");
+      let denied token =
+        let _, v = verify ~token p "SELECT status FROM orders" in
+        member "allowed" v <> `Bool true
+      in
+      Alcotest.(check bool) "a: status denied at v1" true (denied "agent-token");
+      Alcotest.(check bool) "b: status denied at v1" true (denied "agentb-token");
+      (* hold every reload in the secret prefetch, then update both sources *)
+      ok_or_fail
+        (Docker_util.run_capture [ "pause"; vault_container ] |> Result.map ignore);
+      push_pair ~dir ~key ~repo:"pa" ~version:"2.0.0" ~extra_columns:[ "status" ];
+      push_pair ~dir ~key ~repo:"pb" ~version:"2.0.0" ~extra_columns:[ "status" ];
+      let da = layer_digests "pa" and db = layer_digests "pb" in
+      (* both pollers downloaded their new bundle: both reloads now wait on Vault *)
+      wait_until ~timeout:30. "both sources fetched 2.0.0" (fun () ->
+          registry_fetched "pa" da && registry_fetched "pb" db);
+      Unix.sleepf 0.5;
+      ok_or_fail
+        (Docker_util.run_capture [ "unpause"; vault_container ] |> Result.map ignore);
+      wait_until ~timeout:60. "both sources at 2.0.0" (fun () -> both "2.0.0");
+      (* a few more polls: nothing changes any more *)
+      Unix.sleepf 12.;
+      Alcotest.(check bool) "status still reports 2.0.0" true (both "2.0.0");
+      Alcotest.(check bool) "a: 2.0.0 served" false (denied "agent-token");
+      Alcotest.(check bool) "b: 2.0.0 served" false (denied "agentb-token"))
+
 (* ======================================================================= *)
 (* Kafka audit sink                                                        *)
 
@@ -958,6 +1226,10 @@ let () =
           slow "OCI bundle source (real registry)" (docker_test "bundle" bundle_source);
           slow "policy_from_groups refs re-checked after bundle_source (real registry)"
             (docker_test "bundle" bundle_group_refs);
+          slow "a bundle refused at startup is not cached (real registry)"
+            (docker_test "bundle" bundle_refused_at_startup);
+          slow "two sources updated during a pending secret prefetch (real Vault)"
+            (docker_test "bundle" bundle_sources_concurrent);
         ] );
       ("kafka", [ slow "Kafka audit sink (real Kafka)" (docker_test "kafka" kafka_sink) ]);
       ( "elasticsearch",

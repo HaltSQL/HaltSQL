@@ -36,6 +36,25 @@ even before 1.0.
   duplicate names, and re-checks every token, `default_policy`, OIDC and mTLS
   policy reference. Hot reload re-verifies when the bundle or its `.sig` file
   changes.
+- **End-to-end suite** (`test/e2e/`, `make e2e`): a Docker Compose stack of
+  the real services (Postgres 17, Keycloak, Kafka, OpenSearch, OPA,
+  registry:2, MinIO) and a pytest driver that runs the real `haltsql`,
+  `haltsql-server` and `haltsql-proxy` binaries against it. First scenario:
+  policy distribution through an OCI registry (signed push, hot update,
+  untrusted-signer refusal with the last good bundle kept, restart from cache).
+  Runs in the `E2E` job of the Integration workflow.
+- End-to-end scenarios for identity (Keycloak groups select the policy, the
+  tenant comes from a token claim), OPA (`E_EXTERNAL_POLICY`, both `on_error`
+  modes against a stopped, paused or absent OPA, no deny-to-allow) and the
+  shadow rollout (`/v1/admin/report`, `haltsql report --suggest --apply-to`,
+  then enforce).
+- End-to-end scenarios for the audit pipeline (file, Kafka and OpenSearch at
+  once; `haltsql audit verify` on every copy, tampering detected in the exports
+  and on the services), `haltsql-proxy` in front of Postgres (TLS, SCRAM,
+  denied statements absent from the Postgres log, SIGHUP policy reload,
+  chained audit file) and the agent frameworks (OpenAI Agents SDK, LangGraph,
+  Google ADK tools through each framework's tool-call machinery, cross-tenant
+  queries denied and never executed).
 - **Policy CI**: a GitHub Action (`action.yml`), GitLab CI templates
   (`ci/gitlab/`) and pre-commit hooks (`.pre-commit-hooks.yaml`).
 - **haltsql-proxy**: a PostgreSQL v3 wire-protocol firewall (new
@@ -239,6 +258,39 @@ even before 1.0.
 ### Fixed
 These were found while integrating the unreleased features above.
 
+- Server: two bundle sources updated while a reload waited on the secret
+  prefetch (`${vault:...}` and other provider placeholders) lost one update:
+  the reload that finished last put the other source's old policies back while
+  its status reported the new version, and later polls never re-applied it.
+  Bundle-driven reloads (and file/SIGHUP reloads) are now serialized and each
+  derives its policy set from the state at commit time.
+- Server: at startup a freshly fetched bundle was cached before the startup
+  checks ran. When they refused it, the cache held the refused bundle and the
+  last good one was deleted, so every later restart failed (even with the
+  source down, or back on the good version, refused as a rollback). Bundles
+  fetched at startup are now cached only once accepted; a refused one falls
+  back to the cached last good bundle.
+- OPA: a denial by OPA (or an OPA failure with `on_error: deny`) kept the
+  `bind_params` of the HaltSQL verdict; a denied verdict now never carries
+  them.
+- `haltsql audit verify --allow-redelivery`: exact copies of records already
+  seen (Kafka at-least-once re-delivery of a whole batch) are warnings and
+  skipped. `verify_chain.py kafka` skips them always; before, a retried batch
+  failed both verifiers although the docs said it was skipped.
+- `verify_chain.py es`: several chains from genesis (server restarts,
+  replicas) are no longer reported as a fork, and a chain that follows a
+  missing record (a deleted document) now exits with status 1 instead of 0
+  (`--any-start` accepts exports that begin mid-chain). `verify_chain.py kafka`
+  likewise fails on a mid-stream start unless `--any-start` is given.
+- Terraform `haltsql-aws`: the task role allowed `s3:GetObject` on the bundle
+  key only, so the signature GET (`key.sig`) was denied and every S3
+  `bundle_source` failed. The statement now lists both exact keys
+  (`modules/bundle-object-arns`, checked with `terraform test` and against
+  MinIO by `deploy/terraform/test/aws-bundle-policy-minio.sh`).
+- Tests: Kafka mTLS (client certificates) is now tested against a real broker
+  with `ssl.client.auth=required`, including refusal without a certificate and
+  with one from another CA.
+
 - `haltsql bundle build`: a policy without `tenancy` produced a bundle that
   did not load, because the bundle stored an empty `tenancy.keys` that the
   policy loader rejects. The empty key is now left out; the loaded policy and
@@ -252,8 +304,71 @@ These were found while integrating the unreleased features above.
 - Test helpers: `waitpid` (and `Unix.system`) calls in the Docker and
   subprocess test helpers now retry on `EINTR`, so a signal delivered while a
   test waited for a child process no longer failed the test.
+- haltsql-server reload: a reload that changed `audit.sinks` was accepted
+  and the new sinks were silently never opened. The running sinks still stay
+  (audit sinks are opened once, so the chain is not forked), but the reload
+  now logs a warning and `GET /v1/admin/status` reports
+  `audit_restart_pending: true` until the sinks match again or the server
+  restarts.
+- haltsql-server: `policy_from_groups` references that a bundle fails to
+  provide are reported with their config location
+  (`server.auth.oidc[i].policy_from_groups.map[j].policy` or `.default`);
+  startup fails closed and a reload (including a new bundle from a
+  `bundle_source`) is rejected with the last good set kept. Covered against a
+  real registry.
+- Wiring tests: the Kafka broker could not read its mounted
+  `server.properties` (a `0700` temporary directory), so the Kafka audit-sink
+  test never got a broker when the test user and the image's user differed.
+- Proxy tests: environment overrides for child processes were appended to the
+  inherited environment, so an inherited variable won (getenv returns the
+  first match). With AWS keys set in the developer's shell, the MinIO
+  `audit verify` step failed with `InvalidAccessKeyId`. Overridden inherited
+  entries are now dropped.
+- Bundle-source tests: the oras compatibility test reached registry:2 through
+  `host.docker.internal`, which on Linux cannot reach a port published on
+  127.0.0.1 only. oras now shares the registry container's network namespace.
+- `haltsql bundle push|pull --json`: a refused push (signature not made by a
+  `--public-key`, bundle that does not load), a failed pull verification or an
+  unreachable registry printed only a stderr line, so scripts parsing stdout
+  got an empty document. These failures now also print
+  `{"ok": false, "exit": N, "error": "..."}`, like `bundle verify --json`; a
+  successful push gains `"ok": true`. Found by the new end-to-end suite.
+- Docs: `GET /v1/admin/status` shows `signed_by` as the full key id
+  (`sha256:<hex>`), as the server reports it.
+- Docs: the shadow report's *By caller* section groups server records by the
+  audit `caller` (`oidc:<provider>` for OIDC tokens), not by the OIDC subject.
 
 ### Security
+- Kafka audit sink: TLS to a broker whose name is neither an IP address nor a
+  valid DNS host name (for example `kafka_1`) skipped the host name check, so
+  any certificate chaining to a trusted root was accepted. Such brokers
+  (configured or advertised by Metadata) are now refused. The proxy's
+  `upstream.tls.mode: verify-full` rejects such a host at config load and at
+  connect time.
+- Kafka audit sink: SASL `PLAIN` without TLS checked only the bootstrap
+  brokers for loopback; the password was then sent in clear text to the
+  partition leader the broker advertised, wherever it was. Every connection is
+  now checked, and a non-loopback leader is refused.
+- "Loopback only" checks (bundle-source redirects and `plain_http`
+  registries, OCI references, Kafka plain text, Vault/OTLP/OPA `http` URLs,
+  the catalog tools' sslmode default) treated any host name starting with
+  `127.` as loopback, so `127.attacker.example` passed. Only `localhost`,
+  `::1` and literal 127.0.0.0/8 IPv4 addresses count now (one shared helper,
+  `Haltsql_core.Loopback`). URLs whose host ocaml-uri cuts at an IP-address
+  prefix (`http://127.0.0.1.nip.io/`) are refused as malformed.
+- Terraform `haltsql-kubernetes`: `bundle_sources[*].auth` values must be
+  secret placeholders (`${env:...}`, `${file:...}`, `${vault:...}`,
+  `${aws-sm:...}`, `${gcp-sm:...}`). Literal registry passwords and tokens
+  were accepted and rendered into the ConfigMap and the Helm values.
+- Analyzer: functions that run a SQL string given as an argument (`ts_rewrite`,
+  `ts_stat`, `query_to_xml*`, `cursor_to_xml*`, `table_to_xml*`,
+  `schema_to_xml*`, `database_to_xml*`, the `dblink` family) are now denied
+  even when allowlisted (`E_FUNCTION_DENIED`, rule `functions.dynamic_sql`).
+  `haltsql report --suggest`/`--apply-to` and `GET /v1/admin/report` no
+  longer suggest `ts_rewrite`, `setseed`, `getpgusername`, `brin_*summarize*`
+  or `gin_clean_pending_list`. Before, one shadow denial of
+  `ts_rewrite(q, 'SELECT ...')` produced an applicable suggestion, and the
+  SQL in its second argument read other tenants' rows.
 - Analyzer: a tenant placeholder used anywhere besides its tenant predicate is
   now denied (`E_PARAM_UNBOUND`, rule `params.tenant_reuse`). Before,
   `WHERE $1::float8 IS NOT NULL AND tenant_id = $1` was allowed. PostgreSQL

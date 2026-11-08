@@ -22,6 +22,7 @@ module Registry = Registry
 module Oci_artifact = Oci_artifact
 module Remote = Remote
 module Cache = Cache
+module Http_fetch = Http_fetch
 
 (** {1 Updates and errors} *)
 
@@ -133,12 +134,35 @@ val poll_once :
     accepted update is reported to [on_warning] and does not fail the poll. *)
 
 val start :
-  t -> on_update:on_update -> on_error:(error -> unit) -> (unit, error) result Lwt.t
+  ?defer_cache:bool ->
+  t ->
+  on_update:on_update ->
+  on_error:(error -> unit) ->
+  (unit, error) result Lwt.t
 (** Restores the cache, polls once, then keeps polling in the background every
     [poll_interval_s] (with jitter) until {!stop}. Resolves after the first poll: [Ok ()]
     when a bundle is current (from the source or the cache), else the error of the first
     poll. Every failure, including those of background polls and cache problems, is also
-    passed to [on_error]. *)
+    passed to [on_error].
+
+    With [defer_cache] (default [false]) accepted bundles are not written to the cache
+    until {!commit_startup}: a caller that still has to accept the bundle (the server's
+    startup checks) never caches a bundle it then refuses, and the last accepted bundle
+    stays in the cache. *)
+
+val commit_startup : t -> (unit, error) result
+(** Ends [defer_cache]: caches the current bundle if it is not the one restored from the
+    cache. Later accepted bundles are cached as usual. *)
+
+val restored_update : t -> update option
+(** The bundle {!load_cache} restored at startup (the last accepted one), if any. *)
+
+val fall_back_to_restored : t -> reason:string -> bool
+(** Makes the bundle restored from the cache current again, when the current one is a
+    different bundle that the caller refused ([reason] becomes [last_error], as
+    [Rejected]). [false] (nothing changed) without a restored bundle or when it is already
+    current. Rollback protection then compares later bundles with the restored one, so the
+    refused bundle is offered again by the next poll and refused again. *)
 
 val stop : t -> unit
 (** Stops the background polling (a poll in progress completes). *)

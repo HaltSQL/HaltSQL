@@ -528,6 +528,87 @@ let bundle_roundtrip () =
       output_string oc " ");
   check_code "tampered" 1 (run [ "bundle"; "verify"; b; "--public-key"; k ^ ".pub" ])
 
+(* Regression: [bundle push|pull --json] printed nothing on stdout when the
+   push was refused or the registry was unreachable (only a stderr line), so a
+   script parsing the JSON got an empty document. Neither case needs a
+   registry: the signature check runs before connecting, and 127.0.0.1:1
+   refuses connections. *)
+let bundle_oci_json_errors () =
+  let k = tmp "oci-trusted.key" and rogue = tmp "oci-rogue.key" in
+  let b = tmp "oci.haltsqlbundle" in
+  List.iter
+    (fun f -> try Sys.remove f with Sys_error _ -> ())
+    [ k; k ^ ".pub"; rogue; rogue ^ ".pub"; b; b ^ ".sig" ];
+  check_code "keygen" 0 (run [ "bundle"; "keygen"; "-o"; k ]);
+  check_code "keygen rogue" 0 (run [ "bundle"; "keygen"; "-o"; rogue ]);
+  check_code "build" 0
+    (run [ "bundle"; "build"; policy; "--name"; "cli"; "--bundle-version"; "1"; "-o"; b ]);
+  check_code "sign (rogue)" 0 (run [ "bundle"; "sign"; b; "--key"; rogue ]);
+  let json_error what expected_exit r =
+    check_code what expected_exit r;
+    match Yojson.Safe.from_string r.out with
+    | `Assoc kv -> (
+        if List.assoc_opt "ok" kv <> Some (`Bool false) then
+          Alcotest.failf "%s: ok is not false: %s" what r.out;
+        if List.assoc_opt "exit" kv <> Some (`Int expected_exit) then
+          Alcotest.failf "%s: exit is not %d: %s" what expected_exit r.out;
+        match List.assoc_opt "error" kv with
+        | Some (`String m) -> m
+        | _ -> Alcotest.failf "%s: no error message: %s" what r.out)
+    | _ -> Alcotest.failf "%s: not a JSON object: %S" what r.out
+    | exception Yojson.Json_error e ->
+        Alcotest.failf "%s: stdout is not JSON (%s): %S\nstderr: %s" what e r.out r.err
+  in
+  let m =
+    json_error "push refused (untrusted signer)" 1
+      (run
+         [
+           "bundle";
+           "push";
+           "--oci";
+           "127.0.0.1:1/haltsql/cli:t";
+           "--plain-http";
+           b;
+           "--public-key";
+           k ^ ".pub";
+           "--json";
+         ])
+  in
+  check_contains "push refused message" m "not a trusted key";
+  ignore
+    (json_error "push to an unreachable registry" 3
+       (run
+          [
+            "bundle";
+            "push";
+            "--oci";
+            "127.0.0.1:1/haltsql/cli:t";
+            "--plain-http";
+            "--timeout";
+            "5";
+            b;
+            "--json";
+          ]));
+  ignore
+    (json_error "pull from an unreachable registry" 3
+       (run
+          [
+            "bundle";
+            "pull";
+            "--oci";
+            "127.0.0.1:1/haltsql/cli:t";
+            "--plain-http";
+            "--timeout";
+            "5";
+            "-o";
+            tmp "oci-pulled.haltsqlbundle";
+            "--public-key";
+            k ^ ".pub";
+            "--json";
+          ]));
+  if Sys.file_exists (tmp "oci-pulled.haltsqlbundle") then
+    Alcotest.fail "a failed pull wrote its output file"
+
 let rls_generate () =
   let r = run [ "rls"; "generate"; "-p"; policy ] in
   check_code "rls generate" 0 r;
@@ -603,6 +684,7 @@ let () =
         [
           tc "every subcommand builds" all_commands_have_help;
           tc "bundle keygen/build/sign/verify" bundle_roundtrip;
+          tc "bundle push/pull --json errors" bundle_oci_json_errors;
           tc "rls generate" rls_generate;
           tc "secret provider placeholders" config_secret_provider;
         ] );

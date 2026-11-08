@@ -17,11 +17,18 @@ locals {
     "arn:${local.partition}:ecr:${local.ecr_match.region}:${local.ecr_match.account}:repository/${local.ecr_match.repo}"
   )
 
-  bundle_object_arns = [for o in var.s3_bundle_objects : "arn:${local.partition}:s3:::${o.bucket}/${o.key}"]
+  # each bundle key and its detached signature, key.sig (both are fetched)
+  bundle_object_arns = module.bundle_object_arns.arns
   audit_prefix_arns  = [for d in var.s3_audit_destinations : "arn:${local.partition}:s3:::${d.bucket}/${d.prefix}*"]
   audit_locked_arns  = [for d in var.s3_audit_destinations : "arn:${local.partition}:s3:::${d.bucket}/${d.prefix}*" if d.object_lock]
 
   task_has_statements = length(local.bundle_object_arns) + length(local.audit_prefix_arns) + length(var.runtime_secret_arns) > 0
+}
+
+module "bundle_object_arns" {
+  source    = "./modules/bundle-object-arns"
+  partition = local.partition
+  objects   = var.s3_bundle_objects
 }
 
 data "aws_iam_policy_document" "assume_ecs_tasks" {

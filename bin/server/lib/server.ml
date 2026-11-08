@@ -238,8 +238,25 @@ let main ?health_listen ~(sources : State.sources) () =
         | Error e -> Error e
         | Ok (srcs, remote) -> (
             pollers := srcs;
-            match State.load ~remote sources with
-            | Ok cfg -> Ok cfg
+            let loaded =
+              match State.load ~remote sources with
+              | Ok cfg -> Ok cfg
+              | Error e -> (
+                  (* A fresh bundle the startup checks refuse: start from the cached
+                     last good bundles instead, if they pass. *)
+                  match Bundle_sources.restored_remote srcs with
+                  | None -> Error e
+                  | Some (remote', replaced) -> (
+                      match State.load ~remote:remote' sources with
+                      | Ok cfg ->
+                          Bundle_sources.fall_back replaced ~reason:(String.concat "; " e);
+                          Ok cfg
+                      | Error _ -> Error e))
+            in
+            match loaded with
+            | Ok cfg ->
+                Bundle_sources.commit srcs;
+                Ok cfg
             | Error e ->
                 List.iter Haltsql_bundle_source.stop srcs;
                 Error e))

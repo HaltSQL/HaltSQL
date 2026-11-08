@@ -28,11 +28,18 @@ exception Failed of int * string
 
 let fail code fmt = Printf.ksprintf (fun s -> raise (Failed (code, s))) fmt
 
-let run f =
+(* A verification or registry failure is also reported on stdout with
+   [--json] ({"ok":false,"exit":N,"error":...}, the shape of
+   [bundle verify --json]), so a script reading the JSON never gets an empty
+   document. *)
+let run ~json f =
   Common.run (fun () ->
       match f () with
       | code -> code
       | exception Failed (code, msg) ->
+          if json then
+            Common.print_json
+              (`Assoc [ ("ok", `Bool false); ("exit", `Int code); ("error", `String msg) ]);
           prerr_endline ("haltsql: " ^ msg);
           code)
 
@@ -184,7 +191,7 @@ let read_or_usage ~max ~what path =
 (* ------------------------------------------------------------------ push *)
 
 let push ~conn ~bundle ~signature ~public_keys ~json =
-  run (fun () ->
+  run ~json (fun () ->
       let keys = List.map load_public_key public_keys in
       let bytes = read_or_usage ~max:B.default_max_bytes ~what:"bundle" bundle in
       let sig_path = Option.value signature ~default:(B.signature_path bundle) in
@@ -226,6 +233,7 @@ let push ~conn ~bundle ~signature ~public_keys ~json =
             Common.print_json
               (`Assoc
                  ([
+                    ("ok", `Bool true);
                     ("reference", `String (S.Oci_ref.to_string r));
                     ("digest", `String digest);
                     ("pinned", `String (pushed ^ "@" ^ digest));
@@ -276,7 +284,7 @@ let push_cmd =
 (* ------------------------------------------------------------------ pull *)
 
 let pull ~conn ~output ~public_keys ~name_prefix ~json =
-  run (fun () ->
+  run ~json (fun () ->
       if public_keys = [] then Common.usage "pull: at least one --public-key is required";
       let keys = List.map load_public_key public_keys in
       let r, reg = connect conn in

@@ -3,11 +3,14 @@
 #
 #   1. terraform fmt -check (whole tree)
 #   2. terraform init -backend=false + validate (every module and example)
-#   3. terraform test (haltsql-kubernetes input validation and preconditions)
+#   3. terraform test (haltsql-kubernetes input validation and preconditions;
+#      haltsql-aws/modules/bundle-object-arns)
 #   4. tflint with the terraform, aws, azurerm and google rulesets (Docker)
 #   5. trivy config, failing on HIGH/CRITICAL misconfigurations (Docker)
 #   6. the example Config documents load in the real haltsql CLI (Docker,
 #      when a local haltsql image exists)
+#   7. the haltsql-aws bundle read statement against real MinIO (Docker):
+#      aws-bundle-policy-minio.sh
 #
 # Usage: deploy/terraform/test/static-checks.sh
 # Environment: GITHUB_TOKEN (optional, avoids GitHub API rate limits when
@@ -65,8 +68,18 @@ else
   cat "$WORK/test.log"; bad "terraform test"
 fi
 
+log "terraform test (modules/haltsql-aws/modules/bundle-object-arns)"
+data="$WORK/tfdata/modules_haltsql-aws_bundle-object-arns"
+arns_dir="$TF_ROOT/modules/haltsql-aws/modules/bundle-object-arns"
+if TF_DATA_DIR="$data" terraform -chdir="$arns_dir" init -backend=false -input=false -no-color >"$WORK/init.log" 2>&1 &&
+  TF_DATA_DIR="$data" terraform -chdir="$arns_dir" test -no-color >"$WORK/test.log" 2>&1; then
+  tail -1 "$WORK/test.log"
+else
+  cat "$WORK/init.log" "$WORK/test.log" 2>/dev/null; bad "terraform test bundle-object-arns"
+fi
+
 if ! docker info >/dev/null 2>&1; then
-  log "SKIP: tflint, trivy and config checks need Docker, which is not reachable"
+  log "SKIP: tflint, trivy, config and MinIO checks need Docker, which is not reachable"
   [ "$FAILED" = 0 ] || exit 1
   exit 0
 fi
@@ -117,5 +130,8 @@ else
     fi
   done
 fi
+
+log "haltsql-aws bundle read statement against MinIO"
+if "$HERE/aws-bundle-policy-minio.sh"; then :; else bad "aws-bundle-policy-minio.sh"; fi
 
 if [ "$FAILED" = 0 ]; then log "PASS: static checks"; else log "FAILED: static checks"; exit 1; fi

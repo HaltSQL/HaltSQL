@@ -92,7 +92,7 @@ policies.
 | `upstream.host`, `upstream.port` | -, `5432` | The real server. Every resolved address is tried in order. |
 | `upstream.database`, `upstream.user` | required | Service credentials. Clients must ask for exactly this database name. |
 | `upstream.password` | none | For SCRAM-SHA-256, MD5 or cleartext (cleartext only over TLS). Omit for `trust`. |
-| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name; the host name is checked against DNS SubjectAltName entries only, so a server certificate that carries the name only in its CN is rejected). |
+| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name; the host name is checked against DNS SubjectAltName entries only, so a server certificate that carries the name only in its CN is rejected). With `verify-full`, `upstream.host` must be an IP address or a valid DNS host name (no `_`); a host the certificate check cannot use is a config error. |
 | `upstream.tls.ca` | none | PEM CA bundle; required for `verify-full`. |
 | `upstream.connect_timeout_seconds` | `10` | TCP connect timeout (authentication gets three times this). |
 | `policies` | required | List of `{path: file}` or `{inline: {...policy...}}`. Each is referenced by its `metadata.name`. |

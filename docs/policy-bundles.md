@@ -251,6 +251,13 @@ flowchart LR
 5. **Hand-over.** The verified policies go to the server. If the server
    refuses them (for example because a token references a policy the new bundle
    no longer has), the current bundle stays. Only accepted bundles are cached.
+   At startup a freshly fetched bundle is cached only after the server's
+   startup checks accepted it. If they refuse it, the server starts from the
+   bundle restored from `cache_dir` (the last accepted one) when that passes,
+   logs `bundle refused at startup; starting from the cached last good
+   bundle`, and reports the refusal as `bundle_source_rejected`; without a
+   usable cached bundle, startup fails. Bundle-driven reloads are serialized,
+   so two sources that update at the same time both take effect.
 6. **Failure.** Any failure (unreachable source, denied, bad digest, bad or
    untrusted signature, rollback, refusal) keeps the last good bundle. It is
    reported with a stable code and retried at the next poll.
@@ -324,7 +331,10 @@ haltsql bundle pull --oci ghcr.io/acme/haltsql-policies@sha256:<digest> \
 
 Both commands accept `--plain-http` (loopback registries only),
 `--username U --password-env VAR` or `--token-env VAR`, `--ca-file FILE`,
-`--timeout SECONDS` and `--json`. Passwords and tokens come from environment
+`--timeout SECONDS` and `--json`. With `--json`, a refused push, a failed
+verification or an unreachable registry also prints
+`{"ok": false, "exit": N, "error": "..."}` on stdout (exit code `N`), the
+shape `bundle verify --json` uses. Passwords and tokens come from environment
 variables, never from the command line. Exit code 3 means the registry could
 not be reached or refused the request. A digest or size mismatch is a
 verification failure (exit 1).

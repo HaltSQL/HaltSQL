@@ -1831,6 +1831,21 @@ let test_audit_chain () =
     (Error (1, "prev_hash does not match the previous record's hash"))
     (C.Audit_chain.verify_lines [ l2; l1 ])
 
+(* regression: a DNS name starting with "127." is not loopback *)
+let test_loopback_http () =
+  List.iter
+    (fun (u, expected) -> Alcotest.(check bool) u expected (C.Http.is_loopback_http u))
+    [
+      ("http://127.0.0.1:8200/v1", true);
+      ("http://127.3.2.1/x", true);
+      ("http://localhost:8080/", true);
+      ("http://[::1]:8080/", true);
+      ("http://127.attacker.example:8080/", false);
+      ("http://127.0.0.1.nip.io/", false);
+      ("http://127.0.0.300/", false);
+      ("http://example.com/", false);
+    ]
+
 let () =
   Alcotest.run "cloud"
     [
@@ -1843,6 +1858,7 @@ let () =
           Alcotest.test_case "S3 examples" `Quick test_sigv4_s3_examples;
           Alcotest.test_case "helpers" `Quick test_sigv4_helpers;
         ] );
+      ("http", [ Alcotest.test_case "loopback hosts" `Quick test_loopback_http ]);
       ( "credentials",
         [
           Alcotest.test_case "env + static" `Quick test_creds_env_static;

@@ -129,6 +129,44 @@ run "rejects_plain_http_for_remote_registry" {
   expect_failures = [var.bundle_sources]
 }
 
+# Regression: literal registry credentials were accepted and rendered into the
+# ConfigMap and the (non-sensitive) Helm values.
+run "rejects_literal_registry_password" {
+  command = plan
+  variables {
+    bundle_sources = [{
+      oci         = "registry.corp.example/haltsql/policies:prod"
+      public_keys = ["ed25519:AAAA"]
+      auth        = { username = "ci", password = "LITERAL-REGISTRY-PASSWORD" }
+    }]
+  }
+  expect_failures = [var.bundle_sources]
+}
+
+run "rejects_literal_registry_token" {
+  command = plan
+  variables {
+    bundle_sources = [{
+      oci         = "registry.corp.example/haltsql/policies:prod"
+      public_keys = ["ed25519:AAAA"]
+      auth        = { token = "ghp_literaltoken" }
+    }]
+  }
+  expect_failures = [var.bundle_sources]
+}
+
+run "rejects_placeholder_with_trailing_literal" {
+  command = plan
+  variables {
+    bundle_sources = [{
+      oci         = "registry.corp.example/haltsql/policies:prod"
+      public_keys = ["ed25519:AAAA"]
+      auth        = { token = "$${env:T}literal" }
+    }]
+  }
+  expect_failures = [var.bundle_sources]
+}
+
 run "rejects_auth_on_s3_bundle" {
   command = plan
   variables {

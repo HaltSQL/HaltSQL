@@ -70,6 +70,14 @@ let of_reason (r : Record.reason) =
       with
       | Some f -> Function f
       | None -> Unrecognized)
+  | "functions.dynamic_sql" -> (
+      (* never suggestable: Suggest.unsafe_function lists every such function *)
+      match
+        between ~prefix:"function "
+          ~suffix:" runs SQL that HaltSQL cannot analyze; it is never allowed" m
+      with
+      | Some f -> Function f
+      | None -> Unrecognized)
   | "functions.sql_value" -> (
       match between ~prefix:"SQL value function " ~suffix:" is not allowed" m with
       | Some f -> Sql_value_function f

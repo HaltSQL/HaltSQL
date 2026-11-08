@@ -157,7 +157,34 @@ let make_server ~ca_key ~ca_cert cn =
   | Ok c -> (key, c)
   | Error _ -> failwith "sign server"
 
-type pki = { dir : string; ca_pem : string; ca_file : string; rogue_ca_pem : string }
+let make_client ~ca_key ~ca_cert cn =
+  let key = X509.Private_key.generate ~bits:2048 `RSA in
+  let csr = ok (X509.Signing_request.create (dn cn) key) in
+  let ext =
+    X509.Extension.(
+      empty
+      |> add Basic_constraints (true, (false, None))
+      |> add Key_usage (true, [ `Digital_signature; `Key_encipherment ])
+      |> add Ext_key_usage (false, [ `Client_auth ]))
+  in
+  match
+    X509.Signing_request.sign csr ~valid_from:(shift (-1)) ~valid_until:(shift 30)
+      ~extensions:ext ca_key
+      (X509.Certificate.subject ca_cert)
+  with
+  | Ok c -> (key, c)
+  | Error _ -> failwith "sign client"
+
+type pki = {
+  dir : string;
+  ca_pem : string;
+  ca_file : string;
+  rogue_ca_pem : string;
+  client_cert_file : string;  (** client certificate signed by the test CA *)
+  client_key_file : string;
+  rogue_client_cert_file : string;  (** client certificate signed by another CA *)
+  rogue_client_key_file : string;
+}
 
 (* Writes ca.pem, server.crt, server.key and server-bundle.pem (key + chain, the
    PEM keystore layout Kafka reads) into a fresh directory. Docker Desktop shares
@@ -169,7 +196,9 @@ let make_pki () =
   Unix.chmod dir 0o755;
   let ca_key, ca_cert = make_ca "haltsql siem test CA" in
   let key, cert = make_server ~ca_key ~ca_cert "localhost" in
-  let _, rogue = make_ca "unrelated CA" in
+  let rogue_key, rogue = make_ca "unrelated CA" in
+  let ckey, ccert = make_client ~ca_key ~ca_cert "haltsql-client" in
+  let rkey, rcert = make_client ~ca_key:rogue_key ~ca_cert:rogue "haltsql-client" in
   let p f = Filename.concat dir f in
   let ca_pem = X509.Certificate.encode_pem ca_cert in
   let key_pem = X509.Private_key.encode_pem key in
@@ -178,7 +207,20 @@ let make_pki () =
   write_file (p "server.crt") cert_pem;
   write_file (p "server.key") key_pem;
   write_file (p "server-bundle.pem") (key_pem ^ cert_pem);
-  { dir; ca_pem; ca_file = p "ca.pem"; rogue_ca_pem = X509.Certificate.encode_pem rogue }
+  write_file (p "client.crt") (X509.Certificate.encode_pem ccert);
+  write_file ~perm:0o600 (p "client.key") (X509.Private_key.encode_pem ckey);
+  write_file (p "rogue-client.crt") (X509.Certificate.encode_pem rcert);
+  write_file ~perm:0o600 (p "rogue-client.key") (X509.Private_key.encode_pem rkey);
+  {
+    dir;
+    ca_pem;
+    ca_file = p "ca.pem";
+    rogue_ca_pem = X509.Certificate.encode_pem rogue;
+    client_cert_file = p "client.crt";
+    client_key_file = p "client.key";
+    rogue_client_cert_file = p "rogue-client.crt";
+    rogue_client_key_file = p "rogue-client.key";
+  }
 
 (* ---- records and chains ---- *)
 

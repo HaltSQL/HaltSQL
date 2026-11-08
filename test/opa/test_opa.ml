@@ -535,6 +535,51 @@ let test_real_deny _ =
        (fun (r : Reason.t) -> r.code = code && contains r.message "app.invoices")
        v.reasons)
 
+(* Regression: an OPA denial (and an OPA failure with on_error deny) kept the
+   bind_params of the HaltSQL verdict it overturned; a denied verdict never carries
+   bind_params (docs/verdict.md). Real OPA, bound-tenancy policy. *)
+let bound_policy =
+  lazy
+    (match
+       Haltsql.Policy_load.of_json
+         (Yojson.Safe.from_string
+            {|{
+  "apiVersion": "haltsql.dev/v1",
+  "kind": "Policy",
+  "metadata": {"name": "bound"},
+  "search_path": ["app"],
+  "statements": {"allow": ["select"]},
+  "tenancy": {"mode": "bound", "keys": {"tenant": "${ctx.tenant_id}"}},
+  "tables": {
+    "app.invoices": {"columns": ["id", "tenant_id", "amount_cents"], "tenant_column": "tenant_id"}
+  }
+}|})
+     with
+    | Ok p -> p
+    | Error _ -> Alcotest.fail "bound policy does not load")
+
+let test_real_bind_params _ =
+  let v0 =
+    verify ~p:bound_policy "SELECT amount_cents FROM app.invoices WHERE tenant_id = $1"
+  in
+  Alcotest.(check bool) "precondition: allowed" true v0.allowed;
+  Alcotest.(check bool) "precondition: bind_params" true (v0.bind_params <> []);
+  let enforce c =
+    run
+      (Opa.enforce ~code ~mode:Policy.Enforce ~cfg:c ~caller:token_caller ~context:ctx v0)
+  in
+  let v, o = enforce (cfg "haltsql/decision") in
+  Alcotest.(check string) "OPA denies" "denied" (Opa.outcome_label o);
+  Alcotest.(check bool) "denied" false v.allowed;
+  Alcotest.(check int) "OPA deny: no bind_params" 0 (List.length v.bind_params);
+  let v, o =
+    enforce
+      (cfg ~url:(Printf.sprintf "http://127.0.0.1:%d" closed_port) "haltsql/decision")
+  in
+  Alcotest.(check string) "OPA down" "error_denied" (Opa.outcome_label o);
+  Alcotest.(check bool) "on_error deny: denied" false v.allowed;
+  Alcotest.(check int) "on_error deny: no bind_params" 0 (List.length v.bind_params)
+
 let test_real_input _ =
   (match check_cfg (cfg "haltsql_fixtures/echo") (input "SELECT id FROM app.orders") with
   | Opa.Denied [ keys ] ->
@@ -802,6 +847,7 @@ let () =
         [
           it "allow" test_real_allow;
           it "deny" test_real_deny;
+          it "a denial carries no bind_params" test_real_bind_params;
           it "input document" test_real_input;
           it "errors" test_real_errors;
           it "timeout" test_real_timeout;

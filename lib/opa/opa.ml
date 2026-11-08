@@ -217,7 +217,9 @@ let apply ~code ~(mode : Policy.mode) cfg (v : Verdict.t) outcome =
   | _ when not v.allowed -> v
   | added -> (
       match mode with
-      | Policy.Enforce -> { v with allowed = false; reasons = v.reasons @ added }
+      | Policy.Enforce ->
+          (* a denied verdict never carries bind_params (like every other denial) *)
+          { v with allowed = false; reasons = v.reasons @ added; bind_params = [] }
       | Policy.Shadow -> { v with shadow_reasons = v.shadow_reasons @ added })
 
 (* ---- IO ---- *)

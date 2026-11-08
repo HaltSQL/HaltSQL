@@ -152,6 +152,38 @@ let t_duplicate_line () =
   check_errors "duplicated record" [ "duplicate_record" ] r;
   Alcotest.(check int) "at line 4" 4 (first_line r)
 
+(* Regression: Kafka delivery is at least once. A produce request that timed out
+   after the broker stored it is sent again, so a whole batch can follow itself.
+   With --allow-redelivery such exact copies are warnings and skipped; everything
+   else is still detected. *)
+let t_redelivery () =
+  let lines = chain 10 in
+  let nth = List.nth lines in
+  let range a b = List.filteri (fun i _ -> i >= a && i < b) lines in
+  let replay = range 0 8 @ range 3 8 @ [ nth 8; nth 9 ] in
+  check_errors "replayed batch without the flag"
+    (List.init 5 (fun _ -> "duplicate_record"))
+    (verify (text replay));
+  let opts = { V.default_opts with redelivery = true } in
+  let r = verify ~opts (text replay) in
+  check_ok "replayed batch with --allow-redelivery" r;
+  Alcotest.(check int) "records" 10 r.records;
+  Alcotest.(check int)
+    "duplicates are warnings" 5
+    (List.length (List.filter (( = ) "duplicate_record") (kinds r)));
+  let one = range 0 4 @ [ nth 3 ] @ range 4 10 in
+  check_ok "adjacent single copy" (verify ~opts (text one));
+  let deleted = range 0 8 @ range 3 8 @ [ nth 9 ] in
+  check_errors "a deletion after a replay" [ "broken_link" ] (verify ~opts (text deleted));
+  let edited =
+    range 0 8
+    @ [ replace_once (nth 3) ~sub:"\"user\":\"agent\"" ~by:"\"user\":\"admin\"" ]
+    @ range 8 10
+  in
+  check_errors "an edited copy"
+    [ "bad_hash"; "broken_link"; "broken_link" ]
+    (verify ~opts (text edited))
+
 let t_mid_chain_start () =
   let lines = chain 8 in
   let tail = List.filteri (fun i _ -> i >= 3) lines in
@@ -502,6 +534,13 @@ let cli_cases bin () =
   let code, out, _ = run_bin bin [ good ] in
   Alcotest.(check int) "good: exit 0" 0 code;
   Alcotest.(check bool) "good: OK" true (contains out "OK, 5 records");
+  let replay = Filename.concat dir "replay.jsonl" in
+  write_file replay (text (lines @ List.filteri (fun i _ -> i >= 2) lines));
+  let code, _, _ = run_bin bin [ replay ] in
+  Alcotest.(check int) "replayed batch: exit 1" 1 code;
+  let code, out, _ = run_bin bin [ "--allow-redelivery"; replay ] in
+  Alcotest.(check int) "replayed batch, --allow-redelivery: exit 0" 0 code;
+  Alcotest.(check bool) "replayed batch: OK" true (contains out "OK, 5 records");
   let code, out, _ = run_bin bin [ bad ] in
   Alcotest.(check int) "bad: exit 1" 1 code;
   Alcotest.(check bool) "bad: first broken link" true (contains out "first broken link");
@@ -608,6 +647,7 @@ let () =
           Alcotest.test_case "truncated tail vs --expect-head" `Quick
             t_truncate_whole_lines;
           Alcotest.test_case "duplicated line" `Quick t_duplicate_line;
+          Alcotest.test_case "at-least-once redelivery" `Quick t_redelivery;
           Alcotest.test_case "mid-chain start" `Quick t_mid_chain_start;
           Alcotest.test_case "restart (new chain)" `Quick t_restart;
           Alcotest.test_case "logs with --mixed" `Quick t_mixed_logs;

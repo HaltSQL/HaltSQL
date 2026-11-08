@@ -703,7 +703,11 @@ let secrets_cases =
             "secrets: {vault: {address: 'http://127.0.0.1:8200', auth: {method: token, \
              token: t}}}"
         in
-        Alcotest.(check bool) "loopback ok" true (x.secrets.vault <> None));
+        Alcotest.(check bool) "loopback ok" true (x.secrets.vault <> None);
+        (* regression: a DNS name starting with "127." is not loopback *)
+        err ~path:"secrets.vault.address" ~msg:"only allowed for loopback"
+          "secrets: {vault: {address: 'http://127.attacker.example:8200', auth: {method: \
+           token, token: t}}}");
     tc "provider placeholders not allowed in secrets" (fun () ->
         let r, _ = fake_resolver () in
         err ~resolve:r ~path:"secrets.vault.auth.token"

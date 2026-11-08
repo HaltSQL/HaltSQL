@@ -1,0 +1,132 @@
+# HaltSQL end-to-end stack: the REAL services HaltSQL integrates with, no
+# mocks or emulators. Brought up by test/e2e/stack.sh (or `make e2e`).
+#
+# Host ports (127.0.0.1 only) are in 17000-17049; 17050-17099 are left for
+# the haltsql-server / haltsql-proxy processes the tests start themselves.
+#
+#   17000 postgres:17           17004 OPA
+#   17001 Keycloak (realm import) 17005 registry:2 (plain HTTP, loopback)
+#   17002 Kafka (KRaft, PLAINTEXT) 17006 MinIO S3 API
+#   17003 OpenSearch (HTTP)
+#
+# Secrets (passwords, the Keycloak client secret) are never committed: stack.sh
+# generates test/e2e/.env (mode 0600, gitignored) and Compose reads it.
+name: haltsql-e2e
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${E2E_PG_PASSWORD:?run test/e2e/stack.sh env}
+    ports: ["127.0.0.1:17000:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.2
+    command: ["start-dev", "--http-port=8080", "--import-realm", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${E2E_KC_ADMIN_PASSWORD:?run test/e2e/stack.sh env}
+      # Placeholders in the realm import file (Keycloak substitutes ${VAR}).
+      E2E_KC_CLIENT_SECRET: ${E2E_KC_CLIENT_SECRET:?run test/e2e/stack.sh env}
+      E2E_KC_USER_PASSWORD: ${E2E_KC_USER_PASSWORD:?run test/e2e/stack.sh env}
+    volumes:
+      - ./fixtures/keycloak:/opt/keycloak/data/import:ro
+    ports: ["127.0.0.1:17001:8080"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 3s
+      timeout: 5s
+      retries: 100
+
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:17002,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:17002
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_NUM_PARTITIONS: "1"
+      # Tests create their own uniquely named topics (conftest.kafka_create_topic).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports: ["127.0.0.1:17002:17002"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 20s
+      retries: 60
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    environment:
+      discovery.type: single-node
+      # Plain HTTP, no security plugin: HaltSQL's TLS/auth variants of the
+      # Elasticsearch/OpenSearch sink are covered by test/siem.
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+    ports: ["127.0.0.1:17003:9200"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s' >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 100
+
+  opa:
+    image: openpolicyagent/opa:1.10.1
+    # Decision logs on the console: tests read `docker logs` to see exactly
+    # what input OPA received. The image has no shell, so no healthcheck;
+    # conftest waits for GET /health.
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --log-level=error
+      - --set=decision_logs.console=true
+      - /policies
+    volumes:
+      - ./fixtures/opa:/policies:ro
+    ports: ["127.0.0.1:17004:8181"]
+
+  registry:
+    image: registry:2
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    ports: ["127.0.0.1:17005:5000"]
+    healthcheck:
+      test: ["CMD", "busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5000/v2/"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  minio:
+    # minio/minio is no longer published on Docker Hub; pgsty builds the same server.
+    image: pgsty/minio:latest
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: haltsql-e2e
+      MINIO_ROOT_PASSWORD: ${E2E_MINIO_ROOT_PASSWORD:?run test/e2e/stack.sh env}
+    ports: ["127.0.0.1:17006:9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 60

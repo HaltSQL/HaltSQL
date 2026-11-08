@@ -644,6 +644,62 @@ let patch_roundtrip file policy () =
   let _, o2 = R.Patch.apply patched doc' t.suggestions in
   Alcotest.(check (list string)) "idempotent" [] o2.applied
 
+(* Regression: ts_rewrite runs its second argument as SQL, so a shadow denial of it must
+   never become an applicable suggestion (it escaped the tenancy rules). The other
+   functions have side effects or expose server state. *)
+let dynamic_sql_function_rules () =
+  let fns =
+    [
+      ( "ts_rewrite",
+        "ts_rewrite(to_tsquery('a'), 'SELECT to_tsquery(''a''), to_tsquery(status) FROM \
+         app.orders')" );
+      ("brin_summarize_new_values", "brin_summarize_new_values('app.orders_brin')");
+      ("brin_summarize_range", "brin_summarize_range('app.orders_brin', 0)");
+      ("brin_desummarize_range", "brin_desummarize_range('app.orders_brin', 0)");
+      ("gin_clean_pending_list", "gin_clean_pending_list('app.orders_gin')");
+      ("setseed", "setseed(0.5)");
+      ("getpgusername", "getpgusername()");
+    ]
+  in
+  let recs =
+    List.map
+      (fun (_, call) ->
+        record
+          (Printf.sprintf
+             "SELECT %s AS x FROM app.orders o WHERE o.tenant_id = $1 LIMIT 1" call))
+      fns
+  in
+  let t = suggest recs in
+  check_ids "only the safe to_tsquery" [ "shop-enforce/function/to_tsquery" ] t;
+  List.iter
+    (fun (f, _) ->
+      Alcotest.(check string)
+        (f ^ " unsafe") "unsafe"
+        (match find_item t (f ^ "()") with
+        | Some i -> R.Suggest.category_to_string i.category
+        | None -> "missing");
+      Alcotest.(check bool)
+        (f ^ " unsafe_function") true
+        (R.Suggest.unsafe_function f <> None))
+    fns;
+  let doc', o = R.Patch.apply enforce (read_doc "shop-enforce.yaml") t.suggestions in
+  Alcotest.(check (list string))
+    "--apply-to adds only to_tsquery"
+    [ "shop-enforce/function/to_tsquery" ]
+    o.applied;
+  let text = R.Patch.render Docload.Yaml ~applied:o.applied doc' in
+  List.iter
+    (fun (f, _) ->
+      Alcotest.(check bool)
+        (f ^ " not in the patched policy")
+        false
+        (let n = String.length f in
+         let rec go i =
+           i + n <= String.length text && (String.sub text i n = f || go (i + 1))
+         in
+         go 0))
+    fns
+
 let patch_misc () =
   let t =
     suggest [ record "SELECT id, region FROM app.orders WHERE tenant_id = $1 LIMIT 10" ]
@@ -786,6 +842,8 @@ let () =
         [
           Alcotest.test_case "columns" `Quick column_rule;
           Alcotest.test_case "functions" `Quick function_rules;
+          Alcotest.test_case "dynamic-SQL and side-effect functions" `Quick
+            dynamic_sql_function_rules;
           Alcotest.test_case "limits" `Quick limit_rules;
           Alcotest.test_case "tables" `Quick table_rules;
           Alcotest.test_case "pii flagged" `Quick pii_rules;

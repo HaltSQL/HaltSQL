@@ -390,6 +390,18 @@ let kafka_cases =
              "      brokers: ['kafka.corp.example:9092']\n\
              \      topic: t\n\
              \      sasl: {mechanism: plain, username: u, password: p}\n");
+        (* regression: a DNS name starting with "127." is not loopback *)
+        List.iter
+          (fun b ->
+            err ~path:(s0 "sasl.mechanism")
+              ~msg:"SASL PLAIN sends the password in clear text"
+              (kafka
+                 (Printf.sprintf
+                    "      brokers: ['%s:9092']\n\
+                    \      topic: t\n\
+                    \      sasl: {mechanism: plain, username: u, password: p}\n"
+                    b)))
+          [ "127.attacker.example"; "127.0.0.1.nip.io" ];
         (* allowed with tls, or on loopback *)
         ignore
           (ok
@@ -518,6 +530,18 @@ let bundle_source_cases =
           ~path:(p0 "bundle_source.plain_http")
           ~msg:"only allowed on loopback"
           (src "    bundle_source: {oci: 'registry.corp.example/p:x', plain_http: true}\n");
+        (* regression: DNS names that merely start with "127." are not loopback *)
+        List.iter
+          (fun host ->
+            err
+              ~path:(p0 "bundle_source.plain_http")
+              ~msg:"only allowed on loopback"
+              (src
+                 (Printf.sprintf
+                    "    bundle_source: {oci: '%s:5000/p:x', plain_http: true}\n" host)))
+          [ "127.evil.example"; "127.0.0.1.nip.io" ];
+        ignore
+          (ok (src "    bundle_source: {oci: '127.0.0.2:5000/p:x', plain_http: true}\n"));
         err
           ~path:(p0 "bundle_source.plain_http")
           ~msg:"only allowed with oci"

@@ -7,6 +7,7 @@ module Registry = Registry
 module Oci_artifact = Oci_artifact
 module Remote = Remote
 module Cache = Cache
+module Http_fetch = Http_fetch
 module B = Haltsql_bundle
 module Config = Haltsql_load.Config
 module Policy = Haltsql_core.Policy
@@ -161,6 +162,11 @@ type t = {
   lock : Lwt_mutex.t;
   rng : Random.State.t;
   mutable cur : current option;
+  mutable restored : current option;
+      (** the bundle {!load_cache} restored at startup: the last accepted one *)
+  mutable defer_cache : bool;
+      (** while true (startup, until {!commit_startup}), accepted bundles are not cached
+      *)
   mutable checks : int;
   mutable last_success : float option;
   mutable last_error : error option;
@@ -271,6 +277,8 @@ let create ?(allow_downgrade = false) ?ca_file ?(timeout = 30.) ?(jitter = 0.1)
       lock = Lwt_mutex.create ();
       rng = Random.State.make_self_init ();
       cur = None;
+      restored = None;
+      defer_cache = false;
       checks = 0;
       last_success = None;
       last_error = None;
@@ -356,14 +364,16 @@ let load_cache t ~on_update =
                   call_on_update on_update u >|= function
                   | Error m -> Error (Rejected m)
                   | Ok () ->
-                      t.cur <-
-                        Some
-                          {
-                            upd = u;
-                            bundle_sha = sha256_hex e.bundle;
-                            bundle_bytes = e.bundle;
-                            signature_bytes = e.signature;
-                          };
+                      let c =
+                        {
+                          upd = u;
+                          bundle_sha = sha256_hex e.bundle;
+                          bundle_bytes = e.bundle;
+                          signature_bytes = e.signature;
+                        }
+                      in
+                      t.cur <- Some c;
+                      t.restored <- Some c;
                       Ok (Updated u)))))
 
 type fetched =
@@ -436,7 +446,8 @@ let poll_once t ~on_update ?(on_warning = fun _ -> ()) () =
               (* same bundle under a new manifest / ETag: remember the new revision *)
               let c = { c with upd = { c.upd with revision } } in
               t.cur <- Some c;
-              (match store_cache t c with Ok () -> () | Error e -> on_warning e);
+              (if not t.defer_cache then
+                 match store_cache t c with Ok () -> () | Error e -> on_warning e);
               Lwt.return (finish t (Ok Unchanged))
           | cur -> (
               match verify t ~bundle ~signature with
@@ -462,9 +473,10 @@ let poll_once t ~on_update ?(on_warning = fun _ -> ()) () =
                             }
                           in
                           t.cur <- Some c;
-                          (match store_cache t c with
-                          | Ok () -> ()
-                          | Error e -> on_warning e);
+                          (if not t.defer_cache then
+                             match store_cache t c with
+                             | Ok () -> ()
+                             | Error e -> on_warning e);
                           finish t (Ok (Updated u)))))))
 
 let next_delay t =
@@ -473,7 +485,8 @@ let next_delay t =
   in
   t.interval *. (1. +. j)
 
-let start t ~on_update ~on_error =
+let start ?(defer_cache = false) t ~on_update ~on_error =
+  t.defer_cache <- defer_cache;
   let report r = match r with Error e -> on_error e | Ok _ -> () in
   let safe_report e = try on_error e with _ -> () in
   (load_cache t ~on_update >|= function Error e -> safe_report e | Ok _ -> ())
@@ -510,6 +523,29 @@ let start t ~on_update ~on_error =
     | Some _, _ -> Ok ()
     | None, Error e -> Error e
     | None, Ok _ -> Error (Fetch_failed (Fetch_error.Protocol "no bundle was obtained")))
+
+let commit_startup t =
+  t.defer_cache <- false;
+  match t.cur with
+  | None -> Ok ()
+  | Some c -> (
+      match t.restored with
+      | Some r when r.bundle_sha = c.bundle_sha && r.upd.revision = c.upd.revision ->
+          Ok ()
+      | _ -> store_cache t c)
+
+let restored_update t = Option.map (fun c -> c.upd) t.restored
+
+let fall_back_to_restored t ~reason =
+  match t.restored with
+  | None -> false
+  | Some r -> (
+      match t.cur with
+      | Some c when c.bundle_sha = r.bundle_sha -> false
+      | _ ->
+          t.cur <- Some r;
+          t.last_error <- Some (Rejected reason);
+          true)
 
 let stop t =
   if not t.stopped then begin

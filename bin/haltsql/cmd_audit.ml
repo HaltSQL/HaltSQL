@@ -42,10 +42,19 @@ module Verify = struct
     strict : bool;  (** a new chain (prev_hash = genesis) mid-stream is an error *)
     mixed : bool;  (** skip lines that are not audit records (logs) *)
     expect_head : string option;  (** the last record's hash must be this *)
+    redelivery : bool;
+        (** an exact copy of a record already seen (at-least-once delivery, e.g. a Kafka
+            produce retry) is a warning and skipped, not an error *)
   }
 
   let default_opts =
-    { start = Genesis; strict = false; mixed = false; expect_head = None }
+    {
+      start = Genesis;
+      strict = false;
+      mixed = false;
+      expect_head = None;
+      redelivery = false;
+    }
 
   type report = {
     source : string;
@@ -189,9 +198,14 @@ module Verify = struct
         err r "bad_hash" (Some loc) (m ^ ": the record's content does not match its hash"));
     match Hashtbl.find_opt c.seen hash with
     | Some l0 when self = Ok () ->
-        (* a copy: report it and keep linking to the original *)
-        err r "duplicate_record" (Some loc)
-          (Printf.sprintf "duplicate of the record at %s" (loc_to_string l0))
+        (* a copy: report it and keep linking to the original (and to the last new
+           record, so a whole replayed batch is skipped) *)
+        add r
+          (if c.opts.redelivery then Warning else Error)
+          "duplicate_record" (Some loc)
+          (Printf.sprintf "duplicate of the record at %s%s" (loc_to_string l0)
+             (if c.opts.redelivery then " (re-delivery, skipped)"
+              else " (--allow-redelivery skips exact re-deliveries)"))
     | _ ->
         if not c.started then begin
           c.first_prev <- Some prev;
@@ -982,8 +996,8 @@ let man_examples ex =
   `S Manpage.s_examples
   :: List.concat_map (fun e -> [ `Pre (Manpage.escape e); `Noblank ]) ex
 
-let run_verify inputs concat json any_start initial_prev strict mixed expect_head spool
-    host endpoint region =
+let run_verify inputs concat json any_start initial_prev strict mixed expect_head
+    redelivery spool host endpoint region =
   try
     if inputs = [] then
       usage "no input (give files, directories, - for stdin or s3://bucket/prefix)";
@@ -1003,6 +1017,7 @@ let run_verify inputs concat json any_start initial_prev strict mixed expect_hea
         strict;
         mixed;
         expect_head = Option.map (hex "--expect-head") expect_head;
+        redelivery;
       }
     in
     let is_s3 i = String.length i > 5 && String.sub i 0 5 = "s3://" in
@@ -1134,6 +1149,17 @@ let verify_cmd =
             "Treat a new chain starting mid-stream (a restart without chain continuity) \
              as an error instead of a warning.")
   in
+  let redelivery =
+    Arg.(
+      value & flag
+      & info [ "allow-redelivery" ]
+          ~doc:
+            "Skip an exact copy of a record already seen (warning duplicate_record) \
+             instead of failing. For exports of at-least-once sinks such as Kafka, where \
+             a retried produce request can store a batch twice. A copy whose content \
+             does not match its hash, and every missing or reordered record, are still \
+             errors.")
+  in
   let mixed =
     Arg.(
       value & flag
@@ -1216,6 +1242,6 @@ let verify_cmd =
     (Cmd.info "verify" ~doc ~man ~exits)
     Term.(
       const run_verify $ inputs $ concat $ json $ any_start $ initial_prev $ strict
-      $ mixed $ expect_head $ spool $ host $ endpoint $ region)
+      $ mixed $ expect_head $ redelivery $ spool $ host $ endpoint $ region)
 
 let cmd = Cmd.group (Cmd.info "audit" ~doc:"Audit log tools." ~exits) [ verify_cmd ]

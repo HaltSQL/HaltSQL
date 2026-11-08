@@ -149,6 +149,41 @@ let tls_failure = function
   | Tls_lwt.Tls_alert a -> Tls.Packet.alert_type_to_string a
   | e -> Printexc.to_string e
 
+(* The name the TLS handshake checks the broker certificate against. A host that is
+   neither an IP address nor a valid DNS host name (e.g. "kafka_1": '_' is not
+   allowed in host names) cannot be checked, so it is refused (fail closed):
+   [Tls.Config.client] without [peer_name] and [ip] would verify the chain only. *)
+type tls_peer = Peer_ip of Ipaddr.t | Peer_name of [ `host ] Domain_name.t
+
+let tls_peer host =
+  match Ipaddr.of_string host with
+  | Ok ip -> Some (Peer_ip ip)
+  | Error _ -> (
+      match Result.bind (Domain_name.of_string host) Domain_name.host with
+      | Ok h -> Some (Peer_name h)
+      | Error _ -> None)
+
+(* Checked before every connection, bootstrap brokers and advertised leaders alike. *)
+let check_peer t (host, port) =
+  match t.tls with
+  | Some _ -> (
+      match tls_peer host with
+      | Some _ -> Lwt.return_unit
+      | None ->
+          conn_fail
+            "kafka broker %s:%d: host name cannot be verified (neither an IP address nor \
+             a valid DNS host name); refusing to connect over TLS"
+            host port)
+  | None -> (
+      match t.cfg.kafka_sasl with
+      | Some { sasl_mechanism = Config.Sasl_plain; _ }
+        when not (Haltsql_core.Loopback.is_host host) ->
+          conn_fail
+            "kafka broker %s:%d is not a loopback address: SASL PLAIN without TLS would \
+             send the password in clear text; refusing to connect"
+            host port
+      | _ -> Lwt.return_unit)
+
 let transport t (host, port) fd =
   match t.tls with
   | None ->
@@ -159,21 +194,23 @@ let transport t (host, port) fd =
           oc,
           fun () -> Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) )
   | Some tls -> (
-      let ip, peer_name =
-        match Ipaddr.of_string host with
-        | Ok ip -> (Some ip, None)
-        | Error _ -> (
-            match Result.bind (Domain_name.of_string host) Domain_name.host with
-            | Ok h -> (None, Some h)
-            | Error _ -> (None, None))
-      in
       match
-        Tls.Config.client ~authenticator:tls.authenticator ?peer_name ?ip
-          ?certificates:tls.own ()
+        match tls_peer host with
+        | Some (Peer_ip ip) ->
+            Result.map
+              (fun c -> (c, None))
+              (Tls.Config.client ~authenticator:tls.authenticator ~ip
+                 ?certificates:tls.own ())
+        | Some (Peer_name h) ->
+            Result.map
+              (fun c -> (c, Some h))
+              (Tls.Config.client ~authenticator:tls.authenticator ~peer_name:h
+                 ?certificates:tls.own ())
+        | None -> Error (`Msg (host ^ ": host name cannot be verified"))
       with
       | Error (`Msg m) ->
           Lwt_unix.close fd >>= fun () -> conn_fail "kafka TLS configuration: %s" m
-      | Ok cfg ->
+      | Ok (cfg, peer_name) ->
           Lwt.catch
             (fun () ->
               Lwt_unix.with_timeout t.connect_timeout (fun () ->
@@ -282,6 +319,7 @@ let sasl_authenticate t c ~auth_v (sasl : Config.kafka_sasl) =
             | Error m -> conn_fail "%s" m))
 
 let connect t addr =
+  check_peer t addr >>= fun () ->
   tcp_connect t addr >>= fun fd ->
   transport t addr fd >>= fun (ic, oc, close) ->
   let c0 = { addr; ic; oc; close; corr = 1l; produce_v = 3; metadata_v = 1 } in

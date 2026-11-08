@@ -3,6 +3,9 @@
      19092 PLAINTEXT
      19093 SASL_SSL      (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512; certificate from a test CA)
      19094 SASL_PLAINTEXT (PLAIN, SCRAM)
+     19095 SASL_PLAINTEXT (PLAIN), advertised on the Docker bridge gateway (a
+           non-loopback address of this host) and published there and on 127.0.0.1
+     19096 SSL with ssl.client.auth=required (mTLS; client certificates from the CA)
    Records are read back with the broker's own kafka-console-consumer and their
    hash chain is verified; the broker is stopped and started during shipping. *)
 
@@ -15,16 +18,42 @@ let container = "haltsql-siem-kafka"
 let password = "kafka-test-" ^ string_of_int (Unix.getpid ()) ^ "-pw"
 let run = Lwt_main.run
 
-let properties =
+(* A non-loopback address of this host: the gateway of Docker's default bridge. *)
+let gateway =
+  lazy
+    (match
+       docker
+         [
+           "network";
+           "inspect";
+           "bridge";
+           "--format";
+           "{{(index .IPAM.Config 0).Gateway}}";
+         ]
+     with
+    | 0, out when String.trim out <> "" -> String.trim out
+    | _ -> failwith "cannot read the gateway of the Docker bridge network")
+
+let properties () =
   String.concat "\n"
     [
       "process.roles=broker,controller";
       "node.id=1";
       "controller.quorum.voters=1@localhost:9093";
-      "listeners=PLAINTEXT://:19092,SASL_SSL://:19093,SASL_PLAINTEXT://:19094,CONTROLLER://:9093";
-      "advertised.listeners=PLAINTEXT://localhost:19092,SASL_SSL://localhost:19093,SASL_PLAINTEXT://localhost:19094";
+      "listeners=PLAINTEXT://:19092,SASL_SSL://:19093,SASL_PLAINTEXT://:19094,ADVPLAIN://:19095,MTLS://:19096,CONTROLLER://:9093";
+      Printf.sprintf
+        "advertised.listeners=PLAINTEXT://localhost:19092,SASL_SSL://localhost:19093,SASL_PLAINTEXT://localhost:19094,ADVPLAIN://%s:19095,MTLS://localhost:19096"
+        (Lazy.force gateway);
       "controller.listener.names=CONTROLLER";
-      "listener.security.protocol.map=PLAINTEXT:PLAINTEXT,SASL_SSL:SASL_SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT";
+      "listener.security.protocol.map=PLAINTEXT:PLAINTEXT,SASL_SSL:SASL_SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,ADVPLAIN:SASL_PLAINTEXT,MTLS:SSL,CONTROLLER:PLAINTEXT";
+      "listener.name.advplain.sasl.enabled.mechanisms=PLAIN";
+      Printf.sprintf
+        "listener.name.advplain.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule \
+         required user_haltsql=\"%s\";"
+        password;
+      "listener.name.mtls.ssl.client.auth=required";
+      "ssl.truststore.type=PEM";
+      "ssl.truststore.location=/cfg/ca.pem";
       "inter.broker.listener.name=PLAINTEXT";
       "sasl.enabled.mechanisms=PLAIN,SCRAM-SHA-256,SCRAM-SHA-512";
       Printf.sprintf
@@ -77,7 +106,7 @@ let wait_ready () =
 let env =
   lazy
     (let pki = make_pki () in
-     write_file (Filename.concat pki.dir "server.properties") properties;
+     write_file (Filename.concat pki.dir "server.properties") (properties ());
      if not (image_present image) then failwith ("cannot pull " ^ image);
      let scram m = Printf.sprintf "'%s=[name=haltsql,password=%s]'" m password in
      run_container ~name:container
@@ -88,6 +117,12 @@ let env =
          "127.0.0.1:19093:19093";
          "-p";
          "127.0.0.1:19094:19094";
+         "-p";
+         "127.0.0.1:19095:19095";
+         "-p";
+         Lazy.force gateway ^ ":19095:19095";
+         "-p";
+         "127.0.0.1:19096:19096";
          "-v";
          pki.dir ^ ":/cfg:ro";
          "--entrypoint";
@@ -355,6 +390,62 @@ let expect_failure ~what k needle =
   check_no_secret ~secret:password;
   ignore (run (S.close s))
 
+(* mTLS: a client certificate from the broker's trusted CA is accepted; none, or one
+   from another CA, is refused (the broker requires one: ssl.client.auth=required). *)
+let client_tls ?(cert = true) ?(rogue = false) (pki : pki) =
+  Some
+    {
+      Config.kafka_ca = Some (Config.Pem_path pki.ca_file);
+      kafka_cert =
+        (if not cert then None
+         else
+           Some
+             (Config.Pem_path
+                (if rogue then pki.rogue_client_cert_file else pki.client_cert_file)));
+      kafka_key =
+        (if not cert then None
+         else
+           Some
+             (Config.Pem_path
+                (if rogue then pki.rogue_client_key_file else pki.client_key_file)));
+    }
+
+let test_mtls () =
+  let pki = setup () in
+  shipped_over ~name:"mtls" ~brokers:[ "localhost:19096" ] ?tls:(client_tls pki) ()
+
+let test_mtls_refused () =
+  let pki = setup () in
+  expect_failure ~what:"no client certificate"
+    (kafka_cfg ~brokers:[ "localhost:19096" ] ?tls:(client_tls ~cert:false pki)
+       "haltsql.audit.plain")
+    "connection to localhost:19096 failed";
+  expect_failure ~what:"client certificate from another CA"
+    (kafka_cfg ~brokers:[ "localhost:19096" ] ?tls:(client_tls ~rogue:true pki)
+       "haltsql.audit.plain")
+    "connection to localhost:19096 failed"
+
+(* Regression: a broker name that is neither an IP address nor a valid DNS host name
+   (here with '_') used to get a TLS handshake that checked the chain only. *)
+let test_tls_unverifiable_host () =
+  let pki = setup () in
+  expect_failure ~what:"underscore broker over TLS"
+    (kafka_cfg ~brokers:[ "kafka_1:19093" ]
+       ?tls:(tls (Config.Pem_path pki.ca_file))
+       ?sasl:(sasl Config.Sasl_plain) "haltsql.audit.plain")
+    "host name cannot be verified"
+
+(* Regression: SASL PLAIN without TLS is allowed for loopback bootstrap brokers only,
+   but the produce connection went to the leader the broker advertises (here a
+   non-loopback address of this host) and sent the password there in clear text. *)
+let test_plain_advertised_non_loopback () =
+  ignore (setup ());
+  let topic = "haltsql.audit.advplain" in
+  create_topic ~partitions:1 topic;
+  expect_failure ~what:"PLAIN to an advertised non-loopback leader"
+    (kafka_cfg ~brokers:[ "127.0.0.1:19095" ] ?sasl:(sasl Config.Sasl_plain) topic)
+    "SASL PLAIN without TLS would send the password in clear text"
+
 let test_bad_password () =
   let pki = setup () in
   expect_failure ~what:"wrong SCRAM password"
@@ -515,6 +606,60 @@ let test_python_verifier () =
   let code, _ = verify tampered in
   Alcotest.(check int) "tampering detected" 1 code
 
+(* Regression: at-least-once delivery. The broker is paused while a produce request
+   is in flight; the request times out (request_timeout 6 s) and the batch is sent
+   again after the broker resumes, so the partition holds the batch twice. The
+   documented verifier must accept that untampered topic. *)
+let test_redelivery_verifies () =
+  ignore (setup ());
+  let topic = "haltsql.audit.redeliver" in
+  create_topic ~partitions:1 topic;
+  let key = "haltsql/siem-test/redeliver" in
+  let t =
+    match
+      Haltsql_siem.Kafka_sink.create ~request_timeout:6. ~connect_timeout:3. ~key
+        (kafka_cfg topic)
+    with
+    | Ok t -> t
+    | Error e -> Alcotest.failf "create: %s" e
+  in
+  let entries =
+    let rec go acc prev i =
+      if i >= 8 then Array.of_list (List.rev acc)
+      else
+        let line, hash = Haltsql_cloud.Audit_chain.seal ~prev (record i []) in
+        go ({ S.line; hash } :: acc) hash (i + 1)
+    in
+    go [] Haltsql_cloud.Audit_chain.genesis 0
+  in
+  let deliver what es =
+    match run (Haltsql_siem.Kafka_sink.deliver t es) with
+    | Ok _ -> ()
+    | Error e -> Alcotest.failf "%s: %s" what e
+  in
+  deliver "first batch" (Array.sub entries 0 3);
+  let second = Array.sub entries 3 5 in
+  ignore (docker_ok [ "pause"; container ]);
+  let timed_out =
+    Fun.protect
+      ~finally:(fun () -> ignore (docker_ok [ "unpause"; container ]))
+      (fun () -> Result.is_error (run (Haltsql_siem.Kafka_sink.deliver t second)))
+  in
+  Alcotest.(check bool) "the paused request timed out" true timed_out;
+  deliver "second batch, sent again" second;
+  ignore (run (Haltsql_siem.Kafka_sink.close t));
+  let msgs = consume topic 13 in
+  Alcotest.(check int) "the second batch is stored twice" 13 (List.length msgs);
+  let tsv = String.concat "" (List.map (fun m -> m.key ^ "\t" ^ m.value ^ "\n") msgs) in
+  let tmp = Filename.temp_file "haltsql-siem-kafka" ".tsv" in
+  write_file tmp tsv;
+  let code, res = run_python "verify_chain.py" [ "kafka"; tmp ] in
+  Sys.remove tmp;
+  if code <> 0 || not (python_ok res) then Alcotest.failf "verify_chain.py kafka: %s" res;
+  Alcotest.(check bool)
+    "8 distinct records" true
+    (List.mem "OK: 8 records in 1 chain(s)" (String.split_on_char '\n' res))
+
 let () =
   Alcotest.run "siem-kafka"
     [
@@ -528,6 +673,13 @@ let () =
           Alcotest.test_case "SASL PLAIN over TLS" `Slow test_plain_tls;
           Alcotest.test_case "SASL PLAIN on loopback" `Slow test_plain_loopback;
           Alcotest.test_case "bootstrap failover" `Slow test_bootstrap_failover;
+          Alcotest.test_case "mTLS client certificate" `Slow test_mtls;
+          Alcotest.test_case "mTLS without or with a foreign certificate fails closed"
+            `Slow test_mtls_refused;
+          Alcotest.test_case "TLS to an unverifiable broker name fails closed" `Slow
+            test_tls_unverifiable_host;
+          Alcotest.test_case "PLAIN never goes to a non-loopback advertised leader" `Slow
+            test_plain_advertised_non_loopback;
           Alcotest.test_case "wrong password fails closed" `Slow test_bad_password;
           Alcotest.test_case "untrusted CA fails closed" `Slow test_untrusted_ca;
           Alcotest.test_case "unknown topic fails closed" `Slow test_unknown_topic;
@@ -535,5 +687,7 @@ let () =
           Alcotest.test_case "broker restart, on_error=fail_closed" `Slow
             test_restart_fail_closed;
           Alcotest.test_case "documented python verifier" `Slow test_python_verifier;
+          Alcotest.test_case "re-delivered batch verifies (broker paused)" `Slow
+            test_redelivery_verifies;
         ] );
     ]

@@ -65,7 +65,7 @@ records that already contain it.
 | Totals | Records, and how many were allowed, denied (enforce mode) or shadow-denied (allowed, but the shadow policy would have denied them). |
 | By reason code | Records carrying each code. |
 | By table / By column | Relations and `schema.table.column` the records touched or were denied on. |
-| By caller / By policy | Server `caller` (token name, OIDC subject, mTLS identity) or proxy `user`, and the policy name. |
+| By caller / By policy | Server `caller` (token name, `oidc:<provider>`, `mtls:<subject>` or `anonymous`; the OIDC subject is in the audit record's `subject`, not grouped here) or proxy `user`, and the policy name. |
 | Over time | Counts per time bucket. The bucket is 5 minutes for spans up to 6 h, 1 h up to 3 days, otherwise 1 day. Override it with `--bucket 15m`. |
 | Top denied queries | Groups by query fingerprint, worst first, with their codes and callers. Each group shows an example SQL only when a record contains one. |
 
@@ -96,7 +96,7 @@ Only four kinds of change are ever suggested:
 | Code | Suggestion | Conditions |
 |---|---|---|
 | `E_COLUMN_DENIED` | Add the column to the table's `columns`. | The table is already in the policy. The column is not sensitive (see [PII](#sensitive-columns)). |
-| `E_FUNCTION_DENIED` | Add the function to `functions.allow`. | The function is not on the deny list: no side effects, no dynamic SQL, no server state (`pg_*`, `lo_*`, `dblink*`, `set_config`, `current_setting`, `nextval`, `query_to_xml`, `ts_stat`, `row_to_json`, ...). It is not schema-qualified: user-defined functions need a human to read their definition. Identity functions such as `CURRENT_USER` are never allowed. |
+| `E_FUNCTION_DENIED` | Add the function to `functions.allow`. | The function is not on the deny list: no side effects, no dynamic SQL, no server state (`pg_*`, `lo_*`, `dblink*`, `set_config`, `current_setting`, `nextval`, `query_to_xml`, `ts_stat`, `ts_rewrite`, `setseed`, `brin_summarize_*`, `gin_clean_pending_list`, `row_to_json`, ...). It is not schema-qualified: user-defined functions need a human to read their definition. Identity functions such as `CURRENT_USER` are never allowed. |
 | `E_LIMIT_TOO_HIGH` | Raise `require_limit.max` to the largest constant LIMIT seen. | At most 10 times the current maximum, and at most 100000. Anything larger is listed for review ("make the queries page instead"). `LIMIT $n` and non-constant limits need a query fix. |
 | `E_TABLE_DENIED` | Add the table, with the columns the queries actually read. | Never a system schema. When the policy has tenancy, the new table is **always tenant-scoped**, on the tenant column(s) that every existing tenant-scoped table uses. If that is ambiguous (composite or mixed tenant columns), or the catalog shows the table without that column, the suggestion is listed for review instead. |
 

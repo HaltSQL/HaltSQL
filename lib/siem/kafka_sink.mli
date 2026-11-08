@@ -17,11 +17,14 @@
     - [MESSAGE_TOO_LARGE] / [RECORD_LIST_TOO_LARGE]: the batch is split in halves; a
       single record that is still too large is rejected (dropped, counted as [too_large]).
     - No idempotent producer: a request that times out after the broker stored it is sent
-      again, so a record can appear twice (same [hash], adjacent offsets). Verifiers skip
-      a record whose hash equals the previous one.
+      again, so records can appear twice, a whole batch after itself (same [hash] values).
+      [verify_chain.py kafka] and [haltsql audit verify --allow-redelivery] skip such
+      exact re-deliveries.
     - TLS through tls-lwt with CA verification and host name checks (system roots unless
-      [tls.ca_file]); optional client certificate. SASL PLAIN, SCRAM-SHA-256 and
-      SCRAM-SHA-512 (the broker's SCRAM signature is verified).
+      [tls.ca_file]); optional client certificate. A broker host (configured or
+      advertised) that is neither an IP address nor a valid DNS host name is refused. SASL
+      PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 (the broker's SCRAM signature is verified).
+      PLAIN without TLS connects to loopback hosts only, advertised leaders included.
 
     Request versions: Produce v3-v8, Metadata v1-v8, SaslHandshake v1, SaslAuthenticate
     v0-v1 (Kafka 1.0 and later, including 4.x). *)

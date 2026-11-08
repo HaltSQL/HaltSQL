@@ -41,9 +41,12 @@ let on_update (mode : mode ref) (u : B.update) =
       Hashtbl.replace tbl u.source u.policies;
       Lwt.return_ok ()
   | Running st -> (
-      let candidate = replace_assoc u.source u.policies st.remote in
+      (* The candidate is built from st.remote inside State's reload lock, after
+         any other source's reload committed: never from a snapshot taken before. *)
       let* r =
-        State.reload_lwt ~reason:("bundle-source " ^ u.source) ~remote:candidate st
+        State.reload_lwt ~reason:("bundle-source " ^ u.source)
+          ~update_remote:(replace_assoc u.source u.policies)
+          st
       in
       match r with
       | Ok () ->
@@ -79,7 +82,10 @@ let start (cfg : Config.t) ~(mode : mode ref) =
       Lwt_list.map_p
         (fun src ->
           let id = B.source_id src in
-          let* r = B.start src ~on_update:(on_update mode) ~on_error:(log_error id) in
+          let* r =
+            B.start ~defer_cache:true src ~on_update:(on_update mode)
+              ~on_error:(log_error id)
+          in
           Lwt.return (id, r))
         srcs
     in
@@ -108,6 +114,61 @@ let start (cfg : Config.t) ~(mode : mode ref) =
           srcs
       in
       Lwt.return_ok (srcs, remote)
+
+(* ---- startup hand-over ----
+
+   Bundles fetched at startup are only cached once the server accepted them
+   ([commit]): a bundle the startup checks refuse must not replace the last good
+   one in the cache, or every later restart would restore the refused bundle. *)
+
+let current_remote srcs =
+  List.filter_map
+    (fun src -> Option.map (fun (u : B.update) -> (u.source, u.policies)) (B.current src))
+    srcs
+
+(* The policies of each source with the freshly fetched bundles replaced by the
+   ones restored from the cache, and the sources that were replaced; [None] when no
+   source fetched a bundle different from its cached one. *)
+let restored_remote srcs =
+  let replaced = ref [] in
+  let remote =
+    List.filter_map
+      (fun src ->
+        match (B.current src, B.restored_update src) with
+        | Some c, Some r when c != r && c.bundle.metadata <> r.bundle.metadata ->
+            replaced := src :: !replaced;
+            Some (r.source, r.policies)
+        | Some c, _ -> Some (c.source, c.policies)
+        | None, _ -> None)
+      srcs
+  in
+  if !replaced = [] then None else Some (remote, List.rev !replaced)
+
+let fall_back srcs ~reason =
+  List.iter
+    (fun src ->
+      if B.fall_back_to_restored src ~reason then
+        Log.warn "bundle refused at startup; starting from the cached last good bundle"
+          ~fields:
+            (("source", `String (B.source_id src))
+            :: ("error", `String reason)
+            ::
+            (match B.current src with
+            | Some u ->
+                [
+                  ("bundle", `String u.bundle.metadata.name);
+                  ("bundle_version", `String u.bundle.metadata.version);
+                ]
+            | None -> [])))
+    srcs
+
+let commit srcs =
+  List.iter
+    (fun src ->
+      match B.commit_startup src with
+      | Ok () -> ()
+      | Error e -> log_error (B.source_id src) e)
+    srcs
 
 let stop (st : State.t) = List.iter B.stop st.bundle_sources
 

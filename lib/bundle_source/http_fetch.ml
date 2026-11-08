@@ -3,17 +3,18 @@ module Http = Haltsql_cloud.Http
 
 let rng = lazy (Mirage_crypto_rng_unix.use_default ())
 let ensure_rng () = Lazy.force rng
-
-let loopback_host h =
-  let h = String.lowercase_ascii h in
-  h = "localhost" || h = "::1" || h = "[::1]"
-  || (String.length h > 4 && String.sub h 0 4 = "127.")
+let loopback_host = Haltsql_core.Loopback.is_host
 
 let check_url ~what u =
   match (Uri.scheme u, Uri.host u) with
   | _, (None | Some "") -> Error (what ^ ": not an absolute URL")
   | Some "https", Some _ | Some "http", Some _ -> (
-      if Uri.userinfo u <> None then Error (what ^ ": URL must not contain credentials")
+      let p = Uri.path u in
+      (* ocaml-uri stops the host at an IP-address prefix ("127.0.0.1.nip.io" parses
+         as host 127.0.0.1, path ".nip.io"): refuse such URLs *)
+      if p <> "" && p.[0] <> '/' then Error (what ^ ": malformed host in URL")
+      else if Uri.userinfo u <> None then
+        Error (what ^ ": URL must not contain credentials")
       else if Uri.fragment u <> None then Error (what ^ ": URL must not have a fragment")
       else
         match (Uri.scheme u, Uri.host u) with

@@ -390,6 +390,10 @@ let valid_host s =
          | _ -> false)
        s
 
+let verifiable_host h =
+  Result.is_ok (Ipaddr.of_string h)
+  || Result.is_ok (Result.bind (Domain_name.of_string h) Domain_name.host)
+
 let upstream_j ctx path j =
   match
     obj ctx path
@@ -428,6 +432,7 @@ let upstream_j ctx path j =
         optional kvs "connect_timeout_seconds" ~default:(Some 10.) path (fun p j ->
             number ctx p ~min:0.1 ~max:300. j)
       in
+      let verify_full = ref false in
       let tls =
         optional kvs "tls"
           ~default:(Some (Tls_disable, []))
@@ -452,6 +457,7 @@ let upstream_j ctx path j =
                       | Some c -> c
                       | None -> [])
                 in
+                if mode = Some Tls_verify_full then verify_full := true;
                 match mode with
                 | Some Tls_verify_full when ca = [] && field tk "ca" = None ->
                     error ctx (key p "ca") "required when mode is verify-full";
@@ -459,6 +465,17 @@ let upstream_j ctx path j =
                 | Some m -> Some (m, ca)
                 | None -> None))
       in
+      (* verify-full checks the certificate against the host's IP address or DNS name;
+         a host that is neither (e.g. "pg_1": '_' is not allowed in host names) could
+         only get a chain check, so it is refused (fail closed) *)
+      (match host with
+      | Some h when !verify_full && not (verifiable_host h) ->
+          error ctx (key path "host")
+            (Printf.sprintf
+               "host %S cannot be verified by tls.mode verify-full: use an IP address or \
+                a valid DNS host name (letters, digits, '-' and '.')"
+               h)
+      | _ -> ());
       match (host, port, database, user, password, connect_timeout, tls) with
       | ( Some host,
           Some port,

@@ -25,7 +25,11 @@ each input the command checks:
   deleted, inserted or rewritten record breaks the next link
   (`broken_link`). When a record links to an earlier record instead, the
   message says the records were reordered and points to that record. An exact
-  copy of an earlier record is reported as `duplicate_record`.
+  copy of an earlier record is reported as `duplicate_record`. With
+  `--allow-redelivery` (exports of at-least-once sinks such as Kafka, where a
+  retried produce request can store a whole batch twice) such copies are
+  warnings and skipped; a copy whose content does not match its hash is still
+  `bad_hash`.
 - **Start.** The first record must link to genesis (64 zeros), unless
   `--any-start` or `--initial-prev HASH` is given (`mid_chain_start`,
   `start_mismatch`).

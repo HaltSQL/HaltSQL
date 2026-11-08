@@ -43,6 +43,9 @@ type t = {
   mutable bundle_sources : Haltsql_bundle_source.t list;
       (** running pollers (started by [Bundle_sources.start]) *)
   mutable generation : int;  (** incremented by every successful reload *)
+  reload_lock : Lwt_mutex.t;
+      (** serializes [reload_lwt]: a reload that waits on the secret prefetch must not
+          commit a [remote] computed before another reload committed *)
   mutable audit_restart_pending : bool;
       (** the last successful reload carried different audit sinks than the running ones;
           they only take effect after a restart (the running sinks stay) *)
@@ -378,6 +381,7 @@ let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.
     remote = [];
     bundle_sources = [];
     generation = 1;
+    reload_lock = Lwt_mutex.create ();
     audit_restart_pending = false;
   }
 
@@ -465,18 +469,28 @@ let reload ?(reason = "manual") ?resolver ?remote t =
           ];
       Error errs
 
-(* Reload from inside the Lwt loop (file watcher, SIGHUP): secrets from
-   providers are prefetched asynchronously first, with a fresh cache, so
-   rotated secrets are picked up. *)
-let reload_lwt ?reason ?remote t =
-  match (t.sources.config_file, !secret_prefetch) with
-  | Some f, Some prefetch -> (
-      match Config.secrets_of_file f with
-      | Error _ -> Lwt.return (reload ?reason ?remote t) (* reports the located errors *)
-      | Ok secrets ->
-          Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
-              Lwt.return (reload ?reason ?remote ~resolver t)))
-  | _ -> Lwt.return (reload ?reason ?remote t)
+(* Reload from inside the Lwt loop (file watcher, SIGHUP, bundle sources):
+   secrets from providers are prefetched asynchronously first, with a fresh
+   cache, so rotated secrets are picked up.
+
+   Reloads are serialized by [t.reload_lock], held across the prefetch and the
+   commit. [update_remote] derives the new [remote] from [t.remote] as it is
+   once the lock is held, so two bundle sources updating while a prefetch is
+   pending never overwrite each other's policies with older ones. *)
+let reload_lwt ?reason ?update_remote t =
+  Lwt_mutex.with_lock t.reload_lock (fun () ->
+      let run ?resolver () =
+        let remote = Option.map (fun f -> f t.remote) update_remote in
+        reload ?reason ?resolver ?remote t
+      in
+      match (t.sources.config_file, !secret_prefetch) with
+      | Some f, Some prefetch -> (
+          match Config.secrets_of_file f with
+          | Error _ -> Lwt.return (run ()) (* reports the located errors *)
+          | Ok secrets ->
+              Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
+                  Lwt.return (run ~resolver ())))
+      | _ -> Lwt.return (run ()))
 
 let changed t = List.exists (fun (f, sg) -> signature f <> sg) t.signatures
 let find_policy t name = List.assoc_opt name t.snap.policies
