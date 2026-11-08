@@ -31,6 +31,10 @@ server-bound parameters, in a read-only transaction that has a
  }
 ```
 
+Or use Docker with nothing else installed: mount a folder that holds
+`policy.yaml` and pass the same connection string.
+[Run it in Docker](#run-it-in-docker).
+
 [Switch in five minutes](#switch-in-five-minutes) ·
 [What changes for the agent](#what-changes-for-the-agent) ·
 [Reference](#tools)
@@ -116,14 +120,30 @@ the query passes.
 
 ### 1. Install
 
+**Docker (nothing else to install).** The `ghcr.io/haltsql/haltsql-mcp` image
+includes `haltsql-mcp` and the `haltsql` CLI, so it verifies queries itself.
+You don't need a central server, Python or anything else. See
+[Run it in Docker](#run-it-in-docker).
+
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install ./clients/python ./clients/mcp     # Python 3.10+; installs haltsql-mcp
+docker pull ghcr.io/haltsql/haltsql-mcp
+alias haltsql='docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql ghcr.io/haltsql/haltsql-mcp'
 ```
 
-Install the `haltsql` CLI too, to draft the policy and to verify locally
-without a sidecar. It comes as a release binary, through opam or in the
-Docker image ([quickstart](quickstart.md#1-install)).
+With the alias, a database on your machine is `host.docker.internal` rather
+than `localhost` (see
+[Reaching your database](#reaching-your-database-from-the-container)).
+
+**pip:**
+
+```sh
+git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
+pip install ./clients/python './clients/mcp[yaml]'   # Python 3.10+; installs haltsql-mcp
+```
+
+With pip, install the `haltsql` CLI too. You need it to draft the policy and
+to verify queries without a central server. It comes as a release binary or
+through opam ([quickstart](quickstart.md#1-install)).
 
 ### 2. Draft a policy from your database
 
@@ -166,6 +186,14 @@ haltsql rls generate -p policy.yaml --catalog catalog.json --role agent_ro -o rl
 psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f rls.sql
 ```
 
+Give the role the same `search_path` as the policy. HaltSQL resolves
+unqualified table names with the policy's `search_path`, and Postgres must
+resolve them the same way:
+
+```sql
+ALTER ROLE agent_ro SET search_path = public;   -- the policy's search_path
+```
+
 Then set `HALTSQL_MCP_SET_CONFIG='{"haltsql.tenant_id": "tenant_id"}'` so that
 each query's transaction sets the tenant the RLS policies read. See
 [rls-generation.md](rls-generation.md) and
@@ -173,8 +201,29 @@ each query's transaction sets the tenant the RLS policies read. See
 
 ### 4. Swap the server in your client
 
-**Claude Desktop** (`claude_desktop_config.json`) and **Cursor**
-(`~/.cursor/mcp.json` or `.cursor/mcp.json`) use the same shape:
+**With Docker.** Put `policy.yaml` in a folder and mount it at `/config`. This
+works in Claude Desktop (`claude_desktop_config.json`) and Cursor
+(`~/.cursor/mcp.json` or `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm", "--read-only",
+        "-v", "/path/to/haltsql:/config:ro",
+        "-e", "HALTSQL_MCP_CONTEXT",
+        "ghcr.io/haltsql/haltsql-mcp",
+        "postgresql://agent_ro@host.docker.internal:5432/mydb"
+      ],
+      "env": { "HALTSQL_MCP_CONTEXT": "{\"tenant_id\": \"acme\"}" }
+    }
+  }
+}
+```
+
+**With pip.** Claude Desktop and Cursor use the same shape:
 
 ```json
 {
@@ -224,6 +273,9 @@ need anything else running. In production, run the
 audit. Then replace `--local-policy` with `HALTSQL_URL`, `HALTSQL_TOKEN` and
 `--policy-file` (see [Configuration](#configuration)).
 
+A single config file can replace the arguments and environment variables
+above. See [Config file](#config-file).
+
 ### 5. Try it
 
 Restart the client and ask something like "how many orders did we get last
@@ -231,6 +283,114 @@ week?" A well-behaved model calls `describe_policy` or `list_tables` first,
 then writes a scoped query. To check the guardrails, ask it to show you
 customer emails, or every tenant's orders. You should see a denial with
 reason codes, and no rows.
+
+## Run it in Docker
+
+The `ghcr.io/haltsql/haltsql-mcp` image is all a solo developer needs. It
+includes `haltsql-mcp` and the static `haltsql` CLI, runs as a non-root user,
+and works with a read-only root filesystem. MCP clients start it with
+`docker run -i` and talk to it over stdio. The same image can also call a
+central `haltsql-server`, or serve many clients over HTTP.
+
+### Solo: a folder and a connection string
+
+```text
+~/haltsql/
+  policy.yaml          # from `haltsql policy draft`, or written by hand
+```
+
+```sh
+docker run -i --rm --read-only -v ~/haltsql:/config:ro \
+  -e HALTSQL_MCP_CONTEXT='{"tenant_id":"acme"}' \
+  ghcr.io/haltsql/haltsql-mcp postgresql://agent_ro@host.docker.internal:5432/mydb
+```
+
+When `/config/policy.yaml` exists and nothing else is configured, the image
+verifies every query against it with the bundled CLI. No other process is
+involved. Leave out `HALTSQL_MCP_CONTEXT` if your policy has no tenant
+tables.
+
+### Everything in one config file
+
+Add `haltsql-mcp.yaml` next to the policy. Then the client config is just
+`docker run -i --rm --read-only -v ~/haltsql:/config:ro
+ghcr.io/haltsql/haltsql-mcp`:
+
+```yaml
+# ~/haltsql/haltsql-mcp.yaml
+database_url: postgresql://agent_ro:secret@host.docker.internal:5432/mydb
+policy: policy.yaml            # relative to this file
+context: { tenant_id: acme }
+row_cap: 200
+statement_timeout_ms: 5000
+```
+
+### Central server: policies, audit and hot reload in one place
+
+To verify through a central `haltsql-server` instead, use a `server` block
+in place of `policy`:
+
+```yaml
+# ~/haltsql/haltsql-mcp.yaml
+server:
+  url: https://haltsql.internal:8443
+  token_file: token            # file holding the sidecar bearer token
+  policy: analytics-agent      # optional; a token is usually pinned to one policy
+  ca_file: ca.pem              # optional: private CA for https
+database_url: postgresql://agent_ro@db.internal:5432/app
+policy_file: policy.yaml       # optional: lets list_tables and describe_policy show the rules
+context: { tenant_id: acme }
+```
+
+You can do the same with environment variables alone:
+`-e HALTSQL_URL=https://haltsql.internal:8443 -e HALTSQL_TOKEN=...`. A
+`HALTSQL_URL`, a config file or a `--haltsql-url` flag turns off the
+automatic `/config/policy.yaml` local mode. If the server can't be reached
+or rejects the token, the query is not executed.
+
+### Shared HTTP server
+
+```sh
+docker run -d --name haltsql-mcp -p 127.0.0.1:8765:8765 --read-only \
+  -v /etc/haltsql-mcp:/config:ro ghcr.io/haltsql/haltsql-mcp \
+  --transport http --tokens-file /config/tokens.json
+```
+
+Clients connect to `http://HOST:8765/mcp` with a bearer token from the
+[tokens file](#tenant-context), and each token maps to its own tenant
+context. The image listens on all interfaces inside the container
+(`HALTSQL_MCP_HOST=0.0.0.0`). Without a tokens file, HTTP is refused off
+loopback. TLS is not built in, so put a TLS proxy in front.
+
+### What the image does at startup
+
+| In `/config` | And not set | Effect |
+|---|---|---|
+| `haltsql-mcp.yaml` (or `.yml`, `.json`) | `HALTSQL_MCP_CONFIG`, `--config` | Loaded as the config file |
+| `policy.yaml` (or `.yml`, `.json`) | a config file, `HALTSQL_URL`, `HALTSQL_MCP_LOCAL_POLICY`, `--local-policy`, `--haltsql-url` | Verify locally with this policy |
+
+Anything set explicitly wins. Flags override environment variables, which
+override the config file.
+
+### Reaching your database from the container
+
+- **Docker Desktop (macOS, Windows):** use `host.docker.internal` as the host
+  in the connection string.
+- **Linux:** add `--network host` and use `localhost`, or use the database's
+  address on a Docker network.
+- **Database in Compose:** use its service name and attach the same network
+  (`--network NAME`).
+
+### Build the image yourself
+
+```sh
+docker build -t haltsql-local:dev .                    # the haltsql CLI image
+docker build -f clients/mcp/Dockerfile --build-arg HALTSQL_IMAGE=haltsql-local:dev -t haltsql-mcp:dev .
+scripts/mcp-docker-smoke.sh                            # solo, config file, central, fail-closed
+```
+
+Release images are signed with cosign and carry SLSA provenance and an SBOM,
+like the main image. Pin a version tag or digest in production.
 
 ## What changes for the agent
 
@@ -328,10 +488,12 @@ never stored or logged.
 
 ## Configuration
 
-Flags override environment variables.
+Flags override environment variables, and environment variables override the
+[config file](#config-file).
 
 | Variable | Flag | Default | Meaning |
 |---|---|---|---|
+| `HALTSQL_MCP_CONFIG` | `--config` | none (Docker: `/config/haltsql-mcp.yaml` if present) | [Config file](#config-file), overridden by environment variables and flags. |
 | `HALTSQL_URL` | `--haltsql-url` | `http://127.0.0.1:8080` | Sidecar URL. |
 | `HALTSQL_TOKEN` | | none | Sidecar bearer token (pinned to one policy there). |
 | `HALTSQL_POLICY` | `--policy` | none | Policy name to send to the sidecar. |
@@ -353,6 +515,31 @@ Flags override environment variables.
 | `HALTSQL_MCP_PUBLIC_URL` | `--public-url` | `http://HOST:PORT` | External URL (OAuth protected-resource metadata). |
 
 Invalid configuration exits with status `2` and a message on stderr.
+
+### Config file
+
+`--config FILE` or `HALTSQL_MCP_CONFIG` loads one YAML or JSON file. In
+Docker, `/config/haltsql-mcp.yaml` is loaded automatically. Relative paths
+are resolved against the file's own directory, so the same file works both
+natively and in a container. Unknown keys are an error, so a typo can't
+silently drop a guardrail.
+
+| Key | Same as |
+|---|---|
+| `database_url` | `HALTSQL_MCP_DATABASE_URL` |
+| `policy` | `HALTSQL_MCP_LOCAL_POLICY` (verify locally; not with `server`) |
+| `policy_file` | `HALTSQL_MCP_POLICY_FILE` |
+| `context` | `HALTSQL_MCP_CONTEXT` (a mapping) |
+| `tokens_file` | `HALTSQL_MCP_TOKENS_FILE` |
+| `row_cap`, `statement_timeout_ms` | `HALTSQL_MCP_ROW_CAP`, `HALTSQL_MCP_STATEMENT_TIMEOUT_MS` |
+| `set_config` | `HALTSQL_MCP_SET_CONFIG` (a mapping) |
+| `transport`, `host`, `port`, `public_url` | `HALTSQL_MCP_TRANSPORT`, `_HOST`, `_PORT`, `_PUBLIC_URL` |
+| `haltsql_bin` | `HALTSQL_BIN` |
+| `server.url` | `HALTSQL_URL` |
+| `server.token_file` | `HALTSQL_TOKEN` (the file's contents). An inline `server.token` is rejected, to keep secrets out of config files |
+| `server.policy`, `server.timeout` | `HALTSQL_POLICY`, `HALTSQL_TIMEOUT` |
+| `server.ca_file`, `server.client_cert`, `server.client_key` | `HALTSQL_CA_FILE`, `HALTSQL_CLIENT_CERT`, `HALTSQL_CLIENT_KEY` |
+
 
 ## Examples
 

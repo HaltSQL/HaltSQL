@@ -17,6 +17,8 @@ on:
       - vendor/**
       - bench/**
       - scripts/**
+      - clients/python/**
+      - clients/mcp/**
       - .github/workflows/build-images.yml
       - .github/workflows/release.yml
   workflow_dispatch:
@@ -94,6 +96,17 @@ jobs:
       - name: Stop Postgres
         if: always()
         run: docker rm -f haltsql-release-pg || true
+
+      # haltsql-mcp image (clients/mcp/Dockerfile) on top of the CLI just built:
+      # solo/local, config file, central haltsql-server and fail-closed modes.
+      - name: Build the haltsql-mcp image
+        run: |
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+            -f clients/mcp/Dockerfile --build-arg HALTSQL_IMAGE=haltsql-local:dev \
+            -t haltsql-mcp:dev .
+
+      - name: haltsql-mcp smoke test
+        run: scripts/mcp-docker-smoke.sh
 
   bench:
     name: Benchmark regression gate

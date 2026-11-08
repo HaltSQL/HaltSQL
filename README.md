@@ -11,7 +11,9 @@
 > [`haltsql-mcp`](docs/mcp.md), the safe drop-in replacement. It has the same
 > `query(sql)` tool and takes the same connection string, and it adds
 > column allowlists, tenant isolation, function allowlists, row caps and
-> statement timeouts. [Switch in five minutes →](docs/mcp.md)
+> statement timeouts. It runs from one Docker image with no central server
+needed, or calls `haltsql-server` when you want one.
+[Switch in five minutes →](docs/mcp.md)
 
 HaltSQL answers one question per statement:
 

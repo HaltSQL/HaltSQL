@@ -235,12 +235,17 @@ EXAMPLES
   # without a sidecar, verifying with the local haltsql CLI:
   haltsql-mcp --local-policy policy.yaml --context-file ctx.json --database-url ...
 
+  # everything in one file (YAML or JSON); env and flags override it:
+  haltsql-mcp --config haltsql-mcp.yaml
+
   # drop-in for @modelcontextprotocol/server-postgres (DSN as the last argument):
   haltsql-mcp --local-policy policy.yaml postgresql://agent_ro@localhost/app
 
 Exit status: 0 on shutdown, 2 on a configuration error.
 See docs/mcp.md for every environment variable.""",
     )
+    p.add_argument("--config", help="Config file (YAML or JSON); environment variables and flags override it. "
+                                    "Also HALTSQL_MCP_CONFIG.")
     p.add_argument("--transport", choices=["stdio", "http"])
     p.add_argument("--host")
     p.add_argument("--port", type=int)
@@ -264,7 +269,7 @@ See docs/mcp.md for every environment variable.""",
 
 def settings_from_args(argv: Optional[List[str]] = None, env: Optional[Mapping[str, str]] = None) -> Settings:
     args = _parser().parse_args(argv)
-    s = Settings.from_env(env)
+    s = Settings.from_sources(env, config_file=args.config)
     for attr in ("transport", "host", "port", "public_url", "haltsql_url", "haltsql_policy",
                  "local_policy", "policy_file", "database_url", "row_cap",
                  "statement_timeout_ms", "tokens_file"):
