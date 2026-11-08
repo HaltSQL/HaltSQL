@@ -155,7 +155,7 @@ What is checked, in order:
 | `exp` | required; `now < exp + leeway` | `401 token has expired` |
 | `nbf`, `iat` | if present, not later than `now + leeway` | `401` |
 | `required_claims` | a string must equal the claim, or be an element of an array claim, or a word of a space-separated claim such as `scope`; a list requires every value | `401` |
-| policy | `policy`, or the string value of `policy_claim` if it is in `allowed_policies` | `401` |
+| policy | `policy`, or the string value of `policy_claim` if it is in `allowed_policies`, or the first `policy_from_groups` rule the token's groups match (see [Policies from IdP groups](#policies-from-idp-groups)) | `401` |
 | context | each `context_claims` path must exist; strings and integral numbers become one value, non-empty arrays of those a set; anything else is rejected | `401` |
 
 The `sub` claim is recorded as the audit `subject`; the token itself is never
@@ -188,6 +188,72 @@ Pin a provider to one policy with `policy: NAME` when all its tokens belong
 to one agent. Use `policy_claim` + `allowed_policies` when one IdP issues
 tokens for several agents: the token cannot select a policy outside the
 allowlist.
+Use `policy_from_groups` when the IdP already sorts callers into groups or
+roles: no custom claim is needed.
+
+### Policies from IdP groups
+
+```yaml
+server:
+  auth:
+    oidc:
+      - name: corp-keycloak
+        issuer: https://sso.corp.example/realms/corp
+        audiences: [haltsql]
+        policy_from_groups:
+          claim: groups                 # default; a dot path such as realm_access.roles works
+          map:                          # ordered: the first entry the token matches wins
+            - { group: data-platform-admins, policy: admin-readonly }
+            - { group: support, policy: support-bot }
+            - { group: analysts, policy: saas-analytics }
+          default: null                 # no match: 401
+```
+
+How a verified token's policy is chosen:
+
+1. **Overage check.** If the token says its groups did not fit (Azure AD /
+   Entra ID "groups overage", below), it is rejected: `401`, reason
+   `groups_overage`.
+2. **Lookup.** `claim` is looked up like `context_claims`: first as one claim
+   name (so an Auth0 namespaced claim `https://corp.example/groups` works),
+   then as a dot path through nested objects. A missing claim is `401`
+   (`missing_claim`).
+3. **Shape.** A string is one group and is never split on spaces; an array
+   must contain only strings. Anything else (a number, an object, an array
+   with a non-string) is `401` (`bad_claim`).
+4. **First match.** The `map` entries are tried in the order written, and the
+   first one whose `group` the token has wins, whatever the order of the
+   groups inside the token. A caller in both `support` and `analysts` above
+   gets `support-bot`, so list the most specific or most privileged groups
+   first. Groups are compared exactly (case-sensitive).
+5. **Default.** If nothing matches, `default` is used. Without a `default`
+   the token is rejected: `401`, reason `no_group_policy` (the message does
+   not echo the token's groups).
+
+The token is still pinned to the selected policy (a request naming another
+policy gets `403 FORBIDDEN`), and `context_claims`, `required_claims` and
+`request_context_fields` work as for any OIDC provider.
+
+| IdP | Claim to use | Notes |
+|---|---|---|
+| Okta | `groups` | Add a groups claim to the authorization server's access token, with a filter (for example "starts with `haltsql-`") so it stays small. |
+| Keycloak | `groups`, or `realm_access.roles` / `resource_access.<client>.roles` | Add a *Group Membership* mapper to the client (or a client scope) with *Full group path* off, so groups are `analysts` and not `/analysts`; enable *Add to access token*. Realm and client roles are in the access token by default. Keycloak omits the claim for a user in no group, which is a `401` (`missing_claim`). |
+| Auth0 | a namespaced claim, e.g. `https://corp.example/groups` | Set it from a post-login Action (`api.accessToken.setCustomClaim`). |
+| Azure AD / Entra ID | `groups` (object ids) or `roles` (app roles) | See overage below. App roles (`roles`) are usually the better choice: they are scoped to the application and never overflow. |
+
+**Azure AD / Entra ID groups overage.** When a user is in more groups than
+fit in a token (200 for JWTs), Entra ID leaves the `groups` claim out and adds
+`_claim_names: {"groups": "src1"}` and `_claim_sources` pointing at Microsoft
+Graph (or, for implicit-flow tokens, `hasgroups: true`). HaltSQL never calls
+Graph: a partial or missing group list could select the wrong policy, so such
+a token is rejected with `groups_overage`, even if a `groups` claim is also
+present. To avoid it, set *groupMembershipClaims* to `ApplicationGroup` and
+assign only the relevant groups to the enterprise application, or map app
+roles with `claim: roles`.
+
+Group mapping is only as good as the IdP's group administration: anyone who
+can add a user to `data-platform-admins` grants that user the
+`admin-readonly` policy.
 
 ## Static tokens
 
@@ -202,7 +268,8 @@ identity rather than from the calling service.
   `anonymous` or `none`; `result` is `ok`, `rejected` or `unavailable`.
 - `haltsql_tls_reload_total{result}`.
 - OIDC rejections are logged at `info` with a stable reason code
-  (`expired`, `bad_signature`, `wrong_audience`, ...) and the peer address.
+  (`expired`, `bad_signature`, `wrong_audience`, `groups_overage`,
+  `no_group_policy`, ...) and the peer address.
   JWKS refresh failures are logged at `warn`.
 
 ## Threat notes
@@ -217,3 +284,7 @@ identity rather than from the calling service.
 - **IdP outage**: bounded stale keys, then fail closed.
 - **Fail closed**: every verification error is a denial; clients must treat
   any non-200 response as a denial.
+- **Group claims**: a token whose groups overflowed (Entra ID overage), whose
+  groups claim is missing or malformed, or whose groups match no rule
+  without a `default`, is rejected. Group membership is read only from the
+  signed token, never from the request.

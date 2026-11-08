@@ -42,3 +42,45 @@
     HALTSQL_GENCERTS_BIN
     %{dep:gencerts.exe}
     (run %{test})))))
+
+; Proxy audit (hash-chained sinks, on_error policies) and hot reload.
+;  - test_proxy_audit_unit: ProxyConfig audit/reload sections, Paudit file chains.
+;  - test_proxy_audit: the real binary against the lab Postgres (FIFO-backed failing
+;    sinks, SIGHUP / reload.watch) and an S3 sink writing to a real MinIO container
+;    (host port 16002-16003; skipped without Docker or a MinIO image).
+
+(test
+ (name test_proxy_audit_unit)
+ (package haltsql-proxy)
+ (modules test_proxy_audit_unit)
+ (libraries haltsql_pgwire haltsql haltsql.cloud alcotest yojson lwt lwt.unix)
+ (deps
+  (source_tree fixtures)))
+
+(test
+ (name test_proxy_audit)
+ (package haltsql-proxy)
+ (modules test_proxy_audit)
+ (libraries
+  haltsql_pgwire
+  haltsql
+  haltsql.cloud
+  alcotest
+  yojson
+  unix
+  lwt
+  lwt.unix
+  uri
+  cohttp)
+ (deps
+  pgclient.py
+  (source_tree fixtures)
+  (file ../../lab/schemas/saas_shared.sql))
+ (action
+  (setenv
+   HALTSQL_PROXY_BIN
+   %{dep:../../bin/proxy/main.exe}
+   (setenv
+    HALTSQL_AUDIT_CLI
+    %{dep:../audit/audit_cli.exe}
+    (run %{test})))))

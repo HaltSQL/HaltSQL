@@ -226,9 +226,38 @@ policy (`rls check`; exit 1 on drift). See [rls-generation.md](rls-generation.md
 
 Build, sign (Ed25519), verify and inspect signed policy bundles:
 `bundle keygen`, `bundle build`, `bundle sign`, `bundle verify`,
-`bundle inspect`. The server loads bundles listed under `policies` and refuses
+`bundle inspect`; publish and fetch them as OCI artifacts with
+`bundle push --oci REF` and `bundle pull --oci REF` (exit code 3 when the
+registry is unreachable or refuses the request; see
+[policy-bundles.md](policy-bundles.md#publishing-and-pulling-with-the-cli)). The server loads bundles listed under `policies` and refuses
 any whose signature does not verify. See [policy-bundles.md](policy-bundles.md)
 and, for CI, [policy-ci.md](policy-ci.md).
+
+## haltsql report
+
+Shadow-mode analytics over audit records written by haltsql-server or
+haltsql-proxy (files, directories, or `-`), and conservative policy
+suggestions (`--suggest`), optionally applied to a copy of a policy
+(`--apply-to FILE -o OUT`). Exit 1 if applying would turn a tenancy denial
+into an allow or the patched policy does not validate. See
+[shadow-reports.md](shadow-reports.md).
+
+```
+haltsql report audit.jsonl --since 7d --suggest --policy-file policies/shop.yaml
+```
+
+## haltsql audit verify
+
+Verify the hash chain of audit logs: files, rotated sets (`--concat`), mixed
+container logs (`--mixed`), downloaded object-sink directories (with
+`--spool`), and `s3://bucket/prefix` read directly. Exit 0 when every chain
+verifies, 1 when one is broken, 2 on usage or input errors. See
+[audit-verify.md](audit-verify.md).
+
+```
+haltsql audit verify /var/log/haltsql/audit.jsonl
+haltsql audit verify --json s3://corp-haltsql-audit/haltsql/audit/
+```
 
 ## haltsql version
 

@@ -62,6 +62,7 @@ field of each reason carries a query-specific version of the same advice.
 | [`E_WRITE_DENIED`](#e_write_denied) | Write to a table or column the policy does not allow |
 | [`E_UNSUPPORTED`](#e_unsupported) | Syntax HaltSQL does not analyze |
 | [`E_INTERNAL`](#e_internal) | Analyzer bug; fails closed |
+| [`E_EXTERNAL_POLICY`](#e_external_policy) | Denied by the external policy engine (OPA) |
 
 ## Input and parsing
 
@@ -406,3 +407,21 @@ should alert on any occurrence of this code.
 **Fix (agent):** try a simpler query. **Fix (operator):** file a bug with the
 SQL, policy, and HaltSQL version. If the input looks like a bypass attempt,
 report it privately per [SECURITY.md](../SECURITY.md).
+
+## External policy
+
+### E_EXTERNAL_POLICY
+
+Only haltsql-server emits this code, and only when the optional
+[`opa`](config-reference.md#opa) check is configured. HaltSQL allowed the
+query, then Open Policy Agent denied it, or OPA could not be asked (timeout,
+error, undefined decision) and `opa.on_error` is `deny`. The rule is always
+`opa.decision`; the message carries OPA's reasons (sanitized) or says the
+external check failed. In a shadow-mode policy the reason appears in
+`shadow_reasons` and the query stays allowed. OPA can never turn a HaltSQL
+denial into an allow, so this code never appears next to an allow.
+
+**Fix (agent):** the query is outside what the organization's OPA policy
+allows for this caller; do not retry it unchanged. **Fix (operator):** read
+the OPA decision log and the `haltsql_opa_decisions_total` metric; see
+[opa.md](opa.md).

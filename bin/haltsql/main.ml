@@ -313,6 +313,8 @@ let main =
       Cmd_policy_draft.cmd;
       Cmd_rls.cmd;
       Cmd_bundle.cmd;
+      Cmd_report.cmd;
+      Cmd_audit.cmd;
     ]
 
 let () =

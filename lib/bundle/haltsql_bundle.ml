@@ -358,10 +358,30 @@ let build (metadata : metadata) ~(policies : Policy.t list) ~catalogs =
         | Some n -> malformed "duplicate catalog name %S" n
         | None -> Ok ())
   in
+  (* Policy_load.to_json writes [tenancy.keys: {}] for a policy without tenancy, which
+     the policy loader rejects ("must not be empty"); the bundle stores such a policy
+     without the key. The loaded policy (and its version) is the same. *)
+  let drop_empty_tenancy_keys = function
+    | `Assoc kvs ->
+        `Assoc
+          (List.map
+             (function
+               | "tenancy", `Assoc t ->
+                   ( "tenancy",
+                     `Assoc (List.filter (fun (k, v) -> not (k = "keys" && v = `Assoc [])) t)
+                   )
+               | kv -> kv)
+             kvs)
+    | j -> j
+  in
   let policies_json =
     List.map
       (fun (p : Policy.t) ->
-        `Assoc [ ("name", `String p.name); ("document", Policy_load.to_json p) ])
+        `Assoc
+          [
+            ("name", `String p.name);
+            ("document", drop_empty_tenancy_keys (Policy_load.to_json p));
+          ])
       policies
   in
   let catalogs_json =

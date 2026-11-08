@@ -64,9 +64,10 @@ type provider = {
   mutable last_forced : float;  (** last unknown-kid forced refresh *)
   mutable discovered : string option;  (** jwks_uri from discovery *)
   mutable inflight : (int, string) result Lwt.t option;
+  mutable groups : Config.groups_policy option;  (** [policy_from_groups] *)
 }
 
-let provider ?fetch ?(now = Unix.gettimeofday) (cfg : Config.oidc_provider) =
+let provider ?fetch ?(now = Unix.gettimeofday) ?groups (cfg : Config.oidc_provider) =
   let fetch = match fetch with Some f -> f | None -> http_fetch () in
   {
     cfg;
@@ -78,9 +79,11 @@ let provider ?fetch ?(now = Unix.gettimeofday) (cfg : Config.oidc_provider) =
     last_forced = neg_infinity;
     discovered = None;
     inflight = None;
+    groups;
   }
 
 let config p = p.cfg
+let groups p = p.groups
 
 let check_url p what s =
   let u = Uri.of_string s in
@@ -205,7 +208,7 @@ let verify p tok =
   match keys with
   | Error e -> Lwt.return_error (Jwt.Keys_unavailable e)
   | Ok keys -> (
-      match Oidc.verify p.cfg ~keys ~now:(p.now ()) tok with
+      match Oidc.verify ?groups:p.groups p.cfg ~keys ~now:(p.now ()) tok with
       | Error (Jwt.Unknown_kid _) as first ->
           let now = p.now () in
           if now -. p.last_forced < forced_refresh_interval then Lwt.return first
@@ -214,7 +217,8 @@ let verify p tok =
             let* keys = current_keys p ~force:true in
             match keys with
             | Error _ -> Lwt.return first
-            | Ok keys -> Lwt.return (Oidc.verify p.cfg ~keys ~now:(p.now ()) tok)
+            | Ok keys ->
+                Lwt.return (Oidc.verify ?groups:p.groups p.cfg ~keys ~now:(p.now ()) tok)
           end
       | r -> Lwt.return r)
 
@@ -226,18 +230,31 @@ type registry = {
   providers : provider list;
 }
 
-let registry ?fetch ?now cfgs =
-  { fetch; now; providers = List.map (fun c -> provider ?fetch ?now c) cfgs }
+let groups_for group_policies (c : Config.oidc_provider) =
+  List.assoc_opt c.oidc_name group_policies
 
-let update r cfgs =
+let registry ?fetch ?now ?(group_policies = []) cfgs =
+  {
+    fetch;
+    now;
+    providers =
+      List.map
+        (fun c -> provider ?fetch ?now ?groups:(groups_for group_policies c) c)
+        cfgs;
+  }
+
+let update ?(group_policies = []) r cfgs =
   {
     r with
     providers =
       List.map
         (fun c ->
+          let groups = groups_for group_policies c in
           match List.find_opt (fun p -> p.cfg = c) r.providers with
-          | Some p -> p
-          | None -> provider ?fetch:r.fetch ?now:r.now c)
+          | Some p ->
+              p.groups <- groups;
+              p
+          | None -> provider ?fetch:r.fetch ?now:r.now ?groups c)
         cfgs;
   }
 

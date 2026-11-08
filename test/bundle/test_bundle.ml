@@ -168,6 +168,25 @@ let test_round_trip () =
   let ps = ok_b "load_verified" (B.load_verified p [ pub old_key ]) in
   Alcotest.(check int) "load_verified count" 5 (List.length ps)
 
+(* A policy without tenancy round-trips (Policy_load.to_json writes tenancy.keys: {},
+   which the loader rejects; the bundle omits it). *)
+let test_untenanted () =
+  let p =
+    match
+      Policy_load.of_string Docload.Yaml
+        "apiVersion: haltsql.dev/v1\nkind: Policy\nmetadata: { name: plain }\n\
+         search_path: [app]\ntables:\n  app.orders: { columns: [id] }\n"
+    with
+    | Ok p -> p
+    | Error _ -> Alcotest.fail "policy"
+  in
+  let bytes = ok_b "build" (B.build metadata ~policies:[ p ] ~catalogs:[]) in
+  let path = write_signed "plain.haltsqlbundle" bytes old_key in
+  let ps = ok_b "load" (B.load_verified path [ pub old_key ]) in
+  Alcotest.(check (list string))
+    "same version" [ p.version ]
+    (List.map (fun (q : Policy.t) -> q.version) ps)
+
 let test_deterministic () =
   let a = build_bytes () and b = build_bytes () in
   Alcotest.(check string) "same bytes" a b;
@@ -577,6 +596,7 @@ let () =
       ( "bundle",
         [
           Alcotest.test_case "round trip" `Quick test_round_trip;
+          Alcotest.test_case "policy without tenancy" `Quick test_untenanted;
           Alcotest.test_case "deterministic build" `Quick test_deterministic;
           Alcotest.test_case "payload byte flip" `Quick test_payload_flip;
           Alcotest.test_case "signature flip" `Quick test_signature_flip;

@@ -1,6 +1,14 @@
 (test
  (name test_load)
- (modules test_load helpers t_docload t_policy t_config t_config_ext t_misc)
+ (modules
+  test_load
+  helpers
+  t_docload
+  t_policy
+  t_config
+  t_config_ext
+  t_config_tier3
+  t_misc)
  (libraries
   unix
   haltsql.core

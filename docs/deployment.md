@@ -50,6 +50,110 @@ docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql \
 Pin images by digest in production (`ghcr.io/ardada2468/haltsql@sha256:...`)
 and verify the signature (see below).
 
+### What is in the image
+
+| Path | Content |
+|---|---|
+| `/usr/local/bin/haltsql-server` | Entrypoint. Default command `--config /etc/haltsql/config.yaml`. |
+| `/usr/local/bin/haltsql` | The CLI. |
+| `/usr/local/bin/haltsql-proxy` | The PostgreSQL wire-protocol firewall ([proxy.md](proxy.md)). |
+| `/var/log/haltsql` | Empty, writable by the image user, for file audit sinks. |
+| `/etc/ssl/certs` | CA bundle (OIDC discovery, Vault, AWS, GCP). |
+| `/usr/share/doc/haltsql` | `LICENSE`, `NOTICE`, `LICENSE.libpg_query`. |
+
+The base image is `gcr.io/distroless/static-debian12:nonroot`. It has no
+shell, no package manager and no libc, because the binaries are fully static.
+It runs as uid/gid `65532` (`nonroot`). `HALTSQL_LISTEN=0.0.0.0:8080` is set.
+Port 8080 is the server and 6432 the proxy. There is no `HEALTHCHECK`, because
+the image has no shell or curl. Use orchestrator probes on `GET /healthz`
+(liveness) and `GET /readyz` (readiness).
+
+Run the proxy from the same image:
+
+```sh
+docker run --rm -p 127.0.0.1:6432:6432 \
+  -v "$PWD/proxy:/etc/haltsql:ro" -e UPSTREAM_PASSWORD \
+  --entrypoint /usr/local/bin/haltsql-proxy \
+  ghcr.io/ardada2468/haltsql:0.1.0 run --config /etc/haltsql/proxy.yaml
+```
+
+Mounted files must be readable by uid 65532.
+
+### Building the image locally
+
+```sh
+docker build -t haltsql-local:dev .                          # runtime image
+docker build --target scratch -t haltsql-local:scratch .     # same binaries on scratch
+docker buildx build --target dist --output type=local,dest=dist .  # just the binaries
+```
+
+The `Dockerfile` has four stages:
+
+| Stage | What it does |
+|---|---|
+| `builder` | `ocaml/opam:alpine-3.22-ocaml-5.3`. Solves the dependencies against a pinned opam-repository commit (`OPAM_REPOSITORY_COMMIT`). Builds the three binaries with `HALTSQL_STATIC=1 dune build --profile release`, strips them, and fails unless `file` reports each one as statically linked, `ldd` finds no dynamic dependencies, and each binary runs. |
+| `dist` | `scratch` holding only the binaries and licences. The release workflow exports it with `--output`. |
+| `scratch` | The binaries on an empty filesystem. Its build runs `haltsql version` in exec form, so the build fails if anything is dynamically linked. |
+| `runtime` (default) | The distroless image described above. |
+
+Both the base image tag and the opam-repository commit are pinned, so a
+rebuild solves the same dependency set. Change them on purpose, as their own
+change.
+
+`scripts/docker-smoke.sh` tests a built image end to end:
+
+```sh
+make -C lab up                    # Postgres 17 on localhost:5417 (for the proxy step)
+SCRATCH_IMAGE=haltsql-local:scratch scripts/docker-smoke.sh
+```
+
+It checks the following:
+
+- The image runs as non-root and has no shell.
+- `haltsql version`, `validate` and `verify` work, with exit 0 for an allowed
+  query and exit 1 for a denied one.
+- `haltsql-server` answers `GET /healthz` and `POST /v1/verify` for both an
+  allowed and a denied query, writes an audit record, and keeps raw SQL out of
+  its output.
+- `haltsql-proxy` runs against a real PostgreSQL, reached from the container as
+  `host.docker.internal:5417`. Through `psql` from a `postgres:17-alpine`
+  client container, an allowed query returns rows, while a cross-tenant query
+  and a stacked `DROP TABLE` both get `ERROR 42501 ... denied by policy`, and
+  the table is still intact afterwards.
+- With `SCRATCH_IMAGE` set, all three binaries also run on the scratch image.
+
+The script creates its own containers, network and database, all named after
+its process id, and always removes them. Without a Docker daemon it prints
+`SKIPPED` and exits 0. If PostgreSQL is unreachable, it skips the proxy step
+with a message. Set `REQUIRE_PROXY=1` to make that a failure instead (CI does
+this), or `SKIP_PROXY=1` to skip the proxy step on purpose. Set `PGHOST_FROM_DOCKER`, `PGPORT` and
+`HALTSQL_PGPASSWORD` to point it at another server. The
+`.github/workflows/build-images.yml` workflow runs it on amd64 and arm64 for
+every pull request that touches the build.
+
+### Static Linux binaries
+
+The release tarballs (`haltsql-<tag>-linux-{amd64,arm64}.tar.gz`) hold the
+output of the `dist` stage, built on a native runner for each architecture by
+`.github/workflows/release.yml`. They are fully static musl executables with
+no runtime dependencies. They run on any Linux distribution, glibc or musl,
+and on `scratch`.
+
+```sh
+$ file haltsql-server
+haltsql-server: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped
+$ ldd haltsql-server
+        not a dynamic executable
+```
+
+Static linking is opt-in in the build (`HALTSQL_STATIC=1`, read by
+`bin/link_flags.ml`, which adds `-ccopt -static`). The default `dune build`
+stays dynamic. A static build needs musl, because glibc's static NSS is not
+usable. It also needs the static archives of the C libraries the binaries
+link: `libgmp.a` from Alpine's `gmp-static` package for zarith, and the
+vendored `libpg_query.a`, which dune builds. The mirage-crypto, digestif and
+Unix stubs are compiled from source.
+
 ## Kubernetes: sidecar
 
 Run `haltsql-server` as a second container in the agent's pod. The agent calls

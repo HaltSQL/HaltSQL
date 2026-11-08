@@ -38,6 +38,15 @@ type limits = {
 }
 
 type audit_sink = Audit_stdout | Audit_file of string | Audit_none
+type audit_on_error = Audit_fail_closed | Audit_buffer | Audit_drop
+
+type audit_sink_spec = {
+  sink : Config.sink_kind;
+  sink_on_error : audit_on_error;
+  max_buffer_records : int;
+}
+
+type reload = { watch : bool; poll_interval : float }
 
 type t = {
   listen_host : string;
@@ -50,9 +59,12 @@ type t = {
   deny_sqlstate : string;
   allow_transaction_control : bool;
   audit : audit_sink;
+  audit_sinks : audit_sink_spec list;
   log_raw_sql : bool;
   log_level : string;
   shutdown_grace : float;
+  reload : reload;
+  source_files : string list;
 }
 
 let kind = "ProxyConfig"
@@ -66,7 +78,14 @@ type ctx = {
   file : string option;
   base_dir : string option;
   errors : Load_error.t list ref;
+  files : string list ref;  (** every file read, for the reload watcher *)
 }
+
+let note_file ctx path =
+  let path =
+    if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
+  in
+  if not (List.mem path !(ctx.files)) then ctx.files := path :: !(ctx.files)
 
 let error ctx path msg =
   ctx.errors := Load_error.make ?file:ctx.file ~path msg :: !(ctx.errors)
@@ -79,7 +98,8 @@ let absolute ctx p =
     match ctx.base_dir with Some d -> Filename.concat d p | None -> p
   else p
 
-let read_file path limit =
+let read_file ctx path limit =
+  note_file ctx path;
   match open_in_bin path with
   | exception Sys_error e -> Error e
   | ic ->
@@ -140,7 +160,7 @@ let resolve_string ctx path ~env s =
             let f = rest "file:" in
             if f = "" then error ctx path "empty file path in ${file:...}"
             else
-              match read_file (absolute ctx f) max_secret_file_bytes with
+              match read_file ctx (absolute ctx f) max_secret_file_bytes with
               | Ok c -> Buffer.add_string b (trim_newline c)
               | Error e -> error ctx path (Printf.sprintf "${file:%s}: %s" f e)
           else
@@ -290,7 +310,7 @@ let non_empty ctx path = function
 (* TLS material                                                         *)
 
 let load_certs ctx path p =
-  match read_file (absolute ctx p) max_secret_file_bytes with
+  match read_file ctx (absolute ctx p) max_secret_file_bytes with
   | Error e ->
       error ctx path e;
       None
@@ -305,7 +325,7 @@ let load_certs ctx path p =
           None)
 
 let load_key ctx path p =
-  match read_file (absolute ctx p) max_secret_file_bytes with
+  match read_file ctx (absolute ctx p) max_secret_file_bytes with
   | Error e ->
       error ctx path e;
       None
@@ -473,6 +493,7 @@ let policies_j ctx path j =
                      match str ctx (key p "path") pj with
                      | None -> []
                      | Some f -> (
+                         note_file ctx (absolute ctx f);
                          match Policy_load.of_file (absolute ctx f) with
                          | Ok pol -> [ pol ]
                          | Error errs ->
@@ -624,6 +645,235 @@ let identities_j ctx path j policies =
       error ctx path ("expected a list, got " ^ type_name j);
       []
 
+(* ------------------------------------------------------------------ *)
+(* Audit sinks                                                          *)
+
+let audit_on_error_values =
+  [ ("fail_closed", Audit_fail_closed); ("buffer", Audit_buffer); ("drop", Audit_drop) ]
+
+let default_max_buffer = function
+  | Config.Sink_stdout | Config.Sink_file _ -> 10_000
+  | Config.Sink_s3 _ | Config.Sink_gcs _ -> 100_000
+
+let replace_all s ~sub ~by =
+  let n = String.length s and m = String.length sub in
+  let b = Buffer.create n in
+  let rec go i =
+    if i >= n then ()
+    else if i + m <= n && String.sub s i m = sub then (
+      Buffer.add_string b by;
+      go (i + m))
+    else (
+      Buffer.add_char b s.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents b
+
+(* Strings here are already resolved: a "${" left in one is literal and must stay
+   literal when Haltsql.Config (which resolves placeholders itself) decodes it again. *)
+let rec escape_placeholders (j : Yojson.Safe.t) : Yojson.Safe.t =
+  match j with
+  | `String s -> `String (replace_all s ~sub:"${" ~by:"$${")
+  | `List l -> `List (List.map escape_placeholders l)
+  | `Assoc kvs -> `Assoc (List.map (fun (k, v) -> (k, escape_placeholders v)) kvs)
+  | j -> j
+
+(* stdout / file / s3 / gcs sinks are decoded by Haltsql.Config, exactly as the
+   server's audit.sinks entries, so both components accept the same sink syntax. *)
+let delegate_sink ctx path kvs =
+  let doc =
+    `Assoc
+      [
+        ("apiVersion", `String api_version);
+        ("kind", `String "Config");
+        ("audit", `Assoc [ ("sinks", `List [ escape_placeholders (`Assoc kvs) ]) ]);
+      ]
+  in
+  match Config.of_json ?file:ctx.file ?base_dir:ctx.base_dir ~env:(fun _ -> None) doc with
+  | Ok { Config.sinks = [ s ]; _ } -> Some s.Config.sink
+  | Ok _ ->
+      error ctx path "invalid audit sink";
+      None
+  | Error errs ->
+      let pre = "audit.sinks[0]" in
+      let lp = String.length pre in
+      List.iter
+        (fun (e : Load_error.t) ->
+          let p =
+            if String.length e.path >= lp && String.sub e.path 0 lp = pre then
+              path ^ String.sub e.path lp (String.length e.path - lp)
+            else if e.path = "" then path
+            else key path e.path
+          in
+          ctx.errors := { e with path = p } :: !(ctx.errors))
+        errs;
+      None
+
+(* [on_error] and [max_buffer_records] (proxy-level delivery policy), shared by the
+   single-sink form and the entries of [sinks]. *)
+let delivery_j ctx path kvs =
+  let on_error =
+    optional kvs "on_error" ~default:(Some Audit_fail_closed) path (fun p j ->
+        enum ctx p audit_on_error_values j)
+  in
+  let mbr =
+    optional kvs "max_buffer_records" ~default:(Some None) path (fun p j ->
+        Option.map Option.some (int ctx p ~min:1 ~max:1_000_000 j))
+  in
+  (match (on_error, mbr) with
+  | Some (Audit_fail_closed | Audit_drop), Some (Some _) ->
+      error ctx (key path "max_buffer_records") "only allowed with on_error: buffer"
+  | _ -> ());
+  match (on_error, mbr) with Some o, Some m -> Some (o, m) | _ -> None
+
+let spec_of sink (on_error, mbr) =
+  {
+    sink;
+    sink_on_error = on_error;
+    max_buffer_records = Option.value mbr ~default:(default_max_buffer sink);
+  }
+
+let audit_sink_item ctx path j =
+  match j with
+  | `Assoc kvs -> (
+      let ty_ok =
+        match field kvs "type" with
+        | Some (`String ("stdout" | "file" | "s3" | "gcs")) -> true
+        | Some (`String ("elasticsearch" | "kafka")) ->
+            error ctx (key path "type")
+              "not supported by haltsql-proxy (supported: stdout, file, s3, gcs)";
+            false
+        | Some (`String s) ->
+            error ctx (key path "type")
+              (Printf.sprintf "invalid value %S (expected one of: stdout, file, s3, gcs)"
+                 s);
+            false
+        | Some j ->
+            error ctx (key path "type") ("expected a string, got " ^ type_name j);
+            false
+        | None ->
+            error ctx (key path "type") "required";
+            false
+      in
+      let delivery = delivery_j ctx path kvs in
+      if not ty_ok then None
+      else
+        let kvs' =
+          List.filter_map
+            (fun (k, v) ->
+              match k with
+              | "max_buffer_records" -> None
+              | "on_error" -> (
+                  match delivery with
+                  | Some (Audit_buffer, _) -> Some (k, `String "buffer")
+                  | _ -> None)
+              | _ -> Some (k, v))
+            kvs
+        in
+        match (delegate_sink ctx path kvs', delivery) with
+        | Some sink, Some d -> Some (spec_of sink d)
+        | _ -> None)
+  | j ->
+      error ctx path ("expected an object, got " ^ type_name j);
+      None
+
+let audit_j ctx p j =
+  match
+    obj ctx p
+      ~keys:[ "type"; "path"; "on_error"; "max_buffer_records"; "sinks"; "log_raw_sql" ]
+      j
+  with
+  | None -> None
+  | Some ak -> (
+      let raw =
+        optional ak "log_raw_sql" ~default:(Some false) p (fun p j -> bool ctx p j)
+      in
+      let sinks =
+        match field ak "sinks" with
+        | Some sj -> (
+            List.iter
+              (fun k ->
+                if field ak k <> None then
+                  error ctx (key p k) "not allowed together with sinks")
+              [ "type"; "path"; "on_error"; "max_buffer_records" ];
+            let sp = key p "sinks" in
+            match sj with
+            | `List [] ->
+                error ctx sp "at least one sink is required (use type: none for no audit)";
+                None
+            | `List items ->
+                let specs =
+                  List.mapi (fun i it -> audit_sink_item ctx (idx sp i) it) items
+                in
+                if List.for_all Option.is_some specs then
+                  Some (List.filter_map Fun.id specs)
+                else None
+            | j ->
+                error ctx sp ("expected a list, got " ^ type_name j);
+                None)
+        | None -> (
+            let delivery = delivery_j ctx p ak in
+            match
+              required ctx p ak "type" (fun p j ->
+                  enum ctx p [ ("stdout", `Stdout); ("file", `File); ("none", `None) ] j)
+            with
+            | Some `Stdout ->
+                if field ak "path" <> None then
+                  error ctx (key p "path") "only allowed with type: file";
+                Option.map (fun d -> [ spec_of Config.Sink_stdout d ]) delivery
+            | Some `None ->
+                List.iter
+                  (fun k ->
+                    if field ak k <> None then
+                      error ctx (key p k) "not allowed with type: none")
+                  [ "path"; "on_error"; "max_buffer_records" ];
+                Some []
+            | Some `File -> (
+                match
+                  required ctx p ak "path" (fun pp j ->
+                      Option.map (absolute ctx) (non_empty ctx pp (str ctx pp j)))
+                with
+                | Some f ->
+                    Option.map (fun d -> [ spec_of (Config.Sink_file f) d ]) delivery
+                | None -> None)
+            | None -> None)
+      in
+      (* two sinks writing one file (or sharing a spool) would interleave two chains *)
+      (match sinks with
+      | Some specs ->
+          let seen = Hashtbl.create 4 in
+          List.iteri
+            (fun i s ->
+              let where = if field ak "sinks" = None then p else idx (key p "sinks") i in
+              let claim what v =
+                if Hashtbl.mem seen (what, v) then
+                  error ctx where
+                    (Printf.sprintf "%s %S is used by more than one audit sink" what v)
+                else Hashtbl.add seen (what, v) ()
+              in
+              match s.sink with
+              | Config.Sink_stdout -> claim "output" "stdout"
+              | Config.Sink_file f -> claim "file" f
+              | Config.Sink_s3 c -> Option.iter (claim "spool_dir") c.s3_spool_dir
+              | Config.Sink_gcs c -> Option.iter (claim "spool_dir") c.gcs_spool_dir)
+            specs
+      | None -> ());
+      match (sinks, raw) with Some s, Some r -> Some (s, r) | _ -> None)
+
+let legacy_audit specs =
+  match
+    List.find_map
+      (fun s ->
+        match s.sink with
+        | Config.Sink_stdout -> Some Audit_stdout
+        | Config.Sink_file f -> Some (Audit_file f)
+        | Config.Sink_s3 _ | Config.Sink_gcs _ -> None)
+      specs
+  with
+  | Some a -> a
+  | None -> Audit_none
+
 let valid_sqlstate s =
   String.length s = 5
   && String.for_all (function '0' .. '9' | 'A' .. 'Z' -> true | _ -> false) s
@@ -644,6 +894,7 @@ let decode ctx (j : Yojson.Safe.t) =
       "audit";
       "logging";
       "shutdown_grace_seconds";
+      "reload";
     ]
   in
   match obj ctx "" ~keys:top j with
@@ -819,36 +1070,36 @@ let decode ctx (j : Yojson.Safe.t) =
       in
       let audit =
         optional kvs "audit"
-          ~default:(Some (Audit_stdout, false))
+          ~default:
+            (Some
+               ( [
+                   {
+                     sink = Config.Sink_stdout;
+                     sink_on_error = Audit_fail_closed;
+                     max_buffer_records = default_max_buffer Config.Sink_stdout;
+                   };
+                 ],
+                 false ))
+          "" (audit_j ctx)
+      in
+      let reload =
+        optional kvs "reload"
+          ~default:(Some { watch = false; poll_interval = 2. })
           ""
           (fun p j ->
-            match obj ctx p ~keys:[ "type"; "path"; "log_raw_sql" ] j with
+            match obj ctx p ~keys:[ "watch"; "poll_interval_seconds" ] j with
             | None -> None
-            | Some ak -> (
-                let raw =
-                  optional ak "log_raw_sql" ~default:(Some false) p (fun p j ->
-                      bool ctx p j)
+            | Some rk -> (
+                let watch =
+                  optional rk "watch" ~default:(Some false) p (fun p j -> bool ctx p j)
                 in
-                let sink =
-                  match
-                    required ctx p ak "type" (fun p j ->
-                        enum ctx p
-                          [ ("stdout", `Stdout); ("file", `File); ("none", `None) ]
-                          j)
-                  with
-                  | Some `Stdout ->
-                      if field ak "path" <> None then
-                        error ctx (key p "path") "only allowed with type: file";
-                      Some Audit_stdout
-                  | Some `None -> Some Audit_none
-                  | Some `File ->
-                      required ctx p ak "path" (fun pp j ->
-                          Option.map
-                            (fun f -> Audit_file (absolute ctx f))
-                            (non_empty ctx pp (str ctx pp j)))
-                  | None -> None
+                let poll =
+                  optional rk "poll_interval_seconds" ~default:(Some 2.) p (fun p j ->
+                      number ctx p ~min:0.1 ~max:3600. j)
                 in
-                match (sink, raw) with Some s, Some r -> Some (s, r) | _ -> None))
+                match (watch, poll) with
+                | Some watch, Some poll_interval -> Some { watch; poll_interval }
+                | _ -> None))
       in
       let log_level =
         optional kvs "logging" ~default:(Some "info") "" (fun p j ->
@@ -889,7 +1140,8 @@ let decode ctx (j : Yojson.Safe.t) =
           audit,
           log_level,
           shutdown_grace,
-          allow_tx )
+          allow_tx,
+          reload )
       with
       | ( Some (listen_host, listen_port),
           Some tls,
@@ -897,10 +1149,11 @@ let decode ctx (j : Yojson.Safe.t) =
           Some auth,
           Some limits,
           Some deny_sqlstate,
-          Some (audit, log_raw_sql),
+          Some (audit_sinks, log_raw_sql),
           Some log_level,
           Some shutdown_grace,
-          Some allow_transaction_control ) ->
+          Some allow_transaction_control,
+          Some reload ) ->
           Some
             {
               listen_host;
@@ -912,15 +1165,18 @@ let decode ctx (j : Yojson.Safe.t) =
               limits;
               deny_sqlstate;
               allow_transaction_control;
-              audit;
+              audit = legacy_audit audit_sinks;
+              audit_sinks;
               log_raw_sql;
               log_level;
               shutdown_grace;
+              reload;
+              source_files = List.rev !(ctx.files);
             }
       | _ -> None)
 
 let of_json ?file ?base_dir ?(env = Sys.getenv_opt) j =
-  let ctx = { file; base_dir; errors = ref [] } in
+  let ctx = { file; base_dir; errors = ref []; files = ref [] } in
   let j = resolve_tree ctx ~env j in
   let r = if !(ctx.errors) = [] then decode ctx j else None in
   match (r, List.rev !(ctx.errors)) with
@@ -936,7 +1192,63 @@ let of_file ?env path =
         let d = Filename.dirname path in
         if Filename.is_relative d then Filename.concat (Sys.getcwd ()) d else d
       in
-      of_json ~file:path ~base_dir ?env j
+      let abs =
+        if Filename.is_relative path then Filename.concat (Sys.getcwd ()) path else path
+      in
+      Result.map
+        (fun c ->
+          { c with source_files = abs :: List.filter (fun f -> f <> abs) c.source_files })
+        (of_json ~file:path ~base_dir ?env j)
+
+let on_error_name = function
+  | Audit_fail_closed -> "fail_closed"
+  | Audit_buffer -> "buffer"
+  | Audit_drop -> "drop"
+
+let sink_name = function
+  | Config.Sink_stdout -> "stdout"
+  | Config.Sink_file f -> f
+  | Config.Sink_s3 c -> Printf.sprintf "s3://%s/%s" c.s3_bucket c.s3_prefix
+  | Config.Sink_gcs c -> Printf.sprintf "gs://%s/%s" c.gcs_bucket c.gcs_prefix
+
+(* Never includes credentials (static S3 keys, service-account paths are fine). *)
+let audit_sink_json s : Yojson.Safe.t =
+  let opt k = function Some v -> [ (k, `String v) ] | None -> [] in
+  let kind =
+    match s.sink with
+    | Config.Sink_stdout -> [ ("type", `String "stdout") ]
+    | Config.Sink_file f -> [ ("type", `String "file"); ("path", `String f) ]
+    | Config.Sink_s3 c ->
+        [
+          ("type", `String "s3");
+          ("bucket", `String c.s3_bucket);
+          ("prefix", `String c.s3_prefix);
+          ("region", `String c.s3_region);
+          ( "credentials",
+            `String
+              (match c.s3_credentials with
+              | Config.S3_env -> "env"
+              | Config.S3_static _ -> "static (redacted)"
+              | Config.S3_web_identity -> "web_identity"
+              | Config.S3_instance -> "instance") );
+        ]
+        @ opt "endpoint" c.s3_endpoint
+        @ opt "spool_dir" c.s3_spool_dir
+    | Config.Sink_gcs c ->
+        [
+          ("type", `String "gcs");
+          ("bucket", `String c.gcs_bucket);
+          ("prefix", `String c.gcs_prefix);
+        ]
+        @ opt "spool_dir" c.gcs_spool_dir
+  in
+  `Assoc
+    (kind
+    @ [ ("on_error", `String (on_error_name s.sink_on_error)) ]
+    @
+    match s.sink_on_error with
+    | Audit_buffer -> [ ("max_buffer_records", `Int s.max_buffer_records) ]
+    | Audit_fail_closed | Audit_drop -> [])
 
 let to_json_redacted c : Yojson.Safe.t =
   let r = `String "<redacted>" in
@@ -1040,7 +1352,14 @@ let to_json_redacted c : Yojson.Safe.t =
                 | Audit_stdout -> "stdout"
                 | Audit_file _ -> "file"
                 | Audit_none -> "none") );
+            ("sinks", `List (List.map audit_sink_json c.audit_sinks));
             ("log_raw_sql", `Bool c.log_raw_sql);
+          ] );
+      ( "reload",
+        `Assoc
+          [
+            ("watch", `Bool c.reload.watch);
+            ("poll_interval_seconds", `Float c.reload.poll_interval);
           ] );
       ("logging", `Assoc [ ("level", `String c.log_level) ]);
       ("shutdown_grace_seconds", `Float c.shutdown_grace);

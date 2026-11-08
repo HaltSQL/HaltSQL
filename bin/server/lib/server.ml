@@ -224,7 +224,35 @@ let main ?health_listen ~(sources : State.sources) () =
   Haltsql_auth.Oidc_client.set_logger (fun lvl msg fields ->
       let fields = List.map (fun (k, v) -> (k, `String v)) fields in
       match lvl with `Info -> Log.info msg ~fields | `Warn -> Log.warn msg ~fields);
-  match State.load sources with
+  let bundle_mode = ref (Bundle_sources.Startup (Hashtbl.create 1)) in
+  let pollers = ref [] in
+  let loaded =
+    match State.load_unchecked sources with
+    | Error e -> Error e
+    | Ok cfg when cfg.bundle_sources = [] -> (
+        match State.check_policy_refs cfg with Ok () -> Ok cfg | Error e -> Error e)
+    | Ok cfg -> (
+        (* Fetch and verify every remote bundle (or restore it from its cache)
+           before the policy references can be checked. *)
+        match Lwt_main.run (Bundle_sources.start cfg ~mode:bundle_mode) with
+        | Error e -> Error e
+        | Ok (srcs, remote) -> (
+            pollers := srcs;
+            match State.load ~remote sources with
+            | Ok cfg -> Ok cfg
+            | Error e ->
+                List.iter Haltsql_bundle_source.stop srcs;
+                Error e))
+  in
+  let remote_at_start () =
+    List.filter_map
+      (fun src ->
+        Option.map
+          (fun (u : Haltsql_bundle_source.update) -> (u.source, u.policies))
+          (Haltsql_bundle_source.current src))
+      !pollers
+  in
+  match loaded with
   | Error errs ->
       List.iter
         (fun e ->
@@ -239,6 +267,9 @@ let main ?health_listen ~(sources : State.sources) () =
         | Ok () -> ()
         | Error e -> raise (Startup_error e));
         let st = State.create ~sources cfg in
+        st.remote <- remote_at_start ();
+        st.bundle_sources <- !pollers;
+        bundle_mode := Bundle_sources.Running st;
         Metrics.set_policies_loaded (List.length st.snap.policies);
         let fd, port = bind_listen cfg.listen in
         let health = Option.map bind_listen health_listen in
@@ -297,6 +328,10 @@ let main ?health_listen ~(sources : State.sources) () =
                      | _ -> "none") );
                  ("oidc_providers", `Int (List.length cfg.oidc));
                  ("mtls_identities", `Int (List.length cfg.mtls));
+                 ("audit_sinks", `List (List.map (fun (s : Audit.sink) -> `String s.name) st.sinks));
+                 ("bundle_sources", `Int (List.length st.bundle_sources));
+                 ("opa", `Bool (st.snap.opa <> None));
+                 ("admin_api", `Bool st.snap.admin.admin_enabled);
                ]
               @
               match health with
@@ -327,6 +362,7 @@ let main ?health_listen ~(sources : State.sources) () =
                  st.sinks
              in
              Telemetry.shutdown ());
+          Bundle_sources.stop st;
           State.close st;
           Log.info "stopped";
           0)

@@ -11,25 +11,11 @@ type identity = {
   context : Context.t;
   request_context_fields : string list;
   expires_at : float;
+  matched_group : string option;
 }
 
 let ( let* ) = Result.bind
-
-let lookup_claim claims path =
-  match List.assoc_opt path claims with
-  | Some v -> Some v
-  | None ->
-      let rec walk (j : Yojson.Safe.t) = function
-        | [] -> Some j
-        | k :: rest -> (
-            match j with
-            | `Assoc kv -> (
-                match List.assoc_opt k kv with Some v -> walk v rest | None -> None)
-            | _ -> None)
-      in
-      let parts = String.split_on_char '.' path in
-      if List.length parts < 2 || List.mem "" parts then None
-      else walk (`Assoc claims) parts
+let lookup_claim = Group_policy.lookup_claim
 
 (* 2^53: integers beyond this are not exactly representable as floats. *)
 let max_exact = 9007199254740992.
@@ -90,7 +76,7 @@ let rec all_ok f = function
       let* () = f x in
       all_ok f xs
 
-let verify (p : Config.oidc_provider) ~keys ~now tok =
+let verify ?groups (p : Config.oidc_provider) ~keys ~now tok =
   let* t = Jwt.decode tok in
   let* alg = Jwt.alg_of_string t.alg_name in
   if not (List.mem alg p.algorithms) then Error (Jwt.Alg_not_allowed t.alg_name)
@@ -118,13 +104,16 @@ let verify (p : Config.oidc_provider) ~keys ~now tok =
                 if claim_matches c m then Ok () else Error (Jwt.Claim_mismatch name))
           p.required_claims
       in
-      let* policy =
-        match p.oidc_policy with
-        | Config.Oidc_pinned n -> Ok n
-        | Config.Oidc_from_claim { claim; allowed } -> (
+      let* policy, matched_group =
+        match (groups, p.oidc_policy) with
+        | Some g, _ ->
+            let* s = Group_policy.select g t.claims in
+            Ok (s.policy, s.matched_group)
+        | None, Config.Oidc_pinned n -> Ok (n, None)
+        | None, Config.Oidc_from_claim { claim; allowed } -> (
             match lookup_claim t.claims claim with
             | None -> Error (Jwt.Missing_claim claim)
-            | Some (`String n) when List.mem n allowed -> Ok n
+            | Some (`String n) when List.mem n allowed -> Ok (n, None)
             | Some _ -> Error (Jwt.Policy_not_allowed claim))
       in
       let* context =
@@ -151,4 +140,5 @@ let verify (p : Config.oidc_provider) ~keys ~now tok =
           context = List.rev context;
           request_context_fields = p.oidc_request_context_fields;
           expires_at;
+          matched_group;
         }

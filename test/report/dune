@@ -1,0 +1,81 @@
+; haltsql report tests.
+;  - test_report: record parsing (both producers), summaries, every suggestion rule,
+;    never-weaken rules, PII flagging, patching, and a QCheck property that applying
+;    suggestions never turns a tenancy denial into an allow (real verifier).
+;  - test_report_e2e: real audit records from in-process haltsql-servers, the `report`
+;    command end to end (--apply-to), and Report_api.
+;  - test_report_proxy: real audit records from the haltsql-proxy binary in front of the
+;    lab Postgres (localhost:5417; skipped when unavailable).
+; report_cli.exe runs bin/haltsql/cmd_report.ml as `haltsql report` (the same module the
+; haltsql binary registers).
+
+(executable
+ (name report_cli)
+ (modules report_cli cmd_report common)
+ (libraries
+  haltsql
+  haltsql.report
+  haltsql.catalog_tools
+  haltsql.cloud
+  cmdliner
+  yojson
+  unix))
+
+(test
+ (name test_report)
+ (package haltsql)
+ (modules test_report)
+ (libraries haltsql haltsql.report qcheck-core qcheck-alcotest alcotest yojson)
+ (deps
+  (source_tree fixtures)))
+
+(test
+ (name test_report_e2e)
+ (package haltsql-server)
+ (modules test_report_e2e)
+ (libraries
+  haltsql_server
+  haltsql
+  haltsql.report
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  lwt
+  lwt.unix
+  yojson
+  unix)
+ (deps
+  (source_tree fixtures))
+ (action
+  (setenv
+   HALTSQL_REPORT_CLI
+   %{dep:report_cli.exe}
+   (run %{test}))))
+
+(copy_files# ../../bin/haltsql/{common,cmd_report}.ml)
+
+(test
+ (name test_report_proxy)
+ (package haltsql-proxy)
+ (modules test_report_proxy)
+ (libraries
+  haltsql_pgwire
+  haltsql
+  haltsql.report
+  haltsql.catalog_tools
+  alcotest
+  lwt
+  lwt.unix
+  yojson
+  unix)
+ (deps
+  (source_tree fixtures))
+ (action
+  (setenv
+   HALTSQL_REPORT_CLI
+   %{dep:report_cli.exe}
+   (setenv
+    HALTSQL_PROXY_BIN
+    %{dep:../../bin/proxy/main.exe}
+    (run %{test})))))

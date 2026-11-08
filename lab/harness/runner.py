@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import psycopg
 
 from common.fixtures import LAB, get_fixture, materialize_generated
 from common.policy import load_policy
+from compat.engines import get_engine
 from generators.redteam import load_jsonl
 from generators.sqlspec import SchemaModel
 from generators.workload import adversarial_workload, benign_workload
@@ -46,6 +48,7 @@ def build_items(scn: Scenario, model: SchemaModel, universe: Any, fixture_name: 
 
 def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db: bool = False,
                  jobs: int | None = None) -> bool:
+    get_engine(scn.engine).check_dsn(scn.dsn)
     fixture = get_fixture(scn.fixture)
     if fixture.generated:
         fixture = materialize_generated(fixture, out_dir / "fixture", scn.erp_tables, int(scn.data.get("seed", 42)))
@@ -63,9 +66,11 @@ def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db:
         log(f"Postgres {version}: creating database {name}")
         dsn = labdb.create_database(admin, name)
         try:
-            lab = labdb.install(dsn, fixture, policy, scn.data)
+            lab = labdb.install(dsn, fixture, policy, scn.data, scn.engine)
             log(f"loaded {lab.dataset.row_count()} rows into {len(lab.catalog)} tables "
                 f"(server {lab.server_version})")
+            for note in lab.engine_notes:
+                log(f"engine {scn.engine}: {note}")
             model = SchemaModel.build(policy, fixture.model, lab.catalog)
             items = build_items(scn, model, lab.universe, fixture.name, seed)
             log(f"verifying {len(items)} queries with {' '.join(verifier_cmd)}")
@@ -79,7 +84,8 @@ def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db:
                     ctx = it.get("context") or {}
                     results[str(it["id"])] = check_item(
                         session, it, verdicts[str(it["id"])], policy.keys, lab.dataset.registry,
-                        lab.universe.allowed(ctx), scn.statement_timeout_ms)
+                        lab.universe.allowed(ctx), scn.statement_timeout_ms,
+                        get_engine(scn.engine).ignored_settings)
             metrics = compute_metrics(lab.server_version, items, verdicts, results)
             run_failures = [f"pg{version}: {f}" for f in check_expectations(metrics, scn.expect)]
             failures += run_failures
@@ -87,7 +93,13 @@ def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db:
                                                          if str(i["id"]) == r.id), None),
                          "findings": [f"{f.oracle}: {f.detail}" for f in r.findings]}
                         for r in results.values() if r.findings]
-            runs.append({"postgres_version": version, "metrics": metrics.to_json(), "examples": examples})
+            errors_by_state = Counter((r.execution_error or "").split(":", 1)[0].removeprefix("rls run ")
+                                      for r in results.values() if r.execution_error)
+            runs.append({"postgres_version": version, "metrics": metrics.to_json(), "examples": examples,
+                         "engine": scn.engine, "engine_notes": lab.engine_notes,
+                         "execution_errors_by_sqlstate": dict(errors_by_state),
+                         "execution_error_samples": sorted({r.execution_error[:200] for r in results.values()
+                                                            if r.execution_error})[:10]})
             log(f"pg{version}: executed={metrics.executed} escapes={metrics.escapes} "
                 f"side_effects={metrics.side_effects} fp_rate={metrics.false_positive_rate:.3f}")
             all_results.update(results)

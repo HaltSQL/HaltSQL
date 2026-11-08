@@ -1,0 +1,17 @@
+# Installs the HaltSQL operator: CRDs, RBAC and the controller Deployment in
+# the haltsql-system namespace.
+#
+#   kubectl apply -k deploy/operator/config/default
+#
+# Override the image with `kustomize edit set image controller=...` in an
+# overlay, or see docs/kubernetes-operator.md.
+namespace: haltsql-system
+namePrefix: haltsql-operator-
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: haltsql-operator
+    includeSelectors: false
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager

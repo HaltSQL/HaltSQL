@@ -58,20 +58,36 @@ let run config listen log_level =
           prerr_endline ("haltsql-proxy: invalid --listen address " ^ l);
           exit_usage
       | _ -> (
-          let cfg =
+          let overrides (cfg : Proxy_config.t) =
+            let cfg =
+              match log_level with
+              | Some l -> { cfg with Proxy_config.log_level = l }
+              | None -> cfg
+            in
             match Option.bind listen parse_listen with
             | Some (h, p) -> { cfg with Proxy_config.listen_host = h; listen_port = p }
             | None -> cfg
+          in
+          let cfg = overrides cfg in
+          (* SIGHUP / file watch: re-read the same file with the same overrides *)
+          let reload () =
+            match Proxy_config.of_file config with
+            | Ok c -> Ok (overrides c)
+            | Error errs -> Error (List.map Haltsql.Load_error.to_string errs)
           in
           (* a client going away mid-write must not kill the process *)
           (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
           try
             Lwt_main.run
               (let open Lwt.Syntax in
-               let* srv = Server.start cfg in
+               let* srv = Server.start ~reload cfg in
                let stop _ = Lwt.async (fun () -> Server.shutdown srv) in
                ignore (Lwt_unix.on_signal Sys.sigterm stop);
                ignore (Lwt_unix.on_signal Sys.sigint stop);
+               ignore
+                 (Lwt_unix.on_signal Sys.sighup (fun _ ->
+                      Lwt.async (fun () ->
+                          Lwt.map ignore (Server.reload srv ~trigger:"sighup"))));
                Server.wait srv);
             exit_ok
           with Failure m ->
@@ -112,6 +128,15 @@ let run_cmd =
       `P
         "SIGTERM or SIGINT stops accepting connections and drains sessions for \
          shutdown_grace_seconds.";
+      `P
+        "SIGHUP reloads the config file and its policies (also on file changes with \
+         reload.watch). New connections use the new configuration, existing sessions \
+         keep theirs; an invalid configuration is logged and the current one stays in \
+         force.";
+      `P
+        "Every statement is audited to the configured sinks (hash-chained JSON lines, \
+         see haltsql audit verify). With on_error: fail_closed (the default) a statement \
+         whose audit record cannot be written is refused with SQLSTATE 58030.";
       `S "EXAMPLES";
       `Pre
         "  haltsql-proxy run --config proxy.yaml\n\

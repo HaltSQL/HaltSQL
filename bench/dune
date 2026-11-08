@@ -1,16 +1,17 @@
-; Verify-latency benchmark (plain Unix.gettimeofday loops; core_bench is not
-; installed). Run with `make bench` / `dune build @bench --force`, or directly:
-;   dune exec bench/bench.exe -- --root . --iters 20000 --json bench.json
-;   dune exec bench/bench.exe -- --root . --baseline bench.json --max-regress 0.10
+; Benchmark harness (bench/bench.ml documents the suites). Plain Unix.gettimeofday
+; timing; core_bench/bechamel are not dependencies. Run everything with
+;   scripts/bench.sh            (builds, runs all suites, writes bench/results/)
+; or the fast library suite alone with `make bench` / `dune build @bench --force`.
 
 (executable
  (name bench)
- (libraries haltsql unix yojson))
+ (libraries haltsql haltsql-proxy.pgwire digestif unix yojson lwt lwt.unix))
 
 (rule
  (alias bench)
  (deps
   (source_tree ../test/corpus)
-  (source_tree ../test/fixtures))
+  (source_tree ../test/fixtures)
+  (source_tree corpus))
  (action
-  (run %{exe:bench.exe} --root ..)))
+  (run %{exe:bench.exe} --root .. --suite library --small)))

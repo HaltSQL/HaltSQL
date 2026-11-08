@@ -1,0 +1,27 @@
+apiVersion: haltsql.dev/v1alpha1
+kind: HaltSQLServer
+metadata:
+  name: haltsql
+spec:
+  replicas: 2
+  image: ghcr.io/ardada2468/haltsql:0.1.0
+  policies:
+    - name: analytics
+  config:
+    logLevel: info
+  auth:
+    tokens:
+      - name: analytics-agent
+        policy: analytics-agent
+        sha256SecretRef: { name: haltsql-tokens, key: analytics-agent.sha256 }
+  audit:
+    sinks:
+      - type: stdout
+  podDisruptionBudget:
+    enabled: true
+  networkPolicy:
+    enabled: true
+    ingressFrom:
+      - podSelector:
+          matchLabels:
+            app: analytics-agent
