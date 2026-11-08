@@ -50,7 +50,7 @@
 # create a dependency cycle.
 FROM scratch AS cache-base
 
-FROM ocaml/opam:alpine-3.22-ocaml-5.3@sha256:75fab91b192f782768f92cc037e3413274302b6498f3ea29ed4a096e49ce6f8f AS builder
+FROM ocaml/opam:alpine-3.22-ocaml-5.5@sha256:0cd95bf956e14c3d15c2e9c240456143c06ad878ea1c86c44ecad059fd6971ef AS builder
 ARG OPAM_REPOSITORY_COMMIT=76e3d58643dea3b2867c8811b8aacf30a4417c05
 USER root
 # gmp-dev + gmp-static: zarith (JWT RSA keys) links libgmp; recent Alpine ships
