@@ -58,8 +58,23 @@ app.kubernetes.io/component: policy-firewall
 {{- default (printf "%s-policies" (include "haltsql.fullname" .)) .Values.existingPolicyConfigMap -}}
 {{- end -}}
 
-{{/* The haltsql Config document (kind: Config). Token hashes come from env. */}}
+{{/*
+The haltsql Config document (kind: Config). Token hashes come from env.
+server.extraConfig, when set, is deep-merged over the rendered document.
+*/}}
 {{- define "haltsql.config" -}}
+{{- if .Values.server.extraConfig -}}
+{{- $base := include "haltsql.baseConfig" . | fromYaml -}}
+{{- if hasKey $base "Error" -}}
+{{- fail (printf "internal error rendering the haltsql Config: %s" (get $base "Error")) -}}
+{{- end -}}
+{{- mustMergeOverwrite $base (deepCopy .Values.server.extraConfig) | toYaml -}}
+{{- else -}}
+{{- include "haltsql.baseConfig" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "haltsql.baseConfig" -}}
 apiVersion: haltsql.dev/v1
 kind: Config
 server:
@@ -117,4 +132,37 @@ telemetry:
 logging:
   level: {{ .Values.server.logLevel | quote }}
   format: {{ .Values.server.logFormat | quote }}
+{{- end -}}
+
+
+{{/* Number of replicas the workload runs with (HPA minimum when autoscaling). */}}
+{{- define "haltsql.minReplicas" -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- .Values.autoscaling.minReplicas | int -}}
+{{- else -}}
+{{- .Values.replicaCount | int -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Render a probe from values: drops the chart-only `enabled` key and, with TLS
+enabled, moves httpGet probes to the plain-HTTP health port.
+Usage: include "haltsql.probe" (dict "probe" .Values.livenessProbe "root" $)
+*/}}
+{{- define "haltsql.probe" -}}
+{{- $p := omit (deepCopy .probe) "enabled" -}}
+{{- if and .root.Values.tls.enabled (hasKey $p "httpGet") -}}
+{{- $_ := set $p.httpGet "port" "health" -}}
+{{- end -}}
+{{- toYaml $p -}}
+{{- end -}}
+
+{{/* Whether the NetworkPolicy opens TCP 443 egress. */}}
+{{- define "haltsql.egressHTTPS" -}}
+{{- $v := .Values.networkPolicy.egress.allowHTTPS -}}
+{{- if eq (toString $v) "auto" -}}
+{{- if .Values.oidc }}true{{ end -}}
+{{- else if $v -}}
+true
+{{- end -}}
 {{- end -}}

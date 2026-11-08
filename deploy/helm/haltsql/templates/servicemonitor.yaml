@@ -1,20 +1,40 @@
 {{- if and .Values.serviceMonitor.enabled .Values.server.metrics }}
+{{- $sm := .Values.serviceMonitor }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "haltsql.fullname" . }}
+  namespace: {{ default .Release.Namespace $sm.namespace }}
   labels:
     {{- include "haltsql.labels" . | nindent 4 }}
-    {{- with .Values.serviceMonitor.labels }}
+    {{- with $sm.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
   selector:
     matchLabels:
       {{- include "haltsql.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: http
       path: /metrics
-      interval: {{ .Values.serviceMonitor.interval }}
-      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      {{- if .Values.tls.enabled }}
+      scheme: https
+      {{- with $sm.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      honorLabels: {{ $sm.honorLabels }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

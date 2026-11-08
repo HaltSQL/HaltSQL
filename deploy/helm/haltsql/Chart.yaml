@@ -2,11 +2,22 @@ apiVersion: v2
 name: haltsql
 description: HaltSQL policy firewall for LLM-generated PostgreSQL (HTTP sidecar service)
 type: application
-version: 0.1.0
+# 0.2.0: hardened defaults (startup probe, zone spread, anti-affinity, egress
+# rules for OIDC), values.schema.json, extraEnv/extraVolumes/extraConfig.
+version: 0.2.0
 appVersion: "0.1.0"
+# matchLabelKeys in the default topology spread needs 1.27+; the optional
+# preStop sleep (preStopSleepSeconds) needs 1.30+.
+kubeVersion: ">=1.27.0-0"
 home: https://github.com/ardada2468/HaltSQL
 sources:
   - https://github.com/ardada2468/HaltSQL
 keywords: [sql, postgres, security, llm, policy, firewall]
 maintainers:
   - name: Arnav Dadarya
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/images: |
+    - name: haltsql
+      image: ghcr.io/ardada2468/haltsql:0.1.0

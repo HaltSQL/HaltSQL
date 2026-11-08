@@ -1,4 +1,13 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $https := include "haltsql.egressHTTPS" . | eq "true" }}
+{{- $extra := $np.egress.extraRules | default list }}
+{{- $dns := false }}
+{{- if eq (toString $np.egress.allowDNS) "auto" }}
+{{- $dns = or $https (gt (len $extra) 0) }}
+{{- else }}
+{{- $dns = $np.egress.allowDNS }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -14,20 +23,43 @@ spec:
     - ports:
         - port: http
           protocol: TCP
-      {{- with .Values.networkPolicy.ingressFrom }}
+      {{- with $np.ingressFrom }}
       from:
         {{- toYaml . | nindent 8 }}
       {{- else }}
       from:
         - podSelector: {}
       {{- end }}
-    {{- with .Values.networkPolicy.metricsFrom }}
+    {{- with $np.metricsFrom }}
     - ports:
         - port: http
           protocol: TCP
       from:
         {{- toYaml . | nindent 8 }}
     {{- end }}
-  # haltsql never connects to anything (no database, no network calls).
+    {{- with $np.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  # Verification itself makes no network calls, so egress is denied unless
+  # OIDC (JWKS over HTTPS) or networkPolicy.egress rules need it.
+  {{- if or $dns $https $extra }}
+  egress:
+    {{- if $dns }}
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- if $https }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with $extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- else }}
   egress: []
+  {{- end }}
 {{- end }}

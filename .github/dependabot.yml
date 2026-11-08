@@ -1,3 +1,9 @@
+# Dependency updates. GitHub Actions are pinned to full commit SHAs and the
+# Dockerfile base images to digests; Dependabot bumps both (keeping the
+# "# vX.Y.Z" comments current). `cooldown` delays brand-new releases a few days
+# so a compromised upstream release is likely to be caught and yanked before it
+# is proposed here. OCaml (opam) dependencies are not supported by Dependabot:
+# they are pinned through OPAM_REPOSITORY_COMMIT (Dockerfile, release.yml).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -5,6 +11,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -17,6 +25,65 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "docker"
     labels: [dependencies, docker]
+
+  # SDKs and the docs site. Grouped so each ecosystem opens one PR per week.
+  - package-ecosystem: npm
+    directories: [/clients/typescript, /website]
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(npm)"
+    labels: [dependencies]
+
+  - package-ecosystem: pip
+    directories: [/clients/python, /clients/mcp, /lab]
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      pip:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(pip)"
+    labels: [dependencies]
+
+  - package-ecosystem: gomod
+    directories: [/clients/go/haltsql, /clients/go/pgxtest]
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      gomod:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(go)"
+    labels: [dependencies]
+
+  - package-ecosystem: maven
+    directory: /clients/java
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      maven:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(java)"
+    labels: [dependencies]

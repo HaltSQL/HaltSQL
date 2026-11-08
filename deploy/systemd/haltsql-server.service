@@ -16,6 +16,9 @@ Description=HaltSQL policy firewall (HTTP sidecar)
 Documentation=https://github.com/ardada2468/HaltSQL/tree/main/docs
 After=network-online.target
 Wants=network-online.target
+# Restart loops are rate limited rather than spinning forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=exec
@@ -37,7 +40,7 @@ ConfigurationDirectory=haltsql
 ReadOnlyPaths=/etc/haltsql
 UMask=0027
 
-# Hardening
+# Hardening. Check the result with: systemd-analyze security haltsql-server
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -64,6 +67,13 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+KeyringMode=private
+PrivateIPC=yes
+# Only the listen port may be bound (systemd >= 249). Keep in sync with
+# server.listen (and --health-listen if used); comment out on older systemd.
+SocketBindAllow=tcp:8080
+SocketBindDeny=any
 DevicePolicy=closed
 IPAddressDeny=any
 IPAddressAllow=localhost

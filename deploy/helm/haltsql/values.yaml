@@ -1,12 +1,18 @@
-# Default values for the haltsql chart.
+# Default values for the haltsql chart. Every key is validated by
+# values.schema.json; see README.md in this directory for the full reference.
 
 replicaCount: 2
+revisionHistoryLimit: 5
 
 image:
   repository: ghcr.io/ardada2468/haltsql
   tag: ""            # defaults to .Chart.AppVersion
+  # Pin an exact, signed image. When set it wins over `tag`. Verify first:
+  #   cosign verify ghcr.io/ardada2468/haltsql@sha256:... \
+  #     --certificate-identity-regexp 'https://github.com/ardada2468/HaltSQL/' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  digest: ""         # e.g. sha256:3f1c...
   pullPolicy: IfNotPresent
-  # digest: sha256:...   # set to pin an exact (signed) image
 
 imagePullSecrets: []
 nameOverride: ""
@@ -15,11 +21,15 @@ fullnameOverride: ""
 serviceAccount:
   create: true
   name: ""
-  annotations: {}
+  annotations: {}    # e.g. eks.amazonaws.com/role-arn, iam.gke.io/gcp-service-account
+  # haltsql does not call the Kubernetes API. Set to true only for Vault's
+  # kubernetes auth method (secrets.vault.auth.method: kubernetes).
   automountServiceAccountToken: false
 
 podAnnotations: {}
 podLabels: {}
+priorityClassName: ""
+runtimeClassName: ""
 
 # haltsql-server settings rendered into the Config document (kind: Config).
 server:
@@ -28,8 +38,8 @@ server:
   allowUnauthenticated: false
   defaultPolicy: ""
   reloadWatch: true          # policies are mounted from a ConfigMap; kubelet updates trigger a reload
-  logLevel: info
-  logFormat: json
+  logLevel: info             # debug | info | warn | error
+  logFormat: json            # json | text
   metrics: true
   audit:
     # Audit records go to stdout by default (collected by your log pipeline).
@@ -38,6 +48,13 @@ server:
     sinks:
       - type: stdout
     logRawSql: false
+  # Extra Config keys deep-merged over the rendered document, e.g.
+  # telemetry.otlp, secrets.vault, or S3/GCS audit sinks. Outbound calls these
+  # make need networkPolicy.egress (below). See docs/config-reference.md.
+  extraConfig: {}
+  #  telemetry:
+  #    otlp:
+  #      endpoint: http://otel-collector.observability:4318
 
 # Bearer tokens. Only SHA-256 hashes are stored (in a Secret, injected into the
 # config through ${env:...} placeholders). Each token is pinned to one policy.
@@ -46,6 +63,13 @@ tokens: []
 #  - name: analytics-agent
 #    sha256: 3f7c...e9
 #    policy: analytics-agent
+
+# Use an existing Secret (e.g. from External Secrets / Sealed Secrets / Vault
+# Agent) instead of rendering one. It must contain one key per token named
+# HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`); `tokens`
+# still supplies the names and policies. Pods do not roll automatically when
+# an external Secret changes: bump podAnnotations or use a reloader.
+existingTokenSecret: ""
 
 # Built-in TLS (server.tls). The Secret is mounted as a directory, so
 # cert-manager / kubelet rotations are picked up by reload.watch without a
@@ -61,6 +85,8 @@ tls:
   healthPort: 8081
 
 # OIDC providers (server.auth.oidc), rendered verbatim. See docs/authentication.md.
+# The server fetches discovery documents and JWKS over HTTPS, so with
+# networkPolicy.enabled the chart opens egress to TCP 443 (allowHTTPS: auto).
 oidc: []
 #  - name: corp-okta
 #    issuer: https://corp.okta.com/oauth2/default
@@ -77,10 +103,6 @@ mtlsIdentities: []
 #    policy: analytics-agent
 #    context: { tenant_id: acme }
 
-# Use an existing Secret instead of rendering one. It must contain one key per
-# token named HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`).
-existingTokenSecret: ""
-
 # Policies, keyed by file name. Each value is a full Policy document (YAML).
 policies: {}
 #  analytics-agent.yaml: |
@@ -94,16 +116,35 @@ existingPolicyConfigMap: ""
 # File names (keys) in existingPolicyConfigMap to load.
 existingPolicyFiles: []
 
+# Extra container settings.
+extraArgs: []          # appended to the haltsql-server command line
+extraEnv: []           # [{name: AWS_REGION, value: eu-west-1}, {name: X, valueFrom: {...}}]
+extraEnvFrom: []       # [{secretRef: {name: haltsql-cloud-creds}}]
+extraVolumes: []       # pod volumes
+extraVolumeMounts: []  # mounts into the haltsql container
+initContainers: []
+extraContainers: []    # sidecars (e.g. a log shipper for file audit sinks)
+
 service:
-  type: ClusterIP
+  type: ClusterIP            # ClusterIP | NodePort | LoadBalancer
   port: 8080
-  annotations: {}
+  nodePort: null             # only for NodePort / LoadBalancer
+  annotations: {}            # cloud LB annotations, e.g.
+  #  service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+  #  networking.gke.io/load-balancer-type: Internal
+  #  service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  labels: {}
+  loadBalancerClass: ""
+  loadBalancerSourceRanges: []
+  externalTrafficPolicy: ""  # Cluster | Local (NodePort / LoadBalancer only)
+  internalTrafficPolicy: ""  # Cluster | Local
 
 resources:
   requests:
     cpu: 100m
     memory: 64Mi
   limits:
+    # No CPU limit by default (avoids CFS throttling on the verify hot path).
     memory: 256Mi
 
 podSecurityContext:
@@ -111,6 +152,7 @@ podSecurityContext:
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
@@ -118,34 +160,57 @@ securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
   privileged: false
   capabilities:
     drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
 
-livenessProbe:
+# Probes. With tls.enabled the chart points them at the plain-HTTP health port.
+# startupProbe gives a slow first policy load (large policies, Vault/AWS secret
+# resolution) up to failureThreshold * periodSeconds before liveness applies.
+startupProbe:
+  enabled: true
   httpGet: { path: /healthz, port: http }
-  initialDelaySeconds: 2
+  periodSeconds: 2
+  timeoutSeconds: 2
+  failureThreshold: 30
+livenessProbe:
+  enabled: true
+  httpGet: { path: /healthz, port: http }
   periodSeconds: 10
   timeoutSeconds: 2
   failureThreshold: 3
 readinessProbe:
+  enabled: true
   httpGet: { path: /readyz, port: http }
-  initialDelaySeconds: 1
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: 2
 
+# Seconds a terminating pod keeps serving after it is removed from Service
+# endpoints, so in-flight callers are not cut off (lifecycle.preStop.sleep,
+# Kubernetes >= 1.30). 0 disables it. Must be < terminationGracePeriodSeconds.
+preStopSleepSeconds: 0
 terminationGracePeriodSeconds: 20
 
 podDisruptionBudget:
   enabled: true
+  # maxUnavailable wins when set. The PDB is skipped when fewer than 2
+  # replicas run, since a PDB on a single replica blocks node drains.
   minAvailable: 1
+  maxUnavailable: null
+  unhealthyPodEvictionPolicy: ""   # IfHealthyBudget | AlwaysAllow (Kubernetes >= 1.27)
 
 autoscaling:
   enabled: false
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}       # autoscaling/v2 HPA behavior, rendered verbatim
 
 networkPolicy:
   enabled: true
@@ -155,14 +220,51 @@ networkPolicy:
   # Allow Prometheus to scrape /metrics from this namespace selector.
   metricsFrom: []
   #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+  extraIngress: []   # extra NetworkPolicy ingress rules, rendered verbatim
+  egress:
+    # Egress is denied by default: verification needs no network access.
+    # DNS (UDP/TCP 53) is opened whenever any other egress rule is rendered.
+    # allowHTTPS: TCP 443 to any destination. "auto" = only when `oidc` is set
+    # (discovery + JWKS). Prefer false plus extraRules with the IdP's CIDRs
+    # where your IdP has stable addresses.
+    allowHTTPS: auto
+    allowDNS: auto     # auto | true | false
+    extraRules: []     # e.g. OTLP collector, Vault, S3/GCS endpoints
+    #  - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: observability } } }]
+    #    ports: [{ port: 4318, protocol: TCP }]
 
 serviceMonitor:
   enabled: false
+  namespace: ""      # defaults to the release namespace
   interval: 30s
   scrapeTimeout: 10s
+  labels: {}         # e.g. { release: kube-prometheus-stack }
+  honorLabels: false
+  relabelings: []
+  metricRelabelings: []
+  # With tls.enabled the endpoint is scraped over HTTPS; set e.g.
+  # { ca: { secret: { name: haltsql-tls, key: ca.crt } }, serverName: haltsql }
+  tlsConfig: {}
+
+# Google Cloud Managed Service for Prometheus (monitoring.googleapis.com/v1
+# PodMonitoring). Needs the GMP CRDs (enabled by default on GKE Autopilot).
+podMonitoring:
+  enabled: false
+  interval: 30s
+  timeout: 10s
   labels: {}
 
 nodeSelector: {}
 tolerations: []
+# Full affinity override. When empty the podAntiAffinityPreset below applies.
 affinity: {}
+# Spread replicas across nodes: soft (preferred) | hard (required) | "" (none).
+podAntiAffinityPreset: soft
+# Full topologySpreadConstraints override. When empty and
+# topologySpread.enabled, a zone spread with this release's selector is used.
 topologySpreadConstraints: []
+topologySpread:
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway   # DoNotSchedule for strict zone spreading

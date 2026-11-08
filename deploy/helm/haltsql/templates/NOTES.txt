@@ -17,3 +17,18 @@ WARNING: no tokens are configured and allowUnauthenticated is false: every
 
 WARNING: no policies are configured; /readyz will return 503.
 {{- end }}
+{{- if and .Values.podDisruptionBudget.enabled (lt (include "haltsql.minReplicas" . | int) 2) }}
+
+NOTE: fewer than 2 replicas, so no PodDisruptionBudget was created (one would
+block node drains). Run at least 2 replicas for high availability.
+{{- end }}
+{{- if not .Values.image.digest }}
+
+TIP: pin the image by digest (image.digest) and verify its cosign signature;
+see README.md in the chart.
+{{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.server.extraConfig (not .Values.networkPolicy.egress.extraRules) }}
+
+NOTE: server.extraConfig is set but networkPolicy.egress.extraRules is empty.
+If the extra settings call out (OTLP, Vault, S3/GCS), add egress rules.
+{{- end }}
