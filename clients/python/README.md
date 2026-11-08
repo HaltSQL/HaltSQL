@@ -1,6 +1,6 @@
 # haltsql (Python)
 
-Python client for [HaltSQL](https://github.com/ardada2468/HaltSQL), the policy
+Python client for [HaltSQL](https://github.com/HaltSQL/HaltSQL), the policy
 firewall for LLM-generated PostgreSQL.
 
 ```sh

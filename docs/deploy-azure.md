@@ -84,12 +84,12 @@ flowchart TD
   `Microsoft.DBforPostgreSQL/flexibleServers`).
 - Policies that pass `haltsql validate` and `haltsql test` in CI (see
   [policy-ci.md](policy-ci.md)).
-- The image `ghcr.io/ardada2468/haltsql:<version>`. Import it into your
+- The image `ghcr.io/haltsql/haltsql:<version>`. Import it into your
   Azure Container Registry so nodes do not pull from the internet, and pin it
   by digest:
 
   ```sh
-  az acr import -n "$ACR" --source ghcr.io/ardada2468/haltsql:0.1.0 --image haltsql:0.1.0
+  az acr import -n "$ACR" --source ghcr.io/haltsql/haltsql:0.1.0 --image haltsql:0.1.0
   ```
 
   To verify the signature first, see

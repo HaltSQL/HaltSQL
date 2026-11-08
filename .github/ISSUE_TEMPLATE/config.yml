@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a vulnerability or policy bypass (private)
-    url: https://github.com/ardada2468/HaltSQL/security/advisories/new
+    url: https://github.com/HaltSQL/HaltSQL/security/advisories/new
     about: Never report a bypass in a public issue. Use a private GitHub Security Advisory; see SECURITY.md.
   - name: Documentation
-    url: https://github.com/ardada2468/HaltSQL/tree/main/docs
+    url: https://github.com/HaltSQL/HaltSQL/tree/main/docs
     about: Policy reference, reason codes, tenancy semantics, and deployment guides.

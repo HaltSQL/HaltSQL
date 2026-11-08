@@ -3,7 +3,7 @@
 # Include this file and extend the hidden jobs; including it adds no jobs by itself:
 #
 #   include:
-#     - remote: https://raw.githubusercontent.com/ardada2468/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/HaltSQL/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
 #
 #   policy-check:
 #     extends: .haltsql-check
@@ -38,7 +38,7 @@ variables:
   HALTSQL_POLICIES: policies
   HALTSQL_SUITES: ""
   HALTSQL_FAIL_ON_WARNINGS: "false"
-  HALTSQL_REPO: ardada2468/HaltSQL
+  HALTSQL_REPO: HaltSQL/HaltSQL
   # Pinned by digest so the job runs exactly the image that was reviewed. Re-pin:
   #   docker buildx imagetools inspect alpine:3.23 | grep -m1 Digest
   HALTSQL_CI_IMAGE: alpine:3.23@sha256:f3d55900449227ae9e237ede521e7b665d53a253b42065ba90b9db9275e198ad

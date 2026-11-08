@@ -17,7 +17,7 @@ ENVTEST_K8S_VERSION      ?= 1.35.0
 #   dune build --build-dir _build ./bin/haltsql/main.exe   (repo root)
 HALTSQL_BIN     ?= $(REPO_ROOT)/_build/default/bin/haltsql/main.exe
 HALTSQL_IMAGE   ?= haltsql-operator-e2e/haltsql:dev
-IMG             ?= ghcr.io/ardada2468/haltsql-operator:latest
+IMG             ?= ghcr.io/haltsql/haltsql-operator:latest
 
 export GOTOOLCHAIN = local
 
@@ -62,7 +62,7 @@ docker-build:
 
 .PHONY: install-manifests
 install-manifests: ## Print the install manifests with IMG substituted.
-	@kubectl kustomize config/default | sed 's|ghcr.io/ardada2468/haltsql-operator:latest|$(IMG)|'
+	@kubectl kustomize config/default | sed 's|ghcr.io/haltsql/haltsql-operator:latest|$(IMG)|'
 
 $(CONTROLLER_GEN):
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)

@@ -11,9 +11,9 @@ If HaltSQL allowed a query that your policy should deny, failed open, or has
 any other security problem, report it privately through GitHub Security
 Advisories:
 
-https://github.com/ardada2468/HaltSQL/security/advisories/new
+https://github.com/HaltSQL/HaltSQL/security/advisories/new
 
-See [SECURITY.md](https://github.com/ardada2468/HaltSQL/blob/main/SECURITY.md)
+See [SECURITY.md](https://github.com/HaltSQL/HaltSQL/blob/main/SECURITY.md)
 for what to include and what to expect. We acknowledge reports within 3
 business days and follow a 90-day coordinated disclosure policy.
 

@@ -106,7 +106,7 @@ metadata:
   namespace: agents
 spec:
   replicas: 2
-  image: ghcr.io/ardada2468/haltsql:0.1.0
+  image: ghcr.io/haltsql/haltsql:0.1.0
   policies:
     - name: orders
   auth:

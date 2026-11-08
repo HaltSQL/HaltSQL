@@ -1,6 +1,6 @@
 # Go SDK
 
-`github.com/ardada2468/HaltSQL/clients/go/haltsql` is a client for the
+`github.com/HaltSQL/HaltSQL/clients/go/haltsql` is a client for the
 [HTTP sidecar](http-api.md) that uses **only the standard library**
 (`net/http`, `database/sql`). Go 1.21 or newer.
 
@@ -9,7 +9,7 @@ Source: [`clients/go/haltsql`](../clients/go/haltsql).
 ## Install
 
 ```sh
-go get github.com/ardada2468/HaltSQL/clients/go/haltsql
+go get github.com/HaltSQL/HaltSQL/clients/go/haltsql
 ```
 
 ## Verify a query
@@ -43,7 +43,7 @@ Run SQL only when `err == nil && verdict.Allowed`.
 
 ```go
 import (
-    "github.com/ardada2468/HaltSQL/clients/go/haltsql"
+    "github.com/HaltSQL/HaltSQL/clients/go/haltsql"
     _ "github.com/jackc/pgx/v5/stdlib"
 )
 

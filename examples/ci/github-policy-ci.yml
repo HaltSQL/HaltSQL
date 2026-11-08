@@ -20,7 +20,7 @@ jobs:
       pull-requests: write # for comment-summary
     steps:
       - uses: actions/checkout@v4
-      - uses: ardada2468/HaltSQL@v0.2.0 # pin a release tag (or a full commit SHA)
+      - uses: HaltSQL/HaltSQL@v0.2.0 # pin a release tag (or a full commit SHA)
         with:
           version: v0.2.0
           policies: policies/**/*.yaml
@@ -35,7 +35,7 @@ jobs:
     environment: policy-release # protect the signing key with required reviewers
     steps:
       - uses: actions/checkout@v4
-      - uses: ardada2468/HaltSQL@v0.2.0
+      - uses: HaltSQL/HaltSQL@v0.2.0
         id: haltsql
         with:
           version: v0.2.0

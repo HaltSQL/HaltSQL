@@ -236,6 +236,13 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- **Repository moved to `github.com/HaltSQL/HaltSQL`** (breaking). Go module
+  paths are now `github.com/HaltSQL/HaltSQL/clients/go/haltsql`,
+  `.../clients/go/pgxtest` and `.../deploy/operator`; container images and
+  the Helm chart are published under `ghcr.io/haltsql/`; the docs site is
+  `https://haltsql.github.io/HaltSQL/`; and `cosign verify` must use the new
+  repository's workflow identity. Old `ghcr.io/ardada2468/...` images are not
+  republished.
 - Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,
   configurable NetworkPolicy egress, extra env/volumes/containers, zone
   spreading, `podMonitoring` for GKE managed Prometheus, and `server.port` is
@@ -490,5 +497,5 @@ control in front of production data; see `docs/defense-in-depth.md`.
 - `INSERT` may only name columns listed in the table's `columns`.
 - `LIKE`, `ILIKE` and `SIMILAR TO` are checked against the operator allowlist.
 
-[Unreleased]: https://github.com/ardada2468/HaltSQL/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ardada2468/HaltSQL/releases/tag/v0.1.0
+[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.1.0

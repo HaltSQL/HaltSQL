@@ -109,7 +109,7 @@ spec:
       # Native sidecars start (and become ready) before the agent and stop after it.
       initContainers:
         - name: haltsql
-          image: ghcr.io/ardada2468/haltsql:0.1.0   # pin by digest in production
+          image: ghcr.io/haltsql/haltsql:0.1.0   # pin by digest in production
           restartPolicy: Always
           args: ["--config", "/etc/haltsql/config/config.yaml", "--listen", "0.0.0.0:8080"]
           env:

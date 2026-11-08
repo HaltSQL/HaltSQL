@@ -1,6 +1,6 @@
 # Example: .gitlab-ci.yml in a repository of HaltSQL policies (see docs/policy-ci.md).
 include:
-  - remote: https://raw.githubusercontent.com/ardada2468/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/HaltSQL/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
 
 stages: [test, deploy]
 

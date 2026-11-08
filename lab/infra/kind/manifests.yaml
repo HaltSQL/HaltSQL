@@ -51,7 +51,7 @@ spec:
           command: ["sleep", "infinity"]
           env: [{ name: HALTSQL_URL, value: "http://127.0.0.1:8080" }]
         - name: haltsql
-          image: ghcr.io/ardada2468/haltsql:latest
+          image: ghcr.io/haltsql/haltsql:latest
           args: ["--policy", "/etc/haltsql/policies/saas_shared.yaml", "--allow-unauthenticated",
                  "--listen", "127.0.0.1:8080", "--watch"]
           ports: [{ containerPort: 8080 }]

@@ -5,13 +5,13 @@
 # exact loader rules haltsql-server uses.
 #
 #   docker build -t haltsql-operator:dev \
-#     --build-arg HALTSQL_IMAGE=ghcr.io/ardada2468/haltsql:0.1.0 deploy/operator
+#     --build-arg HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.1.0 deploy/operator
 #
 # HALTSQL_IMAGE must be the haltsql image the servers run (or the same
 # release), so validation and serving agree. The haltsql binary in it is
 # static (musl), so it runs on distroless/static.
 
-ARG HALTSQL_IMAGE=ghcr.io/ardada2468/haltsql:latest
+ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:latest
 ARG GO_IMAGE=golang:1.25
 
 FROM ${HALTSQL_IMAGE} AS haltsql
@@ -32,7 +32,7 @@ RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="haltsql-operator" \
       org.opencontainers.image.description="Kubernetes operator for HaltSQL" \
-      org.opencontainers.image.source="https://github.com/ardada2468/HaltSQL" \
+      org.opencontainers.image.source="https://github.com/HaltSQL/HaltSQL" \
       org.opencontainers.image.licenses="MIT"
 COPY --from=builder /out/manager /manager
 COPY --from=haltsql /usr/local/bin/haltsql /usr/local/bin/haltsql

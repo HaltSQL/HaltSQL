@@ -1,3 +1,3 @@
-module github.com/ardada2468/HaltSQL/clients/go/haltsql
+module github.com/HaltSQL/HaltSQL/clients/go/haltsql
 
 go 1.21

@@ -19,7 +19,7 @@ concurrency:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  IMAGE: ghcr.io/ardada2468/haltsql
+  IMAGE: ghcr.io/haltsql/haltsql
   OCAML_VERSION: "5.2"
   # The static Linux tarballs are built from the `dist` stage of the Dockerfile,
   # which pins the builder image by digest and the opam-repository commit
@@ -299,7 +299,7 @@ jobs:
             echo "Container image: \`${IMAGE}:${version}\` (digest \`${{ needs.image.outputs.digest }}\`)."
             echo
             echo "Verify downloads with \`sha256sum -c SHA256SUMS\` and"
-            echo "\`cosign verify-blob --bundle FILE.sigstore.json --certificate-identity-regexp 'https://github.com/ardada2468/HaltSQL/' --certificate-oidc-issuer https://token.actions.githubusercontent.com FILE\`."
+            echo "\`cosign verify-blob --bundle FILE.sigstore.json --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' --certificate-oidc-issuer https://token.actions.githubusercontent.com FILE\`."
           } >> release-notes.md
           cat release-notes.md
 

@@ -49,7 +49,7 @@ const (
 	operatorImage    = "haltsql-operator-e2e/operator:dev"
 	operatorNS       = "haltsql-system"
 	operatorDeploy   = "haltsql-operator-controller-manager"
-	defaultOperImage = "ghcr.io/ardada2468/haltsql-operator:latest"
+	defaultOperImage = "ghcr.io/haltsql/haltsql-operator:latest"
 	testNS           = "haltsql-e2e"
 )
 

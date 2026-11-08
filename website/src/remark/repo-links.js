@@ -6,8 +6,8 @@ const path = require('path');
 
 const DOCS_DIR = path.resolve(__dirname, '../../../docs');
 const REPO_ROOT = path.resolve(DOCS_DIR, '..');
-const BLOB = 'https://github.com/ardada2468/HaltSQL/blob/main/';
-const TREE = 'https://github.com/ardada2468/HaltSQL/tree/main/';
+const BLOB = 'https://github.com/HaltSQL/HaltSQL/blob/main/';
+const TREE = 'https://github.com/HaltSQL/HaltSQL/tree/main/';
 
 function isRelative(url) {
   return url && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('#') && !url.startsWith('/');

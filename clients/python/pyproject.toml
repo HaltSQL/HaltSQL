@@ -24,8 +24,8 @@ asyncpg = ["asyncpg>=0.27"]
 test = ["pytest>=7", "pytest-asyncio>=0.21"]
 
 [project.urls]
-Homepage = "https://github.com/ardada2468/HaltSQL"
-Documentation = "https://github.com/ardada2468/HaltSQL/blob/main/docs/sdk-python.md"
+Homepage = "https://github.com/HaltSQL/HaltSQL"
+Documentation = "https://github.com/HaltSQL/HaltSQL/blob/main/docs/sdk-python.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

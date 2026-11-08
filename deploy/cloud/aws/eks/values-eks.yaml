@@ -11,7 +11,7 @@
 replicaCount: 3
 
 image:
-  repository: ghcr.io/ardada2468/haltsql
+  repository: ghcr.io/haltsql/haltsql
   # Pin the exact, signed image in production (cosign verify, see docs/deployment.md).
   # digest: sha256:...
 

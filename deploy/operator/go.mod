@@ -1,4 +1,4 @@
-module github.com/ardada2468/HaltSQL/deploy/operator
+module github.com/HaltSQL/HaltSQL/deploy/operator
 
 go 1.25.0
 

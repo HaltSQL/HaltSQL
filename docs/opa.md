@@ -11,7 +11,7 @@ together in both directions:
   API gateway, Envoy `ext_authz`, an agent runtime), a Rego policy can call
   `haltsql-server`'s `POST /v1/verify` with `http.send` and use the verdict.
 
-Both example policies are in [`examples/opa/`](https://github.com/ardada2468/HaltSQL/tree/main/examples/opa),
+Both example policies are in [`examples/opa/`](https://github.com/HaltSQL/HaltSQL/tree/main/examples/opa),
 with Rego unit tests (`opa test examples/opa`).
 
 ## HaltSQL asks OPA
@@ -123,7 +123,7 @@ body.
 
 ### Example policy
 
-[`examples/opa/haltsql.rego`](https://github.com/ardada2468/HaltSQL/blob/main/examples/opa/haltsql.rego)
+[`examples/opa/haltsql.rego`](https://github.com/HaltSQL/HaltSQL/blob/main/examples/opa/haltsql.rego)
 exposes both decision forms: `haltsql/allow` (a boolean) and
 `haltsql/decision` (`{allow, reasons}`):
 
@@ -178,7 +178,7 @@ docker run --rm -v "$PWD/examples/opa:/policies:ro" openpolicyagent/opa:1.10.1 t
 
 ## OPA asks HaltSQL
 
-[`examples/opa/verify_gate.rego`](https://github.com/ardada2468/HaltSQL/blob/main/examples/opa/verify_gate.rego)
+[`examples/opa/verify_gate.rego`](https://github.com/HaltSQL/HaltSQL/blob/main/examples/opa/verify_gate.rego)
 lets OPA decide on a SQL statement by calling `haltsql-server`:
 
 ```rego

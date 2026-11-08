@@ -3,7 +3,7 @@
 DUNE          ?= opam exec -- dune
 OPAM          ?= opam
 OCAMLFORMAT_VERSION := $(shell sed -n 's/^version *= *//p' .ocamlformat 2>/dev/null)
-IMAGE         ?= ghcr.io/ardada2468/haltsql
+IMAGE         ?= ghcr.io/haltsql/haltsql
 VERSION       ?= $(shell sed -n 's/^(version \(.*\))/\1/p' dune-project)
 LAB_DIR       ?= lab
 PYTHON        ?= python3

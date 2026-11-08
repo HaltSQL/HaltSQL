@@ -26,8 +26,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	haltsqlv1alpha1 "github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1"
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/render"
+	haltsqlv1alpha1 "github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/render"
 )
 
 const ordersPolicy = `apiVersion: haltsql.dev/v1
@@ -116,7 +116,7 @@ func newServer(ns, name string, policies ...string) *haltsqlv1alpha1.HaltSQLServ
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
 		Spec: haltsqlv1alpha1.HaltSQLServerSpec{
 			Replicas: ptr.To[int32](2),
-			Image:    "ghcr.io/ardada2468/haltsql:test",
+			Image:    "ghcr.io/haltsql/haltsql:test",
 		},
 	}
 	for _, p := range policies {
@@ -339,7 +339,7 @@ func TestServerLifecycle(t *testing.T) {
 	if sum1 == "" || sum1 != s.Status.ConfigChecksum {
 		t.Fatalf("checksum annotation %q, status %q", sum1, s.Status.ConfigChecksum)
 	}
-	if *d.Spec.Replicas != 2 || d.Spec.Template.Spec.Containers[0].Image != "ghcr.io/ardada2468/haltsql:test" {
+	if *d.Spec.Replicas != 2 || d.Spec.Template.Spec.Containers[0].Image != "ghcr.io/haltsql/haltsql:test" {
 		t.Fatalf("deployment spec: %+v", d.Spec)
 	}
 	if svc.Spec.Ports[0].Port != 8080 || svc.Spec.Selector["app.kubernetes.io/instance"] != "hs" {

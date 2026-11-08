@@ -84,7 +84,7 @@ chain. On EKS, set `credentials: { source: web_identity }` explicitly.
   - `logs` (interface);
   - for ECS: `ecr.api`, `ecr.dkr`;
   - for ADOT: `xray`, `aps-workspaces`.
-- The image `ghcr.io/ardada2468/haltsql:<version>`, mirrored to ECR if your
+- The image `ghcr.io/haltsql/haltsql:<version>`, mirrored to ECR if your
   nodes cannot reach GHCR. Verify its cosign signature and pin it by digest
   ([deployment.md](deployment.md#verifying-release-artifacts)).
 - An audit bucket with Object Lock. `deploy/cloud/aws/terraform/` creates it,

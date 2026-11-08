@@ -5,11 +5,11 @@ replicaCount: 2
 revisionHistoryLimit: 5
 
 image:
-  repository: ghcr.io/ardada2468/haltsql
+  repository: ghcr.io/haltsql/haltsql
   tag: ""            # defaults to .Chart.AppVersion
   # Pin an exact, signed image. When set it wins over `tag`. Verify first:
-  #   cosign verify ghcr.io/ardada2468/haltsql@sha256:... \
-  #     --certificate-identity-regexp 'https://github.com/ardada2468/HaltSQL/' \
+  #   cosign verify ghcr.io/haltsql/haltsql@sha256:... \
+  #     --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' \
   #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   digest: ""         # e.g. sha256:3f1c...
   pullPolicy: IfNotPresent

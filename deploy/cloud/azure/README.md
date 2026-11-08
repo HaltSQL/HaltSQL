@@ -20,7 +20,7 @@ needs no Azure identity.
 | `aks/networkpolicy-shared.yaml` | Replaces the chart's deny-all-egress NetworkPolicy (OIDC needs `login.microsoftonline.com`), plus an `azmonitoring.coreos.com` PodMonitor. |
 | `aks/externalsecret-tls.yaml` | Optional: sync the chart's TLS Secret from a Key Vault certificate with External Secrets Operator. |
 | `aks/proxy.yaml` | **Pattern 3.** `haltsql-proxy` in front of Azure Database for PostgreSQL Flexible Server, with secrets from Key Vault via CSI. |
-| `containerapps/Dockerfile` | Bakes the config and policies into an image on top of `ghcr.io/ardada2468/haltsql`. |
+| `containerapps/Dockerfile` | Bakes the config and policies into an image on top of `ghcr.io/haltsql/haltsql`. |
 | `containerapps/haltsql/sidecar.yaml`, `shared.yaml` | haltsql configs for the two Container Apps options (static token / Entra ID). |
 | `containerapps/haltsql/policies/` | Example policy. |
 | `containerapps/app.yaml` | **Pattern 2A.** Agent + haltsql + collector sidecars in one Container App (`az containerapp create --yaml`). |

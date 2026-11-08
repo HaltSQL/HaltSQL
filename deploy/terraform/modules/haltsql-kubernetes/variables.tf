@@ -102,7 +102,7 @@ variable "atomic" {
 variable "image" {
   description = "Container image. Set digest to pin an exact (signed) image; it takes precedence over tag."
   type = object({
-    repository  = optional(string, "ghcr.io/ardada2468/haltsql")
+    repository  = optional(string, "ghcr.io/haltsql/haltsql")
     tag         = optional(string)
     digest      = optional(string)
     pull_policy = optional(string, "IfNotPresent")

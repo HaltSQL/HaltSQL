@@ -10,7 +10,7 @@ or a policy bypass.**
 
 Report it privately through GitHub Security Advisories:
 
-1. Go to <https://github.com/ardada2468/HaltSQL/security/advisories/new>.
+1. Go to <https://github.com/HaltSQL/HaltSQL/security/advisories/new>.
 2. Describe the problem. For a bypass, include:
    - the policy (minimized if possible),
    - the context JSON,

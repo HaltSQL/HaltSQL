@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: ardada2468/HaltSQL@v0.2.0
+      - uses: HaltSQL/HaltSQL@v0.2.0
         with:
           version: v0.2.0
           policies: policies/**/*.yaml
@@ -49,7 +49,7 @@ jobs:
    another source. With `verify-signature: true` (and cosign on `PATH`), it
    also verifies `SHA256SUMS` with cosign keyless signatures. On other
    platforms, or if the download itself fails, it falls back to the container
-   image `ghcr.io/ardada2468/haltsql:<version>`, which needs Docker. The tag is
+   image `ghcr.io/haltsql/haltsql:<version>`, which needs Docker. The tag is
    resolved to a digest once, and the image is always run by that digest.
    With `verify-signature: true`, a failed download is fatal (there is no
    container fallback), and a container image (`install-method: docker` or an
@@ -119,7 +119,7 @@ printed.
 ```yaml
 # .gitlab-ci.yml
 include:
-  - remote: https://raw.githubusercontent.com/ardada2468/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/HaltSQL/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
 
 variables:
   HALTSQL_VERSION: v0.2.0
@@ -185,7 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: haltsql
-        uses: ardada2468/HaltSQL@v0.2.0
+        uses: HaltSQL/HaltSQL@v0.2.0
         with:
           version: v0.2.0
           policies: policies/**/*.yaml
@@ -265,7 +265,7 @@ For S3 or HTTPS sources, upload `prod.haltsqlbundle.sig` **before**
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/ardada2468/HaltSQL
+  - repo: https://github.com/HaltSQL/HaltSQL
     rev: v0.2.0
     hooks:
       - id: haltsql-validate

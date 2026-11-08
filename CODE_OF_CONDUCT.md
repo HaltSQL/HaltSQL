@@ -11,7 +11,7 @@ expected to follow it.
 ## Reporting
 
 Report unacceptable behavior to the maintainers via GitHub: open a private
-report through [GitHub Security Advisories](https://github.com/ardada2468/HaltSQL/security/advisories/new)
+report through [GitHub Security Advisories](https://github.com/HaltSQL/HaltSQL/security/advisories/new)
 with a title starting with `[Conduct]`, or contact a maintainer listed in
 [GOVERNANCE.md](GOVERNANCE.md) directly on GitHub. Do not report conduct issues
 in public threads.

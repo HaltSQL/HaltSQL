@@ -8,8 +8,8 @@
 #   INPUT_VERIFY_SIGNATURE  true: also verify SHA256SUMS with cosign (keyless); the
 #                         container image, when used, must pass `cosign verify`
 #                         too, and a failed release download never falls back
-#   HALTSQL_REPO          GitHub repository (default ardada2468/HaltSQL)
-#   HALTSQL_IMAGE         container image (default ghcr.io/ardada2468/haltsql)
+#   HALTSQL_REPO          GitHub repository (default HaltSQL/HaltSQL)
+#   HALTSQL_IMAGE         container image (default ghcr.io/haltsql/haltsql)
 #   HALTSQL_RELEASE_BASE_URL  https mirror of the GitHub release downloads (optional)
 #   GITHUB_TOKEN          optional, raises the GitHub API rate limit for "latest"
 #   RUNNER_TEMP, RUNNER_OS, RUNNER_ARCH, GITHUB_PATH  set by GitHub Actions
@@ -26,8 +26,8 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$here/lib.sh"
 
-repo=${HALTSQL_REPO:-ardada2468/HaltSQL}
-image=${HALTSQL_IMAGE:-ghcr.io/ardada2468/haltsql}
+repo=${HALTSQL_REPO:-HaltSQL/HaltSQL}
+image=${HALTSQL_IMAGE:-ghcr.io/haltsql/haltsql}
 method=${INPUT_INSTALL_METHOD:-auto}
 version=${INPUT_VERSION:-latest}
 verify_sig=false

@@ -13,9 +13,9 @@
 (maintainers "Arnav Dadarya")
 
 (source
- (github ardada2468/HaltSQL))
+ (github HaltSQL/HaltSQL))
 
-(documentation "https://github.com/ardada2468/HaltSQL/tree/main/docs")
+(documentation "https://github.com/HaltSQL/HaltSQL/tree/main/docs")
 
 ; Package layout (see PLAN.md section 14):
 ;  - haltsql: the core libraries (haltsql, haltsql.core/parse/load/analyzer/

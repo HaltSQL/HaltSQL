@@ -121,7 +121,7 @@ set -e
 
 # container fallback with a fake docker (records its arguments; no network)
 digest="sha256:$(printf 'a%.0s' $(seq 64))"
-pinned="ghcr.io/ardada2468/haltsql@$digest"
+pinned="ghcr.io/haltsql/haltsql@$digest"
 mkdir -p "$work/fakebin" "$work/cosignbin"
 cat >"$work/fakebin/docker" <<'FAKE'
 #!/usr/bin/env bash
@@ -129,7 +129,7 @@ printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
 if [ "$1" = inspect ]; then
   # another repository's digest first: must be skipped
   printf 'mirror.example/haltsql@sha256:%s\n' "$(printf 'b%.0s' $(seq 64))"
-  printf 'ghcr.io/ardada2468/haltsql@sha256:%s\n' "$(printf 'a%.0s' $(seq 64))"
+  printf 'ghcr.io/haltsql/haltsql@sha256:%s\n' "$(printf 'a%.0s' $(seq 64))"
 fi
 exit 0
 FAKE
@@ -149,7 +149,7 @@ rc=$?
 set -e
 check "docker install exit" 0 "$rc"
 check "docker wrapper path" "$work/rt/haltsql-install/docker-v0.3.1/haltsql" "$p"
-check "docker pull ref" "pull ghcr.io/ardada2468/haltsql:0.3.1" "$(head -1 "$work/docker.log")"
+check "docker pull ref" "pull ghcr.io/haltsql/haltsql:0.3.1" "$(head -1 "$work/docker.log")"
 check "wrapper added to PATH" "$work/rt/haltsql-install/docker-v0.3.1" "$(cat "$work/ghpath")"
 (cd "$work/repo" && PATH="$work/fakebin:$PATH" FAKE_DOCKER_LOG="$work/docker.log" \
   RUNNER_TEMP="$work/rt" "$p" test --json tests)
@@ -168,7 +168,7 @@ rc=$?
 set -e
 check "verified docker install exit" 0 "$rc"
 check "cosign verifies the digest with identity constraints" \
-  "verify --certificate-identity-regexp ^https://github.com/ardada2468/HaltSQL/ --certificate-oidc-issuer https://token.actions.githubusercontent.com $pinned" \
+  "verify --certificate-identity-regexp ^https://github.com/HaltSQL/HaltSQL/ --certificate-oidc-issuer https://token.actions.githubusercontent.com $pinned" \
   "$(cat "$work/cosign.log")"
 contains "verified wrapper pins the digest" "$p" "$pinned\""
 set +e
