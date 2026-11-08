@@ -1,0 +1,363 @@
+/* Restrained by design: hairlines, one accent, colour only where meaning is. */
+
+.wrap {
+  --fa-line: var(--hs-border);
+  --fa-text: var(--ifm-font-color-base);
+  --fa-muted: var(--hs-muted);
+  --fa-accent: var(--ifm-color-primary);
+  --fa-ease: cubic-bezier(0.65, 0, 0.35, 1);
+  margin: 2rem 0 0;
+  border: 1px solid var(--fa-line);
+  border-radius: 14px;
+  background: var(--hs-surface);
+}
+
+/* ---------- tabs ---------- */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid var(--fa-line);
+}
+.tabs {
+  display: flex;
+  gap: 1.5rem;
+}
+.tab,
+.toggle {
+  padding: 0.85rem 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--fa-muted);
+  cursor: pointer;
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  transition: color 0.25s;
+}
+.tab::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  background: var(--fa-text);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.35s var(--fa-ease);
+}
+.tab:hover,
+.toggle:hover {
+  color: var(--fa-text);
+}
+.tabOn {
+  color: var(--fa-text);
+}
+.tabOn::after {
+  transform: scaleX(1);
+}
+.tabNum {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+
+/* ---------- diagram ---------- */
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0.5rem 1.25rem 0;
+  font-family: var(--ifm-font-family-base);
+}
+
+.region {
+  fill: color-mix(in srgb, var(--fa-text) 2.5%, transparent);
+  stroke: var(--fa-line);
+  stroke-width: 1;
+}
+.regionLabel {
+  fill: var(--fa-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+}
+
+.track {
+  stroke: var(--fa-line);
+  stroke-width: 1.5;
+}
+.fill {
+  stroke-width: 1.5;
+  stroke-dasharray: 100;
+  transition-property: stroke-dashoffset, stroke;
+  transition-timing-function: var(--fa-ease);
+}
+.returnPath {
+  fill: none;
+  stroke: var(--hs-deny);
+  stroke-width: 1.5;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  opacity: 0;
+  transition-property: stroke-dashoffset, opacity;
+  transition-timing-function: var(--fa-ease);
+}
+.returnOn {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+
+.tone_accent {
+  stroke: var(--fa-accent);
+  fill: var(--fa-accent);
+}
+.tone_allow {
+  stroke: var(--hs-allow);
+  fill: var(--hs-allow);
+}
+
+.head {
+  transition-property: transform, opacity;
+  transition-timing-function: var(--fa-ease);
+}
+.head circle {
+  stroke: none;
+}
+.headHidden {
+  opacity: 0;
+}
+
+/* stages */
+.stageDot {
+  fill: var(--hs-surface);
+  stroke: var(--fa-line);
+  stroke-width: 1.5;
+  transition: fill 0.4s, stroke 0.4s;
+}
+.stageName {
+  fill: var(--fa-muted);
+  font-size: 14px;
+  font-weight: 600;
+  transition: fill 0.4s;
+}
+.stageSub {
+  fill: var(--fa-muted);
+  font-size: 11.5px;
+  opacity: 0.75;
+}
+.stage_done .stageDot {
+  fill: var(--fa-text);
+  stroke: var(--fa-text);
+}
+.stage_done .stageName,
+.stage_current .stageName {
+  fill: var(--fa-text);
+}
+.stage_current .stageDot {
+  fill: var(--fa-accent);
+  stroke: var(--fa-accent);
+}
+.pulse {
+  fill: none;
+  stroke: var(--fa-accent);
+  stroke-width: 1;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: fa-pulse 1.8s var(--fa-ease) infinite;
+}
+.verdict_allow .stageDot {
+  fill: var(--hs-allow);
+  stroke: var(--hs-allow);
+}
+.verdict_allow .stageName {
+  fill: var(--hs-allow);
+}
+.verdict_deny .stageDot {
+  fill: var(--hs-deny);
+  stroke: var(--hs-deny);
+}
+.verdict_deny .stageName {
+  fill: var(--hs-deny);
+}
+.verdict_allow .pulse {
+  stroke: var(--hs-allow);
+}
+.verdict_deny .pulse {
+  stroke: var(--hs-deny);
+}
+
+/* endpoints */
+.endpoint rect {
+  fill: var(--hs-surface);
+  stroke: var(--fa-line);
+  stroke-width: 1;
+  transition: stroke 0.4s;
+}
+.endTitle {
+  fill: var(--fa-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.endSub {
+  fill: var(--fa-muted);
+  font-size: 11.5px;
+}
+.endpointOn rect {
+  stroke: var(--fa-text);
+}
+.endpointAllow rect {
+  stroke: var(--hs-allow);
+}
+.endpointDeny rect {
+  stroke: var(--hs-deny);
+}
+
+/* ---------- readout ---------- */
+.readout {
+  padding: 0.25rem 1.25rem 1.1rem;
+}
+.row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--fa-line);
+}
+.key {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fa-muted);
+}
+.sql {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.86rem;
+  color: var(--fa-text);
+  white-space: nowrap;
+  overflow-x: auto;
+  animation: fa-fade 0.6s var(--fa-ease);
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.86rem;
+}
+.check {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  color: var(--fa-muted);
+  opacity: 0.45;
+  transition: opacity 0.4s var(--fa-ease), color 0.4s;
+}
+.mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--fa-line);
+  transition: background 0.4s;
+}
+.checkName {
+  color: var(--fa-text);
+  font-weight: 550;
+}
+.checkDetail {
+  color: var(--fa-muted);
+}
+.ok,
+.bad {
+  opacity: 1;
+}
+.ok .mark {
+  background: var(--hs-allow);
+}
+.bad .mark {
+  background: var(--hs-deny);
+}
+.bad .checkDetail {
+  color: var(--hs-deny);
+}
+.outcome {
+  font-size: 0.86rem;
+  color: var(--fa-muted);
+  transition: color 0.4s;
+}
+.outcome_allow {
+  color: var(--hs-allow);
+  font-weight: 550;
+}
+.outcome_deny {
+  color: var(--hs-deny);
+  font-weight: 550;
+}
+.caption {
+  margin: 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--fa-line);
+  color: var(--fa-muted);
+  font-size: 0.92rem;
+}
+
+@keyframes fa-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+@keyframes fa-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  /* The diagram scales down with the column: keep only the large labels. */
+  .stageSub,
+  .endSub,
+  .regionLabel {
+    display: none;
+  }
+  .stageName,
+  .endTitle {
+    font-size: 24px;
+  }
+  .sql {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .row {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+  .tabs {
+    gap: 1rem;
+  }
+}
+
+.reduced .sql {
+  animation: none;
+}

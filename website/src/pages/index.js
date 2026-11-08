@@ -6,23 +6,8 @@ import Heading from '@theme/Heading';
 import CodeBlock from '@theme/CodeBlock';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import Mermaid from '@theme/Mermaid';
+import FlowAnimation from '@site/src/components/FlowAnimation';
 import styles from './index.module.css';
-
-const architecture = `flowchart LR
-  user([End user]) --> app
-  subgraph app [Your application]
-    agent[LLM agent<br/>writes SQL]
-  end
-  agent -- "SQL + caller context" --> hs
-  subgraph hs [HaltSQL]
-    direction TB
-    parse[Parse with the real<br/>Postgres parser] --> analyze[Check every table,<br/>column, function and<br/>tenant predicate]
-    analyze --> verdict{Verdict}
-  end
-  verdict -- "allowed + values to bind" --> pg[(PostgreSQL)]
-  verdict -. "denied + reasons + hints" .-> agent
-  policy[/Policy YAML or JSON/] --> hs`;
 
 const policyYaml = `apiVersion: haltsql.dev/v1
 kind: Policy
@@ -166,7 +151,7 @@ export default function Home() {
             Only an allowed query reaches Postgres, bound with tenant values the model never saw.
             A denied query goes back to the agent with codes and hints so it can try again.
           </p>
-          <Mermaid value={architecture} />
+          <FlowAnimation />
         </Section>
 
         <Section alt kicker="Quick start" title="Try it">
