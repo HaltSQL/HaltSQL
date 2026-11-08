@@ -116,6 +116,18 @@ how conservative the policy semantics are.
 | `chaos.yaml` | nightly | fault injection (see status below) |
 | `oracle-selftest.yaml` | every PR | run with `--fake-verifier allow`; must report escapes |
 
+To judge another policy without editing a scenario, pass `--policy P` to
+`python -m harness run`; `--oracle-policy Q` makes the oracles judge against
+`Q` instead (honeytokens and `haltlab_cols` grants follow it), and `--run-id`
+keeps database names unique when runs share a server.
+
+## Catalog integrations (tier 3)
+
+`make catalog-tier3 PII=path/to/pii.json` proves that the columns a data
+catalog tags as PII are blocked on real Postgres, with a negative control that
+must leak them when the tags are missing. See
+[catalogs/README.md](catalogs/README.md).
+
 ## Infrastructure
 
 - `infra/compose/docker-compose.yml`: Postgres 13-17 (port `54NN`),

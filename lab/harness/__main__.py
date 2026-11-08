@@ -2,6 +2,7 @@
 
     python -m harness run scenarios/pr-smoke.yaml
     python -m harness run scenarios/pr-smoke.yaml --fake-verifier allow   # oracle self-test
+    python -m harness run scenarios/pr-smoke.yaml --policy drafted.yaml   # judge another policy
     python -m harness validate scenarios/*.yaml
 
 Environment: HALTSQL_BIN (verifier command), HALTLAB_DSN (admin DSN; may
@@ -30,6 +31,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--jobs", type=int, help="parallel verification (haltsql --jobs)")
     r.add_argument("--fake-verifier", choices=["allow", "deny"],
                    help="use the stand-in verifier instead of haltsql (oracle self-test)")
+    r.add_argument("--policy", type=Path,
+                   help="policy for the verifier (and, unless --oracle-policy, the oracles); "
+                        "overrides the scenario's and the fixture's policy")
+    r.add_argument("--oracle-policy", type=Path,
+                   help="ground truth for the oracles: honeytokens go in every column it denies and "
+                        "haltlab_cols is granted exactly its allowed columns (default: the verifier policy)")
+    r.add_argument("--run-id", help="suffix for database names, so concurrent runs on one server do not collide")
     v = sub.add_parser("validate", help="check scenario files")
     v.add_argument("scenarios", type=Path, nargs="+")
     a = ap.parse_args(argv)
@@ -59,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
     out = a.out or default_out_dir(scn)
-    ok = run_scenario(scn, out, cmd, keep_db=a.keep_db, jobs=a.jobs)
+    ok = run_scenario(scn, out, cmd, keep_db=a.keep_db, jobs=a.jobs,
+                      policy_path=a.policy.resolve() if a.policy else None,
+                      oracle_policy_path=a.oracle_policy.resolve() if a.oracle_policy else None,
+                      run_id=a.run_id)
     log("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

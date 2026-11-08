@@ -66,3 +66,33 @@ def test_haltsql_smoke_has_no_escapes(tmp_path):
         pytest.skip("haltsql binary not built")
     scn = load_scenario(LAB / "scenarios/pr-smoke.yaml")
     assert run_scenario(scn, tmp_path, cmd)
+
+
+@needs_db
+def test_catalog_tier3_dbt_example_blocks_tagged_pii_and_negative_control_leaks(tmp_path):
+    """catalogs/tier3.py on examples/metadata/dbt_manifest.json: the positive run is
+    clean, and without the catalog tags every tagged column is seen leaking."""
+    import subprocess
+
+    from catalogs.tier3 import main as tier3_main
+
+    try:
+        cmd = resolve_binary()
+    except FileNotFoundError:
+        pytest.skip("haltsql binary not built")
+    pii = tmp_path / "pii.json"
+    subprocess.run([*cmd, "schema", "import", "--from", "dbt",
+                    str(LAB.parent / "examples/metadata/dbt_manifest.json"), "-o", str(pii)],
+                   check=True, capture_output=True)
+    out = tmp_path / "t3"
+    rc = tier3_main(["--pii", str(pii), "--out", str(out), "--benign", "60", "--adversarial", "120",
+                     "--column-attacks", "60"])
+    summary = json.loads((out / "summary.json").read_text())
+    assert rc == 0, summary["failures"]
+    assert summary["positive"]["escapes"] == 0 and summary["positive"]["targeted_allowed"] == 0
+    assert summary["negative"]["column_leaks"] > 0 and not summary["negative"]["undetected"]
+    assert "app.users.full_name" in summary["negative"]["detected"]  # tagged by dbt, granted by the fixture SQL
+
+    empty = tmp_path / "empty.json"
+    empty.write_text('{"tables": {}}')
+    assert tier3_main(["--pii", str(empty), "--out", str(tmp_path / "e"), "--mode", "positive"]) == 1
