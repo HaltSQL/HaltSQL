@@ -20,8 +20,33 @@ env:
   HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  # Which areas this change touches (.github/scripts/changes.sh). Every job
+  # below runs only when its area changed; pushes to main run everything.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ocaml: ${{ steps.areas.outputs.ocaml }}
+      python: ${{ steps.areas.outputs.python }}
+      typescript: ${{ steps.areas.outputs.typescript }}
+      go: ${{ steps.areas.outputs.go }}
+      java: ${{ steps.areas.outputs.java }}
+      action: ${{ steps.areas.outputs.action }}
+      helm: ${{ steps.areas.outputs.helm }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # The PR merge commit and its first parent (the base tip).
+          fetch-depth: 2
+      - id: areas
+        run: .github/scripts/changes.sh ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+
   lint:
     name: Formatting (ocamlformat)
+    needs: changes
+    if: needs.changes.outputs.ocaml == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -45,12 +70,16 @@ jobs:
 
   build-test:
     name: Build and test (${{ matrix.os }}, OCaml ${{ matrix.ocaml }})
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        ocaml: ["5.2", "5.4"]
+        # PRs test the newest OCaml on both OSes (coverage already runs 5.2 on
+        # Ubuntu); pushes to main run the full grid.
+        ocaml: ${{ fromJSON(github.event_name == 'pull_request' && '["5.4"]' || '["5.2", "5.4"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -79,7 +108,9 @@ jobs:
 
   coverage:
     name: Coverage (bisect_ppx)
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -121,7 +152,9 @@ jobs:
 
   postgres-integration:
     name: Postgres integration (rls, schema pull, Python guard)
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -154,7 +187,9 @@ jobs:
 
   python-clients:
     name: Python SDK, MCP server and framework integrations
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.python == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -195,7 +230,8 @@ jobs:
 
   python-sdk-minimum:
     name: Python SDK (Python 3.9, no frameworks)
-    needs: lint
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     # ubuntu-latest (26.04) has no Python 3.9 build in actions/setup-python.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -215,11 +251,15 @@ jobs:
 
   typescript-sdk:
     name: TypeScript SDK (Node ${{ matrix.node }})
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.typescript == 'true') }}
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20", "22"]
+        # PRs test the current LTS; pushes to main cover every supported
+        # version (package.json: engines.node >= 18).
+        node: ${{ fromJSON(github.event_name == 'pull_request' && '["22"]' || '["18", "20", "22"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -260,7 +300,8 @@ jobs:
 
   go-sdk:
     name: Go SDK
-    needs: lint
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -288,7 +329,8 @@ jobs:
 
   java-sdk:
     name: Java SDK (Temurin 17)
-    needs: lint
+    needs: changes
+    if: needs.changes.outputs.java == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -315,7 +357,9 @@ jobs:
 
   policy-ci-action:
     name: GitHub Action and GitLab template self-test
-    needs: lint
+    needs: [changes, lint]
+    # lint is skipped when no OCaml changed; run anyway unless it failed.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.action == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -368,6 +412,8 @@ jobs:
 
   helm-chart:
     name: Helm chart (lint, template, kubeconform)
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -410,3 +456,33 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             /m
+
+  # One check that sums up the workflow, for branch protection: skipped jobs
+  # (areas this change does not touch) count as passing.
+  ci-ok:
+    name: CI ok
+    if: always()
+    needs:
+      - changes
+      - lint
+      - build-test
+      - coverage
+      - postgres-integration
+      - python-clients
+      - python-sdk-minimum
+      - typescript-sdk
+      - go-sdk
+      - java-sdk
+      - policy-ci-action
+      - helm-chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran passed
+        env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::a CI job failed or was cancelled"
+            exit 1
+          fi

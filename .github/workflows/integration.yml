@@ -25,8 +25,29 @@ env:
   HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  # Which areas this change touches (.github/scripts/changes.sh). On a PR each
+  # job runs only when its area changed; main, nightly and dispatch run all.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ocaml: ${{ steps.areas.outputs.ocaml }}
+      operator: ${{ steps.areas.outputs.operator }}
+      terraform: ${{ steps.areas.outputs.terraform }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # The PR merge commit and its first parent (the base tip).
+          fetch-depth: 2
+      - id: areas
+        run: .github/scripts/changes.sh ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+
   ocaml-docker:
     name: OCaml integration (${{ matrix.suite.name }})
+    needs: changes
+    if: needs.changes.outputs.ocaml == 'true'
     # Pinned: the Docker-based suites are tuned on Ubuntu 24.04 runners.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -102,6 +123,8 @@ jobs:
 
   e2e:
     name: E2E
+    needs: changes
+    if: needs.changes.outputs.ocaml == 'true'
     # The end-to-end suite (test/e2e, docs/testing.md#end-to-end-suite): the
     # real services in Docker Compose, the real binaries, a pytest driver.
     runs-on: ubuntu-24.04
@@ -157,6 +180,8 @@ jobs:
 
   operator:
     name: Operator (Go unit + envtest)
+    needs: changes
+    if: needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.operator == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -209,6 +234,8 @@ jobs:
 
   terraform:
     name: Terraform (fmt, validate, test, tflint, trivy)
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -279,3 +306,29 @@ jobs:
       - name: Stop the engines
         if: always()
         run: lab/compat/run.sh down
+
+  # One check that sums up the workflow, for branch protection: skipped jobs
+  # (areas this change does not touch, nightly-only jobs) count as passing.
+  integration-ok:
+    name: Integration ok
+    if: always()
+    needs:
+      - changes
+      - ocaml-docker
+      - e2e
+      - operator
+      - operator-e2e
+      - terraform
+      - terraform-kind
+      - lab-compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran passed
+        env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::an integration job failed or was cancelled"
+            exit 1
+          fi
