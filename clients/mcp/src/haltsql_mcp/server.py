@@ -235,6 +235,9 @@ EXAMPLES
   # without a sidecar, verifying with the local haltsql CLI:
   haltsql-mcp --local-policy policy.yaml --context-file ctx.json --database-url ...
 
+  # drop-in for @modelcontextprotocol/server-postgres (DSN as the last argument):
+  haltsql-mcp --local-policy policy.yaml postgresql://agent_ro@localhost/app
+
 Exit status: 0 on shutdown, 2 on a configuration error.
 See docs/mcp.md for every environment variable.""",
     )
@@ -247,6 +250,9 @@ See docs/mcp.md for every environment variable.""",
     p.add_argument("--local-policy", help="Verify with the local haltsql CLI and this policy file.")
     p.add_argument("--policy-file", help="Policy document for describe_policy/list_tables.")
     p.add_argument("--database-url")
+    p.add_argument("dsn", nargs="?", metavar="DATABASE_URL",
+                   help="libpq DSN, as a positional argument like @modelcontextprotocol/server-postgres "
+                        "takes it (same as --database-url).")
     p.add_argument("--row-cap", type=int)
     p.add_argument("--statement-timeout-ms", type=int)
     p.add_argument("--context-file", help="JSON context for stdio (overrides HALTSQL_MCP_CONTEXT).")
@@ -265,6 +271,10 @@ def settings_from_args(argv: Optional[List[str]] = None, env: Optional[Mapping[s
         val = getattr(args, attr)
         if val is not None:
             setattr(s, "local_policy_file" if attr == "local_policy" else attr, val)
+    if args.dsn is not None:
+        if args.database_url is not None and args.database_url != args.dsn:
+            raise ConfigError("give the database URL once: positionally or with --database-url, not both")
+        s.database_url = args.dsn
     if args.context_file:
         s.load_context_file(args.context_file)
     s.insecure_static_context = bool(args.insecure_static_context)

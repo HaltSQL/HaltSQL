@@ -120,6 +120,19 @@ def test_settings_validation(tmp_path):
     assert "'t'" not in repr(s)  # token not in repr
 
 
+def test_settings_positional_dsn():
+    """`haltsql-mcp postgresql://...` works like @modelcontextprotocol/server-postgres."""
+    dsn = "postgresql://agent_ro@localhost/app"
+    s = settings_from_args([dsn], env={})
+    assert s.database_url == dsn
+    s = settings_from_args(["--row-cap", "10", dsn], env={"DATABASE_URL": "postgresql://other/db"})
+    assert s.database_url == dsn and s.row_cap == 10
+    assert settings_from_args(["--database-url", dsn, dsn], env={}).database_url == dsn
+    with pytest.raises(ConfigError, match="once"):
+        settings_from_args(["--database-url", "postgresql://other/db", dsn], env={})
+    assert dsn not in repr(settings_from_args([dsn], env={}))
+
+
 def test_settings_tls_to_sidecar(tmp_path):
     ca = tmp_path / "ca.pem"
     ca.write_text("x")
