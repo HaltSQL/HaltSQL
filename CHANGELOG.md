@@ -19,6 +19,15 @@ even before 1.0.
   `--snapshot-out` writes the catalog's view of the tables as a
   **non-authoritative** snapshot (`metadata.authoritative: false`, untyped
   columns).
+- **DataHub live provider**, validated against a live DataHub v1.8.0:
+  `haltsql schema fetch --from datahub` reads column tags and glossary terms
+  of postgres datasets (from `schemaMetadata` and `editableSchemaMetadata`)
+  through the GraphQL API with a Personal Access Token (`DATAHUB_TOKEN`),
+  scoped by `--service` (platform instance), `--database` and `--schema`
+  (resolved to containers), following `nextScrollId`. Opt-in end-to-end check
+  in `test/catalog_live/datahub/` (real Postgres-source ingestion,
+  GraphQL-applied labels, fetch, lab tier-3), run weekly by the
+  `catalog-live` workflow.
 - `haltsql policy draft` accepts a non-authoritative snapshot: the draft then
   has no `catalog:` reference and a header comment explaining that `SELECT *`
   stays denied.

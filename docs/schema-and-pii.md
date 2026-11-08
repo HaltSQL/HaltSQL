@@ -246,7 +246,30 @@ response bodies. Responses are capped at 32 MiB.
 
 | Provider | `--from` | Default token variable | Status |
 |---|---|---|---|
-| _providers are added by their own PRs_ | | | |
+| DataHub | `datahub` | `DATAHUB_TOKEN` | Validated against DataHub v1.8.0 (2026-11-08): real Postgres-source ingestion (`acryl-datahub` 1.7.0.19) with schema tag/term transformers, GraphQL-applied column tags and glossary terms, live fetch, lab tier-3 ([details](../test/catalog_live/datahub/README.md)). |
+
+**DataHub.** `--url` is the GMS root (`http://datahub-gms:8080`) or the
+frontend root (`https://datahub.example.com`); HaltSQL posts GraphQL to
+`/api/graphql`. A GraphQL root ending in `/api` or `/api/v2` also works
+(requests then go to `.../graphql`). The token is a Personal Access Token
+(Settings > Access Tokens); the server needs metadata service authentication
+enabled (`METADATA_SERVICE_AUTH_ENABLED=true`, otherwise tokens are not
+checked and requests go through as anonymous). Only `postgres`-platform
+datasets are read. `--service` is the platform instance (as set by the
+recipe's `platform_instance`), `--database` the database name and `--schema`
+the schema names. HaltSQL resolves `--database`/`--schema` to their DataHub
+containers, then lists the datasets in those schemas with
+`scrollAcrossEntities` (100 a page, following `nextScrollId`), and re-checks
+every returned container and dataset (platform, instance, parent containers)
+against the requested scope. Labels are read as for
+`schema import --from datahub`: tags and glossary terms on columns, from both
+`schemaMetadata` (set by ingestion, for example with the
+`pattern_add_dataset_schema_tags` transformer) and `editableSchemaMetadata`
+(set in the UI or with GraphQL `addTag`/`addTerm`), matched by URN and by name
+(so terms with UUID ids are matched by their names). Dataset-level tags and
+descriptions do not count. Without `--database`, every postgres database on
+the instance is fetched into one manifest keyed by `schema.table`, with a
+warning when there is more than one: pass `--database`.
 
 Coming soon (not yet validated against a live instance): Atlan, Collibra,
 dbt Cloud, Unity Catalog. The offline `schema import --from atlan|collibra`
