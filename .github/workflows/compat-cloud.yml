@@ -64,7 +64,7 @@ jobs:
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.run == 'true'
 
       - name: Set up OCaml
@@ -84,7 +84,7 @@ jobs:
 
       - name: Set up Python
         if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload reports
         if: always() && steps.gate.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compat-${{ matrix.engine }}-${{ github.run_id }}
           # Reports hold metrics, query text and lab data, never the DSN.
@@ -123,7 +123,7 @@ jobs:
     timeout-minutes: 30
     if: github.event.inputs.engines == '' || contains(format(' {0} ', github.event.inputs.engines), ' redshift ')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up OCaml
         uses: ocaml/setup-ocaml@v3
         with:
