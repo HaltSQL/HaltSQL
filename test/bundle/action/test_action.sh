@@ -177,8 +177,11 @@ PATH="$work/cosignbin:$work/fakebin:$PATH" FAKE_DOCKER_LOG="$work/docker.log" \
   INPUT_INSTALL_METHOD=docker INPUT_VERSION=0.3.1 INPUT_VERIFY_SIGNATURE=true \
   bash "$scripts/install.sh" >/dev/null 2>&1
 check "unverifiable image exits 2" 2 "$?"
-[ ! -e "$work/rt3/haltsql-install/docker-v0.3.1/haltsql" ] && ok "no wrapper for an unverified image" ||
+if [ ! -e "$work/rt3/haltsql-install/docker-v0.3.1/haltsql" ]; then
+  ok "no wrapper for an unverified image"
+else
   ko "no wrapper for an unverified image"
+fi
 # without cosign on PATH (fake docker only), verify-signature refuses the image
 nocosign=$(mktemp -d "$work/nocosign.XXXXXX")
 for t in bash cat head tail grep tr uname dirname basename mkdir rm chmod printf seq id jq curl; do
