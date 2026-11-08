@@ -301,7 +301,7 @@ flowchart LR
 | `.github/workflows/ci.yml` | Pushes to `main`, every PR, and on demand | Formatting first; every other job waits for it: build and `dune test` on a 2 x 2 OS and OCaml matrix, coverage, Postgres integration, SDK jobs, policy-CI action self-test |
 | `.github/workflows/lab.yml` | Nightly, on PRs touching `lab/`, `lib/` or the workflow, and on demand | Lab unit tests, the oracle self-test, scenarios (`pr-smoke` on PRs, the nightly set and the version matrix on schedule), proxy parity and proxy integration tests; reports uploaded as artifacts |
 | `.github/workflows/security.yml` | Every PR, weekly (Mondays), and on demand | Dependency review, Trivy image and configuration scans |
-| `.github/workflows/pages.yml` | Pushes to `main` and PRs touching `docs/` or `website/`, and on demand | Builds this docs site; deploys it to GitHub Pages from `main` |
+| `.github/workflows/pages.yml` | Pushes to `main` and PRs touching `docs/` or `website/`, and on demand | Builds this docs site; from `main`, publishes the build to the public `HaltSQL/haltsql.github.io` repository, which GitHub Pages serves |
 | `.github/workflows/release.yml` | `v*` tags, and on demand for an existing tag | Release build and artifacts |
 
 ## Where to go next
