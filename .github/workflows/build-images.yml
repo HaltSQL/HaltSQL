@@ -99,9 +99,11 @@ jobs:
 
       # haltsql-mcp image (clients/mcp/Dockerfile) on top of the CLI just built:
       # solo/local, config file, central haltsql-server and fail-closed modes.
+      # The "default" builder (docker driver) can use haltsql-local:dev from the
+      # local image store; the docker-container builder from setup-buildx cannot.
       - name: Build the haltsql-mcp image
         run: |
-          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+          docker buildx build --builder default --platform "linux/${{ matrix.arch }}" --load \
             -f clients/mcp/Dockerfile --build-arg HALTSQL_IMAGE=haltsql-local:dev \
             -t haltsql-mcp:dev .
 
