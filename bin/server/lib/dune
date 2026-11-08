@@ -9,6 +9,10 @@
   haltsql-server.telemetry
   haltsql.cloud
   haltsql.bundle
+  haltsql.bundle_source
+  haltsql.report
+  haltsql-server.siem
+  haltsql-server.opa
   cohttp-lwt-unix
   cohttp-lwt
   cohttp

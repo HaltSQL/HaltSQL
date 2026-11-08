@@ -18,6 +18,8 @@ type error =
   | Bad_claim of string
   | Policy_not_allowed of string
   | Keys_unavailable of string
+  | Groups_overage of string
+  | No_group_policy of string
 
 let error_code = function
   | Malformed _ -> "malformed"
@@ -35,6 +37,8 @@ let error_code = function
   | Bad_claim _ -> "bad_claim"
   | Policy_not_allowed _ -> "policy_not_allowed"
   | Keys_unavailable _ -> "keys_unavailable"
+  | Groups_overage _ -> "groups_overage"
+  | No_group_policy _ -> "no_group_policy"
 
 (* Untrusted strings echoed in messages are truncated and stripped of control
    characters. *)
@@ -61,6 +65,17 @@ let error_to_string = function
   | Policy_not_allowed c ->
       Printf.sprintf "token claim %S does not name an allowed policy" (sanitize c)
   | Keys_unavailable m -> "signing keys are unavailable: " ^ m
+  | Groups_overage c ->
+      Printf.sprintf
+        "token claim %S is incomplete: the identity provider moved the groups out of the \
+         token (group overage, _claim_names/_claim_sources); configure the IdP to emit \
+         fewer groups (e.g. groups assigned to the application) or a roles claim"
+        (sanitize c)
+  | No_group_policy c ->
+      Printf.sprintf
+        "none of the groups in token claim %S is mapped to a policy, and no default \
+         policy is configured"
+        (sanitize c)
 
 let max_token_bytes = 16384
 

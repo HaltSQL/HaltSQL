@@ -1,0 +1,25 @@
+# Kubebuilder project file (layout reference; the code is maintained by hand
+# and with controller-gen, see Makefile).
+domain: haltsql.dev
+layout:
+- go.kubebuilder.io/v4
+projectName: haltsql-operator
+repo: github.com/ardada2468/HaltSQL/deploy/operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: haltsql.dev
+  kind: HaltSQLPolicy
+  path: github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: haltsql.dev
+  kind: HaltSQLServer
+  path: github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1
+  version: v1alpha1
+version: "3"

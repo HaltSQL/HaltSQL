@@ -1,0 +1,75 @@
+; haltsql audit verify (bin/haltsql/cmd_audit.ml).
+;  - audit_cli: a harness binary running the very same Cmd_audit.cmd as `haltsql audit`
+;    (the real binary needs the command registered in bin/haltsql/main.ml).
+;  - test_audit: verification engine (tampering: edited field, deleted / swapped /
+;    duplicated lines, truncation, object gaps, duplicates, wrong run order, spool head)
+;    and CLI tests running the binaries (exit codes, --json, stdin, usage errors).
+;  - test_audit_minio: `audit verify s3://...` against a REAL MinIO container
+;    (host port 16000-16001), objects written by the real S3 sink. Skips cleanly when
+;    Docker or a MinIO image is unavailable.
+
+(copy_files#
+ (files ../../bin/haltsql/cmd_audit.ml))
+
+(library
+ (name audit_cmd)
+ (modules cmd_audit)
+ (libraries
+  haltsql
+  haltsql.cloud
+  cmdliner
+  yojson
+  digestif
+  uri
+  unix
+  lwt
+  lwt.unix))
+
+(executable
+ (name audit_cli)
+ (modules audit_cli)
+ (libraries audit_cmd cmdliner))
+
+(test
+ (name test_audit)
+ (package haltsql)
+ (modules test_audit)
+ (libraries
+  audit_cmd
+  haltsql
+  haltsql.cloud
+  alcotest
+  yojson
+  lwt
+  lwt.unix
+  unix)
+ (action
+  (setenv
+   HALTSQL_AUDIT_CLI
+   %{dep:audit_cli.exe}
+   (setenv
+    HALTSQL_BIN
+    %{dep:../../bin/haltsql/main.exe}
+    (run %{test})))))
+
+(test
+ (name test_audit_minio)
+ (package haltsql)
+ (modules test_audit_minio)
+ (libraries
+  audit_cmd
+  haltsql
+  haltsql.cloud
+  alcotest
+  yojson
+  digestif
+  cohttp
+  lwt
+  lwt.unix
+  unix
+  uri)
+ (action
+  (setenv
+   HALTSQL_AUDIT_CLI
+   %{dep:audit_cli.exe}
+   (run %{test}))))

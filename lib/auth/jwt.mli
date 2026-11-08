@@ -22,6 +22,13 @@ type error =
   | Policy_not_allowed of string
       (** [policy_claim] names a policy outside the allowlist *)
   | Keys_unavailable of string  (** the JWKS could not be obtained *)
+  | Groups_overage of string
+      (** [policy_from_groups]: the groups claim was replaced by an Azure AD / Entra ID
+          overage indicator ([_claim_names] / [_claim_sources] or [hasgroups]); the groups
+          are not in the token, so the token is rejected (no Graph call is made) *)
+  | No_group_policy of string
+      (** [policy_from_groups]: no group in the claim is mapped, and there is no [default]
+      *)
 
 val error_code : error -> string
 (** A stable snake_case code, e.g. ["expired"], ["bad_signature"]. *)

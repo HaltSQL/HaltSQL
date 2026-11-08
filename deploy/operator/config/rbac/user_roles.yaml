@@ -1,0 +1,32 @@
+# Aggregated roles so namespace admins and editors can manage HaltSQL
+# resources, and viewers can read them, without extra bindings.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: haltsql-editor-role
+  labels:
+    app.kubernetes.io/name: haltsql-operator
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: [haltsql.dev]
+    resources: [haltsqlpolicies, haltsqlservers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [haltsql.dev]
+    resources: [haltsqlpolicies/status, haltsqlservers/status]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: haltsql-viewer-role
+  labels:
+    app.kubernetes.io/name: haltsql-operator
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [haltsql.dev]
+    resources: [haltsqlpolicies, haltsqlservers]
+    verbs: [get, list, watch]
+  - apiGroups: [haltsql.dev]
+    resources: [haltsqlpolicies/status, haltsqlservers/status]
+    verbs: [get]

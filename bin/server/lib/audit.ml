@@ -21,6 +21,10 @@ type backend =
   | Object of Haltsql_cloud.Object_sink.t
       (** S3 / GCS: the object sink seals records into its own hash chain (which continues
           across objects), batches, uploads, and applies [on_error] itself *)
+  | Stream of Haltsql_siem.Stream_sink.t
+      (** Elasticsearch / OpenSearch / Kafka: like [Object], the stream sink seals records
+          into its own chain, batches, ships in the background and applies [on_error]
+          itself *)
 
 type sink = {
   name : string;  (** "stdout", the file path, or the custom sink's name *)
@@ -98,16 +102,38 @@ let of_object_sink obj =
     ~name:(Haltsql_cloud.Object_sink.name obj)
     (Object obj)
 
+(* Same for streaming sinks: Stream_sink applies fail_closed / buffer / drop. *)
+let of_stream_sink ss =
+  make ~on_error:Haltsql.Config.Fail_closed
+    ~name:(Haltsql_siem.Stream_sink.name ss)
+    (Stream ss)
+
 let healthy s =
   match s.backend with
   | Object o -> Haltsql_cloud.Object_sink.healthy o
+  | Stream ss -> Haltsql_siem.Stream_sink.healthy ss
   | Fd _ | Custom _ -> Queue.length s.pending < max_pending
 
 let object_sinks sinks =
   List.filter_map (fun s -> match s.backend with Object o -> Some o | _ -> None) sinks
 
+let stream_sinks sinks =
+  List.filter_map (fun s -> match s.backend with Stream ss -> Some ss | _ -> None) sinks
+
+(* "stdout", "file", "custom", "s3/gcs" (object) or the stream sink's kind. *)
+let kind s =
+  match s.backend with
+  | Fd fd when fd = Unix.stdout -> "stdout"
+  | Fd _ -> "file"
+  | Custom _ -> "custom"
+  | Object _ -> "object"
+  | Stream ss -> Haltsql_siem.Stream_sink.kind ss
+
 let start s =
-  match s.backend with Object o -> Haltsql_cloud.Object_sink.start o | _ -> ()
+  match s.backend with
+  | Object o -> Haltsql_cloud.Object_sink.start o
+  | Stream ss -> Haltsql_siem.Stream_sink.start ss
+  | Fd _ | Custom _ -> ()
 
 (* Final flush of batching sinks (S3/GCS) on shutdown. *)
 let shutdown s =
@@ -116,6 +142,7 @@ let shutdown s =
       let open Lwt.Syntax in
       let* r = Haltsql_cloud.Object_sink.close o in
       match r with Ok () -> Lwt.return_ok () | Error e -> Lwt.return_error e)
+  | Stream ss -> Haltsql_siem.Stream_sink.close ss
   | Fd _ | Custom _ -> Lwt.return_ok ()
 
 let open_stdout ?on_error () = make ?on_error ~name:"stdout" (Fd Unix.stdout)
@@ -145,7 +172,7 @@ let close s =
   match s.backend with
   | Fd fd -> ( if fd <> Unix.stdout then try Unix.close fd with _ -> ())
   | Custom c -> ( try c.close () with _ -> ())
-  | Object _ -> () (* closed (flushed) by [shutdown], inside Lwt *)
+  | Object _ | Stream _ -> () (* closed (flushed) by [shutdown], inside Lwt *)
 
 (* Builds the sealed line for [fields] chained after [prev]. Returns (line, hash). *)
 let seal ~prev (fields : (string * Yojson.Safe.t) list) =
@@ -191,6 +218,10 @@ let append sink fields =
   | Custom c -> write_sealed c.write
   | Object o -> (
       match Haltsql_cloud.Object_sink.write o fields with
+      | Ok () -> ()
+      | Error e -> failwith e)
+  | Stream ss -> (
+      match Haltsql_siem.Stream_sink.write ss fields with
       | Ok () -> ()
       | Error e -> failwith e)
 

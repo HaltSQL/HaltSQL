@@ -185,8 +185,12 @@ def check_item(
     registry: Registry,
     allowed: dict[str, set[str]],
     statement_timeout_ms: int,
+    ignore_settings: Sequence[str] = (),
 ) -> ItemResult:
-    """Execute one allowed query under all oracles. The database state is never changed."""
+    """Execute one allowed query under all oracles. The database state is never changed.
+
+    ``ignore_settings`` names settings an engine itself changes while planning
+    (lab/compat/engines.py); they are not attributed to the query."""
     res = ItemResult(id=str(item["id"]), executed=True)
     sql = item["sql"]
     params = bind_values(verdict)
@@ -208,7 +212,8 @@ def check_item(
             return res
         if owner.ok:
             after = _snapshot(s, settings)
-            changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+            changed = sorted(k for k in set(before) | set(after)
+                             if before.get(k) != after.get(k) and k not in ignore_settings)
             for k in changed:
                 res.findings.append(Finding("side_effect", f"setting changed: {k}"))
         elif owner.sqlstate == SQLSTATE_READ_ONLY:

@@ -1,0 +1,25 @@
+# Read-only, tenant-scoped analytics policy used by the kind example and the
+# Terraform end-to-end test.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: tf-analytics
+  owner: platform
+  description: Read-only, tenant-scoped analytics (Terraform kind example)
+dialect: postgres-17
+search_path: [app]
+statements:
+  allow: [select]
+require_limit:
+  max: 1000
+tenancy:
+  mode: bound
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  app.orders:
+    columns: [id, tenant_id, status, total_cents, created_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates]
+mode: enforce

@@ -1,0 +1,22 @@
+# Compatibility run on Neon (cloud, HALTLAB_DSN); see docs/compatibility.md. Same workload and
+# expectations as pr-smoke; also run through haltsql-proxy by lab/compat/run.sh.
+#   lab/compat/run.sh cloud neon   # needs HALTLAB_DSN
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: compat-neon }
+environment:
+  postgres: [17]
+  topology: embedded
+  engine: neon
+  # No dsn: lab/compat/run.sh and .github/workflows/compat-cloud.yml pass HALTLAB_DSN.
+fixture: saas_shared
+data: { scale: tiny, tenants: 8, skew: zipf(1.2), seed: 42 }
+workloads:
+  - benign: { queries: 200 }
+  - adversarial: { queries: 400 }
+expect:
+  escapes: 0
+  side_effects: 0
+  column_leaks: 0
+  false_positive_rate: { max: 0.10 }
+  min_executed: 50

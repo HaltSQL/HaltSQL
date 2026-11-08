@@ -1,0 +1,32 @@
+; SIEM / streaming audit sinks: Elasticsearch / OpenSearch (_bulk) and Kafka (a native
+; producer: RecordBatch v2, SASL PLAIN / SCRAM, TLS via tls-lwt). Same contract as the
+; object sinks in haltsql.cloud (hash-chained records, batching, on_error, bounded
+; buffers, retries with backoff and jitter). See docs/audit-sinks.md.
+
+(library
+ (name haltsql_siem)
+ (public_name haltsql-server.siem)
+ (libraries
+  haltsql.cloud
+  haltsql.load
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  base64
+  eqaf
+  tls
+  tls-lwt
+  x509
+  ca-certs
+  ptime
+  ptime.clock.os
+  domain-name
+  ipaddr
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

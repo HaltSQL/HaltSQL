@@ -43,7 +43,10 @@ let run p = Lwt_main.run p
 let now_p = Ptime_clock.now ()
 let valid_from = Option.get (Ptime.sub_span now_p (Ptime.Span.of_int_s 3600))
 let valid_until = Option.get (Ptime.add_span now_p (Ptime.Span.of_int_s (30 * 86400)))
-let dn cn = X509.Distinguished_name.[ Relative_distinguished_name.singleton (CN cn) ]
+
+let dn cn =
+  X509.Distinguished_name.
+    [ Relative_distinguished_name.singleton (CN (Common_name.v cn)) ]
 
 let make_ca name =
   let key = X509.Private_key.generate `P256 in

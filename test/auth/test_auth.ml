@@ -586,6 +586,50 @@ let mtls_mapping () =
     (Mtls.subject (peer ~spiffe:"spiffe://x/y" ~cn:"c" ()));
   Alcotest.(check string) "subject fp" "sha256:ab" (Mtls.subject (peer ()))
 
+let mtls_cn_text () =
+  let module Dn = X509.Distinguished_name in
+  let cn encoding s = Mtls.cn_text (Dn.Common_name.v ~encoding s) in
+  let chk = Alcotest.(check (option string)) in
+  chk "utf8" (Some "caf\xc3\xa9-bot") (cn `UTF8 "caf\xc3\xa9-bot");
+  chk "utf8 invalid" None (cn `UTF8 "caf\xe9");
+  chk "printable" (Some "support-bot") (cn `Printable "support-bot");
+  chk "printable non-ascii" None (cn `Printable "caf\xe9");
+  chk "bmp" (Some "caf\xc3\xa9") (cn `BMP "\x00c\x00a\x00f\x00\xe9");
+  chk "bmp surrogate pair" (Some "\xf0\x9f\x98\x80") (cn `BMP "\xd8\x3d\xde\x00");
+  chk "bmp lone surrogate" None (cn `BMP "\xd8\x3d");
+  chk "bmp odd length" None (cn `BMP "\x00a\x00");
+  chk "universal" (Some "ab") (cn `Universal "\x00\x00\x00a\x00\x00\x00b");
+  chk "universal out of range" None (cn `Universal "\x00\x11\x00\x00");
+  chk "universal bad length" None (cn `Universal "\x00\x00a");
+  chk "teletex refused" None (cn `Teletex "support-bot");
+  chk "empty" None (cn `UTF8 "");
+  chk "control char" None (cn `UTF8 "a\x00b");
+  chk "newline" None (cn `UTF8 "a\nb");
+  (* End to end: a certificate whose CN is a BMPString keeps its encoding through
+     DER and maps to the UTF-8 identity. *)
+  let key = X509.Private_key.generate `P256 in
+  let now = Ptime_clock.now () in
+  let dn =
+    Dn.
+      [
+        Relative_distinguished_name.singleton
+          (CN (Common_name.v ~encoding:`BMP "\x00b\x00o\x00t"));
+      ]
+  in
+  let csr = Result.get_ok (X509.Signing_request.create dn key) in
+  let valid_until = Option.get (Ptime.add_span now (Ptime.Span.of_int_s 3600)) in
+  let cert =
+    match X509.Signing_request.sign csr ~valid_from:now ~valid_until key dn with
+    | Ok c -> c
+    | Error _ -> Alcotest.fail "sign"
+  in
+  let cert =
+    Result.get_ok (X509.Certificate.decode_der (X509.Certificate.encode_der cert))
+  in
+  let p = Mtls.peer_of_certificate cert in
+  chk "peer cn from BMP" (Some "bot") p.Mtls.subject_cn;
+  Alcotest.(check string) "subject" "bot" (Mtls.subject p)
+
 let context_merge () =
   let authenticated = Context.[ ("tenant_id", One "acme") ] in
   let m body = Request_context.merge ~authenticated ~allowed:[ "user_id" ] ~body in
@@ -631,6 +675,6 @@ let () =
           tc "discovery" discovery;
           tc "registry" registry;
         ] );
-      ("mtls", [ tc "identity mapping" mtls_mapping ]);
+      ("mtls", [ tc "identity mapping" mtls_mapping; tc "CN decoding" mtls_cn_text ]);
       ("context", [ tc "merge rules" context_merge ]);
     ]

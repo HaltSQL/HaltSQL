@@ -50,6 +50,40 @@
           },
           "additionalProperties": false
         },
+        "admin": {
+          "description": "Admin API (GET /v1/admin/report, GET /v1/admin/status).",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "description": "Serve the admin endpoints.",
+              "type": "boolean",
+              "default": false
+            },
+            "callers": {
+              "description": "Callers allowed (required when enabled).",
+              "type": "array",
+              "items": {
+                "description": "token:<name>, oidc:<provider> or mtls:<spiffe-id or CN>.",
+                "type": "string",
+                "pattern": "^(token|oidc|mtls):.+$"
+              },
+              "uniqueItems": true
+            },
+            "report_window": {
+              "description": "Report window, 1m to 30d. Default 24h.",
+              "type": "string",
+              "pattern": "^[0-9]+[smhd]$"
+            },
+            "max_tracked_queries": {
+              "description": "Distinct query fingerprints tracked for the report.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 10000
+            }
+          },
+          "additionalProperties": false
+        },
         "auth": {
           "description": "Caller authentication: static bearer tokens, OIDC JWTs, mTLS.",
           "type": "object",
@@ -152,6 +186,44 @@
                     },
                     "minItems": 1,
                     "uniqueItems": true
+                  },
+                  "policy_from_groups": {
+                    "description": "Select the policy from the token's groups: the first map entry whose group the token has wins, else default. Use instead of policy / policy_claim.",
+                    "type": "object",
+                    "properties": {
+                      "claim": {
+                        "description": "Claim holding the groups (a string or an array of strings; exact name, then dot path).",
+                        "type": "string",
+                        "default": "groups"
+                      },
+                      "map": {
+                        "description": "Ordered group -> policy rules.",
+                        "type": "array",
+                        "items": {
+                          "description": "One rule.",
+                          "type": "object",
+                          "properties": {
+                            "group": {
+                              "description": "Group name (exact match).",
+                              "type": "string"
+                            },
+                            "policy": {
+                              "description": "Policy name.",
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "required": [ "group", "policy" ]
+                        },
+                        "minItems": 1
+                      },
+                      "default": {
+                        "description": "Policy when no group matches. Default: reject the token.",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "map" ]
                   },
                   "context_claims": {
                     "description": "Context field -> claim path (exact claim name first, then a dot path like org.id).",
@@ -271,7 +343,7 @@
       "additionalProperties": false
     },
     "policies": {
-      "description": "Policies to load, from files or inline.",
+      "description": "Policies to load: files, inline, signed bundles or remote bundle sources.",
       "type": "array",
       "items": {
         "description": "A policy file or an inline policy.",
@@ -703,6 +775,123 @@
             },
             "additionalProperties": false,
             "required": [ "bundle", "public_keys" ]
+          },
+          {
+            "description": "Signed policy bundle fetched from a registry, S3 or HTTPS and polled for updates (verified by the server before use).",
+            "type": "object",
+            "properties": {
+              "bundle_source": {
+                "description": "Where the bundle comes from: exactly one of oci, s3 or https.",
+                "type": "object",
+                "properties": {
+                  "oci": {
+                    "description": "OCI artifact: registry/repository:tag or registry/repository@sha256:...",
+                    "type": "string"
+                  },
+                  "plain_http": {
+                    "description": "Talk plain http to the registry (loopback only).",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "s3": {
+                    "description": "S3 (or S3-compatible) object.",
+                    "type": "object",
+                    "properties": {
+                      "bucket": {
+                        "description": "Bucket name.",
+                        "type": "string"
+                      },
+                      "key": {
+                        "description": "Object key of the .haltsqlbundle.",
+                        "type": "string"
+                      },
+                      "region": {
+                        "description": "AWS region.",
+                        "type": "string"
+                      },
+                      "endpoint": {
+                        "description": "Custom endpoint URL (MinIO).",
+                        "type": "string"
+                      },
+                      "credentials": {
+                        "description": "Where AWS credentials come from (as for s3 audit sinks).",
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "description": "Credential source.",
+                            "enum": [
+                              "env", "static", "web_identity", "instance"
+                            ]
+                          },
+                          "access_key_id": {
+                            "description": "Access key id (static only).",
+                            "type": "string"
+                          },
+                          "secret_access_key": {
+                            "description": "Secret access key (static only).",
+                            "type": "string"
+                          },
+                          "session_token": {
+                            "description": "Session token (static only, optional).",
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "bucket", "key", "region" ]
+                  },
+                  "https": {
+                    "description": "HTTPS URL of the .haltsqlbundle (http only for loopback).",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "public_keys": {
+                "description": "Trusted ed25519 public keys (mandatory).",
+                "type": "array",
+                "items": { "description": "Public key.", "type": "string" },
+                "minItems": 1
+              },
+              "name_prefix": {
+                "description": "Prefix added to the names of the policies in this bundle.",
+                "type": "string"
+              },
+              "poll_interval_s": {
+                "description": "Seconds between update checks.",
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 86400,
+                "default": 60
+              },
+              "cache_dir": {
+                "description": "Directory for the last verified bundle (relative to this config).",
+                "type": "string"
+              },
+              "auth": {
+                "description": "Registry or HTTPS credentials: token, or username and password.",
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "description": "Bearer token.",
+                    "type": "string"
+                  },
+                  "username": {
+                    "description": "User name.",
+                    "type": "string"
+                  },
+                  "password": {
+                    "description": "Password.",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [ "bundle_source", "public_keys" ]
           }
         ]
       }
@@ -928,6 +1117,236 @@
                 },
                 "additionalProperties": false,
                 "required": [ "type", "bucket" ]
+              },
+              {
+                "description": "Elasticsearch or OpenSearch (bulk API). Needs url or urls, and index or data_stream.",
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "description": "Sink type.",
+                    "const": "elasticsearch"
+                  },
+                  "url": {
+                    "description": "Cluster URL (https; http only for loopback). Use url or urls.",
+                    "type": "string"
+                  },
+                  "urls": {
+                    "description": "Several cluster node URLs (use url or urls).",
+                    "type": "array",
+                    "items": {
+                      "description": "Node URL (https; http only for loopback).",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "index": {
+                    "description": "Target index (lower case). Use index or data_stream.",
+                    "type": "string"
+                  },
+                  "data_stream": {
+                    "description": "Target data stream (lower case). Use index or data_stream.",
+                    "type": "string"
+                  },
+                  "auth": {
+                    "description": "Credentials: api_key, or username and password (use secret placeholders).",
+                    "type": "object",
+                    "properties": {
+                      "api_key": {
+                        "description": "Encoded API key (sent as Authorization: ApiKey ...).",
+                        "type": "string"
+                      },
+                      "username": {
+                        "description": "Basic auth user name.",
+                        "type": "string"
+                      },
+                      "password": {
+                        "description": "Basic auth password.",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "pipeline": {
+                    "description": "Ingest pipeline to run on each record.",
+                    "type": "string"
+                  },
+                  "tls": {
+                    "description": "TLS settings (https URLs only).",
+                    "type": "object",
+                    "properties": {
+                      "ca_file": {
+                        "description": "PEM CA bundle (path relative to this config, or inline PEM).",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "timeout_ms": {
+                    "description": "Request timeout.",
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 120000,
+                    "default": 10000
+                  },
+                  "batch": {
+                    "description": "Batching of audit records into one request.",
+                    "type": "object",
+                    "properties": {
+                      "max_records": {
+                        "description": "Records per request at most.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000,
+                        "default": 500
+                      },
+                      "max_bytes": {
+                        "description": "Request body bytes at most.",
+                        "type": "integer",
+                        "minimum": 1024,
+                        "maximum": 104857600,
+                        "default": 5242880
+                      },
+                      "flush_interval_ms": {
+                        "description": "Milliseconds before a partial batch is sent.",
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 60000,
+                        "default": 1000
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps up to max_buffer_records in memory and retries; drop discards records (counted in metrics; not fail closed).",
+                    "enum": [ "fail_closed", "buffer", "drop" ],
+                    "default": "fail_closed"
+                  },
+                  "max_buffer_records": {
+                    "description": "Records kept in memory while the sink is down (on_error buffer only; at least batch.max_records). Default 10000.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "type" ]
+              },
+              {
+                "description": "Apache Kafka topic (one message per audit record).",
+                "type": "object",
+                "properties": {
+                  "type": { "description": "Sink type.", "const": "kafka" },
+                  "brokers": {
+                    "description": "Bootstrap brokers.",
+                    "type": "array",
+                    "items": {
+                      "description": "Broker as host:port.",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "topic": {
+                    "description": "Topic name (letters, digits, '.', '_', '-').",
+                    "type": "string"
+                  },
+                  "client_id": {
+                    "description": "Kafka client id.",
+                    "type": "string",
+                    "default": "haltsql"
+                  },
+                  "acks": {
+                    "description": "Acknowledgements required: all (default) or 1 (leader only).",
+                    "enum": [ "all", 1, "1" ],
+                    "default": "all"
+                  },
+                  "tls": {
+                    "description": "TLS to the brokers.",
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "description": "Use TLS (default true when tls is given).",
+                        "type": "boolean",
+                        "default": true
+                      },
+                      "ca_file": {
+                        "description": "PEM CA bundle for the broker certificates.",
+                        "type": "string"
+                      },
+                      "cert_file": {
+                        "description": "Client certificate (with key_file).",
+                        "type": "string"
+                      },
+                      "key_file": {
+                        "description": "Client private key (with cert_file).",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "sasl": {
+                    "description": "SASL authentication. PLAIN needs tls unless every broker is loopback.",
+                    "type": "object",
+                    "properties": {
+                      "mechanism": {
+                        "description": "SASL mechanism.",
+                        "enum": [ "plain", "scram-sha-256", "scram-sha-512" ]
+                      },
+                      "username": {
+                        "description": "SASL user name.",
+                        "type": "string"
+                      },
+                      "password": {
+                        "description": "SASL password (use a secret placeholder).",
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [ "mechanism", "username", "password" ]
+                  },
+                  "batch": {
+                    "description": "Batching of audit records into one request.",
+                    "type": "object",
+                    "properties": {
+                      "max_records": {
+                        "description": "Records per request at most.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000,
+                        "default": 500
+                      },
+                      "max_bytes": {
+                        "description": "Request body bytes at most.",
+                        "type": "integer",
+                        "minimum": 1024,
+                        "maximum": 104857600,
+                        "default": 5242880
+                      },
+                      "flush_interval_ms": {
+                        "description": "Milliseconds before a partial batch is sent.",
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 60000,
+                        "default": 1000
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "on_error": {
+                    "description": "What to do when the sink cannot be written: fail_closed refuses requests (HTTP 503); buffer keeps up to max_buffer_records in memory and retries; drop discards records (counted in metrics; not fail closed).",
+                    "enum": [ "fail_closed", "buffer", "drop" ],
+                    "default": "fail_closed"
+                  },
+                  "max_buffer_records": {
+                    "description": "Records kept in memory while the sink is down (on_error buffer only; at least batch.max_records). Default 10000.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "type", "brokers", "topic" ]
               }
             ]
           }
@@ -1132,6 +1551,53 @@
         }
       },
       "additionalProperties": false
+    },
+    "opa": {
+      "description": "Open Policy Agent check after HaltSQL allows a query. OPA can only further deny; it never allows a query HaltSQL denied.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "OPA base URL (https; http only for loopback).",
+          "type": "string"
+        },
+        "decision_path": {
+          "description": "Decision below /v1/data, e.g. haltsql/allow.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Decision request timeout.",
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 5000,
+          "default": 500
+        },
+        "on_error": {
+          "description": "When OPA cannot be reached or answers badly: deny (default) or keep HaltSQL's verdict.",
+          "enum": [ "deny", "allow_haltsql_verdict" ],
+          "default": "deny"
+        },
+        "headers": {
+          "description": "Extra HTTP headers (values may use secret placeholders; redacted).",
+          "type": "object",
+          "additionalProperties": {
+            "description": "Header value.",
+            "type": "string"
+          }
+        },
+        "tls": {
+          "description": "TLS settings (https url only).",
+          "type": "object",
+          "properties": {
+            "ca_file": {
+              "description": "PEM CA bundle (path relative to this config, or inline PEM).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [ "url", "decision_path" ]
     }
   },
   "additionalProperties": false,

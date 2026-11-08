@@ -1,0 +1,44 @@
+; haltsql.bundle_source tests. Unit tests always run; the integration tests
+; start real servers in Docker (registry:2 anonymous / htpasswd / token auth
+; with cesanta/docker_auth, MinIO, nginx over HTTPS, the oras CLI) on host
+; ports 15000-15009 and skip cleanly when Docker is unavailable
+; (or HALTSQL_SKIP_DOCKER=1). The stand-alone CLI is built from
+; bin/haltsql/cmd_bundle_oci.ml so it can be tested before it is registered.
+
+(copy_files#
+ (files %{project_root}/bin/haltsql/{common,cmd_bundle_oci}.ml))
+
+(executable
+ (name bundle_oci_cli)
+ (modules bundle_oci_cli common cmd_bundle_oci)
+ (libraries
+  haltsql
+  haltsql.bundle
+  haltsql.bundle_source
+  haltsql.cloud
+  cmdliner
+  yojson
+  unix
+  lwt
+  lwt.unix))
+
+(test
+ (name test_bundle_source)
+ (modules test_bundle_source docker_env)
+ (libraries
+  haltsql
+  haltsql.core
+  haltsql.load
+  haltsql.bundle
+  haltsql.bundle_source
+  haltsql.cloud
+  alcotest
+  lwt
+  lwt.unix
+  uri
+  yojson
+  digestif
+  unix)
+ (deps
+  bundle_oci_cli.exe
+  (source_tree %{project_root}/examples)))

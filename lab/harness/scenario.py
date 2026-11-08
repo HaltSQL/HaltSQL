@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from common.policy import read_document
+from compat.engines import ENGINES
 
 TOP_LEVEL_KEYS = {"apiVersion", "kind", "metadata", "environment", "fixture", "schema", "policy",
                   "policies", "data", "workloads", "expect", "oracles", "verifier"}
@@ -60,6 +61,7 @@ class Scenario:
     statement_timeout_ms: int = 2000
     erp_tables: int = 420
     faults: list[str] = field(default_factory=list)
+    engine: str | None = None  # Postgres flavour with install hooks (lab/compat/engines.py)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -130,6 +132,9 @@ def parse_scenario(doc: dict[str, Any], path: Path) -> Scenario:
     bad = [f for f in faults if f not in KNOWN_FAULTS]
     if bad:
         raise ScenarioError(f"{path}: unknown faults {bad}; known: {sorted(KNOWN_FAULTS)}")
+    engine = env.get("engine")
+    if engine is not None and engine not in ENGINES:
+        raise ScenarioError(f"{path}: unknown environment.engine {engine!r}; known: {sorted(ENGINES)}")
     oracles = doc.get("oracles") or {}
     return Scenario(
         path=path,
@@ -145,6 +150,7 @@ def parse_scenario(doc: dict[str, Any], path: Path) -> Scenario:
         statement_timeout_ms=int(oracles.get("statement_timeout_ms", 2000)),
         erp_tables=int((doc.get("data") or {}).get("tables", 420)),
         faults=faults,
+        engine=engine,
         raw=doc,
     )
 

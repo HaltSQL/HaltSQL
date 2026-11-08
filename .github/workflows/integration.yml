@@ -1,0 +1,202 @@
+name: Integration
+
+# Docker-based integration tests against the REAL software (no fakes, mocks or
+# emulators): Kafka, Elasticsearch, OpenSearch, OPA, Keycloak, registry:2 (with
+# cesanta/docker_auth and the oras CLI), MinIO, nginx, Postgres, a real
+# kube-apiserver (envtest) and kind. The same OCaml suites run in ci.yml with
+# HALTSQL_SKIP_DOCKER=1; here they run for real.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * *" # nightly: also the kind end-to-end jobs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  ocaml-docker:
+    name: OCaml integration (${{ matrix.suite.name }})
+    # Pinned: the Docker-based suites are tuned on Ubuntu 24.04 runners.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: Kafka, Elasticsearch, OpenSearch sinks
+            dirs: test/siem
+          - name: OPA and server wiring
+            dirs: test/opa test/wiring
+          - name: Keycloak policy_from_groups
+            dirs: test/auth
+          - name: OCI, S3 and HTTPS bundle sources
+            dirs: test/bundle_source test/bundle
+          - name: audit verify, proxy audit and reload, shadow reports
+            dirs: test/audit test/proxy test/report
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      # The MinIO-based tests never pull on their own; minio/minio is no longer
+      # published on Docker Hub, so use the pgsty build of the MinIO server.
+      - name: Pull the MinIO server image
+        run: docker pull pgsty/minio:latest
+
+      - name: Run (Docker tests must not skip)
+        env:
+          HALTSQL_MINIO_IMAGE: pgsty/minio:latest
+        run: |
+          set -o pipefail
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+          opam exec -- dune test ${{ matrix.suite.dirs }} --force 2>&1 | tee "$RUNNER_TEMP/test.log"
+          if grep -E 'SKIP(PED)? ?\(|SKIP: |\[SKIP\]' "$RUNNER_TEMP/test.log" | grep -viE 'HALTSQL_REQUIRE|not registered'; then
+            echo "::error::a Docker-based test skipped in the integration job"
+            exit 1
+          fi
+
+      - name: Containers left behind
+        if: always()
+        run: docker ps -a --filter name=haltsql- --format '{{.Names}} {{.Status}}'
+
+  operator:
+    name: Operator (Go unit + envtest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql (the validator the operator runs)
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: deploy/operator/go.mod
+          cache-dependency-path: deploy/operator/go.sum
+
+      - name: Unit and envtest tests (real kube-apiserver and etcd)
+        working-directory: deploy/operator
+        run: make test
+
+      - name: Generated files are up to date
+        run: git diff --exit-code -- deploy/operator
+
+  operator-e2e:
+    name: Operator end-to-end (kind)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: deploy/operator/go.mod
+          cache-dependency-path: deploy/operator/go.sum
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+      - name: kind end-to-end
+        working-directory: deploy/operator
+        run: make e2e
+
+  terraform:
+    name: Terraform (fmt, validate, test, tflint, trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - name: Static checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: deploy/terraform/test/static-checks.sh
+
+  terraform-kind:
+    name: Terraform end-to-end (kind)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+      - name: kind end-to-end
+        run: deploy/terraform/test/e2e-kind.sh
+
+  lab-compat:
+    name: Postgres flavours (lab compat, local engines)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+      - name: Build haltsql and haltsql-proxy
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/proxy/main.exe
+          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
+          echo "HALTSQL_PROXY_BIN=$PWD/_build/default/bin/proxy/main.exe" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lab virtualenv
+        working-directory: lab
+        run: make venv
+      - name: Start the engines
+        run: lab/compat/run.sh up
+      - name: Run
+        run: lab/compat/run.sh local all
+      - name: Results
+        if: always()
+        run: lab/compat/run.sh table >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Stop the engines
+        if: always()
+        run: lab/compat/run.sh down

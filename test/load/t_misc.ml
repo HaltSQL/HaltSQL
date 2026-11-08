@@ -244,11 +244,12 @@ let all_examples_cases =
               let p = Filename.concat dir f in
               if Sys.is_directory p then files p else [ p ])
         in
-        (* examples/ci holds CI-system files (GitHub/GitLab/pre-commit) and
-           examples/metadata holds third-party catalog exports (dbt, DataHub, ...):
-           neither are HaltSQL documents. They are covered by test/bundle and
-           test/catalog_tools. *)
-        let not_haltsql_docs = [ "ci"; "metadata" ] in
+        (* examples/ci holds CI-system files (GitHub/GitLab/pre-commit),
+           examples/metadata holds third-party catalog exports (dbt, DataHub, ...)
+           and examples/opa holds Rego for OPA: none of these are HaltSQL
+           documents. They are covered by test/bundle, test/catalog_tools and
+           test/opa (which runs `opa test` on examples/opa in a real OPA). *)
+        let not_haltsql_docs = [ "ci"; "metadata"; "opa" ] in
         let all =
           Array.to_list (Sys.readdir examples)
           |> List.filter (fun d -> not (List.mem d not_haltsql_docs))

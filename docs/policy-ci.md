@@ -154,6 +154,112 @@ extend them.
 
 Pin the `include:` to a release tag, never a branch.
 
+## Publishing to an OCI registry
+
+Servers with a [`bundle_source`](policy-bundles.md#bundle-sources) poll a
+registry for new bundles, so the last CI step is `haltsql bundle push`. Push
+only after the bundle is built, signed and verified, and only from the default
+branch.
+
+**Use a version that increases.** Servers refuse a bundle whose
+`metadata.version` is not strictly greater than the one they run (rollback
+protection). The action's default `bundle-version` is the commit SHA, which
+has no order, so set it explicitly when servers poll the registry. Good choices
+are `1.0.${{ github.run_number }}`, a date with the run number such as
+`2026.11.07.42`, or your release tag.
+
+### GitHub Actions (GHCR)
+
+```yaml
+# .github/workflows/policy-publish.yml
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write               # push to ghcr.io
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: policy-signing # holds HALTSQL_SIGNING_KEY, requires reviewers
+    steps:
+      - uses: actions/checkout@v4
+      - id: haltsql
+        uses: ardada2468/HaltSQL@v0.2.0
+        with:
+          version: v0.2.0
+          policies: policies/**/*.yaml
+          suites: tests
+          bundle: "true"
+          bundle-name: prod-policies
+          bundle-version: 1.0.${{ github.run_number }}
+          signing-key: ${{ secrets.HALTSQL_SIGNING_KEY }}
+          public-keys: keys/policy-signing.pub
+      - name: Push the bundle
+        env:
+          HALTSQL: ${{ steps.haltsql.outputs.haltsql-path }}
+          BUNDLE: ${{ steps.haltsql.outputs.bundle-path }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          REF: ghcr.io/${{ github.repository_owner }}/haltsql-policies:prod
+        run: |
+          "$HALTSQL" bundle push --oci "$REF" "$BUNDLE" \
+            --public-key keys/policy-signing.pub \
+            --username "$GITHUB_ACTOR" --password-env REGISTRY_PASSWORD --json \
+            | tee push.json
+          echo "Pinned: $(jq -r .pinned push.json)" >> "$GITHUB_STEP_SUMMARY"
+```
+
+The repository name in a reference must be lower case. If your owner name has
+capitals, lower-case it first.
+
+### GitLab CI (GitLab container registry)
+
+```yaml
+policy-bundle:
+  extends: .haltsql-bundle
+  needs: [policy-check]
+  variables:
+    HALTSQL_BUNDLE_NAME: prod-policies
+    HALTSQL_BUNDLE_VERSION: "1.0.$CI_PIPELINE_IID"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+policy-push:
+  extends: .haltsql-base
+  stage: deploy
+  needs: [policy-bundle]          # brings haltsql-ci/prod-policies.haltsqlbundle{,.sig}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - >
+      haltsql bundle push --oci "$CI_REGISTRY_IMAGE/haltsql-policies:prod"
+      haltsql-ci/prod-policies.haltsqlbundle --public-key keys/policy-signing.pub
+      --username "$CI_REGISTRY_USER" --password-env CI_REGISTRY_PASSWORD
+```
+
+`.haltsql-bundle` writes `haltsql-ci/<HALTSQL_BUNDLE_NAME>.haltsqlbundle` and
+its `.sig`, and keeps them as job artifacts. The push job picks them up through
+`needs:`.
+
+### What `push` checks and prints
+
+- It refuses a bundle that does not load or a malformed signature file. With
+  `--public-key`, it also refuses a signature that does not verify, so CI never
+  publishes something servers would reject.
+- Passwords and tokens are read from environment variables
+  (`--password-env`, `--token-env`) and never appear in arguments or output.
+- It prints the digest-pinned reference (`pinned` in `--json`). Deploy that
+  when you want an immutable rollout, and use the tag when servers should
+  follow new versions.
+- The artifact is the layout `oras push --artifact-type
+  application/vnd.haltsql.bundle.v1` produces (see
+  [OCI artifact layout](policy-bundles.md#oci-artifact-layout)), so existing
+  oras-based pipelines keep working and either tool can read the other's
+  artifacts.
+
+For S3 or HTTPS sources, upload `prod.haltsqlbundle.sig` **before**
+`prod.haltsqlbundle`, for example with `aws s3 cp` in that order.
+
 ## pre-commit
 
 ```yaml
@@ -196,3 +302,12 @@ summary Markdown (exact rows, escaping, denied-case details, truncation), exit
 codes, fail-on-warnings, the GitHub outputs, bundle build/sign/verify with
 provenance, that no key is ever logged, and JUnit well-formedness and
 escaping.
+
+The OCI, S3 and HTTPS bundle sources and `haltsql bundle push`/`pull` are
+tested against real servers in Docker (`registry:2` with anonymous, htpasswd
+and token auth via `cesanta/docker_auth`, MinIO, nginx over HTTPS, and the
+oras CLI). The tests skip with a message when Docker is unavailable:
+
+```sh
+dune test test/bundle_source            # HALTSQL_SKIP_DOCKER=1 runs only the unit tests
+```

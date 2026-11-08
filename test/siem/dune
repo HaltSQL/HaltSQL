@@ -1,0 +1,35 @@
+; haltsql-server.siem tests.
+;  test_siem_unit: pure tests (CRC-32C, murmur2, RecordBatch v2, Kafka response
+;    decoding, SCRAM RFC 7677 / PBKDF2 RFC 7914 vectors, _bulk body and item
+;    classification, engine policies with a scripted in-process transport).
+;  test_siem_kafka: the real apache/kafka (KRaft) in Docker on host ports
+;    19092-19094: plaintext, SASL/SCRAM-SHA-256/512 + PLAIN over TLS with a test
+;    CA, consumption with kafka-console-consumer, broker restarts.
+;  test_siem_es: the real Elasticsearch (security + TLS, API key) on 19200 and
+;    OpenSearch on 19201: query back, mapping conflicts, per-item retries,
+;    cluster down.
+; The Docker tests skip (with a message) when Docker is unavailable or
+; HALTSQL_SIEM_SKIP_DOCKER=1. HALTSQL_SIEM_KEEP_CONTAINERS=1 keeps containers.
+
+(tests
+ (names test_siem_unit test_siem_kafka test_siem_es)
+ (package haltsql-server)
+ (deps verify_chain.py)
+ (libraries
+  haltsql_siem
+  haltsql_cloud
+  haltsql.load
+  alcotest
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  base64
+  x509
+  ipaddr
+  ptime
+  ptime.clock.os
+  uri
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix))
