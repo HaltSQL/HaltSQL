@@ -6,7 +6,7 @@
 
 (generate_opam_files true)
 
-(license Apache-2.0)
+(license MIT)
 
 (authors "Arnav Dadarya")
 

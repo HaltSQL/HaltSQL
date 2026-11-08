@@ -9,8 +9,8 @@ info:
     Denials are returned as `200` verdicts with `allowed: false`. Clients must
     treat any non-200 response, timeout, or connection error as a denial.
   license:
-    name: Apache-2.0
-    identifier: Apache-2.0
+    name: MIT
+    identifier: MIT
   contact:
     url: https://github.com/ardada2468/HaltSQL
 servers:

@@ -6,7 +6,7 @@ description:
   "haltsql-proxy sits in front of PostgreSQL, authenticates clients (SCRAM-SHA-256 or TLS client certificates), verifies every statement with HaltSQL and enforces bound tenancy by rewriting Bind parameters."
 maintainer: ["Arnav Dadarya"]
 authors: ["Arnav Dadarya"]
-license: "Apache-2.0"
+license: "MIT"
 homepage: "https://github.com/ardada2468/HaltSQL"
 doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"
 bug-reports: "https://github.com/ardada2468/HaltSQL/issues"
