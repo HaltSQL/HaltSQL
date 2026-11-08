@@ -9,7 +9,7 @@ const sidebars = {
       type: 'category',
       label: 'Get started',
       collapsed: false,
-      items: ['index', 'quickstart'],
+      items: ['index', 'mcp', 'quickstart'],
     },
     {
       type: 'category',
@@ -37,7 +37,6 @@ const sidebars = {
         'cli',
         'http-api',
         'proxy',
-        'mcp',
         'policy-bundles',
         'policy-ci',
         'shadow-reports',

@@ -9,6 +9,9 @@ These docs describe version **0.1.0** (pre-1.0).
 
 ## Start here
 
+- [haltsql-mcp](mcp.md): the safe drop-in replacement for
+  `@modelcontextprotocol/server-postgres`. Give Claude Desktop, Cursor or your
+  own agent Postgres access with column, tenant and function guardrails.
 - [Quickstart](quickstart.md): from zero to your first denied query in five minutes.
 - [CLI reference](cli.md): every `haltsql` command, flag, and exit code.
 - [HTTP API](http-api.md): the `haltsql-server` sidecar ([OpenAPI 3.1](openapi.yaml)).
@@ -33,7 +36,7 @@ Explainers with diagrams, from the big picture down to the code:
 - [TypeScript SDK](sdk-typescript.md): `@haltsql/client` with `guardedQuery` for node-postgres.
 - [Go SDK](sdk-go.md): standard-library client with `GuardedQuery` for `database/sql`.
 - [Java SDK](sdk-java.md): `com.haltsql:haltsql-client` with `JdbcGuard` for PgJDBC.
-- [MCP server](mcp.md): `haltsql-mcp`, a verified read-only Postgres tool for MCP clients.
+- [MCP server](mcp.md): `haltsql-mcp`, the safe drop-in replacement for the reference Postgres MCP server.
 - [Agent frameworks](agent-frameworks.md): LangGraph, CrewAI, the OpenAI Agents SDK,
   Semantic Kernel and Google ADK packages (`integrations/`).
 - [Integrations overview](integrations.md): the rules every client follows.

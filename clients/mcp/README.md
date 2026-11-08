@@ -1,5 +1,23 @@
 # haltsql-mcp
 
+The safe drop-in replacement for `@modelcontextprotocol/server-postgres`.
+Same `query(sql)` tool, same positional connection string, plus column, tenant
+and function guardrails, a row cap and a statement timeout.
+
+```sh
+haltsql-mcp --local-policy policy.yaml postgresql://agent_ro@localhost/mydb
+```
+
+Or with Docker (includes the `haltsql` CLI; no central server needed):
+
+```sh
+docker run -i --rm --read-only -v "$PWD:/config:ro" ghcr.io/haltsql/haltsql-mcp \
+  postgresql://agent_ro@host.docker.internal/mydb      # /config/policy.yaml is picked up
+```
+
+Build it with `docker build -f clients/mcp/Dockerfile .` from the repository
+root, and see `scripts/mcp-docker-smoke.sh` for the end-to-end test.
+
 An MCP server that lets an agent query PostgreSQL only through
 [HaltSQL](https://github.com/HaltSQL/HaltSQL): every SQL string is verified
 against your policy, then exactly that string runs with server-bound
