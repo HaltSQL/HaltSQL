@@ -87,7 +87,6 @@
 .verdictHint {
   margin: 0.75rem 1.25rem 1.1rem;
   padding: 0.6rem 0.8rem;
-  border-left: 3px solid var(--hs-allow);
   background: var(--hs-surface-2);
   border-radius: 6px;
   color: var(--hs-muted);

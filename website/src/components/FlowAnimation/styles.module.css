@@ -104,15 +104,36 @@
   fill: none;
   stroke: var(--hs-deny);
   stroke-width: 1.5;
+  stroke-linecap: round;
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
-  opacity: 0;
-  transition-property: stroke-dashoffset, opacity;
-  transition-timing-function: var(--fa-ease);
+  transition: stroke-dashoffset 1s var(--fa-ease);
 }
-.returnOn {
+.returnHead {
+  fill: var(--hs-deny);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.returnLabel {
+  fill: var(--hs-deny);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.returnOn .returnPath {
   stroke-dashoffset: 0;
+}
+.returnOn .returnHead {
   opacity: 1;
+  transition-delay: 0.9s;
+}
+.returnOn .returnLabel {
+  opacity: 0.9;
+  transition-delay: 0.45s;
+}
+.returnInstant * {
+  transition: none !important;
 }
 
 .tone_accent {

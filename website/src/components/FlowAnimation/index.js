@@ -17,8 +17,8 @@ const STAGES = [
   { id: 'verdict', x: 670, name: 'Verdict', sub: 'allow or deny' },
 ];
 const pct = (x) => ((x - X0) / (X1 - X0)) * 100;
-// Leaves the verdict to the right, runs under the HaltSQL panel, rises into the agent.
-const RETURN = 'M677,150 C716,150 716,262 668,262 L140,262 C95,262 95,246 95,187';
+// A single arc from the verdict back over the HaltSQL panel into the agent.
+const RETURN = 'M670,141 C640,30 125,30 95,111';
 
 const SCENARIOS = [
   {
@@ -142,7 +142,7 @@ export default function FlowAnimation() {
         </button>
       </div>
 
-      <svg viewBox="0 52 1000 230" className={styles.svg} aria-hidden="true">
+      <svg viewBox="0 18 1000 226" className={styles.svg} aria-hidden="true">
         {/* HaltSQL region */}
         <rect x="262" y="66" width="476" height="160" rx="14" className={styles.region} />
         <text x="284" y="94" className={styles.regionLabel}>HALTSQL</text>
@@ -161,12 +161,14 @@ export default function FlowAnimation() {
             transitionDuration: reduced ? '0ms' : `${Math.min(cur.ms * 0.55, 900)}ms`,
           }}
         />
-        <path
-          d={RETURN}
-          pathLength="100"
-          className={clsx(styles.returnPath, cur.at === 'return' && styles.returnOn)}
-          style={{ transitionDuration: reduced ? '0ms' : '1100ms' }}
-        />
+        <g className={clsx(styles.returnGroup, cur.at === 'return' && styles.returnOn, reduced && styles.returnInstant)}>
+          <path d={RETURN} pathLength="100" className={styles.returnPath} />
+          {/* arrowhead drawn separately so it appears only once the arc arrives */}
+          <path d="M0,0 L-10,-5 L-10,5 z" transform="translate(95 112) rotate(110)" className={styles.returnHead} />
+          <text x="382" y="45" textAnchor="middle" className={styles.returnLabel}>
+            reasons and hints
+          </text>
+        </g>
 
         {/* stages */}
         {STAGES.map((st, i) => {
