@@ -236,6 +236,12 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- CI on pull requests runs only the jobs whose files changed: a `changes`
+  job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
+  `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test
+  OCaml 5.4 (Ubuntu and macOS) and Node 22; pushes to `main` still run the
+  full OCaml 5.2/5.4 x Ubuntu/macOS and Node 18/20/22 matrices. New `CI ok`
+  and `Integration ok` checks sum up each workflow for branch protection.
 - **Repository moved to `github.com/HaltSQL/HaltSQL`** (breaking). Go module
   paths are now `github.com/HaltSQL/HaltSQL/clients/go/haltsql`,
   `.../clients/go/pgxtest` and `.../deploy/operator`; container images and
