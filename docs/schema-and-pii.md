@@ -247,7 +247,23 @@ response bodies. Responses are capped at 32 MiB.
 
 | Provider | `--from` | Default token variable | Status |
 |---|---|---|---|
-| _providers are added by their own PRs_ | | | |
+| OpenMetadata | `openmetadata` | `OPENMETADATA_TOKEN` | Validated against OpenMetadata 2.0.7 (2026-11-08): real Postgres-connector ingestion, REST-applied tags, live fetch, lab tier-3 ([details](../test/catalog_live/openmetadata/README.md)). |
+
+**OpenMetadata.** `--url` is the server root (`https://om.example.com`) or the
+API root (`https://om.example.com/api`). The token is a bot JWT (Settings >
+Bots); a bot whose user has only the `DataConsumer` role is enough.
+`--service` is the database service name, `--database` the database inside it
+(it requires `--service`), `--schema` the schema names. HaltSQL lists
+`GET /api/v1/tables?fields=columns,tags&include=non-deleted`, scoped by
+`database=service.database`, `databaseSchema=service.database.schema` or
+`service=`, following `paging.after` cursors (100 tables a page), and re-checks
+every returned table against the requested scope. Labels are read as for
+`schema import --from openmetadata`: classification tags (for example
+`PII.Sensitive`, `PersonalData.Personal`) and glossary terms on columns and on
+nested STRUCT fields; `Tier.*` and other non-matching classifications, table
+tags and descriptions do not count. OpenMetadata answers unknown names with an
+empty list, so "no tables found" usually means a misspelt `--service` or
+`--database`.
 
 Coming soon (not yet validated against a live instance): Atlan, Collibra,
 dbt Cloud, Unity Catalog. The offline `schema import --from atlan|collibra`

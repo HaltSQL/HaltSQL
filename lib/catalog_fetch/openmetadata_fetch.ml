@@ -56,6 +56,15 @@ let list_all client ~what path query =
               Ok (items, next)
           | _ -> Error (Printf.sprintf "%s: response has no \"data\" array" what)))
 
+(* The base URL may be the server root or already end in /api. *)
+let api client path =
+  let base = Uri.path (Fetch_client.base_url client) in
+  let base =
+    if String.ends_with ~suffix:"/" base then String.sub base 0 (String.length base - 1)
+    else base
+  in
+  if String.ends_with ~suffix:"/api" base then "/v1" ^ path else "/api/v1" ^ path
+
 let table_fields = [ ("fields", "columns,tags"); ("include", "non-deleted") ]
 
 (* The table's place in the hierarchy, from its entity references (falling back to the
@@ -92,7 +101,7 @@ let to_table t : Provider.table option =
 
 let fetch client (f : Provider.filter) =
   let tables_in query what =
-    list_all client ~what "/api/v1/tables" (table_fields @ query)
+    list_all client ~what (api client "/tables") (table_fields @ query)
   in
   let* items =
     match (f.service, f.database, f.schemas) with

@@ -357,6 +357,24 @@ let test_quote_name () =
     (Some (service ^ ".\"my.db\""))
     (Uri.get_query_param (Cohttp.Request.uri (fst (List.hd srv.requests))) "database")
 
+let test_api_base_url () =
+  (* --url may already end in /api: requests still go to /api/v1/tables. *)
+  let srv = om_server () in
+  let c =
+    match
+      Fetch_client.create ~base_url:(Fake_http.url srv "/api") (Fetch_client.Bearer token)
+    with
+    | Ok c -> c
+    | Error e -> Alcotest.fail e
+  in
+  let f = get_ok "fetch" (run (Om.fetch c (filter ~service ~database:db ()))) in
+  srv.stop ();
+  Alcotest.(check int) "tables" 9 (List.length f.tables);
+  List.iter
+    (fun ((req : Cohttp.Request.t), _) ->
+      Alcotest.(check string) "path" "/api/v1/tables" (Fake_http.path req))
+    srv.requests
+
 let test_registry () =
   match Catalog_fetch.find "openmetadata" with
   | Some (module P) ->
@@ -380,6 +398,7 @@ let () =
           tc "bad cursor" test_bad_cursor;
           tc "database needs service" test_database_needs_service;
           tc "quote name" test_quote_name;
+          tc "api base url" test_api_base_url;
           tc "registry" test_registry;
         ] );
     ]

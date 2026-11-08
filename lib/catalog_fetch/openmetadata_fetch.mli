@@ -5,7 +5,7 @@
     and hands them to the {!Haltsql_catalog_tools.Pii_import.Openmetadata} importer.
 
     - Base URL: the server root, e.g. [https://openmetadata.example.com] (the provider
-      adds [/api/v1/...]).
+      adds [/api/v1/...]), or the API root ending in [/api] (it then adds [/v1/...]).
     - Auth: a bot JWT sent as [Authorization: Bearer]. A bot with the [DataConsumer] role
       is enough. Default token variable: [OPENMETADATA_TOKEN].
     - Scope: [filter.service] is the database service name, [filter.database] the database
