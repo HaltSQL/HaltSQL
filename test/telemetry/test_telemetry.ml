@@ -545,6 +545,28 @@ let test_timeout () =
        (dt >= 0.9 && dt < 2.5);
      Alcotest.(check int) "failure" 1 (E.stats e).export_failures)
 
+(* Regression: a collector that accepts the batch but then streams an endless
+   response body must not hold the export until the timeout (nor buffer the body):
+   only a bounded prefix is read and the connection is closed. *)
+let test_endless_response () =
+  run
+    (let chunk = String.make 65536 'x' in
+     let f =
+       Fake_http.start (fun _ _ ->
+           let s = Lwt_stream.from (fun () -> Lwt.pause () >|= fun () -> Some chunk) in
+           Cohttp_lwt_unix.Server.respond ~status:`OK ~body:(Cohttp_lwt.Body.of_stream s)
+             ())
+     in
+     let e = create ~max_retries:0 (otlp ~metrics:false ~timeout:2 f) in
+     E.end_span e (E.start_span e "x");
+     let t0 = Unix.gettimeofday () in
+     E.flush e >|= fun () ->
+     let dt = Unix.gettimeofday () -. t0 in
+     f.stop ();
+     Alcotest.(check bool) (Printf.sprintf "returned promptly (%.2fs)" dt) true (dt < 1.5);
+     Alcotest.(check int) "delivered" 1 (E.stats e).batches_sent;
+     Alcotest.(check int) "no failure" 0 (E.stats e).export_failures)
+
 let test_connection_refused () =
   run
     (let f = Fake_http.start ok_handler in
@@ -726,6 +748,7 @@ let () =
           Alcotest.test_case "permanent 400" `Quick test_permanent_400;
           Alcotest.test_case "timeout" `Quick test_timeout;
           Alcotest.test_case "connection refused" `Quick test_connection_refused;
+          Alcotest.test_case "endless response body" `Quick test_endless_response;
           Alcotest.test_case "gzip" `Quick test_gzip_export;
           Alcotest.test_case "metrics" `Quick test_metrics_export;
           Alcotest.test_case "noop" `Quick test_noop;

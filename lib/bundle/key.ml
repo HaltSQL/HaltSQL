@@ -1,3 +1,5 @@
+(** Ed25519 bundle-signing keys: PEM/base64 codecs and safe file loading; see key.mli. *)
+
 module Ed = Mirage_crypto_ec.Ed25519
 
 type public = { pub : Ed.pub; raw_pub : string }

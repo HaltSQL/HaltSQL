@@ -1,4 +1,4 @@
-(* Pure OIDC token verification. *)
+(** Pure OIDC token verification. *)
 
 module Config = Haltsql.Config
 module Context = Haltsql.Context

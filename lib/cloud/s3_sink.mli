@@ -26,6 +26,8 @@ val put_object :
 (** One signed PUT (the uploader used by [create]). *)
 
 val object_url : Haltsql_load.Config.s3_sink -> string -> Uri.t
+(** The PUT URL for an object key: virtual-hosted style on AWS, path style
+    ([<endpoint>/<bucket>/<key>]) on a custom endpoint. The key is percent-encoded. *)
 
 val create :
   ?env:(string -> string option) ->

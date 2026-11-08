@@ -1,4 +1,4 @@
-(* SCRAM-SHA-256; see scram.mli. *)
+(** SCRAM-SHA-256; see scram.mli. *)
 
 let mechanism = "SCRAM-SHA-256"
 let ( let* ) = Result.bind

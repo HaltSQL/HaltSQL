@@ -23,3 +23,4 @@ val pbkdf2_sha256 : password:string -> salt:string -> iterations:int -> string
 (** 32-byte PBKDF2-HMAC-SHA-256 (exposed for tests). *)
 
 val constant_time_equal : string -> string -> bool
+(** Comparison whose running time does not depend on where the strings differ. *)

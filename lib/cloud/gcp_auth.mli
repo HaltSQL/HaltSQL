@@ -17,6 +17,8 @@ val default_scope : string
 
 val metadata :
   ?env:(string -> string option) -> ?now:(unit -> float) -> ?timeout:float -> unit -> t
+(** Tokens from the GCE metadata server ([GCE_METADATA_HOST] or
+    [metadata.google.internal]); responses must carry [Metadata-Flavor: Google]. *)
 
 val service_account :
   ?now:(unit -> float) -> ?timeout:float -> ?scope:string -> string -> (t, string) result
@@ -24,6 +26,7 @@ val service_account :
 
 val service_account_file :
   ?now:(unit -> float) -> ?timeout:float -> ?scope:string -> string -> (t, string) result
+(** {!service_account} from a key file of at most 64 KiB. *)
 
 val default :
   ?env:(string -> string option) ->
@@ -34,7 +37,11 @@ val default :
 (** [GOOGLE_APPLICATION_CREDENTIALS] when set, else the metadata server. *)
 
 val token : t -> (string, string) result Lwt.t
+(** A cached access token, refreshed (once, under a lock) within 60 s of its expiry.
+    Errors never contain tokens or key material. *)
+
 val invalidate : t -> unit
+(** Drops the cached token (e.g. after a 401). *)
 
 val jwt_assertion :
   key:Mirage_crypto_pk.Rsa.priv ->

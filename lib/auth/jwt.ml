@@ -1,4 +1,4 @@
-(* Compact JWS decoding and signature verification. Pure. *)
+(** Compact JWS decoding and signature verification. Pure. *)
 
 module Config = Haltsql.Config
 

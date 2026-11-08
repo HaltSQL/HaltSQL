@@ -29,6 +29,7 @@ exception Overflow
 type lookup = Found of Haltsql.Verdict.t | Missing | Wait
 
 val lookup : t -> string -> lookup
+(** What a Bind naming this statement may rely on (see the module description). *)
 
 (** {1 Client side (called as messages are forwarded)} *)
 
@@ -37,7 +38,11 @@ val note_parse : t -> string -> Haltsql.Verdict.t -> unit
     (the server replaces it). *)
 
 val note_close_statement : t -> string -> unit
+(** A Close of a statement was forwarded; the committed entry is dropped at once (only
+    ever causes denials). Raises {!Overflow}. *)
+
 val note_close_portal : t -> unit
+(** A Close of a portal was forwarded. Raises {!Overflow}. *)
 
 val drop_unnamed : t -> unit
 (** A simple Query destroys the unnamed statement. *)
@@ -58,10 +63,15 @@ val in_flight : t -> int
 (** {1 Server side (called as responses arrive)} *)
 
 val on_parse_complete : t -> (unit, string) result
+(** ParseComplete: commits the oldest pending Parse. [Error] when none is pending
+    (protocol desynchronisation; the session is closed). *)
+
 val on_close_complete : t -> (unit, string) result
+(** CloseComplete: applies the oldest pending Close. [Error] when none is pending. *)
 
 val on_error : t -> (string * (char * string) list) option
 (** Discards pending operations of the head segment and returns (and clears) its injected
     denial, if any. *)
 
 val on_ready : t -> unit
+(** ReadyForQuery: retires the head segment. *)

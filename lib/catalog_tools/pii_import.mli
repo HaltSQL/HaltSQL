@@ -40,7 +40,10 @@ val source_to_string : source -> string
 (** ["dbt"], ["datahub"], ["unity"], ["atlan"], ["collibra"]. *)
 
 val source_of_string : string -> source option
+(** Parses a [--from] source name. *)
+
 val all_sources : source list
+(** Every supported source, in documentation order. *)
 
 type result = {
   manifest : Pii.t;
@@ -54,3 +57,4 @@ val import :
 
 val import_file :
   ?config:Pii.Matcher.config -> source -> string -> (result, string) Stdlib.result
+(** {!import} on a JSON file. *)

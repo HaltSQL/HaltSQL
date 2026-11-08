@@ -1,3 +1,5 @@
+(** Google Secret Manager resolver; see gcp_sm.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 

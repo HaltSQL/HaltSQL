@@ -1,4 +1,4 @@
-(* SCRAM-SHA-256 client. See scram.mli. *)
+(** SCRAM-SHA-256 client. See scram.mli. *)
 
 type state = {
   client_first_bare : string;

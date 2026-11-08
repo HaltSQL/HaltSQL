@@ -14,6 +14,8 @@ type peer = {
 }
 
 val peer_of_certificate : X509.Certificate.t -> peer
+(** Extracts the identity fields of a leaf certificate. Performs no validation: only call
+    it on a certificate the TLS layer has already verified. *)
 
 val subject : peer -> string
 (** The SPIFFE ID if any, else the subject CN, else ["sha256:" ^ fingerprint]. *)

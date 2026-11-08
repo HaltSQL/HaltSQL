@@ -7,11 +7,13 @@
     verifies as a single chain. *)
 
 val genesis : string
+(** 64 zeros: the [prev_hash] of the first record of a chain. *)
 
 val seal : prev:string -> (string * Yojson.Safe.t) list -> string * string
 (** [(line, hash)]: appends [prev_hash] and [hash] to the fields. *)
 
 val hash_of_line : string -> string option
+(** The [hash] field of a sealed record line, if it has a 64-hex one (no verification). *)
 
 val verify_lines :
   ?initial_prev:string option -> string list -> (int, int * string) result

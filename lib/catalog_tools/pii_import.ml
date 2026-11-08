@@ -1,4 +1,4 @@
-(* Data-catalog importers (see pii_import.mli). *)
+(** Data-catalog importers (see pii_import.mli). *)
 
 type source = Dbt | Datahub | Unity | Atlan | Collibra
 
@@ -132,7 +132,7 @@ let dbt cfg (j : Yojson.Safe.t) =
       match field "metadata" node with
       | Some (`Assoc _ as md) when str "schema" md <> None -> (
           (* catalog.json *)
-          let schema = Option.get (str "schema" md) in
+          let schema = Option.value (str "schema" md) ~default:"" in
           match str "name" md with
           | None ->
               warnings := Printf.sprintf "%s: no table name; skipped" uid :: !warnings

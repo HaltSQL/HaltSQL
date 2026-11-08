@@ -1,4 +1,4 @@
-(* Enforcement decisions; see enforce.mli. *)
+(** Enforcement decisions; see enforce.mli. *)
 
 open Haltsql
 

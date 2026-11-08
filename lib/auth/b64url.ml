@@ -1,4 +1,4 @@
-(* Strict unpadded base64url. *)
+(** Strict unpadded base64url. *)
 
 let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 

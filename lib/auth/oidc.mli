@@ -24,6 +24,9 @@ val verify :
   now:float ->
   string ->
   (identity, Jwt.error) result
+(** [verify provider ~keys ~now token]: the verified identity, or the first failed check
+    (see the module description for the order). Pure and total: never raises, never
+    performs IO. Error values never contain the token. *)
 
 val lookup_claim : (string * Yojson.Safe.t) list -> string -> Yojson.Safe.t option
 (** Looks a path up as one top-level claim name first, then as a dot path through nested

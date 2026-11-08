@@ -27,6 +27,14 @@ val random_int32 : unit -> int
 (** A random signed 32-bit integer. *)
 
 val md5_hex : string -> string
+(** Lower-case hex MD5 (only for PostgreSQL's legacy md5 password exchange). *)
+
 val sha256 : string -> string
+(** Raw 32-byte SHA-256 digest. *)
+
 val hmac_sha256 : key:string -> string -> string
+(** Raw 32-byte HMAC-SHA-256. *)
+
 val xor : string -> string -> string
+(** Byte-wise XOR of two equal-length strings. Raises [Invalid_argument] on a length
+    mismatch. *)

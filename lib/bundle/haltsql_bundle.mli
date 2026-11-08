@@ -69,7 +69,10 @@ val default_max_bytes : int
 (** 16 MiB: the default size limit for a bundle file. *)
 
 val max_signature_bytes : int
+(** 64 KiB: the size limit for a signature file. *)
+
 val max_policies : int
+(** 1000: the maximum number of policies in one bundle. *)
 
 val build :
   metadata ->
@@ -96,6 +99,9 @@ val signing_input : string -> string
     ["haltsql.dev/v1 PolicyBundle signature\n"] followed by the bundle bytes. *)
 
 val sign : Key.secret -> string -> signature
+(** [sign key bytes] signs the exact bundle bytes, prefixed with a fixed domain-separation
+    string so a bundle signature can never be replayed as a signature over anything else.
+*)
 
 val signatures_to_string : signature list -> string
 (** Canonical signature-file contents (with a trailing newline). One signature uses the

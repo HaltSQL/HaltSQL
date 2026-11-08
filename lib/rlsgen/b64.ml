@@ -1,4 +1,4 @@
-(* Standard base64 (RFC 4648, with padding). *)
+(** Standard base64 (RFC 4648, with padding). *)
 
 let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 

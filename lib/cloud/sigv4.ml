@@ -1,3 +1,5 @@
+(** AWS Signature Version 4 request signing; see sigv4.mli. *)
+
 type credentials = {
   access_key_id : string;
   secret_access_key : string;

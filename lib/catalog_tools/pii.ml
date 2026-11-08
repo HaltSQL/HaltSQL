@@ -1,4 +1,4 @@
-(* PII manifests (see pii.mli). *)
+(** PII manifests (see pii.mli). *)
 
 type entry = {
   schema : string;

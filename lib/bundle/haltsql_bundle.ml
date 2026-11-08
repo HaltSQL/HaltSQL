@@ -1,4 +1,4 @@
-(* Signed policy bundles. See haltsql_bundle.mli and docs/policy-bundles.md. *)
+(** Signed policy bundles. See haltsql_bundle.mli and docs/policy-bundles.md. *)
 
 open Haltsql_core
 module Canonical = Canonical

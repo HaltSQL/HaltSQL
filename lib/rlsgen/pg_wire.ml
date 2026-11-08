@@ -1,4 +1,4 @@
-(* Minimal PostgreSQL wire-protocol client. See pg_wire.mli. *)
+(** Minimal PostgreSQL wire-protocol client. See pg_wire.mli. *)
 
 type sslmode = Disable | Prefer | Require | Verify_full
 

@@ -1,3 +1,5 @@
+(** Google Cloud Storage audit sink; see gcs_sink.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 

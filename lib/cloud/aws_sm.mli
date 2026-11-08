@@ -18,3 +18,6 @@ val create :
 (** [credentials] defaults to {!Aws_creds.default_chain} in the configured region. *)
 
 val get : t -> string -> (string, string) result Lwt.t
+(** [get t "<secret-id>[#<json-key>]"]: the secret string (or decoded binary), or one key
+    of it when it is a JSON object. Retries once with fresh credentials on an
+    expired-credentials error. Errors never contain the secret value. *)
