@@ -1,4 +1,4 @@
-(* haltsql — command-line interface for the HaltSQL policy firewall. *)
+(** haltsql — command-line interface for the HaltSQL policy firewall. *)
 
 open Cmdliner
 
@@ -188,8 +188,22 @@ let schema_cmd =
          ~exits)
       Term.(const (fun out -> Cmds.schema_export ~out) $ out)
   in
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "$(b,pull) snapshots a live database catalog, $(b,import) converts PII metadata \
+         from other tools into manifests, and $(b,export) writes the JSON Schemas of \
+         every HaltSQL document kind (for editor validation).";
+    ]
+    @ man_examples
+        [
+          "  haltsql schema pull --dsn \"$DATABASE_URL\" -o catalog.json";
+          "  haltsql schema export --out schemas/";
+        ]
+  in
   Cmd.group
-    (Cmd.info "schema"
+    (Cmd.info "schema" ~man ~exits
        ~doc:"Catalog snapshots, PII metadata import and JSON Schema tooling.")
     ([ export ] @ Cmd_schema.cmds)
 
@@ -253,7 +267,16 @@ let config_cmd =
          ~exits)
       Term.(const (fun config _ -> Cmds.config_show ~config) $ config $ effective)
   in
-  Cmd.group (Cmd.info "config" ~doc:"Inspect runtime configuration.") [ show ]
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "Inspects the haltsql-server configuration as the server would load it: the \
+         config file merged with HALTSQL_* environment variables, with secrets redacted.";
+    ]
+    @ man_examples [ "  haltsql config show --config config.yaml" ]
+  in
+  Cmd.group (Cmd.info "config" ~doc:"Inspect runtime configuration." ~man ~exits) [ show ]
 
 (* ---- version ---- *)
 

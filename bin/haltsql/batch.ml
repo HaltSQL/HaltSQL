@@ -1,11 +1,11 @@
-(* `haltsql verify --batch`: JSONL in, JSONL out.
-
-   Input lines:  {"id": any, "sql": string, "context": object}
-   Output lines: {"id": ..., <Verdict.to_json fields>}  or  {"id": ..., "error": "..."}
-
-   Output order always matches input order. With [jobs > 1], lines are read
-   in blocks and each block is split into contiguous chunks verified on
-   separate OCaml 5 domains; memory stays bounded by the block size. *)
+(** [haltsql verify --batch]: JSONL in, JSONL out.
+    {v
+    Input lines:  {"id": any, "sql": string, "context": object}
+    Output lines: {"id": ..., <Verdict.to_json fields>}  or  {"id": ..., "error": "..."}
+    v}
+    Output order always matches input order. With [jobs > 1], lines are read in blocks and
+    each block is split into contiguous chunks verified on separate OCaml 5 domains;
+    memory stays bounded by the block size. *)
 
 open Haltsql
 

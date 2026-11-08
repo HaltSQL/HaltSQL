@@ -1,5 +1,4 @@
-(* Structured logging to stderr. Format: one JSON object per line ("json") or
-   "ts LEVEL msg key=value ..." ("text"). *)
+(** Structured logging to stderr. See log.mli. *)
 
 type level = Debug | Info | Warn | Error
 
@@ -32,6 +31,27 @@ let rfc3339 t =
 
 let enabled lvl = rank lvl >= rank !min_level
 
+(* Text format: values that could break the one-record-per-line framing or
+   be mistaken for another key (spaces, '=', quotes, control characters, e.g.
+   from a percent-decoded request path) are written as JSON strings. *)
+let needs_quoting s =
+  s = ""
+  || String.exists
+       (fun c ->
+         c = ' ' || c = '=' || c = '"' || c = '\\' || Char.code c < 0x20 || c = '\x7f')
+       s
+
+let text_value = function
+  | `String s when not (needs_quoting s) -> s
+  | `String s -> Yojson.Safe.to_string (`String s)
+  | j -> Yojson.Safe.to_string j
+
+let text_msg msg =
+  if String.exists (fun c -> Char.code c < 0x20) msg then
+    let j = Yojson.Safe.to_string (`String msg) in
+    String.sub j 1 (String.length j - 2)
+  else msg
+
 let emit lvl msg (fields : (string * Yojson.Safe.t) list) =
   if enabled lvl then begin
     let ts = rfc3339 (Unix.gettimeofday ()) in
@@ -49,11 +69,8 @@ let emit lvl msg (fields : (string * Yojson.Safe.t) list) =
         String.concat " "
           (ts
           :: String.uppercase_ascii (level_to_string lvl)
-          :: msg
-          :: List.map
-               (fun (k, v) ->
-                 k ^ "=" ^ match v with `String s -> s | j -> Yojson.Safe.to_string j)
-               fields)
+          :: text_msg msg
+          :: List.map (fun (k, v) -> k ^ "=" ^ text_value v) fields)
     in
     prerr_endline line
   end

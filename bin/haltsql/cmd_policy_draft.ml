@@ -1,5 +1,5 @@
-(* haltsql policy draft: a reviewable starter policy from a catalog snapshot and PII
-   manifests. [cmd] is the [policy] group; [draft_cmd] the subcommand alone. *)
+(** haltsql policy draft: a reviewable starter policy from a catalog snapshot and PII
+    manifests. [cmd] is the [policy] group; [draft_cmd] the subcommand alone. *)
 
 open Cmdliner
 module Ct = Haltsql_catalog_tools
@@ -245,4 +245,15 @@ let draft_cmd =
       $ name_arg $ require_limit $ no_heuristics $ name_patterns $ include_partitions
       $ catalog_ref $ json)
 
-let cmd = Cmd.group (Cmd.info "policy" ~doc:"Policy authoring tools.") [ draft_cmd ]
+let cmd =
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "Tools for writing policies. $(b,draft) derives a reviewable starter policy from \
+         a catalog snapshot ($(b,haltsql schema pull)) and optional PII manifests.";
+      `S Manpage.s_examples;
+      `Pre "  haltsql policy draft --catalog catalog.json -o policy.yaml";
+    ]
+  in
+  Cmd.group (Cmd.info "policy" ~doc:"Policy authoring tools." ~man ~exits) [ draft_cmd ]

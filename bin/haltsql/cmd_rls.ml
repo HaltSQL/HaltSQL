@@ -1,4 +1,4 @@
-(* haltsql rls generate | check: database-level defense in depth from a policy. *)
+(** haltsql rls generate | check: database-level defense in depth from a policy. *)
 
 open Cmdliner
 open Haltsql

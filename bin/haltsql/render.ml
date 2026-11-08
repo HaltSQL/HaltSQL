@@ -1,4 +1,4 @@
-(* Human-readable rendering of verdicts for `verify` and `explain`. *)
+(** Human-readable rendering of verdicts for [verify] and [explain]. *)
 
 open Haltsql
 

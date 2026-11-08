@@ -1,11 +1,17 @@
-(* In-process Prometheus metrics (text exposition format 0.0.4). The server
-   runs on a single Lwt thread, so plain mutable tables suffice. *)
+(** In-process Prometheus metrics (text exposition format 0.0.4). The server runs on a
+    single Lwt thread, so plain mutable tables suffice.
+
+    Label values are bounded: [route] is one of the known routes or ["other"], [policy] a
+    loaded policy's name, [code] a reason code, [method]/[result] fixed vocabularies.
+    Nothing request-controlled (paths, policy names that failed to resolve, callers)
+    becomes a label. *)
 
 let verify_total : (string * string, int) Hashtbl.t = Hashtbl.create 16
 let reasons_total : (string, int) Hashtbl.t = Hashtbl.create 16
 let reload_total : (string, int) Hashtbl.t = Hashtbl.create 4
 let http_total : (string * int, int) Hashtbl.t = Hashtbl.create 16
 let audit_errors = ref 0
+let open_connections = ref 0
 
 (* (method, result): method token|oidc|mtls|anonymous|none, result ok|rejected|unavailable *)
 let auth_total : (string * string, int) Hashtbl.t = Hashtbl.create 8
@@ -62,6 +68,7 @@ let observe_audit_error () =
 let set_policies_loaded n =
   Telemetry.Exporter.set_policies_loaded (Telemetry.exporter ()) n
 
+let set_open_connections n = open_connections := n
 let observe_auth ~meth ~result = incr auth_total (meth, result)
 let observe_tls_reload ~ok = incr tls_reload_total (if ok then "success" else "error")
 
@@ -117,6 +124,9 @@ let render ~version ~pg ~policies_loaded =
     (sorted reload_total);
   header "haltsql_audit_errors_total" "counter" "Audit sink write failures.";
   p "haltsql_audit_errors_total %d\n" !audit_errors;
+  header "haltsql_http_open_connections" "gauge"
+    "Client connections currently open on the main listener.";
+  p "haltsql_http_open_connections %d\n" !open_connections;
   header "haltsql_http_requests_total" "counter" "HTTP requests by route and status.";
   List.iter
     (fun ((path, status), n) ->

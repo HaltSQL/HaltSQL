@@ -1,9 +1,9 @@
-(* End-to-end tests of the haltsql-proxy binary against the lab Postgres 17
-   (make -C lab up; localhost:5417). A real driver (psycopg 3 / libpq, from lab/.venv)
-   and a raw protocol client exercise the proxy. Skips cleanly when Postgres or the venv
-   is unavailable.
+(** End-to-end tests of the haltsql-proxy binary against the lab Postgres 17 (make -C lab
+    up; localhost:5417). A real driver (psycopg 3 / libpq, from lab/.venv) and a raw
+    protocol client exercise the proxy. Skips cleanly when Postgres or the venv is
+    unavailable.
 
-   Database: haltsql_proxy_test (created and dropped here). *)
+    Database: haltsql_proxy_test (created and dropped here). *)
 
 open Haltsql_pgwire
 

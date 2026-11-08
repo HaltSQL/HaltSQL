@@ -1,4 +1,4 @@
-(* Shared helpers for the haltsql CLI subcommands. *)
+(** Shared helpers for the haltsql CLI subcommands. *)
 
 open Haltsql
 

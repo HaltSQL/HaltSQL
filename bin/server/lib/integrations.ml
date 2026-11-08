@@ -1,8 +1,8 @@
-(* Wires the optional enterprise integrations into the server's hooks
-   ([State.secret_resolver], [State.secret_prefetch], [State.remote_sink],
-   [State.bundle_loader]). Called once by [Server.main] before the config is
-   loaded; in-process tests that build [State] directly run without them, and
-   every hook fails closed when unset. *)
+(** Wires the optional enterprise integrations into the server's hooks
+    ([State.secret_resolver], [State.secret_prefetch], [State.remote_sink],
+    [State.bundle_loader]). Called once by [Server.main] before the config is loaded;
+    in-process tests that build [State] directly run without them, and every hook fails
+    closed when unset. *)
 
 open Haltsql
 module Secrets = Haltsql_cloud.Secrets

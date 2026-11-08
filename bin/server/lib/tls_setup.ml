@@ -1,4 +1,4 @@
-(* Built-in TLS: PEM loading, cipher policy, client-certificate verification. *)
+(** Built-in TLS: PEM loading, cipher policy, client-certificate verification. *)
 
 module Config = Haltsql.Config
 
