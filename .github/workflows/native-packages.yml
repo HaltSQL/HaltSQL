@@ -237,7 +237,12 @@ jobs:
         env:
           HALTSQL_REQUIRE_NATIVE: "1"
         run: |
-          wheel="$(ls "$PWD"/dist/*.whl | grep -v none-any | head -1)"
+          wheel=""
+          for f in "$PWD"/dist/*.whl; do
+            case "$f" in *none-any*) continue ;; esac
+            wheel="$f"; break
+          done
+          if [ -z "$wheel" ]; then echo "no platform wheel in dist/" >&2; exit 1; fi
           echo "testing $wheel"
           HALTSQL_WHEEL="$wheel" .venv/bin/python -m pytest -q -m wheel
 
@@ -307,7 +312,8 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install -e ".[test]"
-          HALTSQL_WHEEL="$(ls "$GITHUB_WORKSPACE"/wheel/*.whl | head -1)" .venv/bin/python -m pytest -q -m wheel
+          wheels=("$GITHUB_WORKSPACE"/wheel/*.whl)
+          HALTSQL_WHEEL="${wheels[0]}" .venv/bin/python -m pytest -q -m wheel
 
   sdist:
     name: sdist + pure wheel
