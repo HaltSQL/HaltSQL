@@ -38,7 +38,7 @@ jobs:
 
       - name: Build haltsql
         run: |
-          opam install . --deps-only -y
+          opam install . --deps-only --with-test -y
           opam exec -- dune build ./bin/haltsql ./bin/proxy/main.exe
           echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
           echo "HALTSQL_PROXY_BIN=$PWD/_build/default/bin/proxy/main.exe" >> "$GITHUB_ENV"
