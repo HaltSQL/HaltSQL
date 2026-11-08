@@ -7,6 +7,13 @@
  * const v = await haltsql.verify(sql, { tenant_id: session.tenantId });
  * if (v.allowed) { ... }
  * ```
+ *
+ * Or, with no sidecar, using the engine bundled for this platform:
+ *
+ * ```ts
+ * import { LocalVerifier } from "@haltsql/client";
+ * const haltsql = await LocalVerifier.create({ policyFile: "policy.yaml" });
+ * ```
  */
 export { HaltSQLClient, VERSION, constantTimeEqual } from "./client.js";
 export type { ClientOptions, VerifyOptions } from "./client.js";
@@ -21,7 +28,14 @@ export {
 } from "./errors.js";
 export { bindParamsToPositional, toPgArrayLiteral } from "./params.js";
 export { guardedQuery } from "./pg.js";
-export type { PgQueryable, GuardedQueryOptions, GuardedQueryResult } from "./pg.js";
+export { LocalVerifier, NATIVE_PLATFORMS, nativePackageName, resolveLocalBinary } from "./local.js";
+export type {
+  LocalVerifierOptions,
+  LocalVerifyItem,
+  ResolveBinaryOptions,
+  ResolvedBinary,
+} from "./local.js";
+export type { PgQueryable, GuardedQueryOptions, GuardedQueryResult, SqlVerifier } from "./pg.js";
 export { parseVerdict } from "./validate.js";
 export type {
   BindParam,

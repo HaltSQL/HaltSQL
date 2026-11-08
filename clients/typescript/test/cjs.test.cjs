@@ -20,3 +20,17 @@ test("package exports resolve both conditions", () => {
   assert.equal(pkg.exports["."].import.default, "./dist/esm/index.js");
   assert.deepEqual(Object.keys(pkg.dependencies ?? {}), []);
 });
+
+test("CommonJS build: LocalVerifier and binary resolution (no import.meta in CJS)", () => {
+  const m = require("../dist/cjs/index.js");
+  assert.equal(typeof m.LocalVerifier, "function");
+  assert.equal(typeof m.resolveLocalBinary, "function");
+  const src = require("node:fs").readFileSync(require.resolve("../dist/cjs/meta.js"), "utf8");
+  assert.ok(!src.includes("import.meta"));
+  assert.equal(require("../dist/cjs/meta.js").moduleUrl, require("node:url").pathToFileURL(require.resolve("../dist/cjs/meta.js")).href);
+  // Resolution from this module's location runs without throwing a SyntaxError/TypeError.
+  assert.throws(
+    () => m.resolveLocalBinary({ platform: "linux", arch: "x64", env: { PATH: "" } }),
+    (e) => e instanceof m.HaltSQLUsageError && /@haltsql\/native-linux-x64/.test(e.message),
+  );
+});

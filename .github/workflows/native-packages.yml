@@ -1,0 +1,393 @@
+name: Native packages (wheels, npm)
+
+# Builds the platform wheels (`pip install haltsql`) and npm platform packages
+# (`@haltsql/native-<platform>`) that bundle the compiled engine, tests them as a user
+# would install them, and publishes them on release tags.
+#
+#   artifact            Linux (x86_64, aarch64)                 macOS arm64
+#   libhaltsql.so       manylinux_2_28 container (glibc 2.28)   macos-14, deployment target 11.0
+#   haltsql (CLI)       static musl, Dockerfile `dist` stage    macos-14
+#
+# Wheels are tagged py3-none-<platform>: the library is loaded with ctypes, so one
+# wheel per platform serves every CPython >= 3.9.
+
+on:
+  pull_request:
+    paths:
+      - "native/**"
+      - "lib/**"
+      - "bin/haltsql/**"
+      - "vendor/libpg_query/**"
+      - "clients/python/**"
+      - "clients/typescript/**"
+      - "Dockerfile"
+      - "dune-project"
+      - ".github/workflows/native-packages.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OCAML_VERSION: "5.2"
+
+jobs:
+  lib-linux:
+    name: libhaltsql (manylinux_2_28 ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    container:
+      image: quay.io/pypa/manylinux_2_28_${{ matrix.arch }}
+    env:
+      OPAMROOT: /opam
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Cache opam root
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: /opam
+          key: opam-manylinux_2_28-${{ matrix.arch }}-${{ env.OCAML_VERSION }}-${{ hashFiles('dune-project') }}
+          restore-keys: opam-manylinux_2_28-${{ matrix.arch }}-${{ env.OCAML_VERSION }}-
+
+      - name: Build and test libhaltsql
+        env:
+          OCAML_VERSION: "5.2.1"
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          native/scripts/build-manylinux.sh out
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lib-linux-${{ matrix.arch }}
+          path: out/libhaltsql.so
+          if-no-files-found: error
+
+  cli-linux:
+    name: haltsql CLI (static musl ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Same stage, cache scope and checks as the release tarballs (release.yml).
+      - name: Build static CLI (Dockerfile target "dist")
+        run: |
+          docker buildx build --platform "${{ matrix.platform }}" \
+            --target dist --output "type=local,dest=out" \
+            --cache-from "type=gha,scope=static-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}" .
+          file out/haltsql | grep -Eq "statically linked|static-pie linked"
+          out/haltsql version
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: out/haltsql
+          if-no-files-found: error
+
+  macos:
+    name: libhaltsql + CLI (macOS arm64)
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: ${{ env.OCAML_VERSION }}
+          dune-cache: true
+
+      - name: Build and test
+        run: |
+          opam install ./haltsql.opam --deps-only --yes
+          # Link libgmp (zarith) statically: the CLI must not need Homebrew's dylib.
+          mkdir -p "$RUNNER_TEMP/gmp-static"
+          cp "$(brew --prefix gmp)/lib/libgmp.a" "$RUNNER_TEMP/gmp-static/"
+          export HALTSQL_STATIC_GMP="$RUNNER_TEMP/gmp-static"
+          opam exec -- dune build --profile release lib/pgquery/libpg_query.a
+          opam exec -- dune build --profile release native/libhaltsql.so bin/haltsql/main.exe
+          opam exec -- dune build --profile release @native/test/runtest
+          mkdir -p out
+          install -m 0755 _build/default/native/libhaltsql.so out/libhaltsql.so
+          install -m 0755 _build/default/bin/haltsql/main.exe out/haltsql
+          # The dylib's install name is its dune build path; give it a stable one.
+          install_name_tool -id @rpath/libhaltsql.dylib out/libhaltsql.so
+          codesign --force --sign - out/libhaltsql.so
+          otool -L out/libhaltsql.so out/haltsql
+          # Nothing outside the OS may be linked: the wheel must be self-contained.
+          if otool -L out/libhaltsql.so out/haltsql | grep -v ':$' \
+               | grep -Ev '^\s+(/usr/lib/|/System/Library/|@rpath/libhaltsql\.dylib)'; then
+            echo "unexpected dynamic dependency"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-macos-arm64
+          path: out/
+          if-no-files-found: error
+
+  package:
+    name: Package + test (${{ matrix.platform }})
+    needs: [lib-linux, cli-linux, macos]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            lib: lib-linux-x86_64
+            cli: cli-linux-x86_64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            lib: lib-linux-aarch64
+            cli: cli-linux-aarch64
+          - platform: darwin-arm64
+            runner: macos-14
+            lib: native-macos-arm64
+            cli: native-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.lib }}
+          path: prebuilt
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: matrix.lib != matrix.cli
+        with:
+          name: ${{ matrix.cli }}
+          path: prebuilt
+
+      - name: Inspect prebuilt artifacts
+        run: |
+          chmod 0755 prebuilt/haltsql prebuilt/libhaltsql.so
+          ls -la prebuilt
+          prebuilt/haltsql version
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Build wheel
+        env:
+          HALTSQL_PREBUILT_DIR: ${{ github.workspace }}/prebuilt
+        run: |
+          python -m pip install --upgrade build auditwheel
+          clients/python/scripts/build_wheel.sh
+          ls -la clients/python/dist
+
+      - name: Python tests against the prebuilt engine
+        working-directory: clients/python
+        env:
+          HALTSQL_REQUIRE_NATIVE: "1"
+          HALTSQL_LIB: ${{ github.workspace }}/prebuilt/libhaltsql.so
+          HALTSQL_BIN: ${{ github.workspace }}/prebuilt/haltsql
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[test]"
+          .venv/bin/python -m pytest -q
+
+      - name: Install the wheel into a clean venv and test it
+        working-directory: clients/python
+        env:
+          HALTSQL_REQUIRE_NATIVE: "1"
+        run: |
+          wheel="$(ls "$PWD"/dist/*.whl | grep -v none-any | head -1)"
+          echo "testing $wheel"
+          HALTSQL_WHEEL="$wheel" .venv/bin/python -m pytest -q -m wheel
+
+      - name: Build npm platform package and smoke-test it
+        working-directory: clients/typescript
+        env:
+          HALTSQL_REQUIRE_NATIVE: "1"
+          HALTSQL_BIN: ${{ github.workspace }}/prebuilt/haltsql
+        run: |
+          npm ci
+          npm test
+          npm run build
+          node scripts/pack-native-smoke.mjs \
+            --binary ../../prebuilt/haltsql --lib ../../prebuilt/libhaltsql.so
+          node scripts/build-native-package.mjs --platform ${{ matrix.platform }} \
+            --binary ../../prebuilt/haltsql --lib ../../prebuilt/libhaltsql.so \
+            --out "$RUNNER_TEMP/native-${{ matrix.platform }}"
+          mkdir -p ../../npm-out
+          (cd "$RUNNER_TEMP/native-${{ matrix.platform }}" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm-out")
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: clients/python/dist/*.whl
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-${{ matrix.platform }}
+          path: npm-out/*.tgz
+          if-no-files-found: error
+
+  # The wheel is pure ctypes, so the same file must work on every supported CPython.
+  wheel-pythons:
+    name: Wheel on Python ${{ matrix.python }} (${{ matrix.platform }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux-x64, darwin-arm64]
+        python: ["3.9", "3.11", "3.13"]
+        include:
+          - platform: linux-x64
+            runner: ubuntu-22.04
+          - platform: darwin-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: wheel
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Wheel test
+        working-directory: clients/python
+        env:
+          HALTSQL_REQUIRE_NATIVE: "1"
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[test]"
+          HALTSQL_WHEEL="$(ls "$GITHUB_WORKSPACE"/wheel/*.whl | head -1)" .venv/bin/python -m pytest -q -m wheel
+
+  sdist:
+    name: sdist + pure wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Build
+        working-directory: clients/python
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel
+          ls -la dist
+          ls dist/*-py3-none-any.whl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-sdist
+          path: clients/python/dist/*
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package, wheel-pythons, sdist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/haltsql/
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "{wheel-*,python-sdist}"
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+
+  publish-npm:
+    name: Publish npm packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: npm
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: npm-*
+          path: npm-out
+          merge-multiple: true
+      # Platform packages first, so @haltsql/client never points at a missing version.
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for t in npm-out/*.tgz; do npm publish --provenance --access public "$t"; done
+      - name: Publish @haltsql/client
+        working-directory: clients/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          npm publish --provenance --access public

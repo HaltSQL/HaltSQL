@@ -114,6 +114,10 @@ jobs:
       - name: Build
         run: |
           opam install . --deps-only --yes
+          # Link libgmp (zarith) statically so the binaries run without Homebrew.
+          mkdir -p "$RUNNER_TEMP/gmp-static"
+          cp "$(brew --prefix gmp)/lib/libgmp.a" "$RUNNER_TEMP/gmp-static/"
+          export HALTSQL_STATIC_GMP="$RUNNER_TEMP/gmp-static"
           opam exec -- dune build @install --profile release
           out="haltsql-${TAG}-darwin-arm64"
           mkdir -p "$out" dist
@@ -121,6 +125,9 @@ jobs:
             cp "_build/install/default/bin/$b" "$out/"
             strip "$out/$b"
             otool -L "$out/$b"
+            if otool -L "$out/$b" | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
+              echo "$b links a non-system library"; exit 1
+            fi
           done
           cp LICENSE NOTICE README.md "$out/" && cp vendor/libpg_query/LICENSE "$out/LICENSE.libpg_query"
           tar -czf "dist/$out.tar.gz" "$out"
