@@ -1,6 +1,10 @@
 (** Typed PostgreSQL AST — the subset of the libpg_query parse tree that HaltSQL
     understands.
 
+    Produced by [Haltsql_parse.Pg_parse] and consumed by [Haltsql_analyzer]. This module
+    only defines types (plus two accessors); it has no interface file because one would
+    merely repeat them.
+
     Design rule: anything the converter does not map precisely becomes an [Unsupported_*]
     constructor carrying the original node name. The analyzer denies every [Unsupported_*]
     node (fail closed), so an unknown construct can never be silently accepted.
@@ -17,10 +21,19 @@ type qname = { schema : string option; name : string }
     represented as [Unsupported_from]. *)
 
 type alias = { aliasname : string; colnames : string list }
+(** [AS aliasname (colnames)]; [colnames] is empty when no column list is given. *)
+
+(** [UNION] / [INTERSECT] / [EXCEPT] (the [ALL] flag is on {!select_body.Set_op}). *)
 type set_op = Union | Intersect | Except
+
+(** Join type. [Cross] is an inner join without ON or USING ([CROSS JOIN]);
+    comma-separated FROM items are separate {!from_item}s, not joins. *)
 type join_kind = Inner | Left | Right | Full | Cross
+
+(** Boolean connective of a {!expr.Bool_expr}. *)
 type bool_op = And | Or | Not
 
+(** Kind of a subquery expression ({!expr.Sub_link}). *)
 type sublink_kind =
   | Exists  (** [EXISTS (subquery)] *)
   | Any  (** [x op ANY (subquery)] and [x IN (subquery)] *)
@@ -29,30 +42,33 @@ type sublink_kind =
   | Array_sublink  (** [ARRAY(SELECT ...)] *)
   | Other_sublink of string  (** ROWCOMPARE, MULTIEXPR, CTE — denied *)
 
+(** Kind of an operator expression ({!expr.A_expr}). *)
 type aexpr_kind =
   | Op  (** ordinary binary/unary operator: [=], [<], [+], [||], ... *)
   | Op_any  (** [x op ANY (array)] *)
   | Op_all  (** [x op ALL (array)] *)
   | Distinct  (** [IS DISTINCT FROM] *)
   | Not_distinct  (** [IS NOT DISTINCT FROM] *)
-  | Nullif
+  | Nullif  (** [NULLIF(a, b)] *)
   | In  (** [x IN (list)] / [x NOT IN (list)]; [name] is ["="] or ["<>"] *)
-  | Like
-  | Ilike
-  | Similar
+  | Like  (** [LIKE] / [NOT LIKE] ([name] is [~~] / [!~~]) *)
+  | Ilike  (** [ILIKE] / [NOT ILIKE] ([name] is [~~*] / [!~~*]) *)
+  | Similar  (** [SIMILAR TO] ([name] is [~] / [!~]) *)
   | Between
   | Not_between
-  | Between_sym
+  | Between_sym  (** [BETWEEN SYMMETRIC] *)
   | Not_between_sym
 
+(** A literal constant. *)
 type const =
   | Int of string  (** kept as text to avoid overflow issues *)
-  | Float of string
+  | Float of string  (** kept as text: never rounded *)
   | String of string
   | Bool of bool
-  | Bit_string of string
+  | Bit_string of string  (** e.g. ["b101"] or ["xFF"] *)
   | Null
 
+(** One component of a column reference: a name or [*]. *)
 type field = Name of string | Star
 
 type type_name = {
@@ -60,13 +76,17 @@ type type_name = {
   array_bounds : int;  (** number of array dimensions, 0 if not an array *)
   type_loc : loc;
 }
+(** A type in a cast. Type modifiers (e.g. the [10] of [varchar(10)]) are not kept. *)
 
+(** A top-level statement (also the body of a CTE or of EXPLAIN). *)
 type stmt =
   | Select of select
   | Insert of insert
   | Update of update
   | Delete of delete
   | Explain of { analyze : bool; options : string list; stmt : stmt; loc : loc }
+      (** [analyze] is true unless the ANALYZE option is absent or explicitly false (fail
+          closed); [options] are the option names. *)
   | Other of { kind : string; loc : loc }
       (** Any other statement node (DDL, DO, CALL, COPY, SET, LOCK, ...), carrying the
           libpg_query node name, e.g. ["CreateStmt"]. *)
@@ -81,7 +101,9 @@ and select = {
   locking : string list;  (** e.g. [["FOR UPDATE"]]; empty when absent *)
   sel_loc : loc;
 }
+(** A SELECT, VALUES or set operation, with its clauses that apply to the whole result. *)
 
+(** The part of a {!select} that produces rows. *)
 and select_body =
   | Simple of simple_select
   | Values of expr list list
@@ -98,9 +120,14 @@ and simple_select = {
   having : expr option;
   windows : window_def list;  (** named WINDOW clauses *)
 }
+(** A plain [SELECT ... FROM ... WHERE ...] block. *)
 
 and target = { expr : expr; alias : string option; target_loc : loc }
+(** An output column ([expr AS alias]) or a RETURNING item. *)
+
 and sort_by = { sort_expr : expr; sort_loc : loc }
+(** An ORDER BY item. Direction and NULLS placement are not kept: they cannot change which
+    rows or columns are read. *)
 
 and window_def = {
   win_name : string option;
@@ -108,7 +135,9 @@ and window_def = {
   win_order_by : sort_by list;
   win_loc : loc;
 }
+(** A window definition ([OVER (...)] or a named [WINDOW] clause). *)
 
+(** An item of a FROM list (or of UPDATE ... FROM / DELETE ... USING). *)
 and from_item =
   | Relation of { rel : qname; alias : alias option; inh : bool; loc : loc }
       (** A base relation or CTE reference; [inh = false] means [ONLY t]. *)
@@ -134,6 +163,7 @@ and from_item =
       (** TABLESAMPLE, XMLTABLE, JSON_TABLE, ROWS FROM, 3-part names, ... *)
 
 and with_clause = { recursive : bool; ctes : cte list; with_loc : loc }
+(** A WITH clause. *)
 
 and cte = {
   cte_name : string;
@@ -141,7 +171,9 @@ and cte = {
   cte_query : stmt;  (** may be a data-modifying statement *)
   cte_loc : loc;
 }
+(** One common table expression. *)
 
+(** A value expression. *)
 and expr =
   | Column_ref of { fields : field list; loc : loc }
       (** [a], [t.a], [s.t.a], [t.*], [*] *)
@@ -204,6 +236,7 @@ and insert = {
   ins_returning : target list;
   ins_loc : loc;
 }
+(** [INSERT INTO ins_rel (ins_cols) <source> [ON CONFLICT ...] [RETURNING ...]]. *)
 
 and update = {
   upd_with : with_clause option;
@@ -215,6 +248,7 @@ and update = {
   upd_returning : target list;
   upd_loc : loc;
 }
+(** [UPDATE upd_rel SET ... [FROM ...] [WHERE ...] [RETURNING ...]]. *)
 
 and delete = {
   del_with : with_clause option;
@@ -225,10 +259,13 @@ and delete = {
   del_returning : target list;
   del_loc : loc;
 }
+(** [DELETE FROM del_rel [USING ...] [WHERE ...] [RETURNING ...]]. *)
 
+(** [schema.name], or [name] when unqualified (no quoting). *)
 let qname_to_string { schema; name } =
   match schema with None -> name | Some s -> s ^ "." ^ name
 
+(** Byte offset of a statement. *)
 let stmt_loc = function
   | Select s -> s.sel_loc
   | Insert i -> i.ins_loc

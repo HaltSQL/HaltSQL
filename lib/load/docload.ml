@@ -108,7 +108,10 @@ let add_scalar b (j : Yojson.Safe.t) =
   | `String s -> add_str b s
   | `Assoc [] -> Buffer.add_string b "{}"
   | `List [] -> Buffer.add_string b "[]"
-  | `Assoc _ | `List _ -> assert false
+  | (`Assoc (_ :: _) | `List (_ :: _)) as j ->
+      (* Not reached: callers check [is_scalar] first. JSON is valid YAML flow
+         syntax, so this is still a correct (if less pretty) rendering. *)
+      Buffer.add_string b (Yojson.Safe.to_string j)
 
 let is_scalar = function `Assoc (_ :: _) | `List (_ :: _) -> false | _ -> true
 let indent b n = Buffer.add_string b (String.make n ' ')

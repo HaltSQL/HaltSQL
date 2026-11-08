@@ -1,4 +1,4 @@
-(** Small pure helpers shared by the analyzer modules. *)
+(* Small pure helpers shared by the analyzer modules; see util.mli. *)
 
 let sort_uniq_strings l = List.sort_uniq String.compare l
 

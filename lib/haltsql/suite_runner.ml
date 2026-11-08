@@ -1,3 +1,5 @@
+(* Scenario-suite runner; see suite_runner.mli. *)
+
 open Haltsql_core
 module Ts = Haltsql_load.Test_suite
 

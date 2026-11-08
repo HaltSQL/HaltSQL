@@ -1,5 +1,4 @@
-(** Context-free rules: statement kinds, functions, operators, casts, SQL value functions,
-    LIMIT. Each check emits reasons into the [Env.t]. *)
+(* Context-free rules; see rules.mli. *)
 
 open Haltsql_core
 

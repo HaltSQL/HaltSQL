@@ -1,7 +1,10 @@
 (** Stable, machine-readable reasons for a verdict.
 
     The string form of each [code] is part of HaltSQL's public API. Codes are never
-    renamed or reused; new codes may be added in minor releases. *)
+    renamed or reused; new codes may be added in minor releases. Clients must treat an
+    unknown code as a denial reason like any other. *)
+
+(** Reason codes. Their string forms ({!code_to_string}) are a stable public contract. *)
 
 type code =
   | E_PARSE  (** SQL did not parse *)
@@ -30,6 +33,7 @@ type code =
   | E_UNSUPPORTED  (** syntax HaltSQL does not analyze; always denied *)
   | E_INTERNAL  (** analyzer bug; fails closed *)
 
+(** Every code, in documentation order. *)
 let all_codes =
   [
     E_PARSE;
@@ -59,6 +63,7 @@ let all_codes =
     E_INTERNAL;
   ]
 
+(** The stable string form, identical to the constructor name (e.g. ["E_PARSE"]). *)
 let code_to_string = function
   | E_PARSE -> "E_PARSE"
   | E_EMPTY -> "E_EMPTY"
@@ -86,6 +91,7 @@ let code_to_string = function
   | E_UNSUPPORTED -> "E_UNSUPPORTED"
   | E_INTERNAL -> "E_INTERNAL"
 
+(** Inverse of {!code_to_string}. *)
 let code_of_string s =
   List.find_opt (fun c -> String.equal (code_to_string c) s) all_codes
 
@@ -96,11 +102,15 @@ type t = {
   rule : string;  (** id of the rule that produced it, e.g. ["tenancy.predicate"] *)
   hint : string option;  (** short instruction an LLM agent can follow to fix its query *)
 }
+(** One reason a statement is (or, in shadow mode, would be) denied. *)
 
+(** [make ?loc ?hint ~rule code message]. A negative [loc] (unknown) is dropped. *)
 let make ?loc ?hint ~rule code message =
   let loc = match loc with Some l when l >= 0 -> Some l | _ -> None in
   { code; message; loc; rule; hint }
 
+(** [{"code", "message", "rule", "loc"?, "hint"?}]: part of the verdict JSON contract
+    (docs/verdict.md). *)
 let to_json r : Yojson.Safe.t =
   `Assoc
     ([
@@ -111,6 +121,7 @@ let to_json r : Yojson.Safe.t =
     @ (match r.loc with Some l -> [ ("loc", `Int l) ] | None -> [])
     @ match r.hint with Some h -> [ ("hint", `String h) ] | None -> [])
 
+(** [CODE: message (at byte N)], for humans. *)
 let pp fmt r =
   Format.fprintf fmt "%s: %s%s" (code_to_string r.code) r.message
     (match r.loc with Some l -> Printf.sprintf " (at byte %d)" l | None -> "")

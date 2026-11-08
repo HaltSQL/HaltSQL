@@ -1,3 +1,5 @@
+(* Public facade of the core libraries; see haltsql.mli. *)
+
 module Ast = Haltsql_core.Ast
 module Reason = Haltsql_core.Reason
 module Context = Haltsql_core.Context
@@ -26,6 +28,10 @@ let multi_statement n =
 let empty_analysis reasons : Analyzer.analysis =
   { reasons; statement_kind = None; tables = []; columns = []; bind_params = [] }
 
+(* The catch-all handler is deliberate: [verify] must never raise, so any
+   exception (a bug, or Stack_overflow / Out_of_memory on hostile input) becomes
+   an [E_INTERNAL] denial. [Pg_parse.parse] and [Analyzer.analyze] are already
+   total; this is the last line of defence. *)
 let verify (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t =
   let t0 = Unix.gettimeofday () in
   let parsed = ref false in

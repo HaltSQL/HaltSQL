@@ -1,6 +1,12 @@
+; Document loaders: policy, catalog snapshot, config and scenario documents.
+; Docpos (reader), Dec (decoding combinators), Lpath (key paths) and
+; Policy_impl are implementation details. Ident and Catalog_impl stay public
+; because haltsql.catalog_tools and haltsql.bundle use them.
+
 (library
  (name haltsql_load)
  (public_name haltsql.load)
  (libraries haltsql.core yojson yaml digestif)
+ (private_modules docpos dec lpath policy_impl)
  (instrumentation
   (backend bisect_ppx)))

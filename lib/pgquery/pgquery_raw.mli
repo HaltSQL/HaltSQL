@@ -4,8 +4,14 @@
     with 256 MB stacks (libpg_query's tree writers recurse without a depth check, and
     OCaml domains run on small-stack threads); the OCaml runtime lock is released while
     waiting, so domains parse in parallel. Pool size: number of CPUs, or
-    [HALTSQL_PARSER_THREADS]. Inputs containing a NUL byte are rejected (C strings would
-    silently truncate them, which could hide a second statement from the parser). *)
+    [HALTSQL_PARSER_THREADS] (1-64). The pool is started on first use and started again in
+    a child process after [fork], so forking processes can keep parsing. Inputs containing
+    a NUL byte are rejected (C strings would silently truncate them, which could hide a
+    second statement from the parser).
+
+    This is the lowest layer of the verification pipeline: [Haltsql_parse.Pg_parse]
+    converts the JSON produced here into the typed AST and applies the size limits.
+    Neither function raises for any input; failures are [Error _] values. *)
 
 val parse_json : string -> (string, string * int) result
 (** [Ok json] in libpg_query's JSON format

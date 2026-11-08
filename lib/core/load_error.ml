@@ -10,8 +10,10 @@ type t = {
   message : string;
 }
 
+(** [make ?file ?line ?column ?path message]; [path] defaults to the root ([""]). *)
 let make ?file ?line ?column ?(path = "") message = { file; line; column; path; message }
 
+(** [file:line:col: path: message], omitting the parts that are unknown. *)
 let to_string e =
   let where =
     match (e.file, e.line, e.column) with
@@ -25,6 +27,8 @@ let to_string e =
   let path = if e.path = "" then "" else e.path ^ ": " in
   where ^ path ^ e.message
 
+(** [{"file", "line", "column", "path", "message"}]; unknown location fields are omitted.
+*)
 let to_json e : Yojson.Safe.t =
   let opt k = function Some v -> [ (k, v) ] | None -> [] in
   `Assoc

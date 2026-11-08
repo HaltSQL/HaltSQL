@@ -1,6 +1,5 @@
-(* Decoding helpers shared by the document loaders. Errors are accumulated
-   (never raised) so a loader can report every problem in one pass; each error
-   is located with the nearest known source position for its key path. *)
+(* Decoding combinators shared by the document loaders; see dec.mli for the
+   contract. Errors are kept newest-first and reversed once by [errors]. *)
 
 open Haltsql_core
 
@@ -40,7 +39,6 @@ let error_unlocated ctx path msg =
 let add_errors ctx errs = ctx.errors <- List.rev_append errs ctx.errors
 let errors ctx = List.rev ctx.errors
 let has_errors ctx = ctx.errors <> []
-let result ctx v = if has_errors ctx then Error (errors ctx) else Ok v
 
 let type_name : json -> string = function
   | `Null -> "null"
@@ -54,32 +52,37 @@ let type_name : json -> string = function
 let type_error ctx path expected (j : json) =
   error ctx path (Printf.sprintf "expected %s, found %s" expected (type_name j))
 
-(* Levenshtein distance, for "did you mean" hints on unknown keys. *)
+(* Levenshtein distance, for "did you mean" hints on unknown keys. Two rows
+   of [String.length b + 1] ints: memory is linear in the (short) allowed key,
+   not quadratic, whatever the length of the key found in the document. *)
 let distance a b =
   let la = String.length a and lb = String.length b in
-  let d = Array.make_matrix (la + 1) (lb + 1) 0 in
-  for i = 0 to la do
-    d.(i).(0) <- i
-  done;
-  for j = 0 to lb do
-    d.(0).(j) <- j
-  done;
+  let prev = Array.init (lb + 1) Fun.id and cur = Array.make (lb + 1) 0 in
   for i = 1 to la do
+    cur.(0) <- i;
     for j = 1 to lb do
-      let cost = if a.[i - 1] = b.[j - 1] then 0 else 1 in
-      d.(i).(j) <-
-        min (min (d.(i - 1).(j) + 1) (d.(i).(j - 1) + 1)) (d.(i - 1).(j - 1) + cost)
-    done
+      let cost = if Char.equal a.[i - 1] b.[j - 1] then 0 else 1 in
+      cur.(j) <- min (min (prev.(j) + 1) (cur.(j - 1) + 1)) (prev.(j - 1) + cost)
+    done;
+    Array.blit cur 0 prev 0 (lb + 1)
   done;
-  d.(la).(lb)
+  prev.(lb)
+
+(* Keys longer than this get no "did you mean" hint: no allowed key is
+   anywhere near that long, and it bounds the work an adversarial document
+   (thousands of huge unknown keys) can cause. *)
+let max_suggest_len = 256
 
 let unknown_key_msg k allowed =
   let best =
-    List.fold_left
-      (fun acc a ->
-        let dd = distance (String.lowercase_ascii k) a in
-        match acc with Some (_, d0) when d0 <= dd -> acc | _ -> Some (a, dd))
-      None allowed
+    if String.length k > max_suggest_len then None
+    else
+      let lk = String.lowercase_ascii k in
+      List.fold_left
+        (fun acc a ->
+          let dd = distance lk a in
+          match acc with Some (_, d0) when d0 <= dd -> acc | _ -> Some (a, dd))
+        None allowed
   in
   match best with
   | Some (a, d) when d <= max 1 (String.length a / 3) ->

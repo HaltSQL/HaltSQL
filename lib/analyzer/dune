@@ -1,6 +1,10 @@
+; Policy analysis of a parsed statement. Only Analyzer is public; the walker,
+; scopes, rules and the tenancy prover are implementation details.
+
 (library
  (name haltsql_analyzer)
  (public_name haltsql.analyzer)
  (libraries haltsql.core)
+ (private_modules walk tenancy scope rules ast_util util env)
  (instrumentation
   (backend bisect_ppx)))

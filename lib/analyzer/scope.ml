@@ -1,32 +1,4 @@
-(** Scopes and column-name resolution (PLAN §6.4).
-
-    A scope is a stack of levels, innermost first. Each SELECT level (and the target level
-    of an UPDATE / DELETE / INSERT ... RETURNING) contributes one level holding its FROM
-    items. Correlated subqueries see enclosing levels because the stack is passed down;
-    LATERAL items see earlier siblings because the walker pushes the siblings processed so
-    far.
-
-    {2 Column knowledge}
-
-    For each FROM item we track what we know about its column set:
-    - [Exact l]: the item has exactly the columns [l] (catalog snapshot, or a derived
-      table whose output we computed);
-    - [At_least l]: the item has the columns [l] and possibly others we do not know about
-      (a policy table without catalog: its [Only] list plus its tenant columns; an [All]
-      table without catalog: just its tenant columns; a set-returning function).
-
-    {2 Unqualified column resolution}
-
-    Postgres guarantees that an unqualified name that executes successfully matches
-    exactly one item at the innermost level that has the name. We mirror that while never
-    guessing:
-    - at a level, if exactly one item definitely has the column, it wins (if another item
-      also had it, Postgres would reject the query as ambiguous);
-    - two definite matches: ambiguous;
-    - no definite match but exactly one item that might have it: we assign it to that item
-      only if no enclosing level might also supply the name (otherwise the reference may
-      be a correlation to an outer column and we cannot tell which, so it is ambiguous);
-    - no definite or possible match: try the enclosing level. *)
+(* Scopes and column-name resolution; see scope.mli for the resolution rules. *)
 
 open Haltsql_core
 
@@ -156,8 +128,8 @@ let rec find_schema_named (scope : t) s t =
 let innermost_items (scope : t) = match scope with [] -> [] | lvl :: _ -> lvl.items
 
 (** Shape of a column reference: the leading names and whether it ends in [*]. [None] when
-    a [*] appears before the last position. Exhaustive over {!Ast.field} without
-    wildcards. *)
+    a [*] appears before the last position. Exhaustive over [Ast.field] without wildcards.
+*)
 let classify_fields (fields : Ast.field list) : (string list * bool) option =
   let rec go acc = function
     | [] -> Some (List.rev acc, false)

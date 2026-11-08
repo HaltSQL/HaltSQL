@@ -1,44 +1,4 @@
-(** Tenant isolation proofs (PLAN §6.3, rule K) and tenant writes (rule M).
-
-    {2 Read proofs}
-
-    For every occurrence of a tenant-scoped policy table, in its own SELECT level, every
-    tenant column must be proven by a conjunct of one of the occurrence's candidate
-    locations. The walker computes the candidate locations:
-    - the WHERE of the level whose FROM contains the occurrence (for UPDATE / DELETE:
-      their WHERE, for the target and the FROM / USING items);
-    - the ON quals of an INNER (or CROSS with quals) join on the path from the occurrence
-      to the FROM root;
-    - the ON quals of a LEFT join where the occurrence is on the right (nullable) side,
-      and of a RIGHT join where it is on the left side. Never: ON quals of the preserved
-      side, FULL join quals, HAVING, outer queries, inner subqueries.
-
-    Inside a location only top-level AND chains are flattened; OR, NOT, CASE and
-    everything else are opaque (a conjunct that is an OR proves nothing).
-
-    A conjunct proves [col] for the occurrence when it has one of the shapes (operands may
-    be reversed for [=]):
-    - [col = <value>]
-    - [col = ANY (<value>)]
-    - [col IN (<values>)] where [col] is a column reference that resolves to exactly this
-      occurrence's column (qualified by its alias/name, or unqualified and resolving to
-      it), with no cast or COLLATE around it (a cast on the column side can change
-      equality semantics), and where the operator is [=] or [pg_catalog.=].
-
-    The value side may be wrapped in casts to a small set of value-preserving types
-    ([safe_cast_types]); casts that could truncate or round (varchar(n), char(n),
-    numeric(p,s), ...) or COLLATE break the proof, because the type modifier is not
-    visible in the AST and a truncated tenant id would select a different tenant.
-
-    Bound mode: the value is a placeholder [$n]; the proof binds [$n] to the context value
-    ([= $n] and [IN ($n)] need a single context value; a [Many] context requires
-    [= ANY($n)], which binds [Many]; [= ANY($n)] with a [One v] context binds [Many [v]]).
-    Literals never prove in bound mode.
-
-    Literal mode: the value is a string or integer literal. Integer literals are compared
-    after integer normalization; string literals are compared exactly. With [Many vs],
-    every literal of an IN list / ARRAY must be in [vs]. A literal that does not match is
-    [E_TENANT_MISMATCH]. *)
+(* Tenant isolation proofs and tenant writes; see tenancy.mli for the proof rules. *)
 
 open Haltsql_core
 
