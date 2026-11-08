@@ -64,8 +64,25 @@ apiVersion: haltsql.dev/v1
 kind: Config
 server:
   listen: "0.0.0.0:{{ .Values.server.port }}"
+  {{- if .Values.tls.enabled }}
+  tls:
+    cert: /etc/haltsql/tls/tls.crt
+    key: /etc/haltsql/tls/tls.key
+    {{- if ne .Values.tls.clientAuth "none" }}
+    client_ca: /etc/haltsql/tls/ca.crt
+    {{- end }}
+    client_auth: {{ .Values.tls.clientAuth }}
+    min_version: {{ .Values.tls.minVersion | quote }}
+  {{- end }}
   auth:
     allow_unauthenticated: {{ .Values.server.allowUnauthenticated }}
+    {{- with .Values.oidc }}
+    oidc: {{ toJson . }}
+    {{- end }}
+    {{- with .Values.mtlsIdentities }}
+    mtls:
+      identities: {{ toJson . }}
+    {{- end }}
     tokens:
     {{- range $i, $t := .Values.tokens }}
       - name: {{ $t.name | quote }}

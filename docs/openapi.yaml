@@ -16,8 +16,12 @@ info:
 servers:
   - url: http://127.0.0.1:8080
     description: Local sidecar (default listen address)
+  - url: https://haltsql.example.internal:8443
+    description: Built-in TLS (server.tls), optionally with client certificates
 security:
   - bearerAuth: []
+  - oidcBearer: []
+  - mutualTLS: []
 tags:
   - name: verify
   - name: policies
@@ -48,7 +52,15 @@ paths:
                 $ref: "#/components/schemas/Verdict"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
+        "403":
+          description: >
+            FORBIDDEN (the requested policy is not the caller's pinned policy) or
+            CONTEXT_NOT_ALLOWED (the body sets a context field the authenticated
+            identity does not allow). Treat as a denial.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404": { $ref: "#/components/responses/Error" }
         "405": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
@@ -100,7 +112,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Status"
         "503":
-          description: No policy is loaded.
+          description: No policy is loaded, or an audit sink is refusing writes.
           content:
             application/json:
               schema:
@@ -124,6 +136,22 @@ components:
       type: http
       scheme: bearer
       description: Static bearer token; the server stores only its SHA-256. Each token is pinned to one policy.
+    oidcBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        An access token (JWT) from a configured OpenID Connect provider
+        (server.auth.oidc). The server verifies the signature against the
+        provider's JWKS, iss, aud, exp/nbf/iat and required claims; the policy
+        and the context fields named in context_claims come from the token.
+        The request body may only supply the provider's request_context_fields.
+    mutualTLS:
+      type: mutualTLS
+      description: >
+        A client certificate issued by server.tls.client_ca whose SPIFFE ID or
+        subject CN matches a server.auth.mtls identity. The identity pins the
+        policy and supplies a static context.
   responses:
     Error:
       description: Request could not be processed. Treat as a denial.
@@ -303,6 +331,11 @@ components:
         policies:
           type: integer
           description: Number of loaded policies (readyz only).
+        unhealthy_audit_sinks:
+          type: array
+          items:
+            type: string
+          description: Audit sinks currently refusing writes (readyz only).
     Error:
       type: object
       required: [error]
@@ -317,6 +350,7 @@ components:
                 - BAD_REQUEST
                 - UNAUTHORIZED
                 - FORBIDDEN
+                - CONTEXT_NOT_ALLOWED
                 - NOT_FOUND
                 - POLICY_NOT_FOUND
                 - METHOD_NOT_ALLOWED
@@ -325,5 +359,6 @@ components:
                 - NOT_READY
                 - POLICY_UNAVAILABLE
                 - AUDIT_UNAVAILABLE
+                - AUTH_UNAVAILABLE
             message:
               type: string

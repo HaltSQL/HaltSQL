@@ -1,0 +1,7 @@
+[
+  { "catalog_name": "main", "schema_name": "app", "table_name": "customers", "column_name": "email", "tag_name": "pii", "tag_value": "email" },
+  { "catalog_name": "main", "schema_name": "app", "table_name": "customers", "column_name": "phone", "tag_name": "class.phone_number", "tag_value": "" },
+  { "catalog_name": "main", "schema_name": "app", "table_name": "customers", "column_name": "ssn", "tag_name": "data_classification", "tag_value": "Restricted" },
+  { "catalog_name": "main", "schema_name": "app", "table_name": "customers", "column_name": "country", "tag_name": "domain", "tag_value": "geo" },
+  { "catalog_name": "main", "schema_name": "app", "table_name": "users", "column_name": "password_hash", "tag_name": "secret", "tag_value": null }
+]

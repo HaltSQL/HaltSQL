@@ -1,0 +1,46 @@
+{
+  "name": "@haltsql/client",
+  "version": "0.1.0",
+  "description": "Fail-closed client for the HaltSQL sidecar: verify LLM-generated PostgreSQL before running it.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ardada2468/HaltSQL.git",
+    "directory": "clients/typescript"
+  },
+  "keywords": ["haltsql", "postgres", "sql", "llm", "policy", "firewall", "security"],
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "typecheck": "tsc -p tsconfig.esm.json --noEmit",
+    "test": "npm run build && node --test test/client.test.mjs test/cjs.test.cjs test/integration.test.mjs",
+    "vectors": "node scripts/gen-testvectors.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "pg": "^8.13.0",
+    "typescript": "^5.6.0"
+  }
+}

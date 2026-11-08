@@ -1,0 +1,65 @@
+{
+  "name": "saas_deny_join_tenant_missing_and_column",
+  "description": "Two reasons: a denied column and a missing tenant predicate.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT o.id, c.email FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.tenant_id = $1 LIMIT 50",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_COLUMN_DENIED",
+        "message": "column email of app.customers is not readable under this policy",
+        "rule": "columns.denied",
+        "loc": 13,
+        "hint": "Remove email from the query; readable columns of app.customers are: id, tenant_id, name, country, plan, created_at, metadata."
+      },
+      {
+        "code": "E_TENANT_MISSING",
+        "message": "app.customers (as c) has no provable tenant predicate on c.tenant_id in the same SELECT",
+        "rule": "tenancy.predicate",
+        "loc": 40,
+        "hint": "Add `WHERE c.tenant_id = $1` as a top-level AND condition inside the same SELECT that reads app.customers (not in an outer query, not under OR/NOT, not in the ON of the preserved side of an outer join)."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.customers",
+      "app.orders"
+    ],
+    "columns": [
+      "app.customers.email",
+      "app.customers.id",
+      "app.orders.customer_id",
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "74d4a144cd563bd7",
+    "sql_sha256": "2797774eb31291b21333e9e52bb412bc738466dbaa6d00b28d25ff3a29739519",
+    "elapsed_us": 333
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

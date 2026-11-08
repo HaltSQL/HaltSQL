@@ -121,6 +121,8 @@ how conservative the policy semantics are.
 - `infra/compose/docker-compose.yml`: Postgres 13-17 (port `54NN`),
   PgBouncer in transaction mode and Toxiproxy under the `chaos` profile.
   Data lives in tmpfs.
+- `proxy/`: the haltsql-proxy parity scenario (`make proxy-smoke`); see
+  [proxy/README.md](proxy/README.md).
 - `infra/kind/`: a kind cluster with Postgres and an agent pod that has
   `haltsql-server` as a sidecar, for the Kubernetes topology.
 

@@ -1,0 +1,11 @@
+# GitGuardian (ggshield and the GitHub app) configuration.
+version: 2
+secret:
+  ignored-matches:
+    # Default password of the disposable local lab Postgres containers
+    # (lab/infra/compose), also the fallback the integration tests use when
+    # HALTSQL_PGPASSWORD is unset. CI uses a per-run password instead. These containers are created per run on localhost,
+    # hold only synthetic data and are thrown away afterwards; the value is not
+    # a credential for anything real.
+    - name: disposable CI/lab Postgres password
+      match: haltlab

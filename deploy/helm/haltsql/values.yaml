@@ -47,6 +47,36 @@ tokens: []
 #    sha256: 3f7c...e9
 #    policy: analytics-agent
 
+# Built-in TLS (server.tls). The Secret is mounted as a directory, so
+# cert-manager / kubelet rotations are picked up by reload.watch without a
+# restart. With TLS enabled, probes move to a plain-HTTP health port that
+# serves only /healthz and /readyz (--health-listen).
+tls:
+  enabled: false
+  # A kubernetes.io/tls Secret (e.g. from cert-manager) with tls.crt, tls.key
+  # and, for client certificates, ca.crt.
+  secretName: ""
+  clientAuth: none          # none | optional | required (optional/required need ca.crt)
+  minVersion: "1.2"         # "1.2" | "1.3"
+  healthPort: 8081
+
+# OIDC providers (server.auth.oidc), rendered verbatim. See docs/authentication.md.
+oidc: []
+#  - name: corp-okta
+#    issuer: https://corp.okta.com/oauth2/default
+#    audiences: [haltsql]
+#    policy_claim: haltsql_policy
+#    allowed_policies: [analytics-agent]
+#    context_claims: { tenant_id: "https://corp.example/tenant" }
+#    required_claims: { scope: sql.verify }
+
+# mTLS identities (server.auth.mtls.identities), rendered verbatim. Need
+# tls.enabled, ca.crt in the Secret and tls.clientAuth optional or required.
+mtlsIdentities: []
+#  - spiffe_id: spiffe://corp.example/ns/agents/sa/analytics
+#    policy: analytics-agent
+#    context: { tenant_id: acme }
+
 # Use an existing Secret instead of rendering one. It must contain one key per
 # token named HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`).
 existingTokenSecret: ""

@@ -1,0 +1,15 @@
+# haltlab through haltsql-proxy: same fixture and generators as pr-smoke, but every
+# query is sent through a live haltsql-proxy (extended protocol, psycopg/libpq).
+# Run: cd lab && .venv/bin/python -m proxy run proxy/scenarios/proxy-smoke.yaml
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: proxy-smoke }
+environment: { postgres: [17], topology: embedded }
+fixture: saas_shared
+data: { scale: tiny, tenants: 8, skew: zipf(1.2), seed: 42 }
+workloads:
+  - benign: { queries: 150 }
+  - adversarial: { queries: 250 }
+expect:
+  escapes: 0
+  min_executed: 40

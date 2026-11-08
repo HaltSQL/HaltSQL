@@ -1,0 +1,17 @@
+; Signed policy bundles (docs/policy-bundles.md).
+
+(library
+ (name haltsql_bundle)
+ (public_name haltsql.bundle)
+ (libraries
+  haltsql.core
+  haltsql.load
+  yojson
+  digestif
+  eqaf
+  mirage-crypto-ec
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

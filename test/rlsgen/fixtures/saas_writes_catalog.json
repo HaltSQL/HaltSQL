@@ -1,0 +1,23 @@
+{
+  "tables": {
+    "app.ledgers": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "org_id", "type": "int8"},
+        {"name": "amount_cents", "type": "int8"}
+      ]
+    },
+    "app.orders": {
+      "columns": [
+        {"name": "id", "type": "int8"},
+        {"name": "tenant_id", "type": "text"},
+        {"name": "customer_id", "type": "int8"},
+        {"name": "status", "type": "text"},
+        {"name": "total_cents", "type": "int8"},
+        {"name": "currency", "type": "bpchar"},
+        {"name": "note", "type": "text"},
+        {"name": "created_at", "type": "timestamptz"}
+      ]
+    }
+  }
+}

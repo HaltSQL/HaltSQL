@@ -1,0 +1,140 @@
+.hero {
+  padding: 4.5rem 0 3.5rem;
+  border-bottom: 1px solid var(--hs-border);
+  background:
+    radial-gradient(1200px 400px at 85% -10%, rgba(192, 57, 43, 0.12), transparent 60%),
+    var(--ifm-background-color);
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 3rem;
+  align-items: center;
+}
+
+.kicker {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+}
+
+.title {
+  font-size: 3rem;
+  line-height: 1.1;
+  margin-bottom: 1.25rem;
+}
+
+.titleAccent {
+  color: var(--ifm-color-primary);
+}
+
+.subtitle {
+  font-size: 1.15rem;
+  color: var(--hs-muted);
+  max-width: 40rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.75rem;
+}
+
+.verdictCard {
+  border: 1px solid var(--hs-border);
+  border-radius: 14px;
+  background: var(--hs-surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+
+.verdictSql {
+  padding: 1rem 1.25rem;
+  background: var(--hs-surface-2);
+  border-bottom: 1px solid var(--hs-border);
+}
+
+.verdictSql code {
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: normal;
+}
+
+.verdictDeny {
+  padding: 0.75rem 1.25rem 0;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--hs-deny);
+}
+
+.verdictReasons {
+  margin: 0.5rem 0 0;
+  padding: 0 1.25rem 0 2.5rem;
+}
+
+.verdictReasons li {
+  margin-bottom: 0.35rem;
+}
+
+.verdictHint {
+  margin: 0.75rem 1.25rem 1.1rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--hs-surface-2);
+  border-radius: 6px;
+  color: var(--hs-muted);
+}
+
+.section {
+  padding: 3.5rem 0;
+}
+
+.sectionAlt {
+  background: var(--hs-surface-2);
+  border-top: 1px solid var(--hs-border);
+  border-bottom: 1px solid var(--hs-border);
+}
+
+.lead {
+  font-size: 1.1rem;
+  color: var(--hs-muted);
+  max-width: 50rem;
+}
+
+.note {
+  margin-top: 1.25rem;
+  color: var(--hs-muted);
+}
+
+.twoCol {
+  display: grid;
+  /* minmax(0, …): let a column shrink below its longest code line, so code
+     blocks scroll inside their own box instead of widening the page. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: start;
+}
+
+@media (max-width: 996px) {
+  .heroGrid,
+  .twoCol {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .title {
+    font-size: 2.3rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .buttons :global(.button) {
+    width: 100%;
+    white-space: normal;
+  }
+}

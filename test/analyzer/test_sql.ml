@@ -631,7 +631,7 @@ let params =
       [ E_PARAM_UNBOUND ];
     t "param in select list" "SELECT $1" [ E_PARAM_UNBOUND ];
     t "tenant param reused elsewhere"
-      "SELECT id FROM orders WHERE tenant_id = $1 AND status <> $1" [] ~binds:b1;
+      "SELECT id FROM orders WHERE tenant_id = $1 AND status <> $1" [ E_PARAM_UNBOUND ];
     t "literal mode param" ~policy:p_lit
       "SELECT id FROM orders WHERE tenant_id = 'acme' AND status = $1" [ E_PARAM_UNBOUND ];
     t "literal mode tenant param" ~policy:p_lit
@@ -735,11 +735,11 @@ let tenancy =
     t "outer predicate placed in inner subquery"
       "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM items i WHERE o.tenant_id = \
        $1 AND i.tenant_id = $1)"
-      [ E_TENANT_MISSING ];
+      [ E_TENANT_MISSING; E_PARAM_UNBOUND ];
     t "left join preserved side unfiltered"
       "SELECT o.id FROM orders o LEFT JOIN items i ON i.order_id = o.id AND i.tenant_id \
        = $1 AND o.tenant_id = $1"
-      [ E_TENANT_MISSING ];
+      [ E_TENANT_MISSING; E_PARAM_UNBOUND ];
     t "left join nullable side filtered in on"
       "SELECT o.id FROM orders o LEFT JOIN items i ON i.order_id = o.id AND i.tenant_id \
        = $1 WHERE o.tenant_id = $1"
@@ -751,7 +751,7 @@ let tenancy =
     t "right join preserved side in on"
       "SELECT o.id FROM orders o RIGHT JOIN items i ON o.tenant_id = $1 AND i.tenant_id \
        = $1"
-      [ E_TENANT_MISSING ];
+      [ E_TENANT_MISSING; E_PARAM_UNBOUND ];
     t "full join on quals"
       "SELECT o.id FROM orders o FULL JOIN items i ON i.order_id = o.id AND o.tenant_id \
        = $1 AND i.tenant_id = $1"
@@ -801,7 +801,7 @@ let tenancy =
     t "preserved side of nested left join"
       "SELECT o.id FROM (orders o LEFT JOIN items i ON i.tenant_id = $1) LEFT JOIN notes \
        n ON o.tenant_id = $1 AND n.tenant_id = $1"
-      [ E_TENANT_MISSING ];
+      [ E_TENANT_MISSING; E_PARAM_UNBOUND ];
     t "using does not prove"
       "SELECT o.id FROM orders o JOIN items i USING (tenant_id) WHERE tenant_id = $1"
       [ E_TENANT_MISSING; E_PARAM_UNBOUND ];

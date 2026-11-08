@@ -1,0 +1,50 @@
+# Example: .github/workflows/policy-ci.yml in a repository of HaltSQL policies.
+# Validates, lints and tests policies on every pull request, posts a summary comment,
+# and on main builds a signed bundle for the servers (see docs/policy-ci.md).
+name: Policy CI
+
+on:
+  pull_request:
+    paths: ["policies/**", "tests/**", "catalog/**"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write # for comment-summary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ardada2468/HaltSQL@v0.2.0 # pin a release tag (or a full commit SHA)
+        with:
+          version: v0.2.0
+          policies: policies/**/*.yaml
+          suites: tests
+          fail-on-warnings: "true"
+          comment-summary: "true"
+
+  bundle:
+    if: github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-24.04
+    environment: policy-release # protect the signing key with required reviewers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ardada2468/HaltSQL@v0.2.0
+        id: haltsql
+        with:
+          version: v0.2.0
+          policies: policies/**/*.yaml
+          suites: tests
+          catalogs: saas=catalog/saas.snapshot.json
+          bundle: "true"
+          bundle-name: prod-policies
+          bundle-version: ${{ github.run_number }}
+          signing-key: ${{ secrets.HALTSQL_SIGNING_KEY }}
+          public-keys: keys/policy-signing.pub
+      - run: echo "bundle at ${{ steps.haltsql.outputs.bundle-path }}"

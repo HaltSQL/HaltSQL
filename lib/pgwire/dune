@@ -1,0 +1,22 @@
+; haltsql-proxy.pgwire: PostgreSQL wire-protocol (v3) firewall engine used by
+; haltsql-proxy (bin/proxy). See docs/proxy.md.
+
+(library
+ (name haltsql_pgwire)
+ (public_name haltsql-proxy.pgwire)
+ (libraries
+  haltsql
+  yojson
+  digestif
+  lwt
+  lwt.unix
+  tls
+  tls-lwt
+  x509
+  ptime
+  ptime.clock.os
+  domain-name
+  ipaddr
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix))

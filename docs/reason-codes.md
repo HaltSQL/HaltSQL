@@ -58,7 +58,7 @@ field of each reason carries a query-specific version of the same advice.
 | [`E_LIMIT_TOO_HIGH`](#e_limit_too_high) | `LIMIT` too large or not a constant |
 | [`E_LOCKING_CLAUSE`](#e_locking_clause) | `FOR UPDATE` / `FOR SHARE` |
 | [`E_SELECT_INTO`](#e_select_into) | `SELECT ... INTO` |
-| [`E_JOIN_BUDGET`](#e_join_budget) | Too many joins or an unconstrained cross join |
+| [`E_JOIN_BUDGET`](#e_join_budget) | More joins than `limits.max_joins` |
 | [`E_WRITE_DENIED`](#e_write_denied) | Write to a table or column the policy does not allow |
 | [`E_UNSUPPORTED`](#e_unsupported) | Syntax HaltSQL does not analyze |
 | [`E_INTERNAL`](#e_internal) | Analyzer bug; fails closed |
@@ -160,8 +160,8 @@ SELECT id INTO copy_of_orders FROM orders WHERE tenant_id = $1 LIMIT 10
 
 ### E_JOIN_BUDGET
 
-The statement has more joins than `limits.max_joins`, or a cross join (or
-comma-separated `FROM` list) with no join condition between the relations.
+The statement has more joins than `limits.max_joins`. Every join counts,
+including comma-separated `FROM` lists and `CROSS JOIN`.
 
 ```sql
 SELECT o.id FROM orders o, customers c
@@ -298,9 +298,9 @@ mode, use the placeholder `$1` instead of a literal.
 ### E_TENANT_WRITE
 
 A write would set or change a tenant column incorrectly: an `INSERT` that does
-not set the tenant column to the tenant value in every row, an
-`INSERT ... SELECT` whose source does not pass the tenant proof, or an `UPDATE`
-that assigns a tenant column. Only possible when writes are enabled.
+not set the tenant column to the tenant value in every row, or an `UPDATE`
+that assigns a tenant column. (`INSERT ... SELECT` is denied outright as
+`E_UNSUPPORTED`.) Only possible when writes are enabled.
 
 ```sql
 UPDATE orders SET tenant_id = 'globex' WHERE tenant_id = $1 AND id = 7
@@ -326,8 +326,10 @@ SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10
 ### E_PARAM_UNBOUND
 
 The query uses a `$n` placeholder that HaltSQL cannot bind: a parameter that is
-not a tenant predicate value, a parameter used for two different tenancy keys,
-or any parameter in literal mode. HaltSQL only allows placeholders whose value
+not a tenant predicate value, a tenant parameter that is also used outside
+its tenant predicate (for example cast with `$1::float8`, which would change
+how PostgreSQL types the bound tenant value), a parameter used for two
+different tenancy keys, or any parameter in literal mode. HaltSQL only allows placeholders whose value
 it supplies in `bind_params`, so the caller never has to bind something the
 model chose.
 

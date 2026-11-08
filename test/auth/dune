@@ -1,0 +1,18 @@
+; haltsql-server.auth unit tests: JWT/OIDC verification tables, JWKS cache with a
+; fake fetcher and clock, mTLS identity mapping, context merging. No network.
+
+(test
+ (name test_auth)
+ (package haltsql-server)
+ (libraries
+  haltsql
+  haltsql-server.auth
+  alcotest
+  lwt
+  lwt.unix
+  uri
+  yojson
+  digestif
+  mirage-crypto-rng.unix
+  mirage-crypto-pk
+  mirage-crypto-ec))

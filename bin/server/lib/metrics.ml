@@ -7,6 +7,10 @@ let reload_total : (string, int) Hashtbl.t = Hashtbl.create 4
 let http_total : (string * int, int) Hashtbl.t = Hashtbl.create 16
 let audit_errors = ref 0
 
+(* (method, result): method token|oidc|mtls|anonymous|none, result ok|rejected|unavailable *)
+let auth_total : (string * string, int) Hashtbl.t = Hashtbl.create 8
+let tls_reload_total : (string, int) Hashtbl.t = Hashtbl.create 2
+
 let buckets =
   [|
     0.0001; 0.00025; 0.0005; 0.001; 0.0025; 0.005; 0.01; 0.025; 0.05; 0.1; 0.25; 0.5; 1.0;
@@ -24,6 +28,8 @@ let reset () =
   Hashtbl.reset reasons_total;
   Hashtbl.reset reload_total;
   Hashtbl.reset http_total;
+  Hashtbl.reset auth_total;
+  Hashtbl.reset tls_reload_total;
   audit_errors := 0;
   Array.fill bucket_counts 0 (Array.length bucket_counts) 0;
   duration_sum := 0.;
@@ -37,10 +43,27 @@ let observe_verify ~policy ~result ~codes ~seconds =
     (fun i le -> if seconds <= le then bucket_counts.(i) <- bucket_counts.(i) + 1)
     buckets;
   duration_sum := !duration_sum +. seconds;
-  Stdlib.incr duration_count
+  Stdlib.incr duration_count;
+  Telemetry.Exporter.observe_verify (Telemetry.exporter ()) ~policy ~result ~codes
+    ~seconds
 
-let observe_reload ~ok = incr reload_total (if ok then "success" else "error")
-let observe_http ~path ~status = incr http_total (path, status)
+let observe_reload ~ok =
+  incr reload_total (if ok then "success" else "error");
+  Telemetry.Exporter.observe_reload (Telemetry.exporter ()) ~ok
+
+let observe_http ~path ~status =
+  incr http_total (path, status);
+  Telemetry.Exporter.observe_http (Telemetry.exporter ()) ~route:path ~status
+
+let observe_audit_error () =
+  Stdlib.incr audit_errors;
+  Telemetry.Exporter.observe_audit_error (Telemetry.exporter ())
+
+let set_policies_loaded n =
+  Telemetry.Exporter.set_policies_loaded (Telemetry.exporter ()) n
+
+let observe_auth ~meth ~result = incr auth_total (meth, result)
+let observe_tls_reload ~ok = incr tls_reload_total (if ok then "success" else "error")
 
 let escape_label s =
   let b = Buffer.create (String.length s) in
@@ -100,4 +123,15 @@ let render ~version ~pg ~policies_loaded =
       p "haltsql_http_requests_total{route=\"%s\",status=\"%d\"} %d\n" (escape_label path)
         status n)
     (sorted http_total);
+  header "haltsql_auth_total" "counter"
+    "Caller authentication attempts by method and result.";
+  List.iter
+    (fun ((m, r), n) ->
+      p "haltsql_auth_total{method=\"%s\",result=\"%s\"} %d\n" (escape_label m)
+        (escape_label r) n)
+    (sorted auth_total);
+  header "haltsql_tls_reload_total" "counter" "TLS certificate reload attempts by result.";
+  List.iter
+    (fun (r, n) -> p "haltsql_tls_reload_total{result=\"%s\"} %d\n" (escape_label r) n)
+    (sorted tls_reload_total);
   Buffer.contents b

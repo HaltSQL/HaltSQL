@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "dbt_version": "1.8.7",
+    "generated_at": "2026-10-30T09:12:44.512841Z",
+    "invocation_id": "5b0c8f7e-2a33-4c1e-9d41-0f3d5f9a6c21",
+    "adapter_type": "postgres",
+    "project_name": "saas_analytics"
+  },
+  "nodes": {
+    "model.saas_analytics.customers": {
+      "resource_type": "model",
+      "database": "saas",
+      "schema": "app",
+      "name": "customers",
+      "alias": "customers",
+      "unique_id": "model.saas_analytics.customers",
+      "relation_name": "\"saas\".\"app\".\"customers\"",
+      "tags": ["core"],
+      "meta": { "owner": "data-platform", "contains_pii": true },
+      "config": { "materialized": "table", "tags": ["core"], "meta": { "owner": "data-platform" } },
+      "columns": {
+        "id": { "name": "id", "description": "Surrogate key", "meta": {}, "tags": [], "data_type": "bigint" },
+        "tenant_id": { "name": "tenant_id", "description": "Owning tenant", "meta": {}, "tags": [], "data_type": "text" },
+        "name": { "name": "name", "description": "Company or person name", "meta": { "pii": false }, "tags": [], "data_type": "text" },
+        "email": { "name": "email", "description": "Primary contact email", "meta": { "pii": true }, "tags": ["pii"], "data_type": "text" },
+        "phone": { "name": "phone", "description": "Contact phone", "meta": {}, "tags": [], "data_type": "text", "config": { "meta": { "governance": { "sensitivity": "restricted" } }, "tags": [] } },
+        "ssn": { "name": "ssn", "description": "US SSN (legacy)", "meta": { "classification": "confidential" }, "tags": ["gdpr"], "data_type": "text" },
+        "country": { "name": "country", "description": "ISO country", "meta": { "pii": "no" }, "tags": [], "data_type": "character(2)" },
+        "created_at": { "name": "created_at", "description": "", "meta": {}, "tags": [], "data_type": "timestamp with time zone" }
+      }
+    },
+    "model.saas_analytics.users": {
+      "resource_type": "model",
+      "database": "saas",
+      "schema": "app",
+      "name": "users",
+      "alias": "users",
+      "tags": [],
+      "meta": {},
+      "config": { "materialized": "table" },
+      "columns": {
+        "id": { "name": "id", "meta": {}, "tags": [] },
+        "email": { "name": "email", "meta": { "contains_pii": true }, "tags": [] },
+        "full_name": { "name": "full_name", "meta": {}, "tags": [], "policy_tags": ["pii_name"] },
+        "password_hash": { "name": "password_hash", "meta": { "security": "secret" }, "tags": [] },
+        "role": { "name": "role", "meta": {}, "tags": [] }
+      }
+    },
+    "model.saas_analytics.payments": {
+      "resource_type": "model",
+      "database": "saas",
+      "schema": "app",
+      "name": "stg_payments",
+      "alias": "payments",
+      "tags": [],
+      "meta": {},
+      "config": { "materialized": "view" },
+      "columns": {
+        "id": { "name": "id", "meta": {}, "tags": [] },
+        "card_last4": { "name": "card_last4", "meta": {}, "tags": [] },
+        "card_token": { "name": "card_token", "meta": { "pci": true }, "tags": [] }
+      }
+    },
+    "test.saas_analytics.not_null_customers_id.5c7c1a": {
+      "resource_type": "test",
+      "database": "saas",
+      "schema": "app_dbt_test__audit",
+      "name": "not_null_customers_id",
+      "columns": {},
+      "column_name": "id"
+    }
+  },
+  "sources": {
+    "source.saas_analytics.app.audit_events": {
+      "resource_type": "source",
+      "database": "saas",
+      "schema": "app",
+      "name": "audit_events",
+      "identifier": "audit_events",
+      "source_name": "app",
+      "columns": {
+        "ip": { "name": "ip", "description": "Client IP", "meta": { "personal_data": true }, "tags": [] },
+        "detail": { "name": "detail", "description": "Event payload", "meta": {}, "tags": [] }
+      }
+    }
+  }
+}

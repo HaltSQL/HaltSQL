@@ -297,11 +297,267 @@ let inline_policy =
   obj ~required:[ "metadata" ] "An inline Policy document (apiVersion and kind optional)."
     (policy_props ())
 
+let policy_ref d = str d
+
+let ctx_fields d =
+  arr ~unique:true d (pattern_str "Context field name." "^[A-Za-z_][A-Za-z0-9_]*$")
+
+let batch_schema =
+  obj "Batching of audit records into objects."
+    [
+      ("max_records", int ~min:1 ~max:100_000 ~default:500 "Records per object at most.");
+      ( "max_seconds",
+        int ~min:1 ~max:3600 ~default:10 "Seconds before a partial batch is flushed." );
+    ]
+
+let on_error_schema =
+  with_desc
+    "What to do when the sink cannot be written: fail_closed refuses requests (HTTP \
+     503); buffer keeps records in memory and retries."
+    [
+      ("enum", `List [ `String "fail_closed"; `String "buffer" ]);
+      ("default", `String "fail_closed");
+    ]
+
+let prefix_schema =
+  str
+    ~extra:[ ("default", `String "haltsql/audit/") ]
+    "Object key prefix (no leading '/')."
+
+let tls_schema =
+  obj "TLS for the HTTP server. cert and key are required together."
+    [
+      ("cert", str "Path to the PEM certificate chain (or inline PEM).");
+      ("key", str "Path to (or ${file:...} contents of) the PEM private key.");
+      ("client_ca", str "PEM CA bundle used to verify client certificates (mTLS).");
+      ( "client_auth",
+        with_desc
+          "Whether to request client certificates. optional/required need client_ca."
+          [
+            ("enum", `List [ `String "none"; `String "optional"; `String "required" ]);
+            ("default", `String "none");
+          ] );
+      ( "min_version",
+        with_desc "Minimum TLS version."
+          [
+            ("enum", `List [ `String "1.2"; `String "1.3"; `Float 1.2; `Float 1.3 ]);
+            ("default", `String "1.2");
+          ] );
+    ]
+
+let oidc_schema =
+  obj
+    ~required:[ "name"; "issuer"; "audiences" ]
+    "An OpenID Connect provider whose JWTs are accepted as bearer tokens."
+    [
+      ("name", str "Unique provider name (shown in audit logs).");
+      ("issuer", str "Issuer URL (https; http only with allow_insecure_http).");
+      ( "audiences",
+        arr ~min_items:1 ~unique:true "Accepted aud values (at least one)."
+          (str "Audience.") );
+      ( "jwks_uri",
+        str "JWKS URL. Default: discovered from issuer/.well-known/openid-configuration."
+      );
+      ( "algorithms",
+        arr ~min_items:1
+          "Accepted signature algorithms. Default [RS256, ES256]. none and HS* are \
+           rejected."
+          (enum "Algorithm."
+             [ "RS256"; "RS384"; "RS512"; "PS256"; "ES256"; "ES384"; "EdDSA" ]) );
+      ( "leeway_seconds",
+        int ~min:0 ~max:300 ~default:60 "Clock skew tolerance for exp/nbf/iat." );
+      ( "jwks_cache_seconds",
+        int ~min:10 ~max:86400 ~default:300 "How long fetched keys are cached." );
+      ("policy", policy_ref "Pinned policy name (use this or policy_claim).");
+      ("policy_claim", str "Claim whose value names the policy (needs allowed_policies).");
+      ( "allowed_policies",
+        arr ~min_items:1 ~unique:true "Policies policy_claim may select."
+          (str "Policy name.") );
+      ( "context_claims",
+        map_of
+          "Context field -> claim path (exact claim name first, then a dot path like \
+           org.id)."
+          (str "Claim path.") );
+      ( "required_claims",
+        map_of
+          "Claims that must match: a string (equal, or contained in an array / \
+           space-separated value) or a list (all contained)."
+          (one_of "Expected value(s)."
+             [
+               str "Required value.";
+               arr ~min_items:1 "All required values." (str "Value.");
+             ]) );
+      ( "request_context_fields",
+        ctx_fields "Context fields the request body may still supply. Default []." );
+      ( "allow_insecure_http",
+        bool ~default:false "Allow http issuer/jwks URLs. Tests only." );
+    ]
+
+let mtls_schema =
+  obj
+    "Client-certificate identities. Requires server.tls.client_ca and client_auth \
+     optional/required."
+    [
+      ( "identities",
+        arr "Accepted client identities."
+          (obj ~required:[ "policy" ] "One identity: spiffe_id or subject_cn."
+             [
+               ( "spiffe_id",
+                 str "Exact SPIFFE ID URI SAN, e.g. spiffe://corp.example/ns/a/sa/b." );
+               ("subject_cn", str "Exact certificate subject common name.");
+               ("policy", policy_ref "Policy this identity is pinned to.");
+               ( "context",
+                 map_of "Static context values for this identity."
+                   (one_of "Context value."
+                      [
+                        str "A value.";
+                        int "A value.";
+                        arr ~min_items:1 "A set of values." (str "A value.");
+                      ]) );
+               ( "request_context_fields",
+                 ctx_fields "Context fields the request body may still supply." );
+             ]) );
+    ]
+
+let s3_sink =
+  obj
+    ~required:[ "type"; "bucket"; "region" ]
+    "Amazon S3 (or S3-compatible) object storage."
+    [
+      ("type", const "Sink type." "s3");
+      ("bucket", str "Bucket name.");
+      ("prefix", prefix_schema);
+      ("region", str "AWS region, e.g. us-east-1.");
+      ("endpoint", str "Custom endpoint URL (MinIO, tests).");
+      ( "object_lock",
+        obj ~required:[ "mode"; "retain_days" ]
+          "S3 Object Lock retention for written objects."
+          [
+            ("mode", enum "Retention mode." [ "GOVERNANCE"; "COMPLIANCE" ]);
+            ("retain_days", int ~min:1 ~max:36500 "Retention period in days.");
+          ] );
+      ("batch", batch_schema);
+      ( "credentials",
+        obj "Where AWS credentials come from."
+          [
+            ( "source",
+              with_desc "Credential source."
+                [
+                  ( "enum",
+                    `List
+                      [
+                        `String "env";
+                        `String "static";
+                        `String "web_identity";
+                        `String "instance";
+                      ] );
+                  ("default", `String "env");
+                ] );
+            ("access_key_id", str "Access key id (static only; use a secret placeholder).");
+            ( "secret_access_key",
+              str "Secret access key (static only; use a secret placeholder)." );
+            ("session_token", str "Session token (static only, optional).");
+          ] );
+      ( "spool_dir",
+        str
+          "Local directory (relative to the config file) where records are spooled \
+           before upload and the hash-chain head is persisted, so the chain and object \
+           sequence continue across restarts. One directory per sink." );
+      ("on_error", on_error_schema);
+    ]
+
+let gcs_sink =
+  obj ~required:[ "type"; "bucket" ] "Google Cloud Storage."
+    [
+      ("type", const "Sink type." "gcs");
+      ("bucket", str "Bucket name.");
+      ("prefix", prefix_schema);
+      ("batch", batch_schema);
+      ( "credentials",
+        obj "Where Google credentials come from."
+          [
+            ( "source",
+              with_desc "Credential source."
+                [
+                  ("enum", `List [ `String "metadata"; `String "service_account_file" ]);
+                  ("default", `String "metadata");
+                ] );
+            ("file", str "Service account JSON key file (service_account_file only).");
+          ] );
+      ( "spool_dir",
+        str "Local spool directory, as for s3 sinks (relative to the config file)." );
+      ("on_error", on_error_schema);
+    ]
+
+let otlp_schema =
+  obj ~required:[ "endpoint" ] "OpenTelemetry (OTLP/HTTP) export."
+    [
+      ("endpoint", str "Collector URL, e.g. http://collector:4318.");
+      ( "headers",
+        map_of
+          "Extra HTTP headers (values may use secret placeholders; redacted in config \
+           show)."
+          (str "Header value.") );
+      ( "service_name",
+        str ~extra:[ ("default", `String "haltsql") ] "service.name resource attribute."
+      );
+      ("traces", bool ~default:true "Export traces.");
+      ("metrics", bool ~default:true "Export metrics.");
+      ( "export_interval_seconds",
+        int ~min:1 ~max:3600 ~default:15 "Metric export interval." );
+      ("timeout_seconds", int ~min:1 ~max:300 ~default:5 "Export request timeout.");
+    ]
+
+let secrets_schema =
+  obj
+    "Secret providers for ${vault:...}, ${aws-sm:...} and ${gcp-sm:...} placeholders. \
+     Values here may only use ${env:...} and ${file:...}."
+    [
+      ( "vault",
+        obj ~required:[ "address"; "auth" ] "HashiCorp Vault."
+          [
+            ("address", str "Vault URL (https; http only for loopback).");
+            ("namespace", str "Vault Enterprise namespace.");
+            ( "auth",
+              obj ~required:[ "method" ] "How HaltSQL logs in to Vault."
+                [
+                  ("method", enum "Auth method." [ "token"; "kubernetes"; "approle" ]);
+                  ("token", str "Vault token (method token).");
+                  ("role", str "Vault role (method kubernetes).");
+                  ("role_id", str "AppRole role id (method approle).");
+                  ("secret_id", str "AppRole secret id (method approle).");
+                  ( "jwt_path",
+                    str
+                      ~extra:
+                        [
+                          ( "default",
+                            `String "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                          );
+                        ]
+                      "Service account token file (method kubernetes)." );
+                  ("mount", str "Auth mount path. Default kubernetes or approle.");
+                ] );
+            ("ca_file", str "CA bundle for the Vault server certificate.");
+          ] );
+      ( "aws",
+        obj ~required:[ "region" ] "AWS Secrets Manager."
+          [
+            ("region", str "AWS region."); ("endpoint", str "Custom endpoint URL (tests).");
+          ] );
+      ( "gcp",
+        obj "Google Secret Manager."
+          [
+            ("project", str "Default project for short secret names.");
+            ("endpoint", str "Custom endpoint URL (tests).");
+          ] );
+    ]
+
 let config =
   add_defs
     (doc ~id:"config.schema.json" ~title:"HaltSQL runtime configuration"
        "How HaltSQL runs: listen address, TLS, auth tokens, policies, audit, logging. \
-        String values may use ${env:NAME} and ${file:/path} placeholders."
+        String values may use ${env:NAME}, ${file:/path}, ${vault:path#field}, \
+        ${aws-sm:id[#key]} and ${gcp-sm:name[#key]} placeholders."
        ~required:[ "apiVersion"; "kind" ]
        [
          ("apiVersion", api_version);
@@ -312,15 +568,9 @@ let config =
                ( "listen",
                  str "Address as host:port. Default 127.0.0.1:8080. Env: HALTSQL_LISTEN."
                );
-               ( "tls",
-                 obj "TLS certificate and key (both or neither)."
-                   [
-                     ("cert", str "Path to the PEM certificate.");
-                     ( "key",
-                       str "Path to (or ${file:...} contents of) the PEM private key." );
-                   ] );
+               ("tls", tls_schema);
                ( "auth",
-                 obj "Bearer-token authentication."
+                 obj "Caller authentication: static bearer tokens, OIDC JWTs, mTLS."
                    [
                      ( "tokens",
                        arr "Accepted tokens; each is pinned to one policy."
@@ -338,6 +588,8 @@ let config =
                        bool ~default:false
                          "Accept requests without a token (uses default_policy). Local \
                           development only. Env: HALTSQL_ALLOW_UNAUTHENTICATED." );
+                     ("oidc", arr "OpenID Connect providers." oidc_schema);
+                     ("mtls", mtls_schema);
                    ] );
              ] );
          ( "policies",
@@ -353,6 +605,19 @@ let config =
                     ];
                   obj ~required:[ "inline" ] "Inline policy."
                     [ ("inline", inline_policy) ];
+                  obj ~required:[ "bundle"; "public_keys" ]
+                    "Signed policy bundle (verified by the server before use)."
+                    [
+                      ( "bundle",
+                        str "Path to a .haltsqlbundle file, relative to this config." );
+                      ( "public_keys",
+                        arr ~min_items:1
+                          "Trusted ed25519 public keys: file paths, inline PEM, or \
+                           base64 of the 32 raw bytes."
+                          (str "Public key.") );
+                      ( "name_prefix",
+                        str "Prefix added to the names of the policies in this bundle." );
+                    ];
                 ]) );
          ( "default_policy",
            str "Policy used by unauthenticated requests. Env: HALTSQL_DEFAULT_POLICY." );
@@ -367,12 +632,18 @@ let config =
                    (one_of "Audit sink."
                       [
                         obj ~required:[ "type" ] "Standard output."
-                          [ ("type", const "Sink type." "stdout") ];
+                          [
+                            ("type", const "Sink type." "stdout");
+                            ("on_error", on_error_schema);
+                          ];
                         obj ~required:[ "type"; "path" ] "JSON-lines file."
                           [
                             ("type", const "Sink type." "file");
                             ("path", str "File path, relative to this config.");
+                            ("on_error", on_error_schema);
                           ];
+                        s3_sink;
+                        gcs_sink;
                       ]) );
                ( "log_raw_sql",
                  bool ~default:false "Include the raw SQL text in audit records." );
@@ -384,7 +655,10 @@ let config =
                  obj "Metrics."
                    [ ("prometheus", bool ~default:true "Expose Prometheus metrics.") ] );
                ( "otlp_endpoint",
-                 str "OTLP endpoint (accepted; reserved for a future release)." );
+                 str
+                   "Legacy shorthand for telemetry.otlp.endpoint (use one or the other)."
+               );
+               ("otlp", otlp_schema);
              ] );
          ( "logging",
            obj "Process logs."
@@ -402,6 +676,7 @@ let config =
                    ~max:(64 * 1024 * 1024)
                    ~default:1_048_576 "Maximum HTTP request body size." );
              ] );
+         ("secrets", secrets_schema);
        ])
     [ ("ctx_placeholder", ctx_placeholder) ]
 

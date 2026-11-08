@@ -1,0 +1,59 @@
+{
+  "name": "saas_deny_context_missing",
+  "description": "Policy needs ctx.tenant_id but the context is empty.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 10",
+    "context": {},
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_CONTEXT_MISSING",
+        "message": "the request context has no value for \"tenant_id\" (tenancy key \"tenant\")",
+        "rule": "tenancy.context",
+        "loc": 15,
+        "hint": "This is a caller configuration problem, not a query problem: the host application must supply the tenant context."
+      },
+      {
+        "code": "E_PARAM_UNBOUND",
+        "message": "parameter $1 is not a tenant placeholder, so its value is unknown",
+        "rule": "params.unbound",
+        "loc": 40,
+        "hint": "Use $n placeholders only as the value of a tenant predicate (e.g. o.tenant_id = $1); write other values as literals."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "53a2755a1ded78c5",
+    "sql_sha256": "372f83aa27535a0c27b16ce75e67d3986354da94c60b42f8f6533e5314f60db8",
+    "elapsed_us": 254
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

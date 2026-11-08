@@ -1,0 +1,51 @@
+{
+  "name": "writes_allow_update",
+  "description": "Write allowed by the per-table writes block; statement_kind update.",
+  "policy_file": "test/fixtures/policies/writes.yaml",
+  "request": {
+    "sql": "UPDATE tickets SET status = 'closed' WHERE id = 7 AND tenant_id = $1",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "writes"
+  },
+  "verdict": {
+    "allowed": true,
+    "reasons": [],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "writes",
+      "version": "sha256:a64b2ba7fea6874c5d5a34c6e4e939d3257ccef4452028edf4d9075e7092b8a4"
+    },
+    "statement_kind": "update",
+    "tables": [
+      "app.tickets"
+    ],
+    "columns": [
+      "app.tickets.id",
+      "app.tickets.tenant_id"
+    ],
+    "bind_params": [
+      {
+        "param": 1,
+        "value": "acme"
+      }
+    ],
+    "fingerprint": "625db79b00b7542f",
+    "sql_sha256": "04f6c0c75f431113ad1d57f9a1b8fdfcf3a6bc1ff7bf952a96f94728b1271b7d",
+    "elapsed_us": 236
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

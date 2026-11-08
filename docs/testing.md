@@ -71,10 +71,10 @@ sensitive column you left out.
 | Unit | Each module and rule in isolation, with positive and negative cases | Alcotest | Runs on every PR |
 | Golden | Verdict JSON, `explain` output, and error messages stay stable | Snapshot files reviewed in PRs | Runs on every PR |
 | Attack corpus | Known bypass techniques with the verdict HaltSQL must return | `test/corpus/` TestSuite files | Runs on every PR; must be 100% |
-| Conformance | Same verdicts as the sql-guardrail test cases (MIT, attributed) | `test/conformance/` | Planned |
-| Property-based | Evasion transforms applied to allowed queries must flip the verdict to deny when they break isolation | QCheck with shrinking | Planned |
+| Conformance | Same verdicts as the sql-guardrail test cases (MIT, attributed) | `test/conformance/` | Runs on every PR |
+| Property-based | Evasion transforms applied to allowed queries must flip the verdict to deny when they break isolation | QCheck with shrinking (`test/property/`) | Runs on every PR |
 | Differential | Allowed queries run against real Postgres; the database is the judge | `haltlab` | Nightly (lab) |
-| Fuzzing | Parser bridge, YAML/JSON loader, HTTP input: no crashes, every input gets a verdict | AFL++ / Crowbar | Planned |
+| Fuzzing | Parser bridge and YAML/JSON loader (HTTP input planned): no crashes, every input gets a verdict | Deterministic generator (`test/fuzz/`); AFL++ planned | Runs on every PR |
 | Mutation | Tests catch injected bugs in rule code | Mutation testing | Planned |
 | Contract | HTTP API matches `docs/openapi.yaml` | Schemathesis | Planned |
 | Coverage | Untested code | bisect_ppx (`make coverage`) | Report uploaded by CI |

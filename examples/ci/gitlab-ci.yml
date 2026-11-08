@@ -1,0 +1,26 @@
+# Example: .gitlab-ci.yml in a repository of HaltSQL policies (see docs/policy-ci.md).
+include:
+  - remote: https://raw.githubusercontent.com/ardada2468/HaltSQL/v0.2.0/ci/gitlab/haltsql.gitlab-ci.yml
+
+stages: [test, deploy]
+
+variables:
+  HALTSQL_VERSION: v0.2.0
+  HALTSQL_POLICIES: policies
+  HALTSQL_SUITES: tests
+
+policy-check:
+  extends: .haltsql-check
+  variables:
+    HALTSQL_FAIL_ON_WARNINGS: "true"
+
+policy-bundle:
+  extends: .haltsql-bundle
+  needs: [policy-check]
+  variables:
+    HALTSQL_BUNDLE_NAME: prod-policies
+    HALTSQL_CATALOGS: saas=catalog/saas.snapshot.json
+    HALTSQL_PUBLIC_KEYS: keys/policy-signing.pub
+    # HALTSQL_SIGNING_KEY: a masked + protected CI/CD variable holding the PEM key
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

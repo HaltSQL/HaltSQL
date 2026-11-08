@@ -23,7 +23,7 @@ let audit_conv =
   Arg.conv (parse, print)
 
 let run config policies listen allow_unauth default_policy log_level log_format audit
-    log_raw_sql watch max_bytes no_metrics =
+    log_raw_sql watch max_bytes no_metrics health_listen =
   let overrides (c : Haltsql.Config.t) =
     let c = match listen with Some l -> { c with listen = l } | None -> c in
     let c = if allow_unauth then { c with allow_unauthenticated = true } else c in
@@ -36,15 +36,27 @@ let run config policies listen allow_unauth default_policy log_level log_format 
       match audit with
       | [] -> c
       | sinks ->
+          let kinds =
+            List.filter_map
+              (function
+                | `None -> None
+                | `Stdout -> Some Haltsql.Config.Sink_stdout
+                | `File p -> Some (Haltsql.Config.Sink_file p))
+              sinks
+          in
           {
             c with
             audit_sinks =
-              List.filter_map
+              List.map
                 (function
-                  | `None -> None
-                  | `Stdout -> Some Haltsql.Config.Audit_stdout
-                  | `File p -> Some (Haltsql.Config.Audit_file p))
-                sinks;
+                  | Haltsql.Config.Sink_file p -> Haltsql.Config.Audit_file p
+                  | _ -> Haltsql.Config.Audit_stdout)
+                kinds;
+            sinks =
+              List.map
+                (fun k ->
+                  { Haltsql.Config.sink = k; on_error = Haltsql.Config.Fail_closed })
+                kinds;
           }
     in
     let c = if log_raw_sql then { c with log_raw_sql = true } else c in
@@ -60,7 +72,7 @@ let run config policies listen allow_unauth default_policy log_level log_format 
     2
   end
   else
-    Server.main
+    Server.main ?health_listen
       ~sources:{ State.config_file = config; policy_files = policies; overrides }
       ()
 
@@ -157,21 +169,37 @@ let cmd =
   let no_metrics =
     Arg.(value & flag & info [ "no-metrics" ] ~doc:"Disable GET /metrics.")
   in
+  let health_listen =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "health-listen" ] ~docv:"HOST:PORT"
+          ~doc:
+            "Also serve $(b,/healthz) and $(b,/readyz) (only) over plain HTTP on this \
+             address, e.g. for kubelet probes when the main listener uses TLS with \
+             required client certificates.")
+  in
   let man =
     [
       `S Manpage.s_description;
       `P
         "Serves POST /v1/verify, GET /v1/policies, /healthz, /readyz and /metrics. \
          Settings precedence: command-line flags > HALTSQL_* environment variables > \
-         config file > defaults. SIGHUP reloads all policies (atomically; the last good \
-         set is kept on error). SIGTERM/SIGINT shut down gracefully. TLS is not built \
-         in: terminate TLS in a proxy or service mesh.";
+         config file > defaults. SIGHUP reloads all policies, auth settings and TLS \
+         certificates (atomically; the last good set is kept on error). SIGTERM/SIGINT \
+         shut down gracefully. Built-in TLS (server.tls, TLS 1.2/1.3) with optional or \
+         required client certificates, OIDC/JWT bearer tokens (server.auth.oidc) and \
+         mTLS identities (server.auth.mtls) are configured in the config file; see \
+         docs/authentication.md.";
       `S Manpage.s_examples;
       `Pre
         "  haltsql-server --policy policy.yaml --listen 127.0.0.1:8080 \
          --allow-unauthenticated";
       `Noblank;
       `Pre "  haltsql-server --config /etc/haltsql/config.yaml";
+      `Noblank;
+      `Pre
+        "  haltsql-server --config /etc/haltsql/config.yaml --health-listen 0.0.0.0:8081";
       `S Manpage.s_exit_status;
       `P
         "0 after a graceful shutdown; 2 if the configuration cannot be loaded or the \
@@ -183,7 +211,7 @@ let cmd =
        ~doc:"HTTP sidecar for the HaltSQL policy firewall" ~man)
     Term.(
       const run $ config $ policies $ listen $ allow_unauth $ default_policy $ log_level
-      $ log_format $ audit $ log_raw_sql $ watch $ max_bytes $ no_metrics)
+      $ log_format $ audit $ log_raw_sql $ watch $ max_bytes $ no_metrics $ health_listen)
 
 let () =
   exit

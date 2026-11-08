@@ -90,6 +90,13 @@ Rules:
   also `E_TENANT_MISMATCH`.
 - Every parameter in the query must be a tenant parameter, because HaltSQL
   must supply every bound value itself. Any other `$n` is `E_PARAM_UNBOUND`.
+- A tenant parameter may appear only as the value of a tenant predicate. Using
+  it anywhere else (`$1::float8 IS NOT NULL`, `status = $1`, `SELECT $1`,
+  `$1 = 'acme'` under an `OR`) is `E_PARAM_UNBOUND` (rule
+  `params.tenant_reuse`). Such a use could change the type PostgreSQL infers
+  for the parameter, and with it how the tenant value is compared. For
+  example, `float8` rounds a large `bigint` tenant ID, so a neighbouring
+  tenant's rows could match.
 - A literal where a tenant parameter is expected is not accepted
   (`E_TENANT_MISMATCH`, or `E_TENANT_WRITE` in `INSERT ... VALUES`), so a model
   that learned a tenant ID cannot use it.
@@ -302,8 +309,8 @@ conjuncts is planned for a later release.
 When writes are enabled for a table:
 
 - `INSERT` must set every tenant column to the tenant value in every row of
-  `VALUES`. `INSERT ... SELECT` is allowed only if the source query passes the
-  same proof. Otherwise `E_TENANT_WRITE`.
+  `VALUES`, otherwise `E_TENANT_WRITE`. `INSERT ... SELECT` is not supported
+  and is denied (`E_UNSUPPORTED`).
 - `UPDATE` may never assign a tenant column (`E_TENANT_WRITE`) and needs a
   tenant predicate in its `WHERE` (`E_TENANT_MISSING`). Tables in
   `UPDATE ... FROM` need their own predicates.

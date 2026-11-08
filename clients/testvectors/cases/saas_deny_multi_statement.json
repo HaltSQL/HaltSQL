@@ -1,0 +1,48 @@
+{
+  "name": "saas_deny_multi_statement",
+  "description": "Statement smuggling: more than one statement.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 1; DROP TABLE orders",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_MULTI_STATEMENT",
+        "message": "expected exactly one statement, found 2",
+        "rule": "statement.count",
+        "hint": "Send a single SQL statement with no semicolon-separated extras."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": null,
+    "tables": [],
+    "columns": [],
+    "bind_params": [],
+    "fingerprint": null,
+    "sql_sha256": "0c25976dce3488b63e5d504cd01eb6c48661a93c4f3caec21ab26cf4a53fd0d2",
+    "elapsed_us": 251
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

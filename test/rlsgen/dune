@@ -1,0 +1,144 @@
+; haltsql rls: unit tests, golden SQL and a live Postgres integration test.
+;
+; Golden SQL: after an intended change, review and accept with
+;   dune build @test/rlsgen/runtest --auto-promote
+;
+; The integration test uses HALTSQL_TEST_PG_DSN (default
+; postgres://postgres:haltlab@localhost:5417/postgres, i.e. `make -C lab up`)
+; and is skipped with a message when Postgres is not reachable.
+
+(test
+ (name test_rlsgen)
+ (modules test_rlsgen t_unit t_integration)
+ (libraries
+  haltsql
+  haltsql.rlsgen
+  haltsql.pgquery
+  alcotest
+  yojson
+  lwt
+  lwt.unix
+  unix)
+ (deps
+  cli/rls_cli.exe
+  (source_tree ../fixtures)
+  (source_tree fixtures)
+  (source_tree golden)
+  %{project_root}/lab/schemas/saas_shared.sql))
+
+; ---- golden SQL ----
+
+(rule
+ (deps
+  (source_tree ../fixtures))
+ (action
+  (with-stdout-to
+   saas.sql.out
+   (with-stderr-to
+    saas.warnings.out
+    (run cli/rls_cli.exe generate -p ../fixtures/policies/saas.yaml)))))
+
+(rule
+ (deps
+  (source_tree ../fixtures))
+ (action
+  (with-stdout-to
+   composite.sql.out
+   (with-stderr-to
+    composite.warnings.out
+    (run cli/rls_cli.exe generate -p ../fixtures/policies/composite.yaml)))))
+
+(rule
+ (deps
+  (source_tree ../fixtures))
+ (action
+  (with-stdout-to
+   hierarchical.sql.out
+   (with-stderr-to
+    hierarchical.warnings.out
+    (run
+     cli/rls_cli.exe
+     generate
+     -p
+     ../fixtures/policies/hierarchical.yaml
+     --set-field
+     tenant_ids)))))
+
+(rule
+ (deps
+  (source_tree ../fixtures))
+ (action
+  (with-stdout-to
+   writes.sql.out
+   (with-stderr-to
+    writes.warnings.out
+    (run cli/rls_cli.exe generate -p ../fixtures/policies/writes.yaml)))))
+
+(rule
+ (deps
+  (source_tree ../fixtures))
+ (action
+  (with-stdout-to
+   mixed_case.sql.out
+   (with-stderr-to
+    mixed_case.warnings.out
+    (run cli/rls_cli.exe generate -p ../fixtures/policies/mixed_case.yaml)))))
+
+; every option at once, with a role and prefix that need care
+
+(rule
+ (deps
+  (source_tree ../fixtures)
+  (source_tree fixtures))
+ (action
+  (with-stdout-to
+   options.sql.out
+   (with-stderr-to
+    options.warnings.out
+    (run
+     cli/rls_cli.exe
+     generate
+     -p
+     fixtures/saas_writes.yaml
+     --catalog
+     fixtures/saas_writes_catalog.json
+     --set-field
+     org_ids
+     --role
+     "Agent \"Role\""
+     --setting-prefix
+     app.ctx
+     --owner-role
+     table_owner
+     --force-rls
+     --drop-existing)))))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/saas.sql saas.sql.out)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/composite.sql composite.sql.out)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/hierarchical.sql hierarchical.sql.out)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/writes.sql writes.sql.out)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/mixed_case.sql mixed_case.sql.out)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff golden/options.sql options.sql.out)))

@@ -1,13 +1,18 @@
 ; haltsql-server tests: in-process servers on ephemeral ports (all endpoints,
 ; auth, 413, hot reload, metrics, audit chain) plus a subprocess test of the
-; real binary (SIGHUP reload, SIGTERM shutdown, TLS refusal).
+; real binary (SIGHUP reload, SIGTERM shutdown, startup failures).
+; test_auth_e2e: built-in TLS + mTLS (CA and certificates generated in-test),
+; OIDC against an in-process fake issuer, context rules, TLS reload.
 
-(test
- (name test_server)
+(tests
+ (names test_server test_auth_e2e test_integrations)
  (package haltsql-server)
  (libraries
   haltsql_server
   haltsql
+  haltsql-server.auth
+  haltsql.bundle
+  digestif
   alcotest
   str
   cohttp-lwt-unix
@@ -15,10 +20,20 @@
   cohttp
   lwt
   lwt.unix
+  tls
+  tls-lwt
+  x509
+  ptime
+  ptime.clock.os
+  mirage-crypto-rng.unix
+  mirage-crypto-pk
+  mirage-crypto-ec
+  domain-name
   yojson
   unix)
  (deps
-  (source_tree fixtures))
+  (source_tree fixtures)
+  ../../bin/server/main.exe)
  (action
   (setenv
    HALTSQL_SERVER_BIN

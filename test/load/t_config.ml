@@ -119,8 +119,11 @@ let cases =
     tc "unterminated placeholder" (fun () ->
         check_err ~msg:"unterminated placeholder" (c "server: {listen: '${env:X'}"));
     tc "escaped placeholder" (fun () ->
-        let x = c_ok "telemetry: {otlp_endpoint: '$${env:X}'}" in
-        ignore x);
+        let x =
+          c_ok
+            "telemetry: {otlp: {endpoint: 'http://c:4318', service_name: 'a$${env:X}'}}"
+        in
+        Alcotest.(check string) "literal" "a${env:X}" (Option.get x.otlp).service_name);
     tc "placeholders not resolved in inline policies" (fun () ->
         check_err ~path:"policies[0].inline.dialect" ~msg:"only allowed in Config"
           (c

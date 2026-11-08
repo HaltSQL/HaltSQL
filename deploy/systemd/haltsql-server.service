@@ -20,6 +20,8 @@ Wants=network-online.target
 [Service]
 Type=exec
 ExecStart=/usr/local/bin/haltsql-server --config /etc/haltsql/config.yaml
+# SIGHUP reloads policies, auth settings and the TLS certificate/key (e.g. from
+# a certbot/cert-manager deploy hook: systemctl reload haltsql-server).
 ExecReload=/bin/kill -HUP $MAINPID
 EnvironmentFile=-/etc/haltsql/token-hashes.env
 Restart=on-failure
@@ -65,8 +67,13 @@ SystemCallFilter=~@privileged @resources
 DevicePolicy=closed
 IPAddressDeny=any
 IPAddressAllow=localhost
-# To serve other hosts, widen IPAddressAllow (e.g. 10.0.0.0/8) and set
-# server.listen accordingly; keep TLS termination in front (see README).
+# To serve other hosts, widen IPAddressAllow (e.g. 10.0.0.0/8), set
+# server.listen accordingly and enable built-in TLS (server.tls, see
+# docs/authentication.md) or keep TLS termination in front (see README).
+# OIDC providers (server.auth.oidc) need outbound HTTPS to the IdP's discovery
+# and JWKS endpoints: add the IdP's addresses to IPAddressAllow.
+# The TLS key must be readable by the service user (e.g. mode 0640, group
+# haltsql); the server never logs it.
 
 LimitNOFILE=65536
 TasksMax=512

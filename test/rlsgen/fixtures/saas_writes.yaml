@@ -1,0 +1,56 @@
+# Integration-test policy for `haltsql rls` against lab/schemas/saas_shared.sql
+# (plus app.ledgers / app.secrets created by the test). Mirrors
+# lab/policies/saas_shared.yaml, adds writes on app.orders and a set-valued,
+# bigint-typed tenancy key on app.ledgers (generate with --set-field org_ids
+# and --catalog saas_writes_catalog.json).
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: rls-it-saas-writes
+  owner: qa
+dialect: postgres-17
+search_path: [app]
+statements: { allow: [select, insert, update, delete] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys:
+    tenant: ${ctx.tenant_id}
+    orgs: ${ctx.org_ids}
+tables:
+  app.currencies:
+    columns: "*"
+  app.orgs:
+    columns: [id, tenant_id, name, plan, created_at]
+    tenant_columns: { tenant_id: tenant }
+  app.users:
+    columns: [id, tenant_id, full_name, role, created_at, last_login_at]
+    tenant_columns: { tenant_id: tenant }
+  app.customers:
+    columns: [id, tenant_id, name, country, created_at]
+    tenant_columns: { tenant_id: tenant }
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, note, created_at]
+    tenant_columns: { tenant_id: tenant }
+    writes:
+      insert: true
+      update: [status, note]
+      delete: true
+  app.order_items:
+    columns: [id, tenant_id, order_id, sku, description, quantity, unit_price_cents]
+    tenant_columns: { tenant_id: tenant }
+  app.invoices:
+    columns: [id, tenant_id, order_id, number, status, amount_cents, due_date, issued_at]
+    tenant_columns: { tenant_id: tenant }
+  app.payments:
+    columns: [id, tenant_id, invoice_id, method, amount_cents, card_last4, paid_at]
+    tenant_columns: { tenant_id: tenant }
+  app.audit_events:
+    columns: [id, tenant_id, actor_user_id, action, detail, created_at]
+    tenant_columns: { tenant_id: tenant }
+  app.ledgers:
+    columns: [id, org_id, amount_cents]
+    tenant_columns: { org_id: orgs }
+functions:
+  allow: [count, sum]
+mode: enforce

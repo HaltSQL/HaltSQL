@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haltsql-vanna"
+version = "0.1.0"
+description = "HaltSQL guard for Vanna (2.x SqlRunner and legacy run_sql)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = ["haltsql[psycopg]>=0.1.0"]
+
+[project.optional-dependencies]
+vanna = ["vanna>=0.7", "pandas>=1.5"]
+test = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+haltsql_vanna = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: needs the lab Postgres (skipped when unavailable)"]

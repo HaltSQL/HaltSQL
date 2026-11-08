@@ -1,0 +1,49 @@
+# HaltSQL policy for the haltlab saas_shared fixture (lab/schemas/saas_shared.sql).
+# PII/secret columns are intentionally absent from the column lists:
+#   users.email, users.password_hash, customers.email, customers.phone,
+#   customers.ssn, payments.card_token, audit_events.ip
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: proxy-test
+  owner: haltlab
+  description: Analytics agent over the shared-table SaaS fixture
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  app.currencies:
+    columns: "*"
+  app.orgs:
+    columns: [id, tenant_id, name, plan, created_at]
+    tenant_column: tenant_id
+  app.users:
+    columns: [id, tenant_id, full_name, role, created_at, last_login_at]
+    tenant_column: tenant_id
+  app.customers:
+    columns: [id, tenant_id, name, country, created_at]
+    tenant_column: tenant_id
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, note, created_at]
+    tenant_column: tenant_id
+  app.order_items:
+    columns: [id, tenant_id, order_id, sku, description, quantity, unit_price_cents]
+    tenant_column: tenant_id
+  app.invoices:
+    columns: [id, tenant_id, order_id, number, status, amount_cents, due_date, issued_at]
+    tenant_column: tenant_id
+  app.payments:
+    columns: [id, tenant_id, invoice_id, method, amount_cents, card_last4, paid_at]
+    tenant_column: tenant_id
+  app.audit_events:
+    columns: [id, tenant_id, actor_user_id, action, detail, created_at]
+    tenant_column: tenant_id
+functions:
+  allow: [count, sum, avg, min, max, coalesce, date_trunc, lower, upper, now, round, length, extract, nullif, abs, pg_sleep]
+mode: enforce

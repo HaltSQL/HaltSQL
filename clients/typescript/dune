@@ -1,0 +1,3 @@
+; Non-OCaml SDK: keep dune from scanning node_modules, build output, caches.
+
+(dirs)

@@ -19,7 +19,9 @@ env:
 jobs:
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    # Dependency review needs GitHub Advanced Security on private repositories;
+    # run it only where it is available (public repos).
+    if: github.event_name == 'pull_request' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
       contents: read

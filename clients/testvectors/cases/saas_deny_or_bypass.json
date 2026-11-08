@@ -1,0 +1,61 @@
+{
+  "name": "saas_deny_or_bypass",
+  "description": "A tenant predicate under OR proves nothing.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "SELECT id FROM orders WHERE tenant_id = $1 OR true LIMIT 10",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_TENANT_MISSING",
+        "message": "app.orders (as orders) has no provable tenant predicate on orders.tenant_id in the same SELECT",
+        "rule": "tenancy.predicate",
+        "loc": 15,
+        "hint": "Add `WHERE orders.tenant_id = $1` as a top-level AND condition inside the same SELECT that reads app.orders (not in an outer query, not under OR/NOT, not in the ON of the preserved side of an outer join)."
+      },
+      {
+        "code": "E_PARAM_UNBOUND",
+        "message": "parameter $1 is not a tenant placeholder, so its value is unknown",
+        "rule": "params.unbound",
+        "loc": 40,
+        "hint": "Use $n placeholders only as the value of a tenant predicate (e.g. o.tenant_id = $1); write other values as literals."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "select",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.id",
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "9812f912ebd8d302",
+    "sql_sha256": "d493e9759ddfcd263794cb97b1dc8ed883766f5a3a3e10bd7e11550983158a24",
+    "elapsed_us": 239
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

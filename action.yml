@@ -1,0 +1,201 @@
+name: HaltSQL policy CI
+description: >-
+  Validate, lint and test HaltSQL policies with policy test suites, write a job summary,
+  and optionally build and sign a policy bundle.
+author: HaltSQL
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  version:
+    description: HaltSQL release to install ("latest" or a tag such as v0.2.0).
+    required: false
+    default: latest
+  policies:
+    description: >-
+      Policy files: globs, files or directories, separated by whitespace or newlines
+      ('**' matches any depth). Directories are searched for *.yaml, *.yml and *.json.
+    required: false
+    default: policies
+  suites:
+    description: >-
+      Test suites (kind TestSuite): globs, files or directories. Directories are searched
+      for *.suite.yaml, *.suite.yml and *.suite.json. Empty skips the tests.
+    required: false
+    default: ""
+  fail-on-warnings:
+    description: Fail when lint-policy reports warnings.
+    required: false
+    default: "false"
+  comment-summary:
+    description: >-
+      On pull requests, also post the summary as a PR comment (updated in place). Needs
+      'pull-requests: write'.
+    required: false
+    default: "false"
+  max-denied:
+    description: Denied cases listed per suite in the summary.
+    required: false
+    default: "50"
+  working-directory:
+    description: Directory the globs are relative to.
+    required: false
+    default: "."
+  install-method:
+    description: >-
+      auto (release binary; container fallback, pinned by digest, unless verify-signature
+      is true), release, or docker.
+    required: false
+    default: auto
+  verify-signature:
+    description: >-
+      Also verify the release SHA256SUMS with cosign (requires cosign on PATH). When true,
+      a failed release download is fatal (no container fallback) and a container image is
+      used only after `cosign verify` of its digest.
+    required: false
+    default: "false"
+  haltsql-path:
+    description: Use this haltsql binary instead of installing one.
+    required: false
+    default: ""
+  bundle:
+    description: Build a policy bundle from the policies after the checks pass.
+    required: false
+    default: "false"
+  bundle-name:
+    description: Bundle name (default the repository name).
+    required: false
+    default: ""
+  bundle-version:
+    description: Bundle version (default the first 12 characters of the commit SHA).
+    required: false
+    default: ""
+  catalogs:
+    description: Catalog snapshots to ship in the bundle ([NAME=]FILE, whitespace separated).
+    required: false
+    default: ""
+  signing-key:
+    description: >-
+      PEM ed25519 private key for signing the bundle; pass a secret, e.g.
+      secrets.HALTSQL_SIGNING_KEY. Without it the bundle is unsigned.
+    required: false
+    default: ""
+  public-keys:
+    description: Public keys (files or base64) the signed bundle must verify against.
+    required: false
+    default: ""
+  upload-bundle:
+    description: Upload the bundle and its signature as a workflow artifact.
+    required: false
+    default: "true"
+  github-token:
+    description: Token for the PR comment and for resolving "latest".
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  result:
+    description: pass or fail
+    value: ${{ steps.check.outputs.result }}
+  passed:
+    description: Number of passing test cases.
+    value: ${{ steps.check.outputs.passed }}
+  failed:
+    description: Number of failing test cases.
+    value: ${{ steps.check.outputs.failed }}
+  warnings:
+    description: Number of lint warnings.
+    value: ${{ steps.check.outputs.warnings }}
+  summary-file:
+    description: Path of the Markdown summary.
+    value: ${{ steps.check.outputs.summary-file }}
+  haltsql-path:
+    description: Path of the haltsql binary that was used.
+    value: ${{ steps.install.outputs.path }}
+  bundle-path:
+    description: Path of the built bundle (when bundle is true).
+    value: ${{ steps.bundle.outputs.bundle-path }}
+  signature-path:
+    description: Path of the bundle signature (when signed).
+    value: ${{ steps.bundle.outputs.signature-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install haltsql
+      id: install
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_INSTALL_METHOD: ${{ inputs.install-method }}
+        INPUT_HALTSQL_PATH: ${{ inputs.haltsql-path }}
+        INPUT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        path=$(bash "$GITHUB_ACTION_PATH/.github/actions/policy-ci/install.sh")
+        echo "path=$path" >> "$GITHUB_OUTPUT"
+
+    - name: Validate, lint and test policies
+      id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HALTSQL: ${{ steps.install.outputs.path }}
+        INPUT_POLICIES: ${{ inputs.policies }}
+        INPUT_SUITES: ${{ inputs.suites }}
+        INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
+        INPUT_MAX_DENIED: ${{ inputs.max-denied }}
+        HALTSQL_CI_OUT: ${{ runner.temp }}/haltsql-ci
+      run: |
+        set +e
+        bash "$GITHUB_ACTION_PATH/.github/actions/policy-ci/run.sh"
+        rc=$?
+        echo "rc=$rc" >> "$GITHUB_OUTPUT"
+        # Usage/setup errors fail immediately; check failures fail after the comment.
+        if [ "$rc" -ge 2 ]; then exit "$rc"; fi
+        exit 0
+
+    - name: Comment on the pull request
+      if: >-
+        always() && inputs.comment-summary == 'true' &&
+        steps.check.outputs.summary-file != '' &&
+        (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      shell: bash
+      env:
+        SUMMARY_FILE: ${{ steps.check.outputs.summary-file }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/.github/actions/policy-ci/comment.sh"
+
+    - name: Fail on policy check failures
+      if: steps.check.outputs.rc != '0'
+      shell: bash
+      run: |
+        echo "::error::HaltSQL policy checks failed (see the job summary)"
+        exit 1
+
+    - name: Build policy bundle
+      id: bundle
+      if: inputs.bundle == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HALTSQL: ${{ steps.install.outputs.path }}
+        INPUT_POLICIES: ${{ inputs.policies }}
+        INPUT_CATALOGS: ${{ inputs.catalogs }}
+        INPUT_BUNDLE_NAME: ${{ inputs.bundle-name }}
+        INPUT_BUNDLE_VERSION: ${{ inputs.bundle-version }}
+        INPUT_PUBLIC_KEYS: ${{ inputs.public-keys }}
+        HALTSQL_SIGNING_KEY: ${{ inputs.signing-key }}
+        HALTSQL_CI_OUT: ${{ runner.temp }}/haltsql-ci
+      run: bash "$GITHUB_ACTION_PATH/.github/actions/policy-ci/bundle.sh" > /dev/null
+
+    - name: Upload policy bundle
+      if: inputs.bundle == 'true' && inputs.upload-bundle == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: haltsql-policy-bundle
+        path: |
+          ${{ steps.bundle.outputs.bundle-path }}
+          ${{ steps.bundle.outputs.signature-path }}
+        if-no-files-found: error

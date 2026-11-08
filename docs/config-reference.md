@@ -1,7 +1,9 @@
 # Config reference
 
-A config controls how the CLI and `haltsql-server` run: where to listen, who
-may call, which policies to load, audit logging, and metrics. It is a YAML
+A config controls how the CLI and `haltsql-server` run: where to listen, TLS,
+who may call (static tokens, OIDC, mTLS), which policies to load (files,
+inline, or signed bundles), audit logging (stdout, files, S3, GCS), metrics
+and OpenTelemetry, and where secrets come from. It is a YAML
 or JSON document with `kind: Config`, loaded with the same rules as a policy
 (see [policy-reference.md](policy-reference.md#loading-rules)): unknown and
 duplicate keys are errors, and errors are located by file, line, and key path.
@@ -47,7 +49,59 @@ limits:
 
 Top-level keys: `apiVersion` (`haltsql.dev/v1`), `kind` (`Config`), `server`,
 `policies`, `default_policy`, `reload`, `audit`, `telemetry`, `logging`,
-`limits`. Any other key is an error.
+`limits`, `secrets`. Any other key is an error.
+
+A larger example using the enterprise features:
+
+```yaml
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 0.0.0.0:8443
+  tls:
+    cert: /etc/haltsql/tls/server.crt
+    key: /etc/haltsql/tls/server.key
+    client_ca: /etc/haltsql/tls/clients-ca.pem
+    client_auth: optional            # mTLS identities below, OIDC for everyone else
+    min_version: "1.3"
+  auth:
+    oidc:
+      - name: corp-okta
+        issuer: https://corp.okta.com/oauth2/default
+        audiences: [haltsql]
+        policy_claim: haltsql_policy
+        allowed_policies: [saas-analytics, support-bot]
+        context_claims:
+          tenant_id: https://corp.example/tenant
+          user_id: sub
+        required_claims:
+          scope: sql.verify
+    mtls:
+      identities:
+        - spiffe_id: spiffe://corp.example/ns/agents/sa/analytics
+          policy: saas-analytics
+          context: { tenant_id: acme }
+policies:
+  - path: ./policies/support-bot.yaml
+  - bundle: ./bundles/prod.haltsqlbundle
+    public_keys: [./keys/release.pub]
+audit:
+  sinks:
+    - type: s3
+      bucket: corp-haltsql-audit
+      region: eu-west-1
+      object_lock: { mode: COMPLIANCE, retain_days: 365 }
+      credentials: { source: web_identity }
+telemetry:
+  otlp:
+    endpoint: http://otel-collector:4318
+    headers:
+      authorization: "Bearer ${vault:secret/data/haltsql/otel#token}"
+secrets:
+  vault:
+    address: https://vault.corp.example:8200
+    auth: { method: kubernetes, role: haltsql }
+```
 
 ## Keys
 
@@ -56,8 +110,10 @@ Top-level keys: `apiVersion` (`haltsql.dev/v1`), `kind` (`Config`), `server`,
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `server.listen` | string `host:port` | `127.0.0.1:8080` | Address the HTTP server binds to. |
-| `server.tls.cert`, `server.tls.key` | path | none | Reserved. **`haltsql-server` 0.1.0 has no built-in TLS** and refuses to start if `server.tls` is set, so that nobody believes traffic is encrypted when it is not. Terminate TLS in front of the server (Envoy, nginx, or a service mesh such as Istio or Linkerd) and bind the server to `127.0.0.1` or a pod-local address. |
+| `server.tls` | mapping | none | Built-in TLS (see [server.tls](#servertls)). Without it, terminate TLS in front of the server (Envoy, nginx, or a service mesh) and bind to `127.0.0.1` or a pod-local address. See [authentication.md](authentication.md). |
 | `server.auth.tokens` | list | `[]` | Bearer tokens (see below). |
+| `server.auth.oidc` | list | `[]` | OpenID Connect providers whose JWTs are accepted (see [server.auth.oidc](#serverauthoidc)). |
+| `server.auth.mtls` | mapping | none | Client-certificate identities (see [server.auth.mtls](#serverauthmtls)). |
 | `server.auth.allow_unauthenticated` | boolean | `false` | Accept requests without a token. For local development only. |
 
 Each token entry:
@@ -76,6 +132,69 @@ token="$(openssl rand -hex 32)"
 printf '%s' "$token" | sha256sum | cut -d' ' -f1    # goes in token_sha256
 ```
 
+### server.tls
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `cert` | path or PEM | none | Server certificate chain. Required together with `key`. |
+| `key` | path or PEM | none | Private key. Required together with `cert`. Always shown as `<redacted>` by `config show`. |
+| `client_ca` | path or PEM | none | CA bundle used to verify client certificates (enables mTLS). |
+| `client_auth` | `none`, `optional`, `required` | `none` | Whether client certificates are requested. `optional` and `required` need `client_ca`. |
+| `min_version` | `"1.2"`, `"1.3"` | `"1.2"` | Minimum TLS version. |
+
+Relative paths are resolved against the config file's directory. A value
+that starts with `-----BEGIN` (for example from `${file:...}` or a secret
+provider) is used as inline PEM. Setting `client_ca`, `client_auth` or
+`min_version` without `cert` and `key` is an error.
+
+### server.auth.oidc
+
+Each entry describes one OpenID Connect provider. A request whose bearer
+token is a JWT signed by the provider is authenticated by it.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | required | Unique provider name, used in logs and audit events. |
+| `issuer` | URL | required | Must equal the token's `iss`. `https` only (no credentials, query or fragment); `http` only with `allow_insecure_http: true`. |
+| `audiences` | list | required | Non-empty; the token's `aud` must contain one of them. |
+| `jwks_uri` | URL | discovered | Default: `jwks_uri` from `<issuer>/.well-known/openid-configuration`. |
+| `algorithms` | list | `[RS256, ES256]` | Subset of `RS256 RS384 RS512 PS256 ES256 ES384 EdDSA`. `none` and `HS*` are rejected. |
+| `leeway_seconds` | integer 0-300 | `60` | Clock skew allowed for `exp`, `nbf`, `iat`. |
+| `jwks_cache_seconds` | integer 10-86400 | `300` | How long fetched keys are cached. |
+| `policy` | string | none | Pin every token from this provider to one policy. |
+| `policy_claim` | claim path | none | Instead of `policy`: the claim whose value names the policy. Needs `allowed_policies`. |
+| `allowed_policies` | list | none | The only policies `policy_claim` may select (non-empty). |
+| `context_claims` | map | `{}` | Context field -> claim path. The path is first tried as one claim name (so `https://corp.example/tenant` works), then as a dot path (`org.id`). |
+| `required_claims` | map | `{}` | Claim -> string or list. A string must equal the claim, or be contained in it when the claim is an array or a space-separated string such as `scope`. A list requires every value. |
+| `request_context_fields` | list | `[]` | Context fields the request body may still supply. They must not also appear in `context_claims`. |
+| `allow_insecure_http` | boolean | `false` | Allow `http` issuer and JWKS URLs. For tests only. |
+
+Exactly one of `policy` or `policy_claim` is required. Every referenced policy
+must be loaded (see [policies](#policies) for bundles).
+
+### server.auth.mtls
+
+```yaml
+server:
+  auth:
+    mtls:
+      identities:
+        - spiffe_id: spiffe://corp.example/ns/agents/sa/analytics   # exact URI SAN
+          policy: saas-analytics
+          context: { tenant_id: acme, region: [eu-1, eu-2] }
+          request_context_fields: [user_id]
+        - subject_cn: support-bot                                  # exact subject CN
+          policy: support-bot
+```
+
+Each identity has exactly one of `spiffe_id` (a valid `spiffe://` URI with a
+lower-case trust domain) or `subject_cn`, a `policy`, an optional static
+`context` (strings, integers or non-empty lists of those) and
+`request_context_fields` (default `[]`, must not repeat a static context
+field). Identities must be unique. Non-empty `identities` require
+`server.tls.client_ca` and `server.tls.client_auth` set to `optional` or
+`required`.
+
 ### policies
 
 A list of policies to load. Each entry is one of:
@@ -84,9 +203,18 @@ A list of policies to load. Each entry is one of:
 |---|---|
 | `{ path: FILE }` | Load a policy file (YAML or JSON). Relative paths are resolved against the config file's directory. |
 | `{ inline: { ...policy document... } }` | Embed a whole policy document, so a small deployment can be one file. |
+| `{ bundle: FILE, public_keys: [...], name_prefix: STR }` | A signed `.haltsqlbundle`. `public_keys` (non-empty) lists trusted ed25519 keys, each a file path, inline PEM (`-----BEGIN PUBLIC KEY-----`) or the base64 of the 32 raw key bytes. `name_prefix` (optional) is prepended to the names of the bundle's policies. |
 
 Policy names (`metadata.name`) must be unique. Every token's `policy` must
-name a loaded policy. If any policy fails to load, the whole config fails to
+name a loaded policy.
+
+Bundles are parsed and checked when the config loads, but they are verified
+and loaded by the server afterwards. So when a config lists bundles, a policy
+name used by a token, OIDC provider, mTLS identity or `default_policy` that is
+not one of the plain policies is accepted at config load time. If every bundle
+has a `name_prefix`, such a name must start with one of them. The server
+re-validates every reference after loading the bundles and refuses to start
+(or rejects the reload) if one is still missing. If any policy fails to load, the whole config fails to
 load (at startup) or the reload is rejected and the last good set stays active
 (at runtime).
 
@@ -106,15 +234,62 @@ Must name a loaded policy. Default: none.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `audit.sinks` | list | `[{type: stdout}]` | Where audit events go: `{type: stdout}` or `{type: file, path: FILE}` (relative paths are resolved against the config file's directory). If a sink cannot be written, the request is refused with HTTP 503 (fail closed). |
+| `audit.sinks` | list | `[{type: stdout}]` | Where audit events go: `stdout`, `file`, `s3` or `gcs` (below). |
 | `audit.log_raw_sql` | boolean | `false` | Include the raw SQL in audit events. Off by default because SQL can contain sensitive literals; events always include `sql_sha256` and the fingerprint. |
+
+Every sink accepts `on_error`: `fail_closed` (default; if the sink cannot be
+written, requests are refused with HTTP 503) or `buffer` (records are kept in
+memory and retried).
+
+| Sink | Keys |
+|---|---|
+| `stdout` | `type`, `on_error` |
+| `file` | `type`, `path` (relative to the config file), `on_error` |
+| `s3` | `type`, `bucket`, `region` (required); `prefix` (default `haltsql/audit/`), `endpoint` (S3-compatible URL, e.g. MinIO), `object_lock: {mode: GOVERNANCE\|COMPLIANCE, retain_days: 1-36500}`, `batch`, `credentials`, `spool_dir`, `on_error` |
+| `gcs` | `type`, `bucket` (required); `prefix` (default `haltsql/audit/`), `batch`, `credentials`, `spool_dir`, `on_error` |
+
+`batch`: `max_records` (1-100000, default 500) and `max_seconds` (1-3600,
+default 10).
+
+`spool_dir` (s3/gcs, optional, relative to the config file; one directory per
+sink, on persistent storage): records are spooled there before upload, and
+the hash-chain head and object sequence number are persisted, so after a
+restart or crash the chain continues instead of starting again at genesis,
+and a batch uploaded just before a crash is not stored twice. Without it,
+each process starts a new chain (see
+[Audit sinks](audit-sinks.md#restarts-and-chain-continuity)).
+
+S3 `credentials.source`: `env` (default; the standard `AWS_*` variables),
+`static` (needs `access_key_id` and `secret_access_key`, optional
+`session_token`; use secret placeholders and never write keys in the file),
+`web_identity` (IRSA / OIDC federation) or `instance` (instance profile).
+The static keys are only allowed with `source: static`.
+
+GCS `credentials.source`: `metadata` (default) or `service_account_file`
+(needs `file`, relative to the config file).
+
+Bucket names are validated (3-63 characters; S3: lower-case letters, digits,
+`.` and `-`; GCS also `_`). A `prefix` must not start with `/` or contain `..`.
 
 ### telemetry
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `telemetry.metrics.prometheus` | boolean | `true` | Serve Prometheus metrics at `GET /metrics`. |
-| `telemetry.otlp_endpoint` | string | none | Reserved for OpenTelemetry export; accepted but not used in 0.1.0. |
+| `telemetry.otlp` | mapping | none | OpenTelemetry (OTLP/HTTP) export, below. |
+| `telemetry.otlp_endpoint` | URL | none | Legacy shorthand for `telemetry.otlp.endpoint` with all other defaults. Cannot be combined with `telemetry.otlp`. Must be an `http(s)` URL. |
+
+`telemetry.otlp`:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `endpoint` | URL | required | Collector base URL, e.g. `http://collector:4318`. |
+| `headers` | map | `{}` | Extra HTTP headers. Values may use secret placeholders, must not contain CR/LF, and are redacted by `config show`. |
+| `service_name` | string | `haltsql` | `service.name` resource attribute. |
+| `traces` | boolean | `true` | Export traces. |
+| `metrics` | boolean | `true` | Export metrics. |
+| `export_interval_seconds` | integer 1-3600 | `15` | Metric export interval. |
+| `timeout_seconds` | integer 1-300 | `5` | Export request timeout. |
 
 ### logging
 
@@ -129,7 +304,24 @@ Must name a loaded policy. Default: none.
 |---|---|---|---|
 | `limits.max_request_bytes` | integer (1024 to 67108864) | `1048576` | Largest accepted HTTP request body. Larger requests get HTTP 413. |
 
-## Secrets: `${env:NAME}` and `${file:/path}`
+### secrets
+
+Configures the secret providers used by the `${vault:...}`, `${aws-sm:...}`
+and `${gcp-sm:...}` placeholders. Values in this section may only use
+`${env:...}` and `${file:...}` (a provider cannot configure itself).
+
+| Key | Meaning |
+|---|---|
+| `secrets.vault.address` | Vault URL. `https`, or `http` for loopback addresses only. |
+| `secrets.vault.namespace` | Vault Enterprise namespace (optional). |
+| `secrets.vault.auth.method` | `token` (needs `token`), `kubernetes` (needs `role`; `jwt_path` defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`, `mount` to `kubernetes`) or `approle` (needs `role_id` and `secret_id`; `mount` defaults to `approle`). Fields of other methods are errors. |
+| `secrets.vault.ca_file` | CA bundle for the Vault server certificate (optional). |
+| `secrets.aws.region`, `secrets.aws.endpoint` | AWS Secrets Manager region (required) and optional endpoint (tests). |
+| `secrets.gcp.project`, `secrets.gcp.endpoint` | Default project for short secret names, and optional endpoint (tests). |
+
+Vault tokens, AppRole role and secret ids are redacted by `config show`.
+
+## Secrets: placeholders
 
 Config values can load secrets without writing them into the file:
 
@@ -137,12 +329,21 @@ Config values can load secrets without writing them into the file:
 |---|---|
 | `${env:NAME}` | The value of environment variable `NAME`. |
 | `${file:/path}` | The contents of the file (at most 1 MiB), with one trailing newline (`\n` or `\r\n`) removed. Relative paths are resolved against the config file's directory. |
+| `${vault:<path>#<field>}` | Field `<field>` of the Vault secret at `<path>` (e.g. `secret/data/haltsql/otel#token`). |
+| `${aws-sm:<secret-id>[#<json-key>]}` | An AWS Secrets Manager secret, or one key of its JSON value. |
+| `${gcp-sm:<name>[#<json-key>]}` | A Google Secret Manager secret (`projects/P/secrets/S/versions/V` or a short name in `secrets.gcp.project`), or one key of its JSON value. |
 | `$${` | A literal `${`. |
+
+The provider placeholders are resolved by the program loading the config
+(the server and CLI build a resolver from the `secrets` section first, then
+load the rest). A provider placeholder in a program or context with no
+resolver is a load error ("secret provider not configured"). Each distinct
+reference is fetched once per load.
 
 Rules:
 
-- A placeholder that cannot be resolved (unset variable, unreadable file) is a
-  load error. HaltSQL never substitutes an empty string.
+- A placeholder that cannot be resolved (unset variable, unreadable file,
+  missing secret) is a load error. HaltSQL never substitutes an empty string.
 - Placeholders are allowed only in `Config` documents. They are rejected in
   policies, which may only use `${ctx.*}`.
 - Resolved secrets are never printed. `haltsql config show` replaces them with

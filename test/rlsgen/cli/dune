@@ -1,0 +1,9 @@
+; Builds the `haltsql rls` command group stand-alone (the real CLI registers
+; Cmd_rls.cmd in bin/haltsql/main.ml). Used by the golden and CLI tests.
+
+(copy_files# %{project_root}/bin/haltsql/{common,cmd_rls}.ml)
+
+(executable
+ (name rls_cli)
+ (modules common cmd_rls rls_cli)
+ (libraries haltsql haltsql.rlsgen cmdliner yojson unix lwt lwt.unix))

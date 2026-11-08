@@ -70,13 +70,13 @@ let rec conjuncts (e : Ast.expr) =
 let is_eq_name = function [ "=" ] | [ "pg_catalog"; "=" ] -> true | _ -> false
 
 type value_side =
-  | V_param of int
+  | V_param of int * int  (** [(n, loc)] of the [$n] node *)
   | V_lit of [ `Int of string | `Str of string ]
   | V_other
 
 let value_side (e : Ast.expr) =
   match strip_safe_casts e with
-  | Some (Ast.Param { number; _ }) -> V_param number
+  | Some (Ast.Param { number; loc }) -> V_param (number, loc)
   | Some (Ast.Const { value = Ast.Int s; _ }) -> V_lit (`Int s)
   | Some (Ast.Const { value = Ast.String s; _ }) -> V_lit (`Str s)
   | Some
@@ -119,7 +119,8 @@ let rec col_side scope ~item ~col (e : Ast.expr) =
 
 (** Outcome of examining one conjunct for one (occurrence, column). *)
 type outcome =
-  | Proof of (int * Context.value) list  (** bound params *)
+  | Proof of (int * Context.value * int) list
+      (** bound params: [(n, value, loc of the $n node)] *)
   | Mismatch of string  (** literal value that is not the tenant's *)
   | Cast_on_column
   | Needs_any  (** [= $n] / [IN ($n)] with a multi-valued context *)
@@ -171,7 +172,7 @@ let examine (env : Env.t) scope ~item ~col (v : Context.value) (c : Ast.expr) =
   let side = col_side scope ~item ~col in
   let eq_value (value : Ast.expr) =
     match (value_side value, mode, v) with
-    | V_param n, Policy.Bound, Context.One s -> Proof [ (n, Context.One s) ]
+    | V_param (n, pl), Policy.Bound, Context.One s -> Proof [ (n, Context.One s, pl) ]
     | V_param _, Policy.Bound, Context.Many _ -> Needs_any
     | V_param _, Policy.Literal, _ -> Param_in_literal
     | V_lit _, Policy.Bound, _ -> Literal_in_bound
@@ -197,9 +198,9 @@ let examine (env : Env.t) scope ~item ~col (v : Context.value) (c : Ast.expr) =
     when is_eq_name name ->
       with_col_side l (fun () ->
           match value_side r with
-          | V_param n -> (
+          | V_param (n, pl) -> (
               match mode with
-              | Policy.Bound -> Proof [ (n, Context.Many allowed) ]
+              | Policy.Bound -> Proof [ (n, Context.Many allowed, pl) ]
               | Policy.Literal -> Param_in_literal)
           | V_lit _ -> No_match
           | V_other -> (
@@ -325,7 +326,8 @@ let check_level (env : Env.t) (scope : Scope.t) ~(items : Scope.item list)
                   in
                   if proofs <> [] then
                     List.iter
-                      (List.iter (fun (n, value) -> Env.add_binding env n value it.loc))
+                      (List.iter (fun (n, value, pl) ->
+                           Env.add_binding env n value ~ploc:pl it.loc))
                       proofs
                   else if not any_mismatch then begin
                     let has p = List.exists (fun (_, o) -> p o) outcomes in
@@ -385,9 +387,9 @@ let check_insert_value (env : Env.t) ~(tb : Policy.table) ~col ~key ~loc
       | None -> bad " (the row has no value for it)"
       | Some e -> (
           match (value_side e, env.policy.tenancy.mode) with
-          | V_param n, Policy.Bound -> (
+          | V_param (n, pl), Policy.Bound -> (
               match single with
-              | Some s -> Env.add_binding env n (Context.One s) loc
+              | Some s -> Env.add_binding env n (Context.One s) ~ploc:pl loc
               | None ->
                   bad
                     " (the context holds several tenant values; a placeholder is \

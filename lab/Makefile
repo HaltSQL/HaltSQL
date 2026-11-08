@@ -4,7 +4,7 @@ COMPOSE ?= docker compose -f infra/compose/docker-compose.yml
 PROFILE ?=
 SCENARIO ?= scenarios/pr-smoke.yaml
 
-.PHONY: venv up down run smoke selftest matrix validate test test-integration clean
+.PHONY: venv up down run smoke proxy-smoke selftest matrix validate test test-integration clean
 
 venv:
 	test -x $(PY) || (python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt)
@@ -20,6 +20,10 @@ run: venv
 
 smoke: venv
 	$(PY) -m harness run scenarios/pr-smoke.yaml
+
+# Sends every generated query through a live haltsql-proxy (see proxy/README.md).
+proxy-smoke: venv
+	$(PY) -m proxy run proxy/scenarios/proxy-smoke.yaml
 
 selftest: venv
 	$(PY) -m harness run scenarios/oracle-selftest.yaml --fake-verifier allow

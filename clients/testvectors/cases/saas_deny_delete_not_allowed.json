@@ -1,0 +1,60 @@
+{
+  "name": "saas_deny_delete_not_allowed",
+  "description": "Statement kind not allowed.",
+  "policy_file": "test/fixtures/policies/saas.yaml",
+  "request": {
+    "sql": "DELETE FROM orders WHERE tenant_id = $1",
+    "context": {
+      "tenant_id": "acme"
+    },
+    "policy": "saas"
+  },
+  "verdict": {
+    "allowed": false,
+    "reasons": [
+      {
+        "code": "E_STATEMENT_KIND",
+        "message": "DELETE statements are not allowed by this policy",
+        "rule": "statement.kind",
+        "loc": 0,
+        "hint": "Only these statement kinds are allowed: select."
+      },
+      {
+        "code": "E_WRITE_DENIED",
+        "message": "DELETE on app.orders is not allowed by this policy",
+        "rule": "writes.table",
+        "loc": 0,
+        "hint": "Do not delete app.orders."
+      }
+    ],
+    "shadow_reasons": [],
+    "policy": {
+      "name": "saas",
+      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+    },
+    "statement_kind": "delete",
+    "tables": [
+      "app.orders"
+    ],
+    "columns": [
+      "app.orders.tenant_id"
+    ],
+    "bind_params": [],
+    "fingerprint": "f1f952aa4b63d59c",
+    "sql_sha256": "f1f6ccbbd0ce120df4290aea38e629cbab4981e07ace2c670094b6e818e0661d",
+    "elapsed_us": 231
+  },
+  "compare": [
+    "allowed",
+    "reasons[].code",
+    "shadow_reasons[].code",
+    "policy.name",
+    "policy.version",
+    "statement_kind",
+    "tables",
+    "columns",
+    "bind_params",
+    "fingerprint",
+    "sql_sha256"
+  ]
+}

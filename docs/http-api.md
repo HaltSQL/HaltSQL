@@ -14,16 +14,42 @@ haltsql-server --policy policy.yaml --listen 127.0.0.1:8080
 
 ## Authentication
 
-Requests to `/v1/*` carry a bearer token:
+Requests to `/v1/*` are authenticated in this order (details, examples and
+the threat model in [authentication.md](authentication.md)):
+
+1. **mTLS identity.** With built-in TLS (`server.tls`) and client
+   certificates enabled, a certificate issued by `server.tls.client_ca` whose
+   SPIFFE ID (URI SAN) or subject CN matches a `server.auth.mtls` identity
+   authenticates the request. The identity pins the policy and supplies a
+   static context. A valid certificate that matches no identity falls through
+   to bearer authentication.
+2. **OIDC bearer token.** A bearer token that is a JWT whose (unverified)
+   `iss` equals a configured `server.auth.oidc` issuer is verified by that
+   provider: signature against the provider's JWKS (RS256/RS384/RS512/PS256/
+   ES256/ES384/EdDSA; never `none` or HMAC), `iss`, `aud`, `exp`/`nbf`/`iat`
+   with leeway, and `required_claims`. The policy is pinned by the provider or
+   selected by a claim from `allowed_policies`; `context_claims` become the
+   context.
+3. **Static bearer token.** Anything else is compared (constant time) with the
+   SHA-256 hashes in `server.auth.tokens`.
 
 ```
 Authorization: Bearer <token>
 ```
 
-The server stores only the SHA-256 of each token (`token_sha256` in the
-config). **Each token is pinned to exactly one policy**, so a caller cannot pick
-a looser policy than the one it was given. Health, readiness, and metrics
-endpoints do not require a token; restrict them at the network level if needed.
+**Every caller is pinned to exactly one policy**, so it cannot pick a looser
+policy than the one it was given.
+
+**Context from the identity is authoritative.** For OIDC and mTLS callers the
+request body's `context` may only set the fields listed in the identity's
+`request_context_fields`. Any other field is refused with
+`403 CONTEXT_NOT_ALLOWED`, never silently overridden (repeating an
+identity-provided field with exactly the same value is accepted). Static
+tokens and unauthenticated requests supply the whole context in the body.
+
+Health, readiness, and metrics endpoints do not require a token; restrict them
+at the network level if needed, or serve the probes on a separate plain-HTTP
+port with `--health-listen` (only `/healthz` and `/readyz` are served there).
 
 If `server.auth.allow_unauthenticated` is `true` (development only), requests
 without a token use the `policy` named in the request, or `default_policy`.
@@ -46,7 +72,7 @@ Request:
 |---|---|---|---|
 | `sql` | string | yes | The exact SQL string to verify. |
 | `context` | object | no | Context values from the caller's authenticated session: strings, integers, or arrays of those. Default `{}`. |
-| `policy` | string | no | Policy name. With a token, it may be omitted; if given, it must equal the token's pinned policy. |
+| `policy` | string | no | Policy name. For an authenticated caller it may be omitted; if given, it must equal the caller's pinned policy. |
 
 Response `200 OK` with the [verdict JSON](verdict.md), for **both** allowed and
 denied queries. A denial is a normal result, not an HTTP error:
@@ -76,8 +102,9 @@ Errors use HTTP status codes and a JSON body:
 | Status | `error.code` | When |
 |---|---|---|
 | `400` | `BAD_REQUEST` | Body is not JSON, `sql` is missing or not a string, or `context` is invalid. |
-| `401` | `UNAUTHORIZED` | Missing or invalid bearer token (with a `WWW-Authenticate: Bearer` header). |
-| `403` | `FORBIDDEN` | The requested `policy` is not the token's pinned policy. |
+| `401` | `UNAUTHORIZED` | Missing or invalid bearer token, or a JWT rejected by its OIDC provider (expired, wrong audience, bad signature, ...; the message says why). Sent with a `WWW-Authenticate: Bearer` header. |
+| `403` | `FORBIDDEN` | The requested `policy` is not the caller's pinned policy. |
+| `403` | `CONTEXT_NOT_ALLOWED` | The body's `context` sets a field the caller's OIDC or mTLS identity does not allow (see [Authentication](#authentication)). |
 | `404` | `POLICY_NOT_FOUND` | The request names an unknown policy, or names none and no default policy is configured. |
 | `404` | `NOT_FOUND` | Unknown path. |
 | `405` | `METHOD_NOT_ALLOWED` | Wrong HTTP method (with an `Allow` header). |
@@ -86,6 +113,7 @@ Errors use HTTP status codes and a JSON body:
 | `503` | `NOT_READY` | No policy is loaded. |
 | `503` | `POLICY_UNAVAILABLE` | The token's pinned policy is not currently loaded. |
 | `503` | `AUDIT_UNAVAILABLE` | The audit record could not be written, so the request is refused (fail closed). |
+| `503` | `AUTH_UNAVAILABLE` | The OIDC provider's signing keys could not be fetched and no usable cached keys remain (fail closed; sent with `Retry-After`). |
 
 Every response carries an `X-Request-Id` header. Send your own `X-Request-Id`
 to correlate logs; otherwise the server generates one.
@@ -127,6 +155,12 @@ policy is loaded, otherwise `503 {"status":"not_ready","policies":0}`. Also
 accepts `HEAD`. A failed hot reload does not
 make the server unready: the last good policies stay active.
 
+It is also `503` while an audit sink refuses writes: an S3/GCS sink in
+`fail_closed` mode after a failed upload, or one whose `buffer` is full. The
+body then lists those sinks:
+`{"status":"not_ready","policies":N,"unhealthy_audit_sinks":["s3://bucket/prefix/"]}`.
+See [audit-sinks.md](audit-sinks.md).
+
 ## GET /metrics
 
 Prometheus text format, when `telemetry.metrics.prometheus` is enabled.
@@ -142,6 +176,8 @@ Metric names (stable within `/v1`):
 | `haltsql_policy_reload_total` | counter | `result` | Policy reload attempts. |
 | `haltsql_audit_errors_total` | counter | none | Audit sink write failures. |
 | `haltsql_http_requests_total` | counter | `route`, `status` | HTTP requests. |
+| `haltsql_auth_total` | counter | `method` (`token`, `oidc`, `mtls`, `anonymous`, `none`), `result` (`ok`, `rejected`, `unavailable`) | Caller authentication attempts. |
+| `haltsql_tls_reload_total` | counter | `result` | TLS certificate reload attempts. |
 
 Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
 `haltsql_audit_errors_total`, and failed policy reloads.
@@ -152,13 +188,22 @@ Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
   1 MiB). The policy's `limits.max_bytes` (default 16 KiB) applies to the SQL
   itself and gives `E_LIMIT`.
 - **Hot reload:** `SIGHUP`, or file watching (`--watch` / `reload.watch`,
-  polled every 2 seconds), reloads policies atomically.
+  polled every 2 seconds), reloads policies, tokens, OIDC and mTLS settings
+  and TLS material atomically (OIDC key caches of unchanged providers are
+  kept). Enabling or disabling TLS needs a restart.
   Invalid policies are rejected and the last good set stays active.
-- **Audit:** each request produces an audit event with the token name, policy
-  version, fingerprint, SQL hash, verdict, and reason codes. Raw SQL is logged
-  only if `audit.log_raw_sql` is enabled.
+- **Audit:** each request produces an audit event with the caller (token
+  name, `oidc:<provider>` or `mtls:<subject>`), `caller_type` (`token`,
+  `oidc`, `mtls`, `anonymous`), `subject` (OIDC `sub`, SPIFFE ID or
+  certificate CN; `null` for static tokens), policy version, fingerprint, SQL
+  hash, verdict, and reason codes. Raw tokens are never logged. Raw SQL is
+  logged only if `audit.log_raw_sql` is enabled.
 - **Audit is fail-closed:** if an audit sink cannot be written, `/v1/verify`
   returns `503 AUDIT_UNAVAILABLE` instead of a verdict.
-- **TLS is not built into `haltsql-server` in 0.1.0.** Keep the listener on
-  `127.0.0.1` inside the same pod as the agent, or terminate TLS in a proxy or
-  service mesh in front of it.
+- **TLS:** `server.tls` enables built-in TLS 1.2/1.3 (ECDHE + AEAD ciphers
+  only; `min_version: "1.3"` for TLS 1.3 only) with optional or required
+  client certificates. `SIGHUP` or file watching reloads the certificate,
+  key and client CA without dropping the listener; a broken or mismatched
+  key keeps the previous material. Without `server.tls`, keep the listener on
+  `127.0.0.1` inside the agent's pod, or terminate TLS in a proxy or service
+  mesh in front of it.

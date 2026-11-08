@@ -1,0 +1,26 @@
+; Bundle library tests and a stand-alone CLI built from bin/haltsql/cmd_bundle.ml
+; (so its exit codes can be tested before the command is registered in main.ml).
+
+(copy_files#
+ (files %{project_root}/bin/haltsql/{common,cmd_bundle}.ml))
+
+(executable
+ (name bundle_cli)
+ (modules bundle_cli common cmd_bundle)
+ (libraries haltsql haltsql.bundle cmdliner yojson unix))
+
+(test
+ (name test_bundle)
+ (modules test_bundle)
+ (libraries
+  unix
+  haltsql
+  haltsql.core
+  haltsql.load
+  haltsql.bundle
+  alcotest
+  yojson
+  digestif)
+ (deps
+  bundle_cli.exe
+  (source_tree %{project_root}/examples)))

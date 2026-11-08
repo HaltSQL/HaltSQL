@@ -1,0 +1,27 @@
+; haltsql.catalog_tools: catalog snapshots from a live Postgres (schema pull), PII
+; metadata importers (dbt, DataHub, Unity Catalog, Atlan, Collibra) and the starter
+; policy drafter. Kept out of the core library so `haltsql.core`/`haltsql` stay free of
+; network and TLS dependencies.
+
+(library
+ (name haltsql_catalog_tools)
+ (public_name haltsql.catalog_tools)
+ (libraries
+  haltsql.core
+  haltsql.load
+  yojson
+  digestif
+  base64
+  lwt
+  lwt.unix
+  tls
+  tls-lwt
+  x509
+  ca-certs
+  domain-name
+  ipaddr
+  ptime
+  ptime.clock.os
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix))
