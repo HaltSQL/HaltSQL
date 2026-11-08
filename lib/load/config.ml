@@ -147,6 +147,141 @@ type bundle_ref = {
   name_prefix : string option;
 }
 
+(* Tier 3: streaming audit sinks, remote bundle sources, OIDC group mapping,
+   OPA, admin API. *)
+
+type stream_on_error = Stream_fail_closed | Stream_buffer | Stream_drop
+
+type stream_batch = {
+  batch_max_records : int;
+  batch_max_bytes : int;
+  flush_interval_ms : int;
+}
+
+type es_auth =
+  | Es_api_key of string
+  | Es_basic of { username : string; password : string }
+
+type es_target = Es_index of string | Es_data_stream of string
+
+type es_sink = {
+  es_urls : string list;
+  es_target : es_target;
+  es_auth : es_auth option;
+  es_pipeline : string option;
+  es_ca : pem option;
+  es_timeout_ms : int;
+  es_batch : stream_batch;
+}
+
+type kafka_acks = Acks_all | Acks_leader
+type sasl_mechanism = Sasl_plain | Sasl_scram_sha_256 | Sasl_scram_sha_512
+
+type kafka_tls = {
+  kafka_ca : pem option;
+  kafka_cert : pem option;
+  kafka_key : pem option;
+}
+
+type kafka_sasl = {
+  sasl_mechanism : sasl_mechanism;
+  sasl_username : string;
+  sasl_password : string;
+}
+
+type kafka_sink = {
+  kafka_brokers : string list;
+  kafka_topic : string;
+  kafka_client_id : string;
+  kafka_acks : kafka_acks;
+  kafka_tls : kafka_tls option;
+  kafka_sasl : kafka_sasl option;
+  kafka_batch : stream_batch;
+}
+
+type stream_sink_kind = Stream_elasticsearch of es_sink | Stream_kafka of kafka_sink
+
+type stream_sink = {
+  stream : stream_sink_kind;
+  stream_on_error : stream_on_error;
+  max_buffer_records : int;
+  sink_index : int;
+}
+
+type oci_source = {
+  oci_reference : string;
+  oci_registry : string;
+  oci_repository : string;
+  oci_tag : string option;
+  oci_digest : string option;
+  oci_plain_http : bool;
+}
+
+type s3_source = {
+  src_bucket : string;
+  src_key : string;
+  src_region : string;
+  src_endpoint : string option;
+  src_credentials : s3_credentials;
+}
+
+type bundle_location =
+  | Source_oci of oci_source
+  | Source_s3 of s3_source
+  | Source_https of string
+
+type source_auth =
+  | Source_basic of { username : string; password : string }
+  | Source_token of string
+
+type bundle_source = {
+  location : bundle_location;
+  source_public_keys : public_key list;
+  source_name_prefix : string option;
+  poll_interval_s : int;
+  cache_dir : string option;
+  source_auth : source_auth option;
+}
+
+type group_rule = { group : string; group_policy : string }
+
+type groups_policy = {
+  groups_claim : string;
+  group_rules : group_rule list;
+  group_default : string option;
+}
+
+type opa_on_error = Opa_deny | Opa_allow_haltsql_verdict
+
+type opa = {
+  opa_url : string;
+  decision_path : string;
+  opa_timeout_ms : int;
+  opa_on_error : opa_on_error;
+  opa_headers : (string * string) list;
+  opa_ca : pem option;
+}
+
+type admin_caller =
+  | Admin_token of string
+  | Admin_oidc of string
+  | Admin_mtls of mtls_match
+
+type admin = {
+  admin_enabled : bool;
+  admin_callers : admin_caller list;
+  report_window_seconds : int;
+  max_tracked_queries : int;
+}
+
+let default_admin =
+  {
+    admin_enabled = false;
+    admin_callers = [];
+    report_window_seconds = 86_400;
+    max_tracked_queries = 10_000;
+  }
+
 type t = {
   listen : string;
   tls_cert : string option;
@@ -170,6 +305,11 @@ type t = {
   sinks : sink list;
   secrets : secrets;
   policy_bundles : bundle_ref list;
+  stream_sinks : stream_sink list;
+  bundle_sources : bundle_source list;
+  oidc_group_policies : (string * groups_policy) list;
+  opa : opa option;
+  admin : admin;
 }
 
 let default =
@@ -196,7 +336,27 @@ let default =
     sinks = [ { sink = Sink_stdout; on_error = Fail_closed } ];
     secrets = no_secrets;
     policy_bundles = [];
+    stream_sinks = [];
+    bundle_sources = [];
+    oidc_group_policies = [];
+    opa = None;
+    admin = default_admin;
   }
+
+let groups_policy_of c (o : oidc_provider) =
+  List.assoc_opt o.oidc_name c.oidc_group_policies
+
+let groups_of_claim : Yojson.Safe.t -> string list option = function
+  | `String s -> Some [ s ]
+  | `List l ->
+      let strs = List.filter_map (function `String s -> Some s | _ -> None) l in
+      if List.length strs = List.length l then Some strs else None
+  | _ -> None
+
+let select_group_policy g groups =
+  match List.find_opt (fun r -> List.mem r.group groups) g.group_rules with
+  | Some r -> Some r.group_policy
+  | None -> g.group_default
 
 type resolver = scheme:string -> reference:string -> (string, string) result
 
@@ -472,8 +632,7 @@ let parse_url s : (url, string) result =
                 }
           | _ -> Error "invalid host or port in URL")
 
-let is_loopback host =
-  host = "localhost" || host = "::1" || starts_with ~prefix:"127." host
+let is_loopback = Haltsql_core.Loopback.is_host
 
 (* [http]: what to do with plain http. *)
 let url_j ?(no_query = false) ctx ~(http : [ `Allow | `Loopback_only | `Deny of string ])
@@ -712,6 +871,7 @@ let oidc_keys =
     "policy";
     "policy_claim";
     "allowed_policies";
+    "policy_from_groups";
     "context_claims";
     "required_claims";
     "request_context_fields";
@@ -750,6 +910,63 @@ let check_collisions ctx path ~what fields taken =
         Dec.error ctx (Lpath.idx path i)
           (Printf.sprintf "context field %S is already set by %s" f what))
     fields
+
+let group_rule_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "group"; "policy" ] v with
+  | None -> None
+  | Some o -> (
+      let g =
+        Dec.req ctx o p "group" (fun p v ->
+            match Dec.non_empty_string ctx p v with
+            | Some s when String.exists (fun c -> c < ' ' || c = '\127') s ->
+                Dec.error ctx p "must not contain control characters";
+                None
+            | x -> x)
+      in
+      let pol = Dec.req ctx o p "policy" (policy_name_j ctx) in
+      match (g, pol) with
+      | Some group, Some group_policy -> Some { group; group_policy }
+      | _ -> None)
+
+let groups_policy_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "claim"; "map"; "default" ] v with
+  | None -> None
+  | Some o -> (
+      let claim =
+        match Dec.field o "claim" with
+        | None -> Some "groups"
+        | Some _ -> Dec.opt o p "claim" (claim_j ctx)
+      in
+      let rules =
+        non_empty_list ctx (Lpath.key p "map")
+          (Dec.req ctx o p "map" (fun p v -> Dec.list_of ctx p (group_rule_j ctx) v))
+      in
+      (match Dec.field o "map" with
+      | Some (`List l) ->
+          let seen = Hashtbl.create 8 in
+          List.iteri
+            (fun i x ->
+              match x with
+              | `Assoc kv -> (
+                  match List.assoc_opt "group" kv with
+                  | Some (`String g) when Hashtbl.mem seen g ->
+                      Dec.error ctx
+                        (Lpath.key (Lpath.idx (Lpath.key p "map") i) "group")
+                        (Printf.sprintf
+                           "duplicate group %S (the first matching entry wins, so this \
+                            one is never used)"
+                           g)
+                  | Some (`String g) -> Hashtbl.add seen g ()
+                  | _ -> ())
+              | _ -> ())
+            l
+      | _ -> ());
+      let default = Dec.opt o p "default" (policy_name_j ctx) in
+      let default_ok = Dec.field o "default" = None || default <> None in
+      match (claim, rules) with
+      | Some groups_claim, Some group_rules when default_ok ->
+          Some { groups_claim; group_rules; group_default = default }
+      | _ -> None)
 
 let oidc_j ctx p v =
   match Dec.obj ctx p ~keys:oidc_keys v with
@@ -791,21 +1008,42 @@ let oidc_j ctx p v =
         Dec.opt o p "allowed_policies" (fun p v ->
             non_empty_list ctx p (unique_list ctx ~what:"policy" (policy_name_j ctx) p v))
       in
+      let groups = Dec.opt o p "policy_from_groups" (groups_policy_j ctx) in
       let binding =
-        match (Dec.field o "policy", Dec.field o "policy_claim") with
-        | Some _, Some _ ->
+        match
+          ( Dec.field o "policy",
+            Dec.field o "policy_claim",
+            Dec.field o "policy_from_groups" )
+        with
+        | Some _, Some _, None ->
             Dec.error ctx p "use either policy or policy_claim, not both";
             None
-        | None, None ->
-            Dec.error ctx p "needs policy (pinned) or policy_claim + allowed_policies";
+        | Some _, _, Some _ | _, Some _, Some _ ->
+            Dec.error ctx p "use only one of policy, policy_claim or policy_from_groups";
             None
-        | Some _, None ->
+        | None, None, Some _ -> (
+            if Dec.field o "allowed_policies" <> None then
+              Dec.error ctx
+                (Lpath.key p "allowed_policies")
+                "only allowed with policy_claim";
+            (* Fail-closed placeholder: no claim value is in an empty allowed
+               list, so a consumer that ignores oidc_group_policies rejects
+               every token from this provider. *)
+            match groups with
+            | Some g -> Some (Oidc_from_claim { claim = g.groups_claim; allowed = [] })
+            | None -> None)
+        | None, None, None ->
+            Dec.error ctx p
+              "needs policy (pinned) or policy_claim + allowed_policies (or \
+               policy_from_groups)";
+            None
+        | Some _, None, None ->
             if Dec.field o "allowed_policies" <> None then
               Dec.error ctx
                 (Lpath.key p "allowed_policies")
                 "only allowed with policy_claim";
             Option.map (fun n -> Oidc_pinned n) pinned
-        | None, Some _ -> (
+        | None, Some _, None -> (
             if Dec.field o "allowed_policies" = None then
               Dec.error ctx
                 (Lpath.key p "allowed_policies")
@@ -859,20 +1097,21 @@ let oidc_j ctx p v =
       match (name, issuer, audiences, algorithms, binding) with
       | Some oidc_name, Some issuer, Some audiences, Some algorithms, Some oidc_policy ->
           Some
-            {
-              oidc_name;
-              issuer;
-              audiences;
-              jwks_uri;
-              algorithms;
-              leeway_seconds = leeway;
-              jwks_cache_seconds = cache;
-              oidc_policy;
-              context_claims;
-              required_claims;
-              oidc_request_context_fields = rcf;
-              allow_insecure_http = insecure;
-            }
+            ( groups,
+              {
+                oidc_name;
+                issuer;
+                audiences;
+                jwks_uri;
+                algorithms;
+                leeway_seconds = leeway;
+                jwks_cache_seconds = cache;
+                oidc_policy;
+                context_claims;
+                required_claims;
+                oidc_request_context_fields = rcf;
+                allow_insecure_http = insecure;
+              } )
       | _ -> None)
 
 let valid_spiffe_id s =
@@ -992,6 +1231,24 @@ let mtls_identity_j ctx p v =
 let valid_header_name s =
   s <> "" && String.for_all (fun c -> is_alnum c || String.contains "!#$%&'*+-.^_`|~" c) s
 
+(* A map of HTTP headers; values may be secrets (redacted on output). *)
+let headers_j ctx p v =
+  Option.map
+    (List.filter_map (fun (k, hv) ->
+         let kp = Lpath.key p k in
+         if not (valid_header_name k) then begin
+           Dec.error ctx kp (Printf.sprintf "invalid HTTP header name %S" k);
+           None
+         end
+         else
+           match Dec.string ctx kp hv with
+           | Some s when String.exists (fun c -> c = '\r' || c = '\n' || c = '\000') s ->
+               Dec.error ctx kp "header value must not contain CR, LF or NUL characters";
+               None
+           | Some s -> Some (k, s)
+           | None -> None))
+    (Dec.map ctx p v)
+
 let otlp_j ctx p v =
   match
     Dec.obj ctx p
@@ -1010,29 +1267,7 @@ let otlp_j ctx p v =
   | None -> None
   | Some o -> (
       let endpoint = Dec.req ctx o p "endpoint" (url_j ctx ~http:`Allow) in
-      let headers =
-        Option.value ~default:[]
-          (Dec.opt o p "headers" (fun p v ->
-               Option.map
-                 (List.filter_map (fun (k, hv) ->
-                      let kp = Lpath.key p k in
-                      if not (valid_header_name k) then begin
-                        Dec.error ctx kp (Printf.sprintf "invalid HTTP header name %S" k);
-                        None
-                      end
-                      else
-                        match Dec.string ctx kp hv with
-                        | Some s
-                          when String.exists
-                                 (fun c -> c = '\r' || c = '\n' || c = '\000')
-                                 s ->
-                            Dec.error ctx kp
-                              "header value must not contain CR, LF or NUL characters";
-                            None
-                        | Some s -> Some (k, s)
-                        | None -> None))
-                 (Dec.map ctx p v)))
-      in
+      let headers = Option.value ~default:[] (Dec.opt o p "headers" (headers_j ctx)) in
       let service_name =
         Option.value ~default:"haltsql"
           (Dec.opt o p "service_name" (Dec.non_empty_string ctx))
@@ -1216,128 +1451,540 @@ let gcs_credentials_j ctx ~base_dir p v =
             (fun f -> Gcs_service_account_file (Dec.absolute ?base_dir f))
             (Dec.req ctx o p "file" (Dec.non_empty_string ctx)))
 
-let sink_types = [ ("stdout", `Stdout); ("file", `File); ("s3", `S3); ("gcs", `Gcs) ]
+let region_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | Some r
+    when String.for_all
+           (fun c -> (c >= 'a' && c <= 'z') || Docpos.is_digit c || c = '-')
+           r ->
+      Some r
+  | Some r ->
+      Dec.error ctx p (Printf.sprintf "invalid region %S (e.g. us-east-1)" r);
+      None
+  | None -> None
 
-let sink_j ctx ~base_dir path j =
-  match j with
-  | `Assoc kvs -> (
-      let ty = Dec.req ctx kvs path "type" (Dec.enum ctx ~values:sink_types) in
-      let keys =
-        match ty with
-        | Some `Stdout -> [ "type"; "path"; "on_error" ]
-        | Some `File -> [ "type"; "path"; "on_error" ]
-        | Some `S3 ->
-            [
-              "type";
-              "bucket";
-              "prefix";
-              "region";
-              "endpoint";
-              "object_lock";
-              "batch";
-              "credentials";
-              "spool_dir";
-              "on_error";
-            ]
-        | Some `Gcs ->
-            [
-              "type"; "bucket"; "prefix"; "batch"; "credentials"; "spool_dir"; "on_error";
-            ]
-        | None -> [ "type"; "path"; "on_error" ]
+(* ---- streaming audit sinks (elasticsearch, kafka) ---- *)
+
+let pem_j ctx ~base_dir p v = Option.map (pem_of ?base_dir) (Dec.non_empty_string ctx p v)
+let default_stream_batch_bytes = 5 * 1024 * 1024
+
+let default_stream_batch =
+  {
+    batch_max_records = 500;
+    batch_max_bytes = default_stream_batch_bytes;
+    flush_interval_ms = 1000;
+  }
+
+let stream_batch_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "max_records"; "max_bytes"; "flush_interval_ms" ] v with
+  | None -> None
+  | Some b ->
+      let r =
+        Dec.opt b p "max_records" (fun p v -> Dec.int ctx p ~min:1 ~max:100_000 v)
       in
-      ignore (Dec.obj ctx path ~keys j);
-      let on_error =
-        match Dec.field kvs "on_error" with
-        | None -> Some Fail_closed
-        | Some _ ->
-            Dec.opt kvs path "on_error"
-              (Dec.enum ctx ~values:[ ("fail_closed", Fail_closed); ("buffer", Buffer) ])
+      let by =
+        Dec.opt b p "max_bytes" (fun p v ->
+            Dec.int ctx p ~min:1024 ~max:(100 * 1024 * 1024) v)
       in
+      let f =
+        Dec.opt b p "flush_interval_ms" (fun p v -> Dec.int ctx p ~min:10 ~max:60_000 v)
+      in
+      Some
+        {
+          batch_max_records = Option.value ~default:500 r;
+          batch_max_bytes = Option.value ~default:default_stream_batch_bytes by;
+          flush_interval_ms = Option.value ~default:1000 f;
+        }
+
+(* Elasticsearch index / data stream names: lower case, at most 255 bytes, not
+   starting with '-', '_' or '+', not "." or "..". *)
+let valid_es_name s =
+  let n = String.length s in
+  n > 0 && n <= 255 && s <> "." && s <> ".."
+  && (match s.[0] with '-' | '_' | '+' -> false | _ -> true)
+  && String.for_all
+       (fun c ->
+         (c >= 'a' && c <= 'z')
+         || Docpos.is_digit c || c = '.' || c = '-' || c = '_' || c = '+')
+       s
+
+let es_name_j ctx ~what p v =
+  match Dec.non_empty_string ctx p v with
+  | Some s when valid_es_name s -> Some s
+  | Some s ->
+      Dec.error ctx p
+        (Printf.sprintf
+           "invalid %s name %S (1-255 characters: lower-case letters, digits, '.', '-', \
+            '_', '+'; not starting with '-', '_' or '+')"
+           what s);
+      None
+  | None -> None
+
+(* A name made of [A-Za-z0-9._-] (Kafka topics and client ids, ingest
+   pipelines). *)
+let simple_name_j ctx ~what ~max p v =
+  match Dec.non_empty_string ctx p v with
+  | Some s
+    when String.length s <= max
+         && s <> "." && s <> ".."
+         && String.for_all (fun c -> is_alnum c || c = '.' || c = '_' || c = '-') s ->
+      Some s
+  | Some s ->
+      Dec.error ctx p
+        (Printf.sprintf
+           "invalid %s %S (1-%d characters: letters, digits, '.', '_', '-'; not \".\" or \
+            \"..\")"
+           what s max);
+      None
+  | None -> None
+
+let no_crlf_secret_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | Some s when String.exists (fun c -> c = '\r' || c = '\n' || c = '\000') s ->
+      Dec.error ctx p "must not contain CR, LF or NUL characters";
+      None
+  | x -> x
+
+let url_is_https s =
+  match parse_url s with Ok u -> u.scheme = "https" | Error _ -> false
+
+let es_auth_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "api_key"; "username"; "password" ] v with
+  | None -> None
+  | Some o -> (
+      match (Dec.field o "api_key", Dec.field o "username", Dec.field o "password") with
+      | Some _, None, None ->
+          Option.map
+            (fun k -> Es_api_key k)
+            (Dec.opt o p "api_key" (no_crlf_secret_j ctx))
+      | None, _, _ when Dec.field o "username" <> None || Dec.field o "password" <> None
+        -> (
+          let u = Dec.req ctx o p "username" (no_crlf_secret_j ctx) in
+          let pw = Dec.req ctx o p "password" (no_crlf_secret_j ctx) in
+          (match u with
+          | Some u when String.contains u ':' ->
+              Dec.error ctx (Lpath.key p "username") "must not contain ':'"
+          | _ -> ());
+          match (u, pw) with
+          | Some username, Some password -> Some (Es_basic { username; password })
+          | _ -> None)
+      | None, None, None ->
+          Dec.error ctx p "needs api_key, or username and password";
+          None
+      | _ ->
+          Dec.error ctx p "use either api_key or username/password, not both";
+          None)
+
+let es_sink_j ctx ~base_dir p kvs =
+  let urls =
+    match (Dec.field kvs "url", Dec.field kvs "urls") with
+    | Some _, Some _ ->
+        Dec.error ctx p "use either url or urls, not both";
+        None
+    | None, None ->
+        Dec.error ctx (Lpath.key p "url") "required (or urls)";
+        None
+    | Some _, None ->
+        Option.map
+          (fun u -> [ u ])
+          (Dec.opt kvs p "url" (url_j ~no_query:true ctx ~http:`Loopback_only))
+    | None, Some _ ->
+        Dec.opt kvs p "urls" (fun p v ->
+            non_empty_list ctx p
+              (unique_list ctx ~what:"URL"
+                 (url_j ~no_query:true ctx ~http:`Loopback_only)
+                 p v))
+  in
+  let target =
+    match (Dec.field kvs "index", Dec.field kvs "data_stream") with
+    | Some _, Some _ ->
+        Dec.error ctx p "use either index or data_stream, not both";
+        None
+    | None, None ->
+        Dec.error ctx (Lpath.key p "index") "required (or data_stream)";
+        None
+    | Some _, None ->
+        Option.map
+          (fun i -> Es_index i)
+          (Dec.opt kvs p "index" (es_name_j ctx ~what:"index"))
+    | None, Some _ ->
+        Option.map
+          (fun d -> Es_data_stream d)
+          (Dec.opt kvs p "data_stream" (es_name_j ctx ~what:"data stream"))
+  in
+  let auth = Dec.opt kvs p "auth" (es_auth_j ctx) in
+  let pipeline =
+    Dec.opt kvs p "pipeline" (simple_name_j ctx ~what:"pipeline name" ~max:255)
+  in
+  let ca =
+    Dec.opt kvs p "tls" (fun p v ->
+        match Dec.obj ctx p ~keys:[ "ca_file" ] v with
+        | None -> None
+        | Some t -> Dec.opt t p "ca_file" (pem_j ctx ~base_dir))
+  in
+  (match (urls, Dec.field kvs "tls") with
+  | Some us, Some _ when not (List.exists url_is_https us) ->
+      Dec.error ctx (Lpath.key p "tls") "only used with https URLs"
+  | _ -> ());
+  let timeout =
+    Option.value ~default:10_000
+      (Dec.opt kvs p "timeout_ms" (fun p v -> Dec.int ctx p ~min:100 ~max:120_000 v))
+  in
+  let batch =
+    Option.value ~default:default_stream_batch
+      (Dec.opt kvs p "batch" (stream_batch_j ctx))
+  in
+  match (urls, target) with
+  | Some es_urls, Some es_target ->
+      Some
+        (Stream_elasticsearch
+           {
+             es_urls;
+             es_target;
+             es_auth = auth;
+             es_pipeline = pipeline;
+             es_ca = ca;
+             es_timeout_ms = timeout;
+             es_batch = batch;
+           })
+  | _ -> None
+
+(* "host:port" with a DNS name, IPv4 address or [IPv6] address; returns the
+   lower-cased host. *)
+let broker_host s =
+  if not (valid_listen s) then None
+  else if s.[0] = '[' then
+    let i = String.index s ']' in
+    let h = String.sub s 1 (i - 1) in
+    if
+      h <> ""
+      && String.for_all
+           (fun c ->
+             Docpos.is_digit c
+             || (c >= 'a' && c <= 'f')
+             || (c >= 'A' && c <= 'F')
+             || c = ':' || c = '.')
+           h
+    then Some (String.lowercase_ascii h)
+    else None
+  else
+    let h = String.sub s 0 (String.rindex s ':') in
+    if
+      String.for_all (fun c -> is_alnum c || c = '.' || c = '-' || c = '_') h
+      && h.[0] <> '.'
+      && h.[0] <> '-'
+    then Some (String.lowercase_ascii h)
+    else None
+
+let broker_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | None -> None
+  | Some s -> (
+      match broker_host s with
+      | Some _ -> Some s
+      | None ->
+          Dec.error ctx p
+            (Printf.sprintf
+               "invalid broker %S (expected host:port, e.g. kafka-1.corp.example:9093)" s);
+          None)
+
+let kafka_tls_j ctx ~base_dir p v =
+  match Dec.obj ctx p ~keys:[ "enabled"; "ca_file"; "cert_file"; "key_file" ] v with
+  | None -> None
+  | Some o ->
+      let enabled = Option.value ~default:true (Dec.opt o p "enabled" (Dec.bool ctx)) in
+      if not enabled then begin
+        forbid ctx o p
+          [ "ca_file"; "cert_file"; "key_file" ]
+          ~msg:"only allowed when tls.enabled is true";
+        Some None
+      end
+      else begin
+        let ca = Dec.opt o p "ca_file" (pem_j ctx ~base_dir) in
+        let cert = Dec.opt o p "cert_file" (pem_j ctx ~base_dir) in
+        let key = Dec.opt o p "key_file" (pem_j ctx ~base_dir) in
+        (match (Dec.field o "cert_file", Dec.field o "key_file") with
+        | Some _, None ->
+            Dec.error ctx (Lpath.key p "key_file") "required when cert_file is set"
+        | None, Some _ ->
+            Dec.error ctx (Lpath.key p "cert_file") "required when key_file is set"
+        | _ -> ());
+        Some (Some { kafka_ca = ca; kafka_cert = cert; kafka_key = key })
+      end
+
+let sasl_mechanisms =
+  [
+    ("plain", Sasl_plain);
+    ("scram-sha-256", Sasl_scram_sha_256);
+    ("scram-sha-512", Sasl_scram_sha_512);
+  ]
+
+let kafka_sasl_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "mechanism"; "username"; "password" ] v with
+  | None -> None
+  | Some o -> (
+      let m = Dec.req ctx o p "mechanism" (Dec.enum ctx ~values:sasl_mechanisms) in
+      let u = Dec.req ctx o p "username" (no_crlf_secret_j ctx) in
+      let pw = Dec.req ctx o p "password" (no_crlf_secret_j ctx) in
+      match (m, u, pw) with
+      | Some sasl_mechanism, Some sasl_username, Some sasl_password ->
+          Some { sasl_mechanism; sasl_username; sasl_password }
+      | _ -> None)
+
+let kafka_sink_j ctx ~base_dir p kvs =
+  let brokers =
+    non_empty_list ctx (Lpath.key p "brokers")
+      (Dec.req ctx kvs p "brokers" (unique_list ctx ~what:"broker" (broker_j ctx)))
+  in
+  let topic = Dec.req ctx kvs p "topic" (simple_name_j ctx ~what:"topic" ~max:249) in
+  let client_id =
+    Option.value ~default:"haltsql"
+      (Dec.opt kvs p "client_id" (simple_name_j ctx ~what:"client_id" ~max:255))
+  in
+  let acks =
+    match Dec.field kvs "acks" with
+    | None -> Some Acks_all
+    | Some (`String "all") -> Some Acks_all
+    | Some (`Int 1 | `String "1") -> Some Acks_leader
+    | Some (`Int 0 | `String "0") ->
+        Dec.error ctx (Lpath.key p "acks")
+          "acks 0 is not supported: audit records must be acknowledged (use all or 1)";
+        None
+    | Some j ->
+        Dec.error ctx (Lpath.key p "acks")
+          (Printf.sprintf "invalid value %s (expected one of: all, 1)"
+             (Yojson.Safe.to_string j));
+        None
+  in
+  let tls =
+    match Dec.opt kvs p "tls" (kafka_tls_j ctx ~base_dir) with
+    | Some t -> t
+    | None -> None
+  in
+  let sasl = Dec.opt kvs p "sasl" (kafka_sasl_j ctx) in
+  (match (sasl, tls, brokers) with
+  | Some { sasl_mechanism = Sasl_plain; _ }, None, Some bs
+    when not
+           (List.for_all
+              (fun b ->
+                match broker_host b with Some h -> is_loopback h | None -> false)
+              bs) ->
+      Dec.error ctx
+        (Lpath.key (Lpath.key p "sasl") "mechanism")
+        "SASL PLAIN sends the password in clear text: enable tls (plain-text brokers are \
+         only allowed on loopback addresses)"
+  | _ -> ());
+  let batch =
+    Option.value ~default:default_stream_batch
+      (Dec.opt kvs p "batch" (stream_batch_j ctx))
+  in
+  match (brokers, topic, acks) with
+  | Some kafka_brokers, Some kafka_topic, Some kafka_acks ->
+      Some
+        (Stream_kafka
+           {
+             kafka_brokers;
+             kafka_topic;
+             kafka_client_id = client_id;
+             kafka_acks;
+             kafka_tls = tls;
+             kafka_sasl = sasl;
+             kafka_batch = batch;
+           })
+  | _ -> None
+
+let stream_common_keys = [ "type"; "batch"; "on_error"; "max_buffer_records" ]
+
+let es_keys =
+  stream_common_keys
+  @ [ "url"; "urls"; "index"; "data_stream"; "auth"; "pipeline"; "tls"; "timeout_ms" ]
+
+let kafka_keys =
+  stream_common_keys @ [ "brokers"; "topic"; "client_id"; "acks"; "tls"; "sasl" ]
+
+let default_max_buffer_records = 10_000
+
+let stream_sink_j ctx ~base_dir ~index ty path j =
+  let keys = match ty with `Elasticsearch -> es_keys | `Kafka -> kafka_keys in
+  match Dec.obj ctx path ~keys j with
+  | None -> None
+  | Some kvs -> (
       let kind =
         match ty with
-        | None -> None
-        | Some `Stdout ->
-            if Dec.field kvs "path" <> None then
-              Dec.error ctx (Lpath.key path "path") "only allowed for sinks of type file";
-            Some Sink_stdout
-        | Some `File ->
-            Option.map
-              (fun f -> Sink_file (Dec.absolute ?base_dir f))
-              (Dec.req ctx kvs path "path" (Dec.non_empty_string ctx))
-        | Some `S3 -> (
-            let bucket = Dec.req ctx kvs path "bucket" (bucket_j ctx ~gcs:false) in
-            let prefix = Dec.opt kvs path "prefix" (prefix_j ctx) in
-            let region =
-              Dec.req ctx kvs path "region" (fun p v ->
-                  match Dec.non_empty_string ctx p v with
-                  | Some r
-                    when String.for_all
-                           (fun c ->
-                             (c >= 'a' && c <= 'z') || Docpos.is_digit c || c = '-')
-                           r ->
-                      Some r
-                  | Some r ->
-                      Dec.error ctx p
-                        (Printf.sprintf "invalid region %S (e.g. us-east-1)" r);
-                      None
-                  | None -> None)
-            in
-            let endpoint = Dec.opt kvs path "endpoint" (url_j ctx ~http:`Allow) in
-            let lock = Dec.opt kvs path "object_lock" (object_lock_j ctx) in
-            let batch = Dec.opt kvs path "batch" (batch_j ctx) in
-            let creds =
-              match Dec.field kvs "credentials" with
-              | None -> Some S3_env
-              | Some _ -> Dec.opt kvs path "credentials" (s3_credentials_j ctx)
-            in
-            let lock_ok = Dec.field kvs "object_lock" = None || lock <> None in
-            let batch_ok = Dec.field kvs "batch" = None || batch <> None in
-            let spool = Dec.opt kvs path "spool_dir" (Dec.non_empty_string ctx) in
-            let spool_ok = Dec.field kvs "spool_dir" = None || spool <> None in
-            match (bucket, region, creds) with
-            | Some s3_bucket, Some s3_region, Some s3_credentials
-              when lock_ok && batch_ok && spool_ok ->
-                Some
-                  (Sink_s3
-                     {
-                       s3_bucket;
-                       s3_prefix = Option.value ~default:default_audit_prefix prefix;
-                       s3_region;
-                       s3_endpoint = endpoint;
-                       s3_object_lock = lock;
-                       s3_batch = Option.value ~default:default_batch batch;
-                       s3_credentials;
-                       s3_spool_dir = Option.map (Dec.absolute ?base_dir) spool;
-                     })
-            | _ -> None)
-        | Some `Gcs -> (
-            let bucket = Dec.req ctx kvs path "bucket" (bucket_j ctx ~gcs:true) in
-            let prefix = Dec.opt kvs path "prefix" (prefix_j ctx) in
-            let batch = Dec.opt kvs path "batch" (batch_j ctx) in
-            let creds =
-              match Dec.field kvs "credentials" with
-              | None -> Some Gcs_metadata
-              | Some _ -> Dec.opt kvs path "credentials" (gcs_credentials_j ctx ~base_dir)
-            in
-            let batch_ok = Dec.field kvs "batch" = None || batch <> None in
-            let spool = Dec.opt kvs path "spool_dir" (Dec.non_empty_string ctx) in
-            let spool_ok = Dec.field kvs "spool_dir" = None || spool <> None in
-            match (bucket, creds) with
-            | Some gcs_bucket, Some gcs_credentials when batch_ok && spool_ok ->
-                Some
-                  (Sink_gcs
-                     {
-                       gcs_bucket;
-                       gcs_prefix = Option.value ~default:default_audit_prefix prefix;
-                       gcs_batch = Option.value ~default:default_batch batch;
-                       gcs_credentials;
-                       gcs_spool_dir = Option.map (Dec.absolute ?base_dir) spool;
-                     })
-            | _ -> None)
+        | `Elasticsearch -> es_sink_j ctx ~base_dir path kvs
+        | `Kafka -> kafka_sink_j ctx ~base_dir path kvs
       in
+      let on_error =
+        match Dec.field kvs "on_error" with
+        | None -> Some Stream_fail_closed
+        | Some _ ->
+            Dec.opt kvs path "on_error"
+              (Dec.enum ctx
+                 ~values:
+                   [
+                     ("fail_closed", Stream_fail_closed);
+                     ("buffer", Stream_buffer);
+                     ("drop", Stream_drop);
+                   ])
+      in
+      let mbr =
+        Dec.opt kvs path "max_buffer_records" (fun p v ->
+            Dec.int ctx p ~min:1 ~max:1_000_000 v)
+      in
+      (match (on_error, Dec.field kvs "max_buffer_records") with
+      | Some (Stream_fail_closed | Stream_drop), Some _ ->
+          Dec.error ctx
+            (Lpath.key path "max_buffer_records")
+            "only allowed when on_error is buffer"
+      | _ -> ());
+      let batch_records =
+        match kind with
+        | Some (Stream_elasticsearch e) -> e.es_batch.batch_max_records
+        | Some (Stream_kafka k) -> k.kafka_batch.batch_max_records
+        | None -> 0
+      in
+      (match mbr with
+      | Some m when m < batch_records ->
+          Dec.error ctx
+            (Lpath.key path "max_buffer_records")
+            (Printf.sprintf "must be at least batch.max_records (%d)" batch_records)
+      | _ -> ());
       match (kind, on_error) with
-      | Some sink, Some on_error -> Some { sink; on_error }
+      | Some stream, Some stream_on_error ->
+          Some
+            {
+              stream;
+              stream_on_error;
+              max_buffer_records =
+                Option.value ~default:(max default_max_buffer_records batch_records) mbr;
+              sink_index = index;
+            }
       | _ -> None)
+
+let sink_types =
+  [
+    ("stdout", `Stdout);
+    ("file", `File);
+    ("s3", `S3);
+    ("gcs", `Gcs);
+    ("elasticsearch", `Elasticsearch);
+    ("kafka", `Kafka);
+  ]
+
+let classic_sink_j ctx ~base_dir ty path kvs j =
+  let keys =
+    match ty with
+    | Some `Stdout -> [ "type"; "path"; "on_error" ]
+    | Some `File -> [ "type"; "path"; "on_error" ]
+    | Some `S3 ->
+        [
+          "type";
+          "bucket";
+          "prefix";
+          "region";
+          "endpoint";
+          "object_lock";
+          "batch";
+          "credentials";
+          "spool_dir";
+          "on_error";
+        ]
+    | Some `Gcs ->
+        [ "type"; "bucket"; "prefix"; "batch"; "credentials"; "spool_dir"; "on_error" ]
+    | None -> [ "type"; "path"; "on_error" ]
+  in
+  ignore (Dec.obj ctx path ~keys j);
+  let on_error =
+    match Dec.field kvs "on_error" with
+    | None -> Some Fail_closed
+    | Some _ ->
+        Dec.opt kvs path "on_error"
+          (Dec.enum ctx ~values:[ ("fail_closed", Fail_closed); ("buffer", Buffer) ])
+  in
+  let kind =
+    match ty with
+    | None -> None
+    | Some `Stdout ->
+        if Dec.field kvs "path" <> None then
+          Dec.error ctx (Lpath.key path "path") "only allowed for sinks of type file";
+        Some Sink_stdout
+    | Some `File ->
+        Option.map
+          (fun f -> Sink_file (Dec.absolute ?base_dir f))
+          (Dec.req ctx kvs path "path" (Dec.non_empty_string ctx))
+    | Some `S3 -> (
+        let bucket = Dec.req ctx kvs path "bucket" (bucket_j ctx ~gcs:false) in
+        let prefix = Dec.opt kvs path "prefix" (prefix_j ctx) in
+        let region = Dec.req ctx kvs path "region" (region_j ctx) in
+        let endpoint = Dec.opt kvs path "endpoint" (url_j ctx ~http:`Allow) in
+        let lock = Dec.opt kvs path "object_lock" (object_lock_j ctx) in
+        let batch = Dec.opt kvs path "batch" (batch_j ctx) in
+        let creds =
+          match Dec.field kvs "credentials" with
+          | None -> Some S3_env
+          | Some _ -> Dec.opt kvs path "credentials" (s3_credentials_j ctx)
+        in
+        let lock_ok = Dec.field kvs "object_lock" = None || lock <> None in
+        let batch_ok = Dec.field kvs "batch" = None || batch <> None in
+        let spool = Dec.opt kvs path "spool_dir" (Dec.non_empty_string ctx) in
+        let spool_ok = Dec.field kvs "spool_dir" = None || spool <> None in
+        match (bucket, region, creds) with
+        | Some s3_bucket, Some s3_region, Some s3_credentials
+          when lock_ok && batch_ok && spool_ok ->
+            Some
+              (Sink_s3
+                 {
+                   s3_bucket;
+                   s3_prefix = Option.value ~default:default_audit_prefix prefix;
+                   s3_region;
+                   s3_endpoint = endpoint;
+                   s3_object_lock = lock;
+                   s3_batch = Option.value ~default:default_batch batch;
+                   s3_credentials;
+                   s3_spool_dir = Option.map (Dec.absolute ?base_dir) spool;
+                 })
+        | _ -> None)
+    | Some `Gcs -> (
+        let bucket = Dec.req ctx kvs path "bucket" (bucket_j ctx ~gcs:true) in
+        let prefix = Dec.opt kvs path "prefix" (prefix_j ctx) in
+        let batch = Dec.opt kvs path "batch" (batch_j ctx) in
+        let creds =
+          match Dec.field kvs "credentials" with
+          | None -> Some Gcs_metadata
+          | Some _ -> Dec.opt kvs path "credentials" (gcs_credentials_j ctx ~base_dir)
+        in
+        let batch_ok = Dec.field kvs "batch" = None || batch <> None in
+        let spool = Dec.opt kvs path "spool_dir" (Dec.non_empty_string ctx) in
+        let spool_ok = Dec.field kvs "spool_dir" = None || spool <> None in
+        match (bucket, creds) with
+        | Some gcs_bucket, Some gcs_credentials when batch_ok && spool_ok ->
+            Some
+              (Sink_gcs
+                 {
+                   gcs_bucket;
+                   gcs_prefix = Option.value ~default:default_audit_prefix prefix;
+                   gcs_batch = Option.value ~default:default_batch batch;
+                   gcs_credentials;
+                   gcs_spool_dir = Option.map (Dec.absolute ?base_dir) spool;
+                 })
+        | _ -> None)
+  in
+  match (kind, on_error) with
+  | Some sink, Some on_error -> Some { sink; on_error }
+  | _ -> None
+
+let sink_j ctx ~base_dir ~index path j =
+  match j with
+  | `Assoc kvs -> (
+      match Dec.req ctx kvs path "type" (Dec.enum ctx ~values:sink_types) with
+      | Some ((`Elasticsearch | `Kafka) as ty) ->
+          Option.map (fun s -> `Stream s) (stream_sink_j ctx ~base_dir ~index ty path j)
+      | Some ((`Stdout | `File | `S3 | `Gcs) as ty) ->
+          Option.map
+            (fun s -> `Classic s)
+            (classic_sink_j ctx ~base_dir (Some ty) path kvs j)
+      | None ->
+          Option.map (fun s -> `Classic s) (classic_sink_j ctx ~base_dir None path kvs j))
   | j ->
       Dec.type_error ctx path "a mapping" j;
       None
@@ -1464,7 +2111,10 @@ type policy_entry = {
   ppath : Lpath.t;
 }
 
-type entry = Plain of policy_entry | Bundle of bundle_ref * Lpath.t
+type entry =
+  | Plain of policy_entry
+  | Bundle of bundle_ref * Lpath.t
+  | Source of bundle_source * Lpath.t
 
 let is_b64_char c = is_alnum c || c = '+' || c = '/'
 
@@ -1494,69 +2144,367 @@ let public_key_j ctx ~base_dir p v =
   | Some s when is_ed25519_b64 s -> Some (Key_base64 s)
   | Some s -> Some (Key_path (Dec.absolute ?base_dir s))
 
+(* ---- remote bundle sources ---- *)
+
+let is_lower_hex c = Docpos.is_digit c || (c >= 'a' && c <= 'f')
+
+let valid_digest d =
+  let hex_of n prefix =
+    starts_with ~prefix d
+    && String.length d = String.length prefix + n
+    && String.for_all is_lower_hex
+         (String.sub d (String.length prefix) (String.length d - String.length prefix))
+  in
+  hex_of 64 "sha256:" || hex_of 128 "sha512:"
+
+(* One repository path component: [a-z0-9]+ joined by '.', '_', '__' or '-'s. *)
+let valid_repo_component c =
+  c <> ""
+  && String.for_all
+       (fun ch ->
+         (ch >= 'a' && ch <= 'z')
+         || Docpos.is_digit ch || ch = '.' || ch = '_' || ch = '-')
+       c
+  && is_alnum c.[0]
+  && is_alnum c.[String.length c - 1]
+  && not (contains_sub c "..")
+
+let valid_tag t =
+  let n = String.length t in
+  n >= 1 && n <= 128
+  && (is_alnum t.[0] || t.[0] = '_')
+  && String.for_all (fun c -> is_alnum c || c = '_' || c = '.' || c = '-') t
+
+(* registry[:port]/repo/path(:tag|@digest|:tag@digest). The registry host is
+   mandatory (no implicit Docker Hub). Returns
+   (registry, registry host, repository, tag, digest). *)
+let parse_oci_ref s =
+  let err m = Error (Printf.sprintf "invalid OCI reference %S: %s" s m) in
+  if s = "" || has_ws_or_ctl s then err "must not be empty or contain whitespace"
+  else
+    let name, digest =
+      match String.index_opt s '@' with
+      | None -> (s, None)
+      | Some i -> (String.sub s 0 i, Some (String.sub s (i + 1) (String.length s - i - 1)))
+    in
+    match String.index_opt name '/' with
+    | None ->
+        err "expected registry/repository:tag or registry/repository@sha256:<digest>"
+    | Some i -> (
+        let registry = String.sub name 0 i in
+        let rest = String.sub name (i + 1) (String.length name - i - 1) in
+        let last_slash =
+          match String.rindex_opt rest '/' with Some j -> j | None -> -1
+        in
+        let repo, tag =
+          match String.rindex_opt rest ':' with
+          | Some j when j > last_slash ->
+              ( String.sub rest 0 j,
+                Some (String.sub rest (j + 1) (String.length rest - j - 1)) )
+          | _ -> (rest, None)
+        in
+        let host =
+          match broker_host registry with
+          | Some h -> Some h
+          | None ->
+              (* a registry without a port *)
+              if
+                registry <> ""
+                && String.for_all (fun c -> is_alnum c || c = '.' || c = '-') registry
+                && is_alnum registry.[0]
+              then Some (String.lowercase_ascii registry)
+              else None
+        in
+        match host with
+        | None -> err (Printf.sprintf "invalid registry %S" registry)
+        | Some h
+          when not
+                 (String.contains registry '.' || String.contains registry ':'
+                || h = "localhost") ->
+            err
+              (Printf.sprintf
+                 "%S is not a registry host: the reference must start with one (e.g. \
+                  ghcr.io/corp/policies:prod or localhost:5000/policies:prod)"
+                 registry)
+        | Some h ->
+            if
+              repo = ""
+              || String.length repo > 255
+              || not (List.for_all valid_repo_component (String.split_on_char '/' repo))
+            then
+              err
+                (Printf.sprintf
+                   "invalid repository %S (lower-case path components of letters, \
+                    digits, '.', '_', '-')"
+                   repo)
+            else if match tag with Some t -> not (valid_tag t) | None -> false then
+              err
+                (Printf.sprintf
+                   "invalid tag %S (1-128 characters: letters, digits, '_', '.', '-')"
+                   (Option.get tag))
+            else if match digest with Some d -> not (valid_digest d) | None -> false
+            then
+              err
+                "the digest must be sha256:<64 lower-case hex> or sha512:<128 lower-case \
+                 hex>"
+            else if tag = None && digest = None then
+              err "needs a :tag or an @sha256:<digest>"
+            else Ok (registry, h, repo, tag, digest))
+
+let s3_key_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | Some s when String.length s > 1024 ->
+      Dec.error ctx p "must be at most 1024 characters";
+      None
+  | Some s when s.[0] = '/' ->
+      Dec.error ctx p "must not start with '/'";
+      None
+  | Some s when String.exists (fun c -> c < ' ' || c = '\127') s ->
+      Dec.error ctx p "must not contain control characters";
+      None
+  | x -> x
+
+let bundle_location_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "oci"; "s3"; "https"; "plain_http" ] v with
+  | None -> None
+  | Some o -> (
+      let present =
+        List.filter (fun k -> Dec.field o k <> None) [ "oci"; "s3"; "https" ]
+      in
+      if Dec.field o "oci" = None then
+        forbid ctx o p [ "plain_http" ] ~msg:"only allowed with oci";
+      match present with
+      | [] ->
+          Dec.error ctx p "needs one of oci, s3 or https";
+          None
+      | _ :: _ :: _ ->
+          Dec.error ctx p "use only one of oci, s3 or https";
+          None
+      | [ "oci" ] -> (
+          let plain =
+            Option.value ~default:false (Dec.opt o p "plain_http" (Dec.bool ctx))
+          in
+          match Dec.opt o p "oci" (Dec.non_empty_string ctx) with
+          | None -> None
+          | Some r -> (
+              match parse_oci_ref r with
+              | Error m ->
+                  Dec.error ctx (Lpath.key p "oci") m;
+                  None
+              | Ok (registry, host, repo, tag, digest) ->
+                  if plain && not (is_loopback host) then begin
+                    Dec.error ctx (Lpath.key p "plain_http")
+                      "plain http registries are only allowed on loopback addresses";
+                    None
+                  end
+                  else
+                    Some
+                      (Source_oci
+                         {
+                           oci_reference = r;
+                           oci_registry = registry;
+                           oci_repository = repo;
+                           oci_tag = tag;
+                           oci_digest = digest;
+                           oci_plain_http = plain;
+                         })))
+      | [ "https" ] ->
+          Option.map
+            (fun u -> Source_https u)
+            (Dec.opt o p "https" (url_j ~no_query:true ctx ~http:`Loopback_only))
+      | _ ->
+          Dec.opt o p "s3" (fun p v ->
+              match
+                Dec.obj ctx p
+                  ~keys:[ "bucket"; "key"; "region"; "endpoint"; "credentials" ]
+                  v
+              with
+              | None -> None
+              | Some b -> (
+                  let bucket = Dec.req ctx b p "bucket" (bucket_j ctx ~gcs:false) in
+                  let key = Dec.req ctx b p "key" (s3_key_j ctx) in
+                  let region = Dec.req ctx b p "region" (region_j ctx) in
+                  let endpoint = Dec.opt b p "endpoint" (url_j ctx ~http:`Allow) in
+                  let creds =
+                    match Dec.field b "credentials" with
+                    | None -> Some S3_env
+                    | Some _ -> Dec.opt b p "credentials" (s3_credentials_j ctx)
+                  in
+                  match (bucket, key, region, creds) with
+                  | Some src_bucket, Some src_key, Some src_region, Some src_credentials
+                    ->
+                      Some
+                        (Source_s3
+                           {
+                             src_bucket;
+                             src_key;
+                             src_region;
+                             src_endpoint = endpoint;
+                             src_credentials;
+                           })
+                  | _ -> None)))
+
+let source_auth_j ctx p v =
+  match Dec.obj ctx p ~keys:[ "username"; "password"; "token" ] v with
+  | None -> None
+  | Some o -> (
+      match Dec.field o "token" with
+      | Some _ when Dec.field o "username" <> None || Dec.field o "password" <> None ->
+          Dec.error ctx p "use either token or username/password, not both";
+          None
+      | Some _ ->
+          Option.map
+            (fun t -> Source_token t)
+            (Dec.opt o p "token" (no_crlf_secret_j ctx))
+      | None -> (
+          if Dec.field o "username" = None && Dec.field o "password" = None then begin
+            Dec.error ctx p "needs token, or username and password";
+            None
+          end
+          else
+            let u = Dec.req ctx o p "username" (no_crlf_secret_j ctx) in
+            let pw = Dec.req ctx o p "password" (no_crlf_secret_j ctx) in
+            (match u with
+            | Some u when String.contains u ':' ->
+                Dec.error ctx (Lpath.key p "username") "must not contain ':'"
+            | _ -> ());
+            match (u, pw) with
+            | Some username, Some password -> Some (Source_basic { username; password })
+            | _ -> None))
+
+let location_key = function
+  | Source_oci o -> "oci:" ^ o.oci_reference
+  | Source_s3 s ->
+      Printf.sprintf "s3:%s/%s/%s"
+        (Option.value ~default:"" s.src_endpoint)
+        s.src_bucket s.src_key
+  | Source_https u -> "https:" ^ u
+
+let name_prefix_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | Some s
+    when String.length s <= 64
+         && is_alnum s.[0]
+         && String.for_all (fun c -> Policy_impl.is_word_char c || c = '-' || c = '.') s
+    ->
+      Some s
+  | Some s ->
+      Dec.error ctx p
+        (Printf.sprintf
+           "invalid name_prefix %S (1-64 characters: letters, digits, '.', '_', '-'; \
+            starting with a letter or digit)"
+           s);
+      None
+  | None -> None
+
+let public_keys_j ctx ~base_dir path kvs =
+  let keys =
+    non_empty_list ctx
+      (Lpath.key path "public_keys")
+      (Dec.req ctx kvs path "public_keys" (fun p v ->
+           Dec.list_of ctx p (public_key_j ctx ~base_dir) v))
+  in
+  let n_keys =
+    match Dec.field kvs "public_keys" with Some (`List l) -> List.length l | _ -> 0
+  in
+  match keys with Some l when List.length l = n_keys -> Some l | _ -> None
+
+let bundle_source_j ctx ~base_dir path kvs sv =
+  let location = bundle_location_j ctx (Lpath.key path "bundle_source") sv in
+  let keys = public_keys_j ctx ~base_dir path kvs in
+  let prefix = Dec.opt kvs path "name_prefix" (name_prefix_j ctx) in
+  let prefix_ok = Dec.field kvs "name_prefix" = None || prefix <> None in
+  let poll =
+    Option.value ~default:60
+      (Dec.opt kvs path "poll_interval_s" (fun p v -> Dec.int ctx p ~min:10 ~max:86_400 v))
+  in
+  let cache =
+    Option.map (Dec.absolute ?base_dir)
+      (Dec.opt kvs path "cache_dir" (Dec.non_empty_string ctx))
+  in
+  let auth = Dec.opt kvs path "auth" (source_auth_j ctx) in
+  (match (location, Dec.field kvs "auth") with
+  | Some (Source_s3 _), Some _ ->
+      Dec.error ctx (Lpath.key path "auth")
+        "not used by s3 sources; use bundle_source.s3.credentials"
+  | _ -> ());
+  match (location, keys) with
+  | Some location, Some source_public_keys when prefix_ok ->
+      Some
+        {
+          location;
+          source_public_keys;
+          source_name_prefix = prefix;
+          poll_interval_s = poll;
+          cache_dir = cache;
+          source_auth = auth;
+        }
+  | _ -> None
+
 let policy_entry_j ctx ~base_dir path j =
   match
-    Dec.obj ctx path ~keys:[ "path"; "inline"; "bundle"; "public_keys"; "name_prefix" ] j
+    Dec.obj ctx path
+      ~keys:
+        [
+          "path";
+          "inline";
+          "bundle";
+          "bundle_source";
+          "public_keys";
+          "name_prefix";
+          "poll_interval_s";
+          "cache_dir";
+          "auth";
+        ]
+      j
   with
   | None -> None
   | Some kvs -> (
       let has k = Dec.field kvs k <> None in
-      if not (has "bundle") then
+      if not (has "bundle" || has "bundle_source") then
         forbid ctx kvs path
           [ "public_keys"; "name_prefix" ]
-          ~msg:"only allowed with bundle";
-      match (Dec.field kvs "path", Dec.field kvs "inline", Dec.field kvs "bundle") with
-      | Some _, Some _, None ->
+          ~msg:"only allowed with bundle or bundle_source";
+      if not (has "bundle_source") then
+        forbid ctx kvs path
+          [ "poll_interval_s"; "cache_dir"; "auth" ]
+          ~msg:"only allowed with bundle_source";
+      match
+        ( Dec.field kvs "path",
+          Dec.field kvs "inline",
+          Dec.field kvs "bundle",
+          Dec.field kvs "bundle_source" )
+      with
+      | Some _, Some _, None, None ->
           Dec.error ctx path "use either path or inline, not both";
           None
-      | _, _, Some _ when has "path" || has "inline" ->
-          Dec.error ctx path "use only one of path, inline or bundle";
+      | _, _, Some _, _ when has "path" || has "inline" || has "bundle_source" ->
+          Dec.error ctx path "use only one of path, inline or bundle (or bundle_source)";
           None
-      | None, None, None ->
-          Dec.error ctx path "a policy entry needs path or inline (or bundle)";
+      | _, _, _, Some _ when has "path" || has "inline" ->
+          Dec.error ctx path "use only one of path, inline or bundle (or bundle_source)";
           None
-      | None, None, Some bv -> (
+      | None, None, None, None ->
+          Dec.error ctx path
+            "a policy entry needs path or inline (or bundle, or bundle_source)";
+          None
+      | None, None, None, Some sv ->
+          Option.map
+            (fun b -> Source (b, path))
+            (bundle_source_j ctx ~base_dir path kvs sv)
+      | None, None, Some bv, None -> (
           let bp = Lpath.key path "bundle" in
           let bundle =
             Option.map (Dec.absolute ?base_dir) (Dec.non_empty_string ctx bp bv)
           in
-          let keys =
-            non_empty_list ctx
-              (Lpath.key path "public_keys")
-              (Dec.req ctx kvs path "public_keys" (fun p v ->
-                   Dec.list_of ctx p (public_key_j ctx ~base_dir) v))
-          in
-          let prefix =
-            Dec.opt kvs path "name_prefix" (fun p v ->
-                match Dec.non_empty_string ctx p v with
-                | Some s
-                  when String.length s <= 64
-                       && is_alnum s.[0]
-                       && String.for_all
-                            (fun c -> Policy_impl.is_word_char c || c = '-' || c = '.')
-                            s ->
-                    Some s
-                | Some s ->
-                    Dec.error ctx p
-                      (Printf.sprintf
-                         "invalid name_prefix %S (1-64 characters: letters, digits, '.', \
-                          '_', '-'; starting with a letter or digit)"
-                         s);
-                    None
-                | None -> None)
-          in
+          let keys = public_keys_j ctx ~base_dir path kvs in
+          let prefix = Dec.opt kvs path "name_prefix" (name_prefix_j ctx) in
           let prefix_ok = Dec.field kvs "name_prefix" = None || prefix <> None in
-          let n_keys =
-            match Dec.field kvs "public_keys" with
-            | Some (`List l) -> List.length l
-            | _ -> 0
-          in
           match (bundle, keys) with
-          | Some bundle_path, Some public_keys
-            when prefix_ok && List.length public_keys = n_keys ->
+          | Some bundle_path, Some public_keys when prefix_ok ->
               Some (Bundle ({ bundle_path; public_keys; name_prefix = prefix }, path))
           | _ -> None)
-      | Some pv, None, None -> (
+      | Some pv, None, None, None -> (
           let pp = Lpath.key path "path" in
           match Dec.non_empty_string ctx pp pv with
           | None -> None
@@ -1569,12 +2517,230 @@ let policy_entry_j ctx ~base_dir path j =
                   Dec.error ctx pp (Printf.sprintf "cannot load policy %S" abs);
                   Dec.add_errors ctx errs;
                   None))
-      | None, Some iv, None ->
+      | None, Some iv, None, None ->
           Option.map
             (fun (pol : Policy.t) ->
               Plain { pname = pol.name; pol; pfile = None; ppath = path })
             (Policy_impl.decode ctx ?base_dir ~inline:true (Lpath.key path "inline") iv)
       | _ -> None)
+
+(* ---- opa ---- *)
+
+let valid_rego_segment seg =
+  seg <> ""
+  && String.length seg <= 128
+  && (match seg.[0] with 'a' .. 'z' | 'A' .. 'Z' | '_' -> true | _ -> false)
+  && String.for_all Policy_impl.is_word_char seg
+
+let decision_path_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | None -> None
+  | Some s when s.[0] = '/' || starts_with ~prefix:"v1/" s ->
+      Dec.error ctx p
+        (Printf.sprintf
+           "invalid decision_path %S: give the path below /v1/data without a leading \
+            '/', e.g. haltsql/allow"
+           s);
+      None
+  | Some s ->
+      let segs = String.split_on_char '/' s in
+      if List.length segs <= 32 && List.for_all valid_rego_segment segs then Some s
+      else begin
+        Dec.error ctx p
+          (Printf.sprintf
+             "invalid decision_path %S (Rego identifiers separated by '/', e.g. \
+              haltsql/allow)"
+             s);
+        None
+      end
+
+let opa_j ctx ~base_dir p v =
+  match
+    Dec.obj ctx p
+      ~keys:[ "url"; "decision_path"; "timeout_ms"; "on_error"; "headers"; "tls" ]
+      v
+  with
+  | None -> None
+  | Some o -> (
+      let url = Dec.req ctx o p "url" (url_j ~no_query:true ctx ~http:`Loopback_only) in
+      let dp = Dec.req ctx o p "decision_path" (decision_path_j ctx) in
+      let timeout =
+        Option.value ~default:500
+          (Dec.opt o p "timeout_ms" (fun p v -> Dec.int ctx p ~min:10 ~max:5000 v))
+      in
+      let on_error =
+        match Dec.field o "on_error" with
+        | None -> Some Opa_deny
+        | Some _ ->
+            Dec.opt o p "on_error"
+              (Dec.enum ctx
+                 ~values:
+                   [
+                     ("deny", Opa_deny);
+                     ("allow_haltsql_verdict", Opa_allow_haltsql_verdict);
+                   ])
+      in
+      let headers = Option.value ~default:[] (Dec.opt o p "headers" (headers_j ctx)) in
+      let ca =
+        Dec.opt o p "tls" (fun p v ->
+            match Dec.obj ctx p ~keys:[ "ca_file" ] v with
+            | None -> None
+            | Some t -> Dec.opt t p "ca_file" (pem_j ctx ~base_dir))
+      in
+      (match (url, Dec.field o "tls") with
+      | Some u, Some _ when not (url_is_https u) ->
+          Dec.error ctx (Lpath.key p "tls") "only used with an https url"
+      | _ -> ());
+      match (url, dp, on_error) with
+      | Some opa_url, Some decision_path, Some opa_on_error ->
+          Some
+            {
+              opa_url;
+              decision_path;
+              opa_timeout_ms = timeout;
+              opa_on_error;
+              opa_headers = headers;
+              opa_ca = ca;
+            }
+      | _ -> None)
+
+(* ---- server.admin ---- *)
+
+(* "<n>s", "<n>m", "<n>h" or "<n>d" -> seconds. *)
+let parse_duration s =
+  let n = String.length s in
+  if n < 2 || n > 12 then None
+  else
+    let digits = String.sub s 0 (n - 1) in
+    if not (String.for_all Docpos.is_digit digits) then None
+    else
+      let mult =
+        match s.[n - 1] with
+        | 's' -> Some 1
+        | 'm' -> Some 60
+        | 'h' -> Some 3600
+        | 'd' -> Some 86_400
+        | _ -> None
+      in
+      match (mult, int_of_string_opt digits) with
+      | Some m, Some v -> Some (v * m)
+      | _ -> None
+
+let min_report_window = 60
+let max_report_window = 30 * 86_400
+
+let report_window_j ctx p v =
+  match Dec.string ctx p v with
+  | None -> None
+  | Some s -> (
+      match parse_duration s with
+      | Some secs when secs >= min_report_window && secs <= max_report_window -> Some secs
+      | Some _ ->
+          Dec.error ctx p (Printf.sprintf "report_window %S must be between 1m and 30d" s);
+          None
+      | None ->
+          Dec.error ctx p
+            (Printf.sprintf
+               "invalid duration %S (a whole number followed by s, m, h or d, e.g. 24h)" s);
+          None)
+
+let admin_caller_j ctx p v =
+  match Dec.non_empty_string ctx p v with
+  | None -> None
+  | Some s ->
+      let after prefix =
+        String.sub s (String.length prefix) (String.length s - String.length prefix)
+      in
+      let nonempty prefix f =
+        let r = after prefix in
+        if r = "" then begin
+          Dec.error ctx p (Printf.sprintf "empty name after %S" prefix);
+          None
+        end
+        else Some (f r)
+      in
+      if starts_with ~prefix:"token:" s then nonempty "token:" (fun n -> Admin_token n)
+      else if starts_with ~prefix:"oidc:" s then
+        nonempty "oidc:" (fun n ->
+            let sep =
+              match (String.index_opt n ':', String.index_opt n '/') with
+              | Some i, Some j -> Some (Int.min i j)
+              | Some i, None -> Some i
+              | None, Some j -> Some j
+              | None, None -> None
+            in
+            match sep with
+            | Some i when i = 0 || i = String.length n - 1 ->
+                Dec.error ctx p
+                  (Printf.sprintf
+                     "invalid OIDC admin caller %S (expected oidc:<provider> or \
+                      oidc:<provider>:<subject-or-policy>)"
+                     s);
+                Admin_oidc n
+            | _ -> Admin_oidc n)
+      else if starts_with ~prefix:"mtls:" s then
+        nonempty "mtls:" (fun n ->
+            if starts_with ~prefix:"spiffe://" n then Admin_mtls (Spiffe_id n)
+            else Admin_mtls (Subject_cn n))
+      else begin
+        Dec.error ctx p
+          (Printf.sprintf
+             "invalid admin caller %S (expected token:<name>, oidc:<provider> or \
+              mtls:<spiffe-id or subject CN>)"
+             s);
+        None
+      end
+
+let admin_j ctx p v =
+  match
+    Dec.obj ctx p ~keys:[ "enabled"; "callers"; "report_window"; "max_tracked_queries" ] v
+  with
+  | None -> None
+  | Some o ->
+      let enabled = Option.value ~default:false (Dec.opt o p "enabled" (Dec.bool ctx)) in
+      let callers =
+        Option.value ~default:[]
+          (Dec.opt o p "callers" (fun p v ->
+               match Dec.list ctx p v with
+               | None -> None
+               | Some l ->
+                   let seen = Hashtbl.create 4 in
+                   Some
+                     (List.filter_map Fun.id
+                        (List.mapi
+                           (fun i x ->
+                             let ip = Lpath.idx p i in
+                             match admin_caller_j ctx ip x with
+                             | Some c when Hashtbl.mem seen c ->
+                                 Dec.error ctx ip "duplicate admin caller";
+                                 None
+                             | Some c ->
+                                 Hashtbl.add seen c ();
+                                 Some c
+                             | None -> None)
+                           l))))
+      in
+      if enabled && callers = [] && Dec.field o "callers" = None then
+        Dec.error ctx (Lpath.key p "callers") "required when admin.enabled is true"
+      else if enabled && Dec.field o "callers" = Some (`List []) then
+        Dec.error ctx (Lpath.key p "callers")
+          "must not be empty when admin.enabled is true";
+      let window =
+        Option.value ~default:default_admin.report_window_seconds
+          (Dec.opt o p "report_window" (report_window_j ctx))
+      in
+      let mtq =
+        Option.value ~default:default_admin.max_tracked_queries
+          (Dec.opt o p "max_tracked_queries" (fun p v ->
+               Dec.int ctx p ~min:1 ~max:1_000_000 v))
+      in
+      Some
+        {
+          admin_enabled = enabled;
+          admin_callers = callers;
+          report_window_seconds = window;
+          max_tracked_queries = mtq;
+        }
 
 let top_keys =
   [
@@ -1589,6 +2755,7 @@ let top_keys =
     "logging";
     "limits";
     "secrets";
+    "opa";
   ]
 
 let parse_bool_env s =
@@ -1613,9 +2780,12 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
       (* server *)
       ignore
         (Dec.opt kvs root "server" (fun p v ->
-             match Dec.obj ctx p ~keys:[ "listen"; "tls"; "auth" ] v with
+             match Dec.obj ctx p ~keys:[ "listen"; "tls"; "auth"; "admin" ] v with
              | None -> None
              | Some s ->
+                 Option.iter
+                   (fun admin -> c := { !c with admin })
+                   (Dec.opt s p "admin" (admin_j ctx));
                  Option.iter
                    (fun l -> c := { !c with listen = l })
                    (Dec.opt s p "listen" (listen_j ctx));
@@ -1640,7 +2810,17 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
                               (fun b -> c := { !c with allow_unauthenticated = b })
                               (Dec.opt a p "allow_unauthenticated" (Dec.bool ctx));
                             Option.iter
-                              (fun oidc -> c := { !c with oidc })
+                              (fun l ->
+                                c :=
+                                  {
+                                    !c with
+                                    oidc = List.map snd l;
+                                    oidc_group_policies =
+                                      List.filter_map
+                                        (fun (g, o) ->
+                                          Option.map (fun g -> (o.oidc_name, g)) g)
+                                        l;
+                                  })
                               (Dec.opt a p "oidc" (fun p v ->
                                    Dec.list_of ctx p (oidc_j ctx) v));
                             Option.iter
@@ -1662,13 +2842,28 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
                Dec.list_of ctx p (policy_entry_j ctx ~base_dir) v))
       in
       let plain =
-        List.filter_map (function Plain e -> Some e | Bundle _ -> None) entries
+        List.filter_map
+          (function Plain e -> Some e | Bundle _ | Source _ -> None)
+          entries
       in
       let bundles =
         List.filter_map
-          (function Bundle (b, p) -> Some (b, p) | Plain _ -> None)
+          (function Bundle (b, p) -> Some (b, p) | Plain _ | Source _ -> None)
           entries
       in
+      let sources =
+        List.filter_map
+          (function Source (b, p) -> Some (b, p) | Plain _ | Bundle _ -> None)
+          entries
+      in
+      let seen_s = Hashtbl.create 4 in
+      List.iter
+        (fun (b, p) ->
+          let k = location_key b.location in
+          if Hashtbl.mem seen_s k then
+            Dec.error ctx (Lpath.key p "bundle_source") "duplicate bundle source"
+          else Hashtbl.add seen_s k ())
+        sources;
       let policies_failed = Dec.has_errors ctx in
       let seen = Hashtbl.create 8 in
       List.iter
@@ -1691,6 +2886,7 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
           policies = List.map (fun e -> (e.pname, e.pol)) plain;
           policy_files = List.filter_map (fun e -> e.pfile) plain;
           policy_bundles = List.map fst bundles;
+          bundle_sources = List.map fst sources;
         };
       Option.iter
         (fun d -> c := { !c with default_policy = Some d })
@@ -1714,7 +2910,28 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
                      c :=
                        { !c with sinks = s; audit_sinks = List.filter_map legacy_sink s })
                    (Dec.opt a p "sinks" (fun p v ->
-                        Dec.list_of ctx p (sink_j ctx ~base_dir) v));
+                        Option.map
+                          (fun l ->
+                            let classic =
+                              List.filter_map
+                                (function `Classic s -> Some s | `Stream _ -> None)
+                                l
+                            in
+                            let stream =
+                              List.filter_map
+                                (function `Stream s -> Some s | `Classic _ -> None)
+                                l
+                            in
+                            c := { !c with stream_sinks = stream };
+                            classic)
+                          (Option.map
+                             (fun l ->
+                               List.filter_map Fun.id
+                                 (List.mapi
+                                    (fun index x ->
+                                      sink_j ctx ~base_dir ~index (Lpath.idx p index) x)
+                                    l))
+                             (Dec.list ctx p v))));
                  Option.iter
                    (fun b -> c := { !c with log_raw_sql = b })
                    (Dec.opt a p "log_raw_sql" (Dec.bool ctx));
@@ -1775,6 +2992,9 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
       Option.iter
         (fun s -> c := { !c with secrets = s })
         (Dec.opt kvs root "secrets" (secrets_j ctx ~base_dir));
+      Option.iter
+        (fun o -> c := { !c with opa = Some o })
+        (Dec.opt kvs root "opa" (opa_j ctx ~base_dir));
       (* HALTSQL_* environment overrides (env > file) *)
       let envp name = Lpath.key Lpath.root ("env:" ^ name) in
       let ov name f = match env name with Some v when v <> "" -> f v | _ -> () in
@@ -1806,10 +3026,13 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
       (* cross-checks *)
       let cfg = !c in
       let names = List.map fst cfg.policies in
-      let prefixes = List.map (fun b -> b.name_prefix) cfg.policy_bundles in
+      let prefixes =
+        List.map (fun b -> b.name_prefix) cfg.policy_bundles
+        @ List.map (fun b -> b.source_name_prefix) cfg.bundle_sources
+      in
       let check_ref path name =
         if policies_failed || List.mem name names then ()
-        else if cfg.policy_bundles <> [] then
+        else if prefixes <> [] then
           (* Bundle policies are loaded later; the server re-validates. When
              every bundle has a name_prefix, the name must match one. *)
           begin if List.for_all Option.is_some prefixes then
@@ -1854,9 +3077,18 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
             Dec.error ctx (oidc_path i "name")
               (Printf.sprintf "duplicate OIDC provider name %S" o.oidc_name)
           else Hashtbl.add seen_providers o.oidc_name ();
-          match o.oidc_policy with
-          | Oidc_pinned n -> check_ref (oidc_path i "policy") n
-          | Oidc_from_claim { allowed; _ } ->
+          match (List.assoc_opt o.oidc_name cfg.oidc_group_policies, o.oidc_policy) with
+          | Some g, _ ->
+              let gp = oidc_path i "policy_from_groups" in
+              List.iteri
+                (fun j r ->
+                  check_ref
+                    (Lpath.key (Lpath.idx (Lpath.key gp "map") j) "policy")
+                    r.group_policy)
+                g.group_rules;
+              Option.iter (check_ref (Lpath.key gp "default")) g.group_default
+          | None, Oidc_pinned n -> check_ref (oidc_path i "policy") n
+          | None, Oidc_from_claim { allowed; _ } ->
               List.iteri
                 (fun j n -> check_ref (Lpath.idx (oidc_path i "allowed_policies") j) n)
                 allowed)
@@ -1886,6 +3118,40 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
           else Hashtbl.add seen_ids key ();
           check_ref (ident_path i "policy") m.mtls_policy)
         cfg.mtls;
+      (* server.admin: every caller must name a configured identity *)
+      let callers_path =
+        Lpath.key (Lpath.key (Lpath.key root "server") "admin") "callers"
+      in
+      List.iteri
+        (fun i caller ->
+          let p = Lpath.idx callers_path i in
+          match caller with
+          | Admin_token n ->
+              if not (List.exists (fun t -> t.token_name = n) cfg.tokens) then
+                Dec.error ctx p
+                  (Printf.sprintf "unknown token %S (server.auth.tokens has no such name)"
+                     n)
+          | Admin_oidc n ->
+              let provider =
+                match (String.index_opt n ':', String.index_opt n '/') with
+                | Some i, Some j -> String.sub n 0 (Int.min i j)
+                | Some i, None -> String.sub n 0 i
+                | None, Some j -> String.sub n 0 j
+                | None, None -> n
+              in
+              if not (List.exists (fun o -> o.oidc_name = provider) cfg.oidc) then
+                Dec.error ctx p (Printf.sprintf "unknown OIDC provider %S" provider)
+          | Admin_mtls m ->
+              if not (List.exists (fun id -> id.mtls_match = m) cfg.mtls) then
+                Dec.error ctx p
+                  (Printf.sprintf
+                     "unknown mTLS identity %S (no such %s in \
+                      server.auth.mtls.identities)"
+                     (match m with Spiffe_id s | Subject_cn s -> s)
+                     (match m with
+                     | Spiffe_id _ -> "spiffe_id"
+                     | Subject_cn _ -> "subject_cn")))
+        cfg.admin.admin_callers;
       Some cfg
 
 let of_json_pos ?file ?base_dir ?env ?resolve ?positions j =
@@ -1980,7 +3246,20 @@ let tls_json c =
             `String (match t.min_version with Tls_1_2 -> "1.2" | Tls_1_3 -> "1.3") );
         ]
 
-let oidc_json o =
+let groups_policy_json g =
+  `Assoc
+    [
+      ("claim", `String g.groups_claim);
+      ( "map",
+        `List
+          (List.map
+             (fun r ->
+               `Assoc [ ("group", `String r.group); ("policy", `String r.group_policy) ])
+             g.group_rules) );
+      ("default", opt_s g.group_default);
+    ]
+
+let oidc_json groups o =
   `Assoc
     ([
        ("name", `String o.oidc_name);
@@ -1991,9 +3270,10 @@ let oidc_json o =
        ("leeway_seconds", `Int o.leeway_seconds);
        ("jwks_cache_seconds", `Int o.jwks_cache_seconds);
      ]
-    @ (match o.oidc_policy with
-      | Oidc_pinned n -> [ ("policy", `String n) ]
-      | Oidc_from_claim { claim; allowed } ->
+    @ (match (groups, o.oidc_policy) with
+      | Some g, _ -> [ ("policy_from_groups", groups_policy_json g) ]
+      | None, Oidc_pinned n -> [ ("policy", `String n) ]
+      | None, Oidc_from_claim { claim; allowed } ->
           [ ("policy_claim", `String claim); ("allowed_policies", strs allowed) ])
     @ [
         ( "context_claims",
@@ -2143,6 +3423,177 @@ let public_key_json = function
   | Key_pem s -> `String s
   | Key_base64 s -> `String s
 
+let stream_batch_json b =
+  `Assoc
+    [
+      ("max_records", `Int b.batch_max_records);
+      ("max_bytes", `Int b.batch_max_bytes);
+      ("flush_interval_ms", `Int b.flush_interval_ms);
+    ]
+
+let opt_pem = function Some p -> pem_json p | None -> `Null
+
+let stream_sink_json s =
+  let body =
+    match s.stream with
+    | Stream_elasticsearch e ->
+        [
+          ("type", `String "elasticsearch");
+          ("urls", strs e.es_urls);
+          (match e.es_target with
+          | Es_index i -> ("index", `String i)
+          | Es_data_stream d -> ("data_stream", `String d));
+          ( "auth",
+            match e.es_auth with
+            | None -> `Null
+            | Some (Es_api_key _) -> `Assoc [ ("api_key", redacted) ]
+            | Some (Es_basic { username; _ }) ->
+                `Assoc [ ("username", `String username); ("password", redacted) ] );
+          ("pipeline", opt_s e.es_pipeline);
+          ("tls", `Assoc [ ("ca_file", opt_pem e.es_ca) ]);
+          ("timeout_ms", `Int e.es_timeout_ms);
+          ("batch", stream_batch_json e.es_batch);
+        ]
+    | Stream_kafka k ->
+        [
+          ("type", `String "kafka");
+          ("brokers", strs k.kafka_brokers);
+          ("topic", `String k.kafka_topic);
+          ("client_id", `String k.kafka_client_id);
+          ( "acks",
+            match k.kafka_acks with Acks_all -> `String "all" | Acks_leader -> `Int 1 );
+          ( "tls",
+            match k.kafka_tls with
+            | None -> `Assoc [ ("enabled", `Bool false) ]
+            | Some t ->
+                `Assoc
+                  [
+                    ("enabled", `Bool true);
+                    ("ca_file", opt_pem t.kafka_ca);
+                    ("cert_file", opt_pem t.kafka_cert);
+                    ( "key_file",
+                      match t.kafka_key with Some _ -> redacted | None -> `Null );
+                  ] );
+          ( "sasl",
+            match k.kafka_sasl with
+            | None -> `Null
+            | Some x ->
+                `Assoc
+                  [
+                    ( "mechanism",
+                      `String
+                        (match x.sasl_mechanism with
+                        | Sasl_plain -> "plain"
+                        | Sasl_scram_sha_256 -> "scram-sha-256"
+                        | Sasl_scram_sha_512 -> "scram-sha-512") );
+                    ("username", `String x.sasl_username);
+                    ("password", redacted);
+                  ] );
+          ("batch", stream_batch_json k.kafka_batch);
+        ]
+  in
+  `Assoc
+    (body
+    @ [
+        ( "on_error",
+          `String
+            (match s.stream_on_error with
+            | Stream_fail_closed -> "fail_closed"
+            | Stream_buffer -> "buffer"
+            | Stream_drop -> "drop") );
+      ]
+    @
+    match s.stream_on_error with
+    | Stream_buffer -> [ ("max_buffer_records", `Int s.max_buffer_records) ]
+    | Stream_fail_closed | Stream_drop -> [])
+
+let s3_credentials_json = function
+  | S3_env -> `Assoc [ ("source", `String "env") ]
+  | S3_web_identity -> `Assoc [ ("source", `String "web_identity") ]
+  | S3_instance -> `Assoc [ ("source", `String "instance") ]
+  | S3_static { session_token; _ } ->
+      `Assoc
+        ([
+           ("source", `String "static");
+           ("access_key_id", redacted);
+           ("secret_access_key", redacted);
+         ]
+        @
+        match session_token with
+        | Some _ -> [ ("session_token", redacted) ]
+        | None -> [])
+
+let bundle_source_json b =
+  `Assoc
+    [
+      ( "bundle_source",
+        match b.location with
+        | Source_oci o ->
+            `Assoc
+              [
+                ("oci", `String o.oci_reference);
+                ("registry", `String o.oci_registry);
+                ("repository", `String o.oci_repository);
+                ("tag", opt_s o.oci_tag);
+                ("digest", opt_s o.oci_digest);
+                ("plain_http", `Bool o.oci_plain_http);
+              ]
+        | Source_s3 x ->
+            `Assoc
+              [
+                ( "s3",
+                  `Assoc
+                    [
+                      ("bucket", `String x.src_bucket);
+                      ("key", `String x.src_key);
+                      ("region", `String x.src_region);
+                      ("endpoint", opt_s x.src_endpoint);
+                      ("credentials", s3_credentials_json x.src_credentials);
+                    ] );
+              ]
+        | Source_https u -> `Assoc [ ("https", `String u) ] );
+      ("public_keys", `List (List.map public_key_json b.source_public_keys));
+      ("name_prefix", opt_s b.source_name_prefix);
+      ("poll_interval_s", `Int b.poll_interval_s);
+      ("cache_dir", opt_s b.cache_dir);
+      ( "auth",
+        match b.source_auth with
+        | None -> `Null
+        | Some (Source_token _) -> `Assoc [ ("token", redacted) ]
+        | Some (Source_basic { username; _ }) ->
+            `Assoc [ ("username", `String username); ("password", redacted) ] );
+    ]
+
+let opa_json o =
+  `Assoc
+    [
+      ("url", `String o.opa_url);
+      ("decision_path", `String o.decision_path);
+      ("timeout_ms", `Int o.opa_timeout_ms);
+      ( "on_error",
+        `String
+          (match o.opa_on_error with
+          | Opa_deny -> "deny"
+          | Opa_allow_haltsql_verdict -> "allow_haltsql_verdict") );
+      ("headers", `Assoc (List.map (fun (k, _) -> (k, redacted)) o.opa_headers));
+      ("tls", `Assoc [ ("ca_file", opt_pem o.opa_ca) ]);
+    ]
+
+let admin_caller_string = function
+  | Admin_token n -> "token:" ^ n
+  | Admin_oidc n -> "oidc:" ^ n
+  | Admin_mtls (Spiffe_id s) -> "mtls:" ^ s
+  | Admin_mtls (Subject_cn s) -> "mtls:" ^ s
+
+let admin_json a =
+  `Assoc
+    [
+      ("enabled", `Bool a.admin_enabled);
+      ("callers", strs (List.map admin_caller_string a.admin_callers));
+      ("report_window_seconds", `Int a.report_window_seconds);
+      ("max_tracked_queries", `Int a.max_tracked_queries);
+    ]
+
 let to_json_redacted (c : t) : Yojson.Safe.t =
   `Assoc
     [
@@ -2168,9 +3619,12 @@ let to_json_redacted (c : t) : Yojson.Safe.t =
                              ])
                          c.tokens) );
                   ("allow_unauthenticated", `Bool c.allow_unauthenticated);
-                  ("oidc", `List (List.map oidc_json c.oidc));
+                  ( "oidc",
+                    `List (List.map (fun o -> oidc_json (groups_policy_of c o) o) c.oidc)
+                  );
                   ("mtls", `Assoc [ ("identities", `List (List.map mtls_json c.mtls)) ]);
                 ] );
+            ("admin", admin_json c.admin);
           ] );
       ( "policies",
         `List
@@ -2197,12 +3651,15 @@ let to_json_redacted (c : t) : Yojson.Safe.t =
                    ("name_prefix", opt_s b.name_prefix);
                  ])
              c.policy_bundles) );
+      ("bundle_sources", `List (List.map bundle_source_json c.bundle_sources));
       ("default_policy", opt_s c.default_policy);
       ("reload", `Assoc [ ("watch", `Bool c.reload_watch) ]);
       ( "audit",
         `Assoc
           [
-            ("sinks", `List (List.map sink_json c.sinks));
+            ( "sinks",
+              `List (List.map sink_json c.sinks @ List.map stream_sink_json c.stream_sinks)
+            );
             ("log_raw_sql", `Bool c.log_raw_sql);
           ] );
       ( "telemetry",
@@ -2229,4 +3686,5 @@ let to_json_redacted (c : t) : Yojson.Safe.t =
         `Assoc [ ("level", `String c.log_level); ("format", `String c.log_format) ] );
       ("limits", `Assoc [ ("max_request_bytes", `Int c.max_request_bytes) ]);
       ("secrets", secrets_json c.secrets);
+      ("opa", match c.opa with Some o -> opa_json o | None -> `Null);
     ]

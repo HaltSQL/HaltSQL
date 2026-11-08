@@ -1,0 +1,26 @@
+; Remote signed policy bundle sources: an OCI Distribution client (pull and
+; push), S3 / S3-compatible and HTTPS fetchers, a verified on-disk cache and a
+; poller (docs/policy-bundles.md#bundle-sources).
+
+(library
+ (name haltsql_bundle_source)
+ (public_name haltsql.bundle_source)
+ (libraries
+  haltsql.core
+  haltsql.load
+  haltsql.bundle
+  haltsql.cloud
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  digestif
+  eqaf
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  unix)
+ (instrumentation
+  (backend bisect_ppx)))

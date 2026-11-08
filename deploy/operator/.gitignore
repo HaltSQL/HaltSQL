@@ -1,0 +1,5 @@
+# Local tool binaries (controller-gen, setup-envtest) and envtest assets.
+/bin/
+# Coverage and test output.
+*.out
+cover.html

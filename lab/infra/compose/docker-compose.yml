@@ -2,6 +2,7 @@
 #   docker compose up -d                       # Postgres 17 only (default)
 #   docker compose --profile matrix up -d      # Postgres 13-17
 #   docker compose --profile chaos up -d       # + PgBouncer and Toxiproxy
+#   docker compose --profile compat up -d      # Postgres flavours (lab/compat/README.md)
 # Credentials are lab-only and never leave this machine.
 name: haltlab
 
@@ -62,3 +63,72 @@ services:
     command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
     volumes: ["./toxiproxy.json:/config/toxiproxy.json:ro"]
     ports: ["127.0.0.1:8474:8474", "127.0.0.1:25417:25417"]
+
+  # ---------------------------------------------------------------- compat ----
+  # Postgres flavours for lab/compat (docs/compatibility.md). Host ports
+  # 55418-55430; container names haltsql-dbcompat-*. Run with lab/compat/run.sh.
+  compat-pg18:
+    <<: *pg
+    image: postgres:18.4-alpine
+    profiles: [compat]
+    container_name: haltsql-dbcompat-pg18
+    tmpfs:
+      - /var/lib/postgresql          # PG 18 images keep PGDATA under /var/lib/postgresql/18
+    ports: ["127.0.0.1:55418:5432"]
+  compat-supabase:
+    image: supabase/postgres:17.11.0.018
+    profiles: [compat]
+    container_name: haltsql-dbcompat-supabase
+    environment:
+      POSTGRES_PASSWORD: haltlab     # also the password of the non-superuser `postgres` role
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports: ["127.0.0.1:55419:5432"]
+  compat-alloydb-omni:
+    image: google/alloydbomni:17.10.0
+    profiles: [compat]
+    container_name: haltsql-dbcompat-alloydb-omni
+    environment:
+      POSTGRES_PASSWORD: haltlab
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports: ["127.0.0.1:55420:5432"]
+  compat-citus:
+    <<: *pg
+    image: citusdata/citus:14.2.0-alpine
+    platform: linux/amd64
+    profiles: [compat]
+    container_name: haltsql-dbcompat-citus
+    # amd64-only image (emulated on arm64 hosts). No tmpfs: Citus writes
+    # intermediate results to files, which fail on tmpfs under emulation
+    # ("could not append to file: Not supported").
+    tmpfs: []
+    # Citus connects to itself (127.0.0.1) for some distributed operations, so
+    # keep initdb's trust for local and loopback connections inside the
+    # container; connections from the host still need the scram password.
+    environment:
+      POSTGRES_PASSWORD: haltlab
+    command: ["postgres", "-c", "fsync=off", "-c", "max_connections=200", "-c", "shared_preload_libraries=citus"]
+    ports: ["127.0.0.1:55421:5432"]
+  compat-timescaledb:
+    <<: *pg
+    image: timescale/timescaledb:2.31.0-pg17
+    profiles: [compat]
+    container_name: haltsql-dbcompat-timescaledb
+    environment:
+      POSTGRES_PASSWORD: haltlab
+      POSTGRES_INITDB_ARGS: "--auth-local=trust --auth-host=scram-sha-256"
+      TIMESCALEDB_TELEMETRY: "off"   # no outbound telemetry from the lab
+    command: ["postgres", "-c", "fsync=off", "-c", "max_connections=200",
+              "-c", "shared_preload_libraries=timescaledb", "-c", "timescaledb.telemetry_level=off"]
+    ports: ["127.0.0.1:55422:5432"]

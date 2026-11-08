@@ -1,0 +1,22 @@
+# Compatibility run on PostgreSQL 18 (postgres:18.4-alpine); see docs/compatibility.md. Same workload and
+# expectations as pr-smoke; also run through haltsql-proxy by lab/compat/run.sh.
+#   lab/compat/run.sh local pg18
+apiVersion: haltsql.dev/v1
+kind: Scenario
+metadata: { name: compat-pg18 }
+environment:
+  postgres: [18]
+  topology: embedded
+  engine: postgres
+  dsn: postgresql://postgres:haltlab@localhost:55418/postgres   # lab-only credentials (compose profile compat)
+fixture: saas_shared
+data: { scale: tiny, tenants: 8, skew: zipf(1.2), seed: 42 }
+workloads:
+  - benign: { queries: 200 }
+  - adversarial: { queries: 400 }
+expect:
+  escapes: 0
+  side_effects: 0
+  column_leaks: 0
+  false_positive_rate: { max: 0.10 }
+  min_executed: 50

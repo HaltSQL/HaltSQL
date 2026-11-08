@@ -28,6 +28,16 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
     {{- end }}
+    {{- if .Values.tls.enabled }}
+    - ports:
+        - port: health
+          protocol: TCP
+    {{- end }}
+  {{- with .Values.networkPolicy.egress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
   # haltsql never connects to anything (no database, no network calls).
   egress: []
+  {{- end }}
 {{- end }}

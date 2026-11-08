@@ -20,17 +20,30 @@ let tls_config (u : upstream) =
           u.tls_ca
     | Tls_require | Tls_disable -> fun ?ip:_ ~host:_ _ -> Ok None
   in
-  let ip, peer_name =
+  let peer =
     match Ipaddr.of_string u.host with
-    | Ok ip -> (Some ip, None)
+    | Ok ip -> Ok (Some ip, None)
     | Error _ -> (
         match Result.bind (Domain_name.of_string u.host) Domain_name.host with
-        | Ok h -> (None, Some h)
-        | Error _ -> (None, None))
+        | Ok h -> Ok (None, Some h)
+        | Error _ -> (
+            match u.tls_mode with
+            | Tls_verify_full ->
+                (* without a name or an IP the authenticator checks the chain only:
+                   fail closed *)
+                Error
+                  (Printf.sprintf
+                     "upstream host %s cannot be verified (neither an IP address nor a \
+                      valid DNS host name); tls.mode verify-full needs one"
+                     u.host)
+            | Tls_require | Tls_disable -> Ok (None, None)))
   in
-  match Tls.Config.client ~authenticator ?peer_name ?ip () with
-  | Ok c -> Ok (c, peer_name)
-  | Error (`Msg m) -> Error m
+  match peer with
+  | Error m -> Error m
+  | Ok (ip, peer_name) -> (
+      match Tls.Config.client ~authenticator ?peer_name ?ip () with
+      | Ok c -> Ok (c, peer_name)
+      | Error (`Msg m) -> Error m)
 
 let tcp_connect (u : upstream) =
   let* addrs =
@@ -179,7 +192,7 @@ let connect (u : upstream) ~application_name =
       let* fd = tcp_connect u in
       let* io =
         Lwt.catch
-          (fun () -> negotiate u fd)
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
           (fun e ->
             let* () =
               Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
@@ -208,7 +221,15 @@ let send_cancel (u : upstream) ~pid ~key =
   Lwt.catch
     (fun () ->
       let* fd = tcp_connect u in
-      let* io = negotiate u fd in
+      let* io =
+        Lwt.catch
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
+          (fun e ->
+            let* () =
+              Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
+            in
+            Lwt.fail e)
+      in
       let* () = Io.write io (Wire.encode_cancel ~pid ~key) in
       (* the server closes the connection after processing the request *)
       let* () =

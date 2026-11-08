@@ -4,10 +4,11 @@ type source =
   | Env
   | Static of Sigv4.credentials
   | Web_identity
+  | Container
   | Instance
   | Chain of source list
 
-let default_chain = Chain [ Env; Web_identity; Instance ]
+let default_chain = Chain [ Env; Web_identity; Container; Instance ]
 
 let source_of_s3 : Haltsql_load.Config.s3_credentials -> source = function
   | S3_env -> Env
@@ -163,6 +164,114 @@ let web_identity t =
                           }
                     | _ -> Error "web identity: malformed STS response"))))
 
+let parse_creds_json ~fail ~code_prefix body =
+  match Yojson.Safe.from_string body with
+  | exception _ -> fail "malformed credentials document"
+  | j -> (
+      let f = Cloud_util.json_string_field j in
+      match (f "Code", f "AccessKeyId", f "SecretAccessKey", f "Token") with
+      | (None | Some "Success"), Some a, Some s, tok ->
+          Lwt.return
+            (Ok
+               {
+                 creds = { access_key_id = a; secret_access_key = s; session_token = tok };
+                 expires = Option.bind (f "Expiration") parse_expiration;
+               })
+      | Some c, _, _, _ when c <> "Success" ->
+          fail (code_prefix ^ " credentials code " ^ c)
+      | _ -> fail "malformed credentials document")
+
+let allowed_container_full_uri u =
+  if Uri.userinfo u <> None || Uri.fragment u <> None then false
+  else
+    let p = Uri.path u in
+    if p <> "" && p.[0] <> '/' then false
+    else
+      match (Uri.scheme u, Uri.host u) with
+      | Some "https", Some h when h <> "" -> true
+      | Some "http", Some h ->
+          let hl = String.lowercase_ascii h in
+          Haltsql_core.Loopback.is_host h
+          || hl = "169.254.170.2" || hl = "169.254.170.23" || hl = "fd00:ec2::23"
+          || hl = "[fd00:ec2::23]"
+      | _ -> false
+
+let valid_header_token s =
+  s <> "" && not (String.exists (fun c -> c = '\r' || c = '\n' || c = '\x00') s)
+
+let strip_crlf s =
+  let n = ref (String.length s) in
+  while !n > 0 && (s.[!n - 1] = '\r' || s.[!n - 1] = '\n') do
+    decr n
+  done;
+  String.sub s 0 !n
+
+let container_configured t =
+  nonempty t.env "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" <> None
+  || nonempty t.env "AWS_CONTAINER_CREDENTIALS_FULL_URI" <> None
+
+let container t =
+  let fail m = Lwt.return (Error ("container: " ^ m)) in
+  let target_uri =
+    match
+      ( nonempty t.env "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        nonempty t.env "AWS_CONTAINER_CREDENTIALS_FULL_URI" )
+    with
+    | Some rel, _ ->
+        if rel.[0] <> '/' then
+          Error "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI must start with '/'"
+        else
+          let base =
+            Option.value ~default:"http://169.254.170.2"
+              (nonempty t.env "AWS_CONTAINER_CREDENTIALS_ENDPOINT")
+          in
+          let base =
+            if String.length base > 0 && base.[String.length base - 1] = '/' then
+              String.sub base 0 (String.length base - 1)
+            else base
+          in
+          Ok (Uri.of_string (base ^ rel))
+    | None, Some full ->
+        let u = Uri.of_string full in
+        if allowed_container_full_uri u then Ok u
+        else
+          Error
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI must use https or point to loopback or \
+             the ECS/EKS container agent"
+    | None, None ->
+        Error
+          "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI and AWS_CONTAINER_CREDENTIALS_FULL_URI \
+           are not set"
+  in
+  match target_uri with
+  | Error m -> fail m
+  | Ok uri -> (
+      let auth_headers =
+        match nonempty t.env "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE" with
+        | Some file -> (
+            match Cloud_util.read_file ~limit:65536 file with
+            | Error m -> Error ("cannot read authorization token file: " ^ m)
+            | Ok raw ->
+                let tok = strip_crlf raw in
+                if valid_header_token tok then Ok [ ("authorization", tok) ]
+                else Error "invalid token in AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")
+        | None -> (
+            match nonempty t.env "AWS_CONTAINER_AUTHORIZATION_TOKEN" with
+            | Some tok ->
+                if valid_header_token tok then Ok [ ("authorization", tok) ]
+                else Error "invalid AWS_CONTAINER_AUTHORIZATION_TOKEN"
+            | None -> Ok [])
+      in
+      match auth_headers with
+      | Error m -> fail m
+      | Ok headers -> (
+          Http.request ~timeout:t.timeout ~headers `GET uri >>= function
+          | Error m -> fail m
+          | Ok r when r.status <> 200 ->
+              fail
+                (Printf.sprintf "container credentials endpoint returned HTTP %d" r.status)
+          | Ok r -> parse_creds_json ~fail ~code_prefix:"container" r.body))
+
 let instance t =
   if
     Option.map String.lowercase_ascii (nonempty t.env "AWS_EC2_METADATA_DISABLED")
@@ -201,30 +310,17 @@ let instance t =
     | [] -> fail "no IAM role attached to the instance"
     | role :: _ when String.contains role '/' || String.contains role '.' ->
         fail "invalid role name from IMDS"
-    | role :: _ -> (
+    | role :: _ ->
         let* body =
           req ~headers:h `GET ("/latest/meta-data/iam/security-credentials/" ^ role)
         in
-        match Yojson.Safe.from_string body with
-        | exception _ -> fail "malformed credentials document"
-        | j -> (
-            let f = Cloud_util.json_string_field j in
-            match (f "Code", f "AccessKeyId", f "SecretAccessKey", f "Token") with
-            | (None | Some "Success"), Some a, Some s, tok ->
-                Lwt.return
-                  (Ok
-                     {
-                       creds =
-                         { access_key_id = a; secret_access_key = s; session_token = tok };
-                       expires = Option.bind (f "Expiration") parse_expiration;
-                     })
-            | Some c, _, _, _ when c <> "Success" -> fail ("IMDS credentials code " ^ c)
-            | _ -> fail "malformed credentials document"))
+        parse_creds_json ~fail ~code_prefix:"IMDS" body
 
 let rec fetch t = function
   | Env -> from_env t
   | Static c -> Lwt.return (Ok { creds = c; expires = None })
   | Web_identity -> web_identity t
+  | Container -> container t
   | Instance -> instance t
   | Chain sources ->
       let rec go errs = function
@@ -235,7 +331,15 @@ let rec fetch t = function
         | s :: rest -> (
             fetch t s >>= function
             | Ok c -> Lwt.return (Ok c)
-            | Error e -> go (e :: errs) rest)
+            | Error e ->
+                let errs =
+                  match s with
+                  | Container
+                    when (not (container_configured t)) && (errs <> [] || rest <> []) ->
+                      errs
+                  | _ -> e :: errs
+                in
+                go errs rest)
       in
       go [] sources
 

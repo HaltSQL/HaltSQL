@@ -456,6 +456,21 @@ let test_config_errors () =
                  ("tls", `Assoc [ ("mode", `String "verify-full") ]);
                ]))
        ());
+  (* regression: verify-full with a host the certificate check cannot use (not an IP,
+     not a valid DNS host name) used to check the chain only *)
+  has_error "verify-full needs a verifiable host"
+    "upstream.host: host \"pg_1\" cannot be verified by tls.mode verify-full"
+    (base_config
+       ~upstream:
+         (Some
+            (`Assoc
+               [
+                 ("host", `String "pg_1");
+                 ("database", `String "d");
+                 ("user", `String "u");
+                 ("tls", `Assoc [ ("mode", `String "verify-full") ]);
+               ]))
+       ());
   let user ?(policy = "proxy-test") ?(context = `Assoc [ ("tenant_id", `String "acme") ])
       ?(v = verifier) () =
     Some

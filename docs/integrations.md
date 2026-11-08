@@ -18,6 +18,11 @@ helper that runs exactly the verified string with `bind_params`:
 | LangChain | [`integrations/langchain`](../integrations/langchain) | [README](../integrations/langchain/README.md) |
 | LlamaIndex | [`integrations/llamaindex`](../integrations/llamaindex) | [README](../integrations/llamaindex/README.md) |
 | Vanna | [`integrations/vanna`](../integrations/vanna) | [README](../integrations/vanna/README.md) |
+| OpenAI Agents SDK | [`integrations/openai_agents`](../integrations/openai_agents) | [README](../integrations/openai_agents/README.md) |
+| LangGraph | [`integrations/langgraph`](../integrations/langgraph) | [README](../integrations/langgraph/README.md) |
+| Semantic Kernel | [`integrations/semantic_kernel`](../integrations/semantic_kernel) | [README](../integrations/semantic_kernel/README.md) |
+| CrewAI | [`integrations/crewai`](../integrations/crewai) | [README](../integrations/crewai/README.md) |
+| Google ADK (Agent Development Kit) | [`integrations/google_adk`](../integrations/google_adk) | [README](../integrations/google_adk/README.md) |
 
 Clients can check their behaviour against the shared request/verdict vectors
 in [`clients/testvectors`](../clients/testvectors). Drivers that cannot be

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import psycopg
 
 from common.fixtures import Fixture
+from compat.engines import get_engine
 from common.policy import LabPolicy
 from common.tenancy import Universe, build_universe
 from datagen.catalog import TableInfo, introspect, topo_sort
@@ -42,6 +43,7 @@ class LabDatabase:
     universe: Universe
     dataset: Dataset
     server_version: str
+    engine_notes: list[str] = field(default_factory=list)  # what an engine hook changed (lab/compat)
 
 
 def create_database(admin: str, name: str) -> str:
@@ -56,11 +58,17 @@ def drop_database(admin: str, name: str) -> None:
         conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
-def install(dsn: str, fixture: Fixture, policy: LabPolicy, data: dict[str, Any]) -> LabDatabase:
+def install(dsn: str, fixture: Fixture, policy: LabPolicy, data: dict[str, Any],
+            engine: str | None = None) -> LabDatabase:
+    """``engine`` names a Postgres flavour with install hooks (lab/compat/engines.py)."""
     if fixture.schema_sql is None:
         raise ValueError(f"fixture {fixture.name} has no schema SQL (generated fixtures must be materialized)")
     cfg = DataConfig.from_scenario(data)
+    eng = get_engine(engine)
+    notes: list[str] = []
     with psycopg.connect(dsn, autocommit=True) as conn:
+        if eng.prepare is not None:
+            notes += eng.prepare(conn, policy.schemas)
         conn.execute(Path(fixture.schema_sql).read_text(encoding="utf-8"))  # simple protocol: multi-statement OK
         server_version = conn.execute("SHOW server_version").fetchone()[0]
     with psycopg.connect(dsn) as conn:
@@ -70,4 +78,8 @@ def install(dsn: str, fixture: Fixture, policy: LabPolicy, data: dict[str, Any])
         load(conn, dataset)
         conn.execute("ANALYZE")
         conn.commit()
-    return LabDatabase(dsn, catalog, universe, dataset, server_version)
+    if eng.after_load is not None:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            notes += eng.after_load(conn, policy.schemas)
+            conn.execute("ANALYZE")
+    return LabDatabase(dsn, catalog, universe, dataset, server_version, notes)

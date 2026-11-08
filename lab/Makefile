@@ -4,7 +4,7 @@ COMPOSE ?= docker compose -f infra/compose/docker-compose.yml
 PROFILE ?=
 SCENARIO ?= scenarios/pr-smoke.yaml
 
-.PHONY: venv up down run smoke proxy-smoke selftest matrix validate test test-integration clean
+.PHONY: venv up down run smoke proxy-smoke selftest matrix compat-up compat compat-down validate test test-integration clean
 
 venv:
 	test -x $(PY) || (python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt)
@@ -31,6 +31,19 @@ selftest: venv
 matrix: venv
 	$(MAKE) up PROFILE=matrix
 	$(PY) -m harness run scenarios/matrix-pg13-17.yaml
+
+# Postgres flavour compatibility runs (compat/run.sh, docs/compatibility.md).
+# ENGINES: engine names or "all" (default), e.g. make compat ENGINES="pg18 citus".
+ENGINES ?= all
+
+compat-up:
+	compat/run.sh up
+
+compat: venv
+	compat/run.sh local $(ENGINES)
+
+compat-down:
+	compat/run.sh down
 
 validate: venv
 	$(PY) -m harness validate scenarios/*.yaml

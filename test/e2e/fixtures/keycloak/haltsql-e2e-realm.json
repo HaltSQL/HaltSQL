@@ -1,0 +1,79 @@
+{
+  "realm": "haltsql-e2e",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 600,
+  "groups": [
+    { "name": "support", "path": "/support" },
+    { "name": "finance", "path": "/finance" }
+  ],
+  "roles": { "realm": [ { "name": "haltsql-admin" } ] },
+  "clients": [
+    {
+      "clientId": "haltsql-agent",
+      "name": "HaltSQL e2e agent",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${E2E_KC_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "audience-haltsql",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "haltsql",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@e2e.haltsql.invalid",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Support",
+      "groups": ["/support"],
+      "credentials": [ { "type": "password", "value": "${E2E_KC_USER_PASSWORD}", "temporary": false } ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@e2e.haltsql.invalid",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Finance",
+      "groups": ["/finance"],
+      "realmRoles": ["haltsql-admin"],
+      "credentials": [ { "type": "password", "value": "${E2E_KC_USER_PASSWORD}", "temporary": false } ]
+    },
+    {
+      "username": "service-account-haltsql-agent",
+      "enabled": true,
+      "serviceAccountClientId": "haltsql-agent",
+      "groups": ["/support"]
+    }
+  ]
+}

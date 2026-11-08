@@ -64,7 +64,11 @@ jobs:
       - name: Build
         run: opam exec -- dune build
 
+      # Docker-based suites (Kafka, Elasticsearch, OPA, Keycloak, registries,
+      # MinIO) run for real in integration.yml.
       - name: Test
+        env:
+          HALTSQL_SKIP_DOCKER: "1"
         run: opam exec -- dune test
 
   coverage:
@@ -84,6 +88,8 @@ jobs:
         run: opam install . --deps-only --with-test --yes && opam install --yes bisect_ppx
 
       - name: Run tests with instrumentation
+        env:
+          HALTSQL_SKIP_DOCKER: "1"
         run: opam exec -- dune runtest --instrument-with bisect_ppx --force
 
       - name: Coverage report
@@ -167,7 +173,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: SDK, MCP, LangChain, LlamaIndex, Vanna and test vectors
+      - name: SDK, MCP, LangChain, LlamaIndex, Vanna, agent frameworks (OpenAI Agents, LangGraph, Semantic Kernel, CrewAI, Google ADK) and test vectors
         env:
           FULL: "1"
         run: clients/python/run-all-tests.sh

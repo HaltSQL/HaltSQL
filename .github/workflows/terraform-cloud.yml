@@ -1,0 +1,229 @@
+name: Terraform cloud examples
+
+# Plans, or applies and then destroys, the AWS, Azure and GCP examples in
+# deploy/terraform/examples. Manual only: it creates billable resources.
+#
+# Each cloud runs only when its credentials are configured; the others are
+# skipped. Authentication is OIDC federation (no long-lived keys):
+#
+#   AWS    secrets.AWS_ROLE_TO_ASSUME        IAM role trusting token.actions.githubusercontent.com
+#          vars.AWS_REGION                   e.g. eu-west-1
+#          vars.AWS_VPC_ID                   existing VPC
+#          vars.AWS_PRIVATE_SUBNET_IDS       JSON list, e.g. ["subnet-0a..","subnet-0b.."]
+#          vars.AWS_CALLER_CIDRS             JSON list, e.g. ["10.0.0.0/16"]
+#   Azure  secrets.AZURE_CLIENT_ID           app registration / managed identity with a
+#          secrets.AZURE_TENANT_ID           federated credential for this repository
+#          secrets.AZURE_SUBSCRIPTION_ID
+#          vars.AZURE_LOCATION               e.g. westeurope
+#   GCP    secrets.GCP_WORKLOAD_IDENTITY_PROVIDER  projects/N/locations/global/workloadIdentityPools/P/providers/X
+#          secrets.GCP_SERVICE_ACCOUNT       deployer service account
+#          vars.GCP_PROJECT_ID
+#          vars.GCP_REGION                   e.g. europe-west1
+#          vars.GCP_IMAGE                    haltsql image in Artifact Registry
+#
+# State is local to the job: apply-and-destroy always destroys in the same
+# job (also when apply fails), so nothing is left behind or orphaned.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan, or apply-and-destroy (applies, waits for healthy tasks, destroys)"
+        type: choice
+        options: [plan, apply-and-destroy]
+        default: plan
+      clouds:
+        description: "Comma-separated subset of aws,azure,gcp"
+        type: string
+        default: aws,azure,gcp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-cloud
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TERRAFORM_VERSION: "1.14.3"
+
+jobs:
+  detect:
+    name: Detect configured clouds
+    runs-on: ubuntu-latest
+    outputs:
+      aws: ${{ steps.detect.outputs.aws }}
+      azure: ${{ steps.detect.outputs.azure }}
+      gcp: ${{ steps.detect.outputs.gcp }}
+    steps:
+      - id: detect
+        env:
+          CLOUDS: ${{ inputs.clouds }}
+          HAS_AWS: ${{ secrets.AWS_ROLE_TO_ASSUME != '' && vars.AWS_VPC_ID != '' }}
+          HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+          HAS_GCP: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' && vars.GCP_PROJECT_ID != '' && vars.GCP_IMAGE != '' }}
+        run: |
+          set -eu
+          want() { case ",${CLOUDS// /}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+          for c in aws azure gcp; do
+            var="HAS_$(echo "$c" | tr '[:lower:]' '[:upper:]')"
+            if want "$c" && [ "${!var}" = true ]; then
+              echo "$c=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$c=false" >> "$GITHUB_OUTPUT"
+              if want "$c"; then echo "::notice::$c skipped: credentials or variables are not configured"; fi
+            fi
+          done
+
+  aws:
+    name: AWS (ECS Fargate)
+    needs: detect
+    if: needs.detect.outputs.aws == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: deploy/terraform/examples/aws
+    env:
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_name: haltsql-ci-${{ github.run_number }}
+      TF_VAR_vpc_id: ${{ vars.AWS_VPC_ID }}
+      TF_VAR_private_subnet_ids: ${{ vars.AWS_PRIVATE_SUBNET_IDS }}
+      TF_VAR_caller_cidr_blocks: ${{ vars.AWS_CALLER_CIDRS }}
+      TF_VAR_nlb_deletion_protection: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: haltsql-terraform-${{ github.run_id }}
+      - name: Throwaway token hash
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "TF_VAR_agent_token_sha256=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - run: terraform plan -out=tfplan
+      - name: Apply (waits for the service to reach a steady state behind the NLB health checks)
+        if: inputs.action == 'apply-and-destroy'
+        run: terraform apply tfplan
+      - name: Show the service
+        if: inputs.action == 'apply-and-destroy'
+        run: |
+          aws ecs describe-services --cluster "$(terraform output -raw cluster_name)" \
+            --services "$(terraform output -raw service_name)" \
+            --query 'services[0].{status:status,running:runningCount,desired:desiredCount,rollout:deployments[0].rolloutState}'
+      - name: Destroy
+        if: always() && inputs.action == 'apply-and-destroy'
+        run: terraform destroy -auto-approve
+
+  azure:
+    name: Azure (Container Apps)
+    needs: detect
+    if: needs.detect.outputs.azure == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: deploy/terraform/examples/azure
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.AZURE_LOCATION || 'westeurope' }}
+      TF_VAR_name: haltsql-ci-${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: Throwaway token hash
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "TF_VAR_agent_token_sha256=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - run: terraform plan -out=tfplan
+      - name: Apply (waits for the revision to be provisioned)
+        if: inputs.action == 'apply-and-destroy'
+        run: terraform apply tfplan
+      - uses: azure/login@v2
+        if: inputs.action == 'apply-and-destroy'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Check that the revision is healthy (startup and readiness probes passed)
+        if: inputs.action == 'apply-and-destroy'
+        run: |
+          set -eu
+          app="$(terraform output -raw container_app_name)"
+          rg="$(terraform output -raw resource_group_name)"
+          for _ in $(seq 1 30); do
+            state="$(az containerapp revision list -n "$app" -g "$rg" --query '[0].properties.healthState' -o tsv)"
+            echo "healthState=$state"
+            [ "$state" = Healthy ] && exit 0
+            sleep 10
+          done
+          exit 1
+      - name: Destroy
+        if: always() && inputs.action == 'apply-and-destroy'
+        run: terraform destroy -auto-approve
+
+  gcp:
+    name: GCP (Cloud Run)
+    needs: detect
+    if: needs.detect.outputs.gcp == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: deploy/terraform/examples/gcp
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION || 'europe-west1' }}
+      TF_VAR_image: ${{ vars.GCP_IMAGE }}
+      TF_VAR_name: haltsql-ci-${{ github.run_number }}
+      TF_VAR_deletion_protection: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Throwaway token hash
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "TF_VAR_agent_token_sha256=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - run: terraform plan -out=tfplan
+      - name: Apply (waits until the revision is Ready, i.e. the /readyz startup probe passed)
+        if: inputs.action == 'apply-and-destroy'
+        run: terraform apply tfplan
+      - name: Destroy
+        if: always() && inputs.action == 'apply-and-destroy'
+        run: terraform destroy -auto-approve

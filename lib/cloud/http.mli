@@ -12,6 +12,9 @@ val default_ctx : ctx
 val ctx_of_ca_file : string -> (ctx, string) result Lwt.t
 (** Trust only the PEM CA certificates in this file (e.g. a private Vault CA). *)
 
+val ctx_of_ca_pem : string -> (ctx, string) result Lwt.t
+(** Trust only the inline PEM CA certificates in this string. *)
+
 val request :
   ?ctx:ctx ->
   ?timeout:float ->

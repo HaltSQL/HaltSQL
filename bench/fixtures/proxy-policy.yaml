@@ -1,0 +1,25 @@
+# Policy for the haltsql-proxy benchmark (bench/proxy_bench.ml). Literal tenancy so
+# tenant-scoped queries are allowed over the simple query protocol (bound tenancy
+# needs the extended protocol, see docs/proxy.md).
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: proxy-bench
+  owner: bench
+  description: Read-only, tenant-scoped access to app.orders for the proxy benchmark
+dialect: postgres-17
+search_path: [app]
+limits: { max_bytes: 16384, max_depth: 64, max_nodes: 20000, max_joins: 6 }
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: literal
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, created_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates]
+mode: enforce

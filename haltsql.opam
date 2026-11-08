@@ -12,8 +12,8 @@ homepage: "https://github.com/ardada2468/HaltSQL"
 doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"
 bug-reports: "https://github.com/ardada2468/HaltSQL/issues"
 depends: [
-  "ocaml" {>= "5.1"}
   "dune" {>= "3.0"}
+  "ocaml" {>= "5.1"}
   "yojson" {>= "2.0"}
   "yaml" {>= "3.0"}
   "digestif" {>= "1.0"}
@@ -27,9 +27,9 @@ depends: [
   "uri" {>= "4.0"}
   "base64" {>= "3.5"}
   "ptime" {>= "1.0"}
-  "x509" {>= "1.0" & < "1.2"}
-  "tls" {>= "1.0"}
-  "tls-lwt" {>= "1.0"}
+  "x509" {>= "1.2.0"}
+  "tls" {>= "2.0.4"}
+  "tls-lwt" {>= "2.0.4"}
   "ca-certs" {>= "1.0"}
   "domain-name" {>= "0.4"}
   "ipaddr" {>= "5.0"}

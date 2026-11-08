@@ -34,6 +34,8 @@ Explainers with diagrams, from the big picture down to the code:
 - [Go SDK](sdk-go.md): standard-library client with `GuardedQuery` for `database/sql`.
 - [Java SDK](sdk-java.md): `com.haltsql:haltsql-client` with `JdbcGuard` for PgJDBC.
 - [MCP server](mcp.md): `haltsql-mcp`, a verified read-only Postgres tool for MCP clients.
+- [Agent frameworks](agent-frameworks.md): LangGraph, CrewAI, the OpenAI Agents SDK,
+  Semantic Kernel and Google ADK packages (`integrations/`).
 - [Integrations overview](integrations.md): the rules every client follows.
 
 ## Reference
@@ -54,13 +56,27 @@ Explainers with diagrams, from the big picture down to the code:
 ## Operating HaltSQL
 
 - [Deployment](deployment.md): Docker, Kubernetes sidecar, systemd, verifying releases.
+- [Kubernetes operator](kubernetes-operator.md): `HaltSQLPolicy` and `HaltSQLServer`
+  custom resources, validated and rolled out by the operator.
+- [Terraform](terraform.md): modules for Kubernetes, AWS, Azure and GCP.
 - [Authentication and TLS](authentication.md): built-in TLS 1.2/1.3, mTLS
   identities, OIDC/JWT callers, and claim-derived tenant context.
 - [Secrets](secrets.md): `${vault:...}`, `${aws-sm:...}` and `${gcp-sm:...}` config placeholders.
-- [Audit sinks](audit-sinks.md): hash-chained audit records to files, S3 and GCS, with `on_error` semantics.
+- [Audit sinks](audit-sinks.md): hash-chained audit records to files, S3, GCS,
+  Elasticsearch/OpenSearch and Kafka, with `on_error` semantics.
+- [Verifying audit chains](audit-verify.md): `haltsql audit verify` for files, rotated
+  logs, object-store prefixes and spools.
+- [Shadow-mode reports](shadow-reports.md): `haltsql report` and `GET /v1/admin/report`:
+  what would have been denied, and conservative policy suggestions.
+- [Open Policy Agent](opa.md): an optional OPA decision after HaltSQL allows a query
+  (deny-only, `E_EXTERNAL_POLICY`).
 - [Observability](observability.md): Prometheus `/metrics` and OpenTelemetry (OTLP) traces and metrics.
+- [Performance](performance.md): benchmarks of the library, CLI, server and proxy.
+- [Database compatibility](compatibility.md): PostgreSQL 17/18 and Postgres-compatible
+  engines tested in the lab.
 - [Signed policy bundles](policy-bundles.md) and [policy CI](policy-ci.md):
-  `haltsql bundle`, the GitHub Action, GitLab templates and pre-commit hooks.
+  `haltsql bundle` (including `push`/`pull --oci`), remote bundle sources (OCI, S3,
+  HTTPS), the GitHub Action, GitLab templates and pre-commit hooks.
 - [haltsql-proxy](proxy.md): the PostgreSQL wire-protocol firewall.
 - [RLS generation](rls-generation.md): `haltsql rls generate|check` for database-level defense in depth.
 - [Schema and PII import](schema-and-pii.md): `haltsql schema pull|import` and `haltsql policy draft`.
@@ -76,6 +92,7 @@ Explainers with diagrams, from the big picture down to the code:
   - [0004: Verdict schema and reason codes](adr/0004-verdict-schema-and-reason-codes.md)
   - [0005: Apache-2.0 license](adr/0005-license-apache-2.md) (superseded by 0006)
   - [0006: MIT license](adr/0006-license-mit.md)
+  - [0007: Deny-only external policy and admin API](adr/0007-external-policy-and-admin-api.md)
 - [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md) ·
   [Governance](../GOVERNANCE.md) · [Changelog](../CHANGELOG.md)
 

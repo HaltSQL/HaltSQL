@@ -81,6 +81,15 @@ mtlsIdentities: []
 # token named HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`).
 existingTokenSecret: ""
 
+# Extra environment variables appended to the container (e.g. secretKeyRef
+# values referenced via ${env:...} placeholders in extraPolicies or extraConfig).
+extraEnv: []
+#  - name: HALTSQL_BUNDLE_PASSWORD
+#    valueFrom:
+#      secretKeyRef:
+#        name: haltsql-bundle-creds
+#        key: password
+
 # Policies, keyed by file name. Each value is a full Policy document (YAML).
 policies: {}
 #  analytics-agent.yaml: |
@@ -93,6 +102,45 @@ policies: {}
 existingPolicyConfigMap: ""
 # File names (keys) in existingPolicyConfigMap to load.
 existingPolicyFiles: []
+
+# Extra Config policies[] entries, appended to the policies rendered from
+# `policies` / `existingPolicyFiles`. Each entry is a full Config policy entry
+# (path, inline, bundle or bundle_source; see docs/config-reference.md). A
+# bundle_source entry without cache_dir gets "<cache.mountPath>/bundles", so a
+# restarted pod can start from its last verified bundle while the source is
+# down. Secrets (registry passwords, tokens) belong in ${env:...} placeholders,
+# never inline.
+extraPolicies: []
+#  - bundle_source: { oci: "registry.corp.example/haltsql/policies:prod" }
+#    public_keys: ["ed25519:BASE64..."]
+#    name_prefix: prod.
+#    poll_interval_s: 60
+
+# Extra Config keys, deep-merged into the rendered Config document after
+# extraPolicies are appended: nested maps merge key by key and extraConfig
+# wins; lists and scalars replace the rendered value. Use it for settings the
+# chart has no value for (telemetry.otlp, secrets, opa, audit sinks, ...).
+# `policies` is refused here (it would replace the chart's list): use
+# extraPolicies.
+extraConfig: {}
+#  telemetry:
+#    otlp: { endpoint: "http://otel-collector.monitoring:4318" }
+#  opa:
+#    url: "https://opa.policy.svc:8181"
+#    decision_path: haltsql/allow
+
+# Writable volume for bundle-source caches (the root filesystem is read-only).
+# It is mounted at mountPath, and bundle_source entries in extraPolicies
+# without their own cache_dir use "<mountPath>/bundles". `volume` is any pod
+# volume source; the default emptyDir survives container restarts but not pod
+# rescheduling. Use a persistentVolumeClaim (or an ephemeral volume) to keep
+# the cache across rescheduling.
+cache:
+  mountPath: /var/cache/haltsql
+  volume:
+    emptyDir:
+      sizeLimit: 256Mi
+  #  persistentVolumeClaim: { claimName: haltsql-cache }
 
 service:
   type: ClusterIP
@@ -155,6 +203,8 @@ networkPolicy:
   # Allow Prometheus to scrape /metrics from this namespace selector.
   metricsFrom: []
   #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+  # Outbound rules (empty = deny all egress).
+  egress: []
 
 serviceMonitor:
   enabled: false

@@ -1,0 +1,33 @@
+; haltsql-server.opa tests: pure parsing / verdict combination, plus real
+; openpolicyagent/opa containers (host ports 18181, 18182, 18184) running
+; examples/opa, and the reverse direction (OPA -> haltsql-server /v1/verify,
+; server on 127.0.0.1:18183). Docker tests skip with a message when Docker is
+; unavailable.
+
+(test
+ (name test_opa)
+ (package haltsql-server)
+ (libraries
+  haltsql
+  haltsql.cloud
+  haltsql-server.opa
+  alcotest
+  lwt
+  lwt.unix
+  uri
+  yojson
+  digestif
+  x509
+  ptime
+  ptime.clock.os
+  mirage-crypto-rng.unix
+  unix)
+ (deps
+  (source_tree ../../examples/opa)
+  (source_tree fixtures)
+  ../../bin/server/main.exe)
+ (action
+  (setenv
+   HALTSQL_SERVER_BIN
+   %{dep:../../bin/server/main.exe}
+   (run %{test}))))

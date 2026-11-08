@@ -188,13 +188,27 @@ module Matcher = struct
       "phone";
       "ssn";
       "secret";
+      "password";
+      "passwd";
+      "passcode";
+      "token";
+      "apikey";
+      "credential";
+      "cvv";
+      "cvc";
+      "iban";
+      "passport";
+      "dob";
+      "birthdate";
+      "tin";
+      "taxid";
+      "salary";
     ]
 
   let default = { tags = default_terms; terms = default_terms }
-
-  let is_alnum c =
-    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-
+  let is_alpha c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+  let is_digit c = c >= '0' && c <= '9'
+  let is_alnum c = is_alpha c || is_digit c
   let is_upper c = c >= 'A' && c <= 'Z'
   let is_lower c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 
@@ -213,11 +227,16 @@ module Matcher = struct
       if not (is_alnum c) then flush ()
       else begin
         (* camelCase: "personalData" -> personal|Data; "PIIData" -> PII|Data *)
-        (if i > 0 && is_upper c && Buffer.length cur > 0 then
+        (if i > 0 && Buffer.length cur > 0 then
            let p = s.[i - 1] in
-           if is_lower p then flush ()
-           else if is_upper p && i + 1 < n && s.[i + 1] >= 'a' && s.[i + 1] <= 'z' then
-             flush ());
+           if
+             (is_alpha p && is_digit c && Buffer.length cur >= 2)
+             || (is_digit p && is_alpha c)
+           then flush ()
+           else if is_upper c then
+             if is_lower p then flush ()
+             else if is_upper p && i + 1 < n && s.[i + 1] >= 'a' && s.[i + 1] <= 'z' then
+               flush ());
         Buffer.add_char cur c
       end
     done;

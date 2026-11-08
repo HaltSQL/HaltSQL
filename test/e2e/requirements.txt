@@ -1,0 +1,5 @@
+# The e2e pytest driver. Versions are pinned in constraints.txt.
+pytest
+requests
+psycopg[binary]
+kafka-python

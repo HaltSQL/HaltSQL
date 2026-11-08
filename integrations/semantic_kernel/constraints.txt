@@ -1,0 +1,4 @@
+# Exact versions the tests were run with (all released before 2026-10).
+semantic-kernel==1.44.1
+psycopg==3.3.6
+psycopg-binary==3.3.6

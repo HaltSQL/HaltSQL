@@ -345,6 +345,25 @@ let tls_schema =
           ] );
     ]
 
+let groups_schema =
+  obj ~required:[ "map" ]
+    "Select the policy from the token's groups: the first map entry whose group the \
+     token has wins, else default. Use instead of policy / policy_claim."
+    [
+      ( "claim",
+        str
+          ~extra:[ ("default", `String "groups") ]
+          "Claim holding the groups (a string or an array of strings; exact name, then \
+           dot path)." );
+      ( "map",
+        arr ~min_items:1 "Ordered group -> policy rules."
+          (obj ~required:[ "group"; "policy" ] "One rule."
+             [
+               ("group", str "Group name (exact match)."); ("policy", str "Policy name.");
+             ]) );
+      ("default", str "Policy when no group matches. Default: reject the token.");
+    ]
+
 let oidc_schema =
   obj
     ~required:[ "name"; "issuer"; "audiences" ]
@@ -373,6 +392,7 @@ let oidc_schema =
       ( "allowed_policies",
         arr ~min_items:1 ~unique:true "Policies policy_claim may select."
           (str "Policy name.") );
+      ("policy_from_groups", groups_schema);
       ( "context_claims",
         map_of
           "Context field -> claim path (exact claim name first, then a dot path like \
@@ -552,6 +572,192 @@ let secrets_schema =
           ] );
     ]
 
+let stream_batch_schema =
+  obj "Batching of audit records into one request."
+    [
+      ("max_records", int ~min:1 ~max:100_000 ~default:500 "Records per request at most.");
+      ( "max_bytes",
+        int ~min:1024
+          ~max:(100 * 1024 * 1024)
+          ~default:(5 * 1024 * 1024)
+          "Request body bytes at most." );
+      ( "flush_interval_ms",
+        int ~min:10 ~max:60_000 ~default:1000
+          "Milliseconds before a partial batch is sent." );
+    ]
+
+let stream_on_error_schema =
+  with_desc
+    "What to do when the sink cannot be written: fail_closed refuses requests (HTTP \
+     503); buffer keeps up to max_buffer_records in memory and retries; drop discards \
+     records (counted in metrics; not fail closed)."
+    [
+      ("enum", `List [ `String "fail_closed"; `String "buffer"; `String "drop" ]);
+      ("default", `String "fail_closed");
+    ]
+
+let max_buffer_schema =
+  int ~min:1 ~max:1_000_000
+    "Records kept in memory while the sink is down (on_error buffer only; at least \
+     batch.max_records). Default 10000."
+
+let ca_tls_schema d =
+  obj d
+    [ ("ca_file", str "PEM CA bundle (path relative to this config, or inline PEM).") ]
+
+let es_sink =
+  obj ~required:[ "type" ]
+    "Elasticsearch or OpenSearch (bulk API). Needs url or urls, and index or data_stream."
+    [
+      ("type", const "Sink type." "elasticsearch");
+      ("url", str "Cluster URL (https; http only for loopback). Use url or urls.");
+      ( "urls",
+        arr ~min_items:1 ~unique:true "Several cluster node URLs (use url or urls)."
+          (str "Node URL (https; http only for loopback).") );
+      ("index", str "Target index (lower case). Use index or data_stream.");
+      ("data_stream", str "Target data stream (lower case). Use index or data_stream.");
+      ( "auth",
+        obj "Credentials: api_key, or username and password (use secret placeholders)."
+          [
+            ("api_key", str "Encoded API key (sent as Authorization: ApiKey ...).");
+            ("username", str "Basic auth user name.");
+            ("password", str "Basic auth password.");
+          ] );
+      ("pipeline", str "Ingest pipeline to run on each record.");
+      ("tls", ca_tls_schema "TLS settings (https URLs only).");
+      ("timeout_ms", int ~min:100 ~max:120_000 ~default:10_000 "Request timeout.");
+      ("batch", stream_batch_schema);
+      ("on_error", stream_on_error_schema);
+      ("max_buffer_records", max_buffer_schema);
+    ]
+
+let kafka_sink =
+  obj
+    ~required:[ "type"; "brokers"; "topic" ]
+    "Apache Kafka topic (one message per audit record)."
+    [
+      ("type", const "Sink type." "kafka");
+      ( "brokers",
+        arr ~min_items:1 ~unique:true "Bootstrap brokers." (str "Broker as host:port.") );
+      ("topic", str "Topic name (letters, digits, '.', '_', '-').");
+      ("client_id", str ~extra:[ ("default", `String "haltsql") ] "Kafka client id.");
+      ( "acks",
+        with_desc "Acknowledgements required: all (default) or 1 (leader only)."
+          [
+            ("enum", `List [ `String "all"; `Int 1; `String "1" ]);
+            ("default", `String "all");
+          ] );
+      ( "tls",
+        obj "TLS to the brokers."
+          [
+            ("enabled", bool ~default:true "Use TLS (default true when tls is given).");
+            ("ca_file", str "PEM CA bundle for the broker certificates.");
+            ("cert_file", str "Client certificate (with key_file).");
+            ("key_file", str "Client private key (with cert_file).");
+          ] );
+      ( "sasl",
+        obj
+          ~required:[ "mechanism"; "username"; "password" ]
+          "SASL authentication. PLAIN needs tls unless every broker is loopback."
+          [
+            ( "mechanism",
+              enum "SASL mechanism." [ "plain"; "scram-sha-256"; "scram-sha-512" ] );
+            ("username", str "SASL user name.");
+            ("password", str "SASL password (use a secret placeholder).");
+          ] );
+      ("batch", stream_batch_schema);
+      ("on_error", stream_on_error_schema);
+      ("max_buffer_records", max_buffer_schema);
+    ]
+
+let bundle_source_entry =
+  obj
+    ~required:[ "bundle_source"; "public_keys" ]
+    "Signed policy bundle fetched from a registry, S3 or HTTPS and polled for updates \
+     (verified by the server before use)."
+    [
+      ( "bundle_source",
+        obj "Where the bundle comes from: exactly one of oci, s3 or https."
+          [
+            ( "oci",
+              str
+                "OCI artifact: registry/repository:tag or registry/repository@sha256:..."
+            );
+            ( "plain_http",
+              bool ~default:false "Talk plain http to the registry (loopback only)." );
+            ( "s3",
+              obj ~required:[ "bucket"; "key"; "region" ] "S3 (or S3-compatible) object."
+                [
+                  ("bucket", str "Bucket name.");
+                  ("key", str "Object key of the .haltsqlbundle.");
+                  ("region", str "AWS region.");
+                  ("endpoint", str "Custom endpoint URL (MinIO).");
+                  ( "credentials",
+                    obj "Where AWS credentials come from (as for s3 audit sinks)."
+                      [
+                        ( "source",
+                          enum "Credential source."
+                            [ "env"; "static"; "web_identity"; "instance" ] );
+                        ("access_key_id", str "Access key id (static only).");
+                        ("secret_access_key", str "Secret access key (static only).");
+                        ("session_token", str "Session token (static only, optional).");
+                      ] );
+                ] );
+            ("https", str "HTTPS URL of the .haltsqlbundle (http only for loopback).");
+          ] );
+      ( "public_keys",
+        arr ~min_items:1 "Trusted ed25519 public keys (mandatory)." (str "Public key.") );
+      ("name_prefix", str "Prefix added to the names of the policies in this bundle.");
+      ( "poll_interval_s",
+        int ~min:10 ~max:86_400 ~default:60 "Seconds between update checks." );
+      ( "cache_dir",
+        str "Directory for the last verified bundle (relative to this config)." );
+      ( "auth",
+        obj "Registry or HTTPS credentials: token, or username and password."
+          [
+            ("token", str "Bearer token.");
+            ("username", str "User name.");
+            ("password", str "Password.");
+          ] );
+    ]
+
+let opa_schema =
+  obj ~required:[ "url"; "decision_path" ]
+    "Open Policy Agent check after HaltSQL allows a query. OPA can only further deny; it \
+     never allows a query HaltSQL denied."
+    [
+      ("url", str "OPA base URL (https; http only for loopback).");
+      ("decision_path", str "Decision below /v1/data, e.g. haltsql/allow.");
+      ("timeout_ms", int ~min:10 ~max:5000 ~default:500 "Decision request timeout.");
+      ( "on_error",
+        with_desc
+          "When OPA cannot be reached or answers badly: deny (default) or keep HaltSQL's \
+           verdict."
+          [
+            ("enum", `List [ `String "deny"; `String "allow_haltsql_verdict" ]);
+            ("default", `String "deny");
+          ] );
+      ( "headers",
+        map_of "Extra HTTP headers (values may use secret placeholders; redacted)."
+          (str "Header value.") );
+      ("tls", ca_tls_schema "TLS settings (https url only).");
+    ]
+
+let admin_schema =
+  obj "Admin API (GET /v1/admin/report, GET /v1/admin/status)."
+    [
+      ("enabled", bool ~default:false "Serve the admin endpoints.");
+      ( "callers",
+        arr ~unique:true "Callers allowed (required when enabled)."
+          (pattern_str "token:<name>, oidc:<provider> or mtls:<spiffe-id or CN>."
+             "^(token|oidc|mtls):.+$") );
+      ( "report_window",
+        pattern_str "Report window, 1m to 30d. Default 24h." "^[0-9]+[smhd]$" );
+      ( "max_tracked_queries",
+        int ~min:1 ~max:1_000_000 ~default:10_000
+          "Distinct query fingerprints tracked for the report." );
+    ]
+
 let config =
   add_defs
     (doc ~id:"config.schema.json" ~title:"HaltSQL runtime configuration"
@@ -569,6 +775,7 @@ let config =
                  str "Address as host:port. Default 127.0.0.1:8080. Env: HALTSQL_LISTEN."
                );
                ("tls", tls_schema);
+               ("admin", admin_schema);
                ( "auth",
                  obj "Caller authentication: static bearer tokens, OIDC JWTs, mTLS."
                    [
@@ -593,7 +800,7 @@ let config =
                    ] );
              ] );
          ( "policies",
-           arr "Policies to load, from files or inline."
+           arr "Policies to load: files, inline, signed bundles or remote bundle sources."
              (one_of "A policy file or an inline policy."
                 [
                   obj ~required:[ "path" ] "Policy file."
@@ -618,6 +825,7 @@ let config =
                       ( "name_prefix",
                         str "Prefix added to the names of the policies in this bundle." );
                     ];
+                  bundle_source_entry;
                 ]) );
          ( "default_policy",
            str "Policy used by unauthenticated requests. Env: HALTSQL_DEFAULT_POLICY." );
@@ -644,6 +852,8 @@ let config =
                           ];
                         s3_sink;
                         gcs_sink;
+                        es_sink;
+                        kafka_sink;
                       ]) );
                ( "log_raw_sql",
                  bool ~default:false "Include the raw SQL text in audit records." );
@@ -677,6 +887,7 @@ let config =
                    ~default:1_048_576 "Maximum HTTP request body size." );
              ] );
          ("secrets", secrets_schema);
+         ("opa", opa_schema);
        ])
     [ ("ctx_placeholder", ctx_placeholder) ]
 

@@ -60,8 +60,22 @@ let write_file path s =
   Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 path (fun oc ->
       Out_channel.output_string oc s)
 
+(* The inherited environment with [overrides] on top; overridden inherited entries are
+   dropped (getenv returns the first match, so appending is not enough). *)
+let child_env overrides =
+  let name kv =
+    match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv
+  in
+  let names = Array.to_list (Array.map name overrides) in
+  let inherited =
+    List.filter
+      (fun kv -> not (List.mem (name kv) names))
+      (Array.to_list (Unix.environment ()))
+  in
+  Array.append (Array.of_list inherited) overrides
+
 let run_capture ?(env = [||]) argv =
-  let env = Array.append (Unix.environment ()) env in
+  let env = child_env env in
   let ic, oc, ec = Unix.open_process_args_full argv.(0) argv env in
   close_out oc;
   let out = In_channel.input_all ic in
@@ -210,7 +224,7 @@ let start_proxy ~name ~tmp (cfg : Yojson.Safe.t) =
   let log = Filename.concat tmp (name ^ ".log") in
   let out = Unix.openfile log [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600 in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-  let env = Array.append (Unix.environment ()) [| "PROXY_UPSTREAM_PW=" ^ upstream_pw |] in
+  let env = child_env [| "PROXY_UPSTREAM_PW=" ^ upstream_pw |] in
   let pid =
     Unix.create_process_env bin
       [| bin; "run"; "-c"; path; "--listen"; Printf.sprintf "127.0.0.1:%d" port |]

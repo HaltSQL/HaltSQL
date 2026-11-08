@@ -1,0 +1,5 @@
+/*
+Copyright The HaltSQL Authors.
+
+SPDX-License-Identifier: MIT
+*/

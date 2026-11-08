@@ -1,4 +1,4 @@
-(* Structured logs and audit sink; see plog.mli. *)
+(* Structured logs; see plog.mli. The audit log is Paudit. *)
 
 type level = Debug | Info | Warn | Error
 
@@ -37,29 +37,3 @@ let log level msg fields =
       prerr_string (Yojson.Safe.to_string j ^ "\n");
       flush stderr
     with _ -> ()
-
-type audit = Null | Chan of out_channel * bool  (** channel, close on exit *)
-
-let open_audit = function
-  | Proxy_config.Audit_none -> Null
-  | Proxy_config.Audit_stdout -> Chan (stdout, false)
-  | Proxy_config.Audit_file path ->
-      Chan
-        ( open_out_gen [ Open_wronly; Open_append; Open_creat; Open_binary ] 0o600 path,
-          true )
-
-let audit a fields =
-  match a with
-  | Null -> ()
-  | Chan (oc, _) -> (
-      try
-        output_string oc
-          (Yojson.Safe.to_string (`Assoc (("ts", `String (now_rfc3339 ())) :: fields))
-          ^ "\n");
-        flush oc
-      with _ -> ())
-
-let close_audit = function
-  | Null -> ()
-  | Chan (oc, true) -> close_out_noerr oc
-  | Chan (_, false) -> ()

@@ -41,6 +41,20 @@ let remote_sink (kind : Config.sink_kind) ~on_error =
       sink)
     created
 
+(* Elasticsearch / OpenSearch / Kafka. Siem.of_config only loads TLS material (no
+   network IO), so its promise is normally already resolved; this runs at startup,
+   outside the Lwt loop. The sink applies its own on_error policy. *)
+let stream_sink (s : Config.stream_sink) =
+  let on_event m = Log.warn "audit sink event" ~fields:[ ("event", `String m) ] in
+  let p = Haltsql_siem.Siem.of_config ~on_event s in
+  let r = match Lwt.poll p with Some r -> r | None -> Lwt_main.run p in
+  Result.map
+    (fun ss ->
+      let sink = Audit.of_stream_sink ss in
+      Audit.start sink;
+      sink)
+    r
+
 (* Verifies the bundle's detached signature against the configured keys before
    parsing it. Policies are returned unprefixed: State applies name_prefix and
    re-checks every policy reference afterwards. *)
@@ -53,4 +67,5 @@ let install () =
   State.secret_resolver := Some blocking_secret_resolver;
   State.secret_prefetch := Some prefetching_secret_resolver;
   State.remote_sink := Some remote_sink;
+  State.stream_sink := Some stream_sink;
   State.bundle_loader := Some bundle_loader

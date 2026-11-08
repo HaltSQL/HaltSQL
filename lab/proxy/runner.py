@@ -41,6 +41,7 @@ from psycopg import pq
 
 from common.fixtures import LAB, get_fixture
 from common.policy import load_policy
+from compat.engines import get_engine
 from datagen.honeytokens import classify, extract_markers
 from generators.sqlspec import SchemaModel
 from harness import db as labdb
@@ -147,6 +148,26 @@ class Proxy:
             return self.proc.wait()
 
 
+def upstream_tls(info: dict[str, Any]) -> dict[str, Any] | None:
+    """The proxy's ``upstream.tls`` block for the admin DSN's libpq ``sslmode``.
+
+    Managed services require TLS. ``verify-ca`` is mapped to the stricter
+    ``verify-full`` (the proxy has no CA-only mode); ``prefer``/``allow`` are
+    refused because they silently fall back to plaintext.
+    """
+    mode = info.get("sslmode") or "disable"
+    if mode == "disable":
+        return None
+    if mode == "require":
+        return {"mode": "require"}
+    if mode in ("verify-ca", "verify-full"):
+        ca = info.get("sslrootcert")
+        if not ca or ca == "system":
+            raise ValueError(f"sslmode={mode} needs sslrootcert=<PEM file> for haltsql-proxy upstream TLS")
+        return {"mode": "verify-full", "ca": str(Path(ca).resolve())}
+    raise ValueError(f"sslmode={mode} is not supported for the proxy upstream; use disable, require or verify-full")
+
+
 def scram_verifier(bin_cmd: list[str], password: str) -> str:
     p = subprocess.run([*bin_cmd, "scram-verifier"], input=password + "\n", capture_output=True,
                        text=True, check=True)
@@ -172,7 +193,8 @@ def start_proxy(bin_cmd: list[str], out_dir: Path, policy_path: Path, dbname: st
         "listen": f"127.0.0.1:{port}",
         "upstream": {"host": info.get("host", "localhost"), "port": int(info.get("port", 5432)),
                      "database": dbname, "user": info.get("user", "postgres"),
-                     "password": "${env:HALTLAB_PROXY_UPSTREAM_PASSWORD}"},
+                     "password": "${env:HALTLAB_PROXY_UPSTREAM_PASSWORD}",
+                     **({"tls": tls} if (tls := upstream_tls(info)) else {})},
         "policies": [{"path": str(policy_path.resolve())}],
         "auth": {"method": "scram", "users": cfg_users},
         "limits": {"max_connections": 64},
@@ -248,6 +270,7 @@ def _proxied(conn: psycopg.Connection, sql: str, params: list[bytes | None]) -> 
 
 
 def run(scn: Scenario, out_dir: Path, keep_db: bool = False) -> tuple[bool, Metrics]:
+    get_engine(scn.engine).check_dsn(scn.dsn)
     fixture = get_fixture(scn.fixture)
     if fixture.generated:
         raise ValueError("generated fixtures (erp_large) are not supported by the proxy lab yet")
@@ -264,7 +287,9 @@ def run(scn: Scenario, out_dir: Path, keep_db: bool = False) -> tuple[bool, Metr
     metrics = Metrics()
     proxy: Proxy | None = None
     try:
-        lab = labdb.install(dsn, fixture, policy, scn.data)
+        lab = labdb.install(dsn, fixture, policy, scn.data, scn.engine)
+        for note in lab.engine_notes:
+            log(f"engine {scn.engine}: {note}")
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute(f'ALTER DATABASE "{name}" SET statement_timeout = {int(scn.statement_timeout_ms)}')
         model = SchemaModel.build(policy, fixture.model, lab.catalog)

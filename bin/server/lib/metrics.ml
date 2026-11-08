@@ -11,6 +11,14 @@ let audit_errors = ref 0
 let auth_total : (string * string, int) Hashtbl.t = Hashtbl.create 8
 let tls_reload_total : (string, int) Hashtbl.t = Hashtbl.create 2
 
+(* OPA decisions by outcome (skipped|allowed|denied|error_allowed|error_denied) *)
+let opa_total : (string, int) Hashtbl.t = Hashtbl.create 8
+let opa_seconds_sum = ref 0.
+let opa_seconds_count = ref 0
+
+(* admin API requests by endpoint and result (ok|unauthenticated|forbidden|...) *)
+let admin_total : (string * string, int) Hashtbl.t = Hashtbl.create 8
+
 let buckets =
   [|
     0.0001; 0.00025; 0.0005; 0.001; 0.0025; 0.005; 0.01; 0.025; 0.05; 0.1; 0.25; 0.5; 1.0;
@@ -30,6 +38,10 @@ let reset () =
   Hashtbl.reset http_total;
   Hashtbl.reset auth_total;
   Hashtbl.reset tls_reload_total;
+  Hashtbl.reset opa_total;
+  Hashtbl.reset admin_total;
+  opa_seconds_sum := 0.;
+  opa_seconds_count := 0;
   audit_errors := 0;
   Array.fill bucket_counts 0 (Array.length bucket_counts) 0;
   duration_sum := 0.;
@@ -64,6 +76,15 @@ let set_policies_loaded n =
 
 let observe_auth ~meth ~result = incr auth_total (meth, result)
 let observe_tls_reload ~ok = incr tls_reload_total (if ok then "success" else "error")
+
+let observe_opa ~outcome ~seconds =
+  incr opa_total outcome;
+  if outcome <> "skipped" then begin
+    opa_seconds_sum := !opa_seconds_sum +. seconds;
+    Stdlib.incr opa_seconds_count
+  end
+
+let observe_admin ~endpoint ~result = incr admin_total (endpoint, result)
 
 let escape_label s =
   let b = Buffer.create (String.length s) in
@@ -134,4 +155,21 @@ let render ~version ~pg ~policies_loaded =
   List.iter
     (fun (r, n) -> p "haltsql_tls_reload_total{result=\"%s\"} %d\n" (escape_label r) n)
     (sorted tls_reload_total);
+  header "haltsql_opa_decisions_total" "counter"
+    "OPA checks by outcome (skipped, allowed, denied, error_allowed, error_denied).";
+  List.iter
+    (fun (o, n) ->
+      p "haltsql_opa_decisions_total{outcome=\"%s\"} %d\n" (escape_label o) n)
+    (sorted opa_total);
+  header "haltsql_opa_duration_seconds" "summary"
+    "Time spent waiting for OPA decisions (requests actually sent).";
+  p "haltsql_opa_duration_seconds_sum %s\n" (float_str !opa_seconds_sum);
+  p "haltsql_opa_duration_seconds_count %d\n" !opa_seconds_count;
+  header "haltsql_admin_requests_total" "counter"
+    "Admin API requests by endpoint and result.";
+  List.iter
+    (fun ((e, r), n) ->
+      p "haltsql_admin_requests_total{endpoint=\"%s\",result=\"%s\"} %d\n"
+        (escape_label e) (escape_label r) n)
+    (sorted admin_total);
   Buffer.contents b

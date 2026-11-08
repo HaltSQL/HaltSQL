@@ -1335,6 +1335,22 @@ let teardown () =
     with e ->
       Printf.printf "warning: could not drop %s: %s\n" test_db (Printexc.to_string e)
 
+(* regression: a DNS name starting with "127." is not loopback (sslmode default) *)
+let test_dsn_loopback () =
+  List.iter
+    (fun (h, expected) -> Alcotest.(check bool) h expected (Dsn.is_loopback h))
+    [
+      ("127.0.0.1", true);
+      ("127.10.0.1", true);
+      ("localhost", true);
+      ("::1", true);
+      ("/var/run/postgresql", true);
+      ("127.attacker.example", false);
+      ("127.0.0.1.nip.io", false);
+      ("127.0.0.256", false);
+      ("db.example", false);
+    ]
+
 let () =
   let tc name f = Alcotest.test_case name `Quick f in
   (* Probe Postgres up front so the skip message is not swallowed by Alcotest's capture. *)
@@ -1348,6 +1364,7 @@ let () =
               tc "ipv6+defaults" test_dsn_ipv6_and_defaults;
               tc "keywords" test_dsn_keywords;
               tc "errors" test_dsn_errors;
+              tc "loopback hosts" test_dsn_loopback;
             ] );
           ("scram", [ tc "pbkdf2" test_pbkdf2; tc "rfc7677" test_scram_rfc7677 ]);
           ("matcher", [ tc "tokens+match" test_matcher ]);

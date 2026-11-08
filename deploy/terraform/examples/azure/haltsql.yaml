@@ -1,0 +1,49 @@
+# haltsql-server Config for the cloud examples. It holds no secrets: the
+# token hash comes from the platform's secret store as an environment
+# variable. Policies are inline, so the whole deployment is one document.
+# Check it locally with:
+#   HALTSQL_AGENT_TOKEN_SHA256=$(printf x | shasum -a 256 | cut -d' ' -f1) \
+#     haltsql config show --config haltsql.yaml
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  auth:
+    allow_unauthenticated: false
+    tokens:
+      - name: example-agent
+        token_sha256: ${env:HALTSQL_AGENT_TOKEN_SHA256}
+        policy: tf-analytics
+policies:
+  - inline:
+      apiVersion: haltsql.dev/v1
+      kind: Policy
+      metadata:
+        name: tf-analytics
+        description: Read-only, tenant-scoped analytics (Terraform example)
+      dialect: postgres-17
+      search_path: [app]
+      statements:
+        allow: [select]
+      require_limit:
+        max: 1000
+      tenancy:
+        mode: bound
+        keys:
+          tenant: ${ctx.tenant_id}
+      tables:
+        app.orders:
+          columns: [id, tenant_id, status, total_cents, created_at]
+          tenant_column: tenant_id
+      functions:
+        presets: [aggregates]
+      mode: enforce
+audit:
+  sinks:
+    - type: stdout
+  log_raw_sql: false
+telemetry:
+  metrics:
+    prometheus: true
+logging:
+  level: info
+  format: json

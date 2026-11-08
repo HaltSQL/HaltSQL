@@ -1,16 +1,24 @@
-# Build outputs and local state (vendor/ must NOT be excluded: libpg_query is
-# compiled from vendor/libpg_query inside the image).
+# The image build needs only: dune-project, the opam files, bin/, lib/, vendor/ and
+# the licences. Everything else is excluded to keep the context small (website/ and
+# clients/ carry node_modules and build caches) and the layer cache stable.
+# vendor/ must NOT be excluded: libpg_query is compiled from vendor/libpg_query.
+
+# Build outputs and local state.
 _build/
 _build_*/
 _opam/
 _coverage/
+dist/
 *.install
 bisect*.coverage
 .git/
 .github/
+.claude/
 .DS_Store
 .merlin
 *.swp
+**/__pycache__/
+**/node_modules/
 
 # Stray objects from building libpg_query in the source tree on the host.
 vendor/libpg_query/**/*.o
@@ -19,7 +27,15 @@ vendor/libpg_query/*.so
 vendor/libpg_query/*.dylib
 
 # Not needed to build the binaries.
-lab/
-docs/
-deploy/
 bench/
+ci/
+clients/
+deploy/
+docs/
+examples/
+integrations/
+lab/
+schemas/
+scripts/
+test/
+website/

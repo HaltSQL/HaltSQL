@@ -11,25 +11,11 @@ type identity = {
   context : Context.t;
   request_context_fields : string list;
   expires_at : float;
+  matched_group : string option;
 }
 
 let ( let* ) = Result.bind
-
-let lookup_claim claims path =
-  match List.assoc_opt path claims with
-  | Some v -> Some v
-  | None ->
-      let rec walk (j : Yojson.Safe.t) = function
-        | [] -> Some j
-        | k :: rest -> (
-            match j with
-            | `Assoc kv -> (
-                match List.assoc_opt k kv with Some v -> walk v rest | None -> None)
-            | _ -> None)
-      in
-      let parts = String.split_on_char '.' path in
-      if List.length parts < 2 || List.mem "" parts then None
-      else walk (`Assoc claims) parts
+let lookup_claim = Group_policy.lookup_claim
 
 (* 2^53: integers beyond this are not exactly representable as floats. *)
 let max_exact = 9007199254740992.
@@ -50,17 +36,19 @@ let context_value (j : Yojson.Safe.t) : Context.value option =
       if List.length vs = List.length items then Some (Context.Many vs) else None
   | j -> Option.map (fun s -> Context.One s) (scalar_string j)
 
-let one_matches (claim : Yojson.Safe.t) v =
+let one_matches ~name (claim : Yojson.Safe.t) v =
   match claim with
   | `String s ->
-      s = v || List.mem v (List.filter (( <> ) "") (String.split_on_char ' ' s))
+      String.equal s v
+      || (name = "scope" || name = "scp")
+         && List.mem v (List.filter (( <> ) "") (String.split_on_char ' ' s))
   | `List items -> List.exists (fun i -> scalar_string i = Some v) items
   | `Bool b -> string_of_bool b = v
   | j -> scalar_string j = Some v
 
-let claim_matches claim = function
-  | Config.Claim_one v -> one_matches claim v
-  | Config.Claim_all vs -> List.for_all (one_matches claim) vs
+let claim_matches ?(name = "") claim = function
+  | Config.Claim_one v -> one_matches ~name claim v
+  | Config.Claim_all vs -> List.for_all (one_matches ~name claim) vs
 
 let check_time (p : Config.oidc_provider) ~now claims =
   let leeway = float_of_int p.leeway_seconds in
@@ -90,7 +78,7 @@ let rec all_ok f = function
       let* () = f x in
       all_ok f xs
 
-let verify (p : Config.oidc_provider) ~keys ~now tok =
+let verify ?groups (p : Config.oidc_provider) ~keys ~now tok =
   let* t = Jwt.decode tok in
   let* alg = Jwt.alg_of_string t.alg_name in
   if not (List.mem alg p.algorithms) then Error (Jwt.Alg_not_allowed t.alg_name)
@@ -115,16 +103,19 @@ let verify (p : Config.oidc_provider) ~keys ~now tok =
             match lookup_claim t.claims name with
             | None -> Error (Jwt.Missing_claim name)
             | Some c ->
-                if claim_matches c m then Ok () else Error (Jwt.Claim_mismatch name))
+                if claim_matches ~name c m then Ok () else Error (Jwt.Claim_mismatch name))
           p.required_claims
       in
-      let* policy =
-        match p.oidc_policy with
-        | Config.Oidc_pinned n -> Ok n
-        | Config.Oidc_from_claim { claim; allowed } -> (
+      let* policy, matched_group =
+        match (groups, p.oidc_policy) with
+        | Some g, _ ->
+            let* s = Group_policy.select g t.claims in
+            Ok (s.policy, s.matched_group)
+        | None, Config.Oidc_pinned n -> Ok (n, None)
+        | None, Config.Oidc_from_claim { claim; allowed } -> (
             match lookup_claim t.claims claim with
             | None -> Error (Jwt.Missing_claim claim)
-            | Some (`String n) when List.mem n allowed -> Ok n
+            | Some (`String n) when List.mem n allowed -> Ok (n, None)
             | Some _ -> Error (Jwt.Policy_not_allowed claim))
       in
       let* context =
@@ -151,4 +142,5 @@ let verify (p : Config.oidc_provider) ~keys ~now tok =
           context = List.rev context;
           request_context_fields = p.oidc_request_context_fields;
           expires_at;
+          matched_group;
         }

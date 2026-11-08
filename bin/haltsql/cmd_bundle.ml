@@ -614,4 +614,4 @@ let cmd =
   in
   Cmd.group
     (Cmd.info "bundle" ~doc ~man ~exits)
-    [ keygen_cmd; build_cmd; sign_cmd; verify_cmd; inspect_cmd ]
+    ([ keygen_cmd; build_cmd; sign_cmd; verify_cmd; inspect_cmd ] @ Cmd_bundle_oci.cmds)
