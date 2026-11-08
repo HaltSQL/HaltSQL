@@ -171,13 +171,17 @@ identity the client certificate matched. Anonymous callers never match.
     }
   ],
   "audit_sinks": [ { "name": "kafka://kafka-1:9093/haltsql.audit", "type": "kafka", "healthy": true } ],
+  "audit_restart_pending": false,
   "opa": { "host": "127.0.0.1", "decision_path": "haltsql/decision", "timeout_ms": 500, "on_error": "deny" },
   "report": { "tracked_queries": 412, "evicted_queries": 0, "sampled_out": 1290 }
 }
 ```
 
 `origin` is `config` (a policy in the config file), `bundle_source`, or
-`bundle_or_file` (a local bundle or a `--policy` file). `last_error` carries
+`bundle_or_file` (a local bundle or a `--policy` file).
+`audit_restart_pending` is `true` when the last reload changed `audit.sinks`:
+audit sinks are opened once at startup, so records keep going to the listed
+running sinks until a restart (the reload also logs a warning). `last_error` carries
 the stable bundle-source code and message
 ([policy-bundles.md](policy-bundles.md#what-the-poller-does)). Header values
 and credentials are never included.

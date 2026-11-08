@@ -154,6 +154,34 @@ link: `libgmp.a` from Alpine's `gmp-static` package for zarith, and the
 vendored `libpg_query.a`, which dune builds. The mirage-crypto, digestif and
 Unix stubs are compiled from source.
 
+## Kubernetes: Helm chart
+
+`deploy/helm/haltsql` deploys haltsql-server as its own Deployment and
+Service, with the Config and policies in ConfigMaps, token hashes in a
+Secret, and an optional PodDisruptionBudget, HorizontalPodAutoscaler,
+NetworkPolicy and ServiceMonitor. `values.yaml` documents every value. For
+settings the chart has no dedicated value for:
+
+- `extraPolicies`: Config `policies[]` entries appended to the rendered ones,
+  for example a signed `bundle_source` (see
+  [policy-bundles.md](policy-bundles.md)). A `bundle_source` entry without
+  `cache_dir` gets `<cache.mountPath>/bundles`, so a restarted pod can start
+  from its last verified bundle while the source is down.
+- `extraConfig`: Config keys deep-merged into the rendered Config (nested
+  maps merge, `extraConfig` wins, lists and scalars replace), for example
+  `opa`, `secrets`, `telemetry.otlp` or `audit.sinks`. `extraConfig.policies`
+  is refused, because it would replace the chart's list; use
+  `extraPolicies`.
+- `cache`: the writable volume for bundle caches (`mountPath`, default
+  `/var/cache/haltsql`, and `volume`, default an `emptyDir`). The root
+  filesystem is read-only. Use a `persistentVolumeClaim` to keep the cache
+  across rescheduling.
+
+Secrets (registry passwords, API keys) belong in `${env:...}` or secret
+provider placeholders, never inline in these values. For CRD-driven
+deployments see the [Kubernetes operator](kubernetes-operator.md); for
+Terraform see [terraform.md](terraform.md).
+
 ## Kubernetes: sidecar
 
 Run `haltsql-server` as a second container in the agent's pod. The agent calls

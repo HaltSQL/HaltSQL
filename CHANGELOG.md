@@ -69,7 +69,9 @@ even before 1.0.
   `batch` block (`max_records`, `max_bytes`, `flush_interval_ms`). Kafka
   delivery is at least once, without compression or the idempotent producer.
   New metrics are `haltsql_audit_stream_sink_*`. Tested against Elasticsearch
-  8.15, OpenSearch 2.17 and Apache Kafka 3.9 (KRaft) in containers.
+  8.15, OpenSearch 2.17 and Apache Kafka 3.9 (KRaft) in containers. Kafka
+  client-certificate (mTLS) authentication is implemented but not yet covered
+  by an integration test.
 - **Remote policy bundle sources** (`policies: [{bundle_source: ...}]`): a
   signed bundle fetched from an OCI registry (`oci: REF`, `plain_http` only
   for loopback registries), from S3 or an S3-compatible store (`s3:
@@ -80,7 +82,10 @@ even before 1.0.
   optional, and `auth` takes `{token}` or `{username, password}` for OCI and
   HTTPS. A bundle that fails its digest, signature or policy checks is
   refused with a stable `bundle_source_*` code and the last good bundle stays
-  active. New library `haltsql.bundle_source`, new metrics
+  active. Rollbacks are refused (`bundle_source_rollback`): once a bundle is
+  current, a new one must have the same `metadata.name` and a strictly greater
+  `metadata.version`, and the bundle restored from `cache_dir` counts as
+  current. New library `haltsql.bundle_source`, new metrics
   `haltsql_bundle_source_healthy` and `haltsql_bundle_source_checks_total`.
   Tested against `registry:2` (anonymous, htpasswd and token auth through
   `cesanta/docker_auth`, interoperability with `oras` 1.2), MinIO and an
@@ -142,10 +147,20 @@ even before 1.0.
   (through the Helm chart), `haltsql-aws` (ECS on Fargate), `haltsql-azure`
   (Container Apps) and `haltsql-gcp` (Cloud Run v2), with one example each.
   Bad input fails at plan time; configs hold only secret placeholders. The
-  Kubernetes module is applied end to end on kind. The AWS, Azure and GCP
-  modules are only checked statically (`terraform validate`, `terraform
-  test`, tflint, trivy); `.github/workflows/terraform-cloud.yml` applies them
-  on manual dispatch when cloud credentials are configured.
+  Kubernetes module is applied end to end on kind and its input validation
+  has `terraform test` cases. The AWS, Azure and GCP modules have never been
+  applied; they are only checked statically (`terraform validate`, tflint
+  with the cloud rulesets, trivy). `.github/workflows/terraform-cloud.yml`
+  can apply them on manual dispatch once cloud credentials are configured.
+- **Helm chart: `extraPolicies`, `extraConfig` and a cache volume.**
+  `extraPolicies` appends Config `policies[]` entries (for example a
+  `bundle_source`) to the rendered ones; `extraConfig` deep-merges extra
+  Config keys (`opa`, `secrets`, `telemetry.otlp`, audit sinks, ...) and
+  refuses `policies`. A new `cache` volume (`mountPath`, default
+  `/var/cache/haltsql`, and `volume`, default an `emptyDir`) holds bundle
+  caches; `bundle_source` entries without `cache_dir` use
+  `<cache.mountPath>/bundles`. The Terraform Kubernetes module's
+  `bundle_sources` and `config` inputs use them.
 - **Agent framework integrations** (`integrations/`): OpenAI Agents SDK
   (`haltsql-openai-agents`), LangGraph (`haltsql-langgraph`), Semantic
   Kernel (`haltsql-semantic-kernel`), CrewAI (`haltsql-crewai`) and Google
@@ -158,16 +173,38 @@ even before 1.0.
   workload, with an oracle self-test and proxy parity, against PostgreSQL 18,
   Supabase Postgres, AlloyDB Omni, Citus and TimescaleDB in containers, plus
   cloud scenarios (Aurora, Neon, hosted Supabase, AlloyDB) that need a DSN
-  and have not been run. Results are in `docs/compatibility.md`.
-- **Benchmarks** (`bench/`): library, CLI, `haltsql-server` and
-  `haltsql-proxy` latency and throughput, with committed results
-  (`bench/results/`) and `docs/performance.md`.
+  and have not been run. `.github/workflows/compat-cloud.yml` runs the cloud
+  scenarios on manual dispatch when their DSN secrets are set (it has not run
+  yet); Amazon Redshift, which is not PostgreSQL 17, gets an offline grammar
+  suite instead (`test/corpus/compat-redshift.suite.yaml`). Results are in
+  `docs/compatibility.md`.
+- **Benchmarks** (`bench/`, `scripts/bench.sh`): library, CLI,
+  `haltsql-server` and `haltsql-proxy` latency and throughput, with committed
+  results (`bench/results/`) and `docs/performance.md`. A small run is a CI
+  regression gate against `bench/baseline/ci-small.json`: it fails when a
+  workload's calibration-normalized p50 is more than 2.5x the baseline
+  (`--max-regress 1.5`).
+- **Static musl binaries and image builds**: the Dockerfile builds
+  `haltsql`, `haltsql-server` and `haltsql-proxy` as fully static musl
+  executables (`HALTSQL_STATIC=1`) on a pinned opam-repository commit, with
+  `dist` (release tarball contents), `scratch` (the binaries on an empty
+  filesystem) and the default distroless `runtime` targets. `release.yml`
+  now builds the release binaries from the `dist` target and smoke-tests the
+  image before pushing. New `.github/workflows/build-images.yml` builds the
+  amd64 and arm64 images on pull requests that touch the build, checks that
+  the binaries are static, runs `scripts/docker-smoke.sh` (non-root image
+  without a shell, CLI, server and proxy against a real Postgres) and the
+  benchmark gate.
 - **Container integration tests in CI**: `.github/workflows/integration.yml`
   runs the Kafka, Elasticsearch, OpenSearch, OPA, Keycloak, OCI registry,
   MinIO and HTTPS suites against real containers (and fails if they skip),
   plus the operator (envtest and kind), Terraform static checks and kind
-  apply, and the local lab compat engines. Set `HALTSQL_SKIP_DOCKER=1` to
-  skip the Docker-based tests locally.
+  apply, and the local lab compat engines.
+- **`HALTSQL_SKIP_DOCKER=1`** skips every Docker-based suite run by
+  `dune test` (Kafka, Elasticsearch/OpenSearch, OPA, Keycloak, registry,
+  MinIO, HTTPS and proxy-audit) with a message; the `dune test` jobs in
+  `ci.yml` set it. Without it, a suite whose Docker daemon or image is
+  unavailable also skips with a message.
 
 ### Changed
 - `telemetry.otlp_endpoint` must now be an `http(s)` URL. It was previously
@@ -179,8 +216,17 @@ even before 1.0.
   The `haltsql` opam package now also depends on lwt, cohttp and tls,
   because the CLI links the cloud, bundle, RLS and catalog tools. The core
   libraries themselves have no network dependencies.
-- Dependencies: ported to x509 1.2 and tls/tls-lwt 2.0.4; the `x509 < 1.2`
-  upper bound is gone (now `x509 >= 1.2.0`, `tls >= 2.0.4`).
+- **x509 1.2.** Dependencies are now `x509 >= 1.2.0` and
+  `tls`/`tls-lwt >= 2.0.4`; the `x509 < 1.2` upper bound is gone. Behaviour
+  changes that come with it:
+  - Server hostname checks read only DNS SubjectAltName entries. A server
+    certificate that names its host only in the subject CN is now rejected
+    by haltsql-proxy's upstream `verify-full`, and by the Vault, S3 and OIDC
+    HTTPS clients. Reissue such certificates with a DNS SAN.
+  - Client-certificate CNs (`subject_cn` identities in haltsql-server and
+    haltsql-proxy) are decoded from UTF8String, PrintableString, BMPString
+    and UniversalString. A TeletexString, malformed, empty or control-character
+    CN is treated as absent and never matches (fail closed).
 - haltsql-proxy audit records are now hash-chained like the server's
   (`prev_hash`, `hash`), and the file sink continues the chain across
   restarts. A file whose last line is not a sealed record stops the proxy
@@ -191,7 +237,7 @@ even before 1.0.
   reloads.
 
 ### Fixed
-Both were found while integrating the unreleased features above.
+These were found while integrating the unreleased features above.
 
 - `haltsql bundle build`: a policy without `tenancy` produced a bundle that
   did not load, because the bundle stored an empty `tenancy.keys` that the
@@ -203,6 +249,9 @@ Both were found while integrating the unreleased features above.
   a `bundle_source` could not start. The server now fetches and verifies
   every bundle source (or restores it from `cache_dir`) first, then checks
   the references.
+- Test helpers: `waitpid` (and `Unix.system`) calls in the Docker and
+  subprocess test helpers now retry on `EINTR`, so a signal delivered while a
+  test waited for a child process no longer failed the test.
 
 ### Security
 - Analyzer: a tenant placeholder used anywhere besides its tenant predicate is

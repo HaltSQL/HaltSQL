@@ -105,8 +105,8 @@ together with `chart_version`, which is then required.
 | `server` | Port, request size limit, log level and format, metrics, `audit_sinks` (Config `audit.sinks` shape), `log_raw_sql`, `default_policy`, `reload_watch`. |
 | `tokens`, `existing_token_secret` | Static bearer tokens. Each has a name, a SHA-256 and the one policy it is pinned to. The chart stores the hashes in a Secret, or you name an existing Secret. |
 | `policies`, `existing_policy_config_map` | Policy documents keyed by file name, or an existing ConfigMap. Each value must parse as YAML with `kind: Policy`. |
-| `bundle_sources` | Signed bundles pulled from OCI, S3 or HTTPS (Config `bundle_source`; see [policy-bundles.md](policy-bundles.md)). `public_keys` is mandatory. Needs a chart extension (below). |
-| `config`, `config_yaml` | Extra Config keys such as `telemetry`, `secrets` and `opa`, given as an object or as YAML. Needs a chart extension. |
+| `bundle_sources` | Signed bundles pulled from OCI, S3 or HTTPS (Config `bundle_source`; see [policy-bundles.md](policy-bundles.md)). `public_keys` is mandatory. Uses the chart's `extraPolicies` and its bundle cache volume. |
+| `config`, `config_yaml` | Extra Config keys such as `telemetry`, `secrets` and `opa`, given as an object or as YAML. Uses the chart's `extraConfig`. |
 | `secret_env` | Environment variables from existing Kubernetes Secrets, for `${env:NAME}` placeholders. Needs a chart extension. |
 | `oidc_providers` | Config `server.auth.oidc`. Exactly one of `policy`, `policy_claim` (with `allowed_policies`) or `policy_from_groups`. `https` issuers only. `HS*` algorithms are rejected. |
 | `tls`, `mtls_identities` | Built-in TLS from a `kubernetes.io/tls` Secret, and client-certificate identities. Identities require `client_auth` to be `optional` or `required`. |
@@ -159,19 +159,19 @@ GKE uses the metadata server.
 
 ### Chart extensions
 
-Some module inputs use chart values that `deploy/helm/haltsql` does not have
-yet. A module input only sends its value when you use it. When the chart is
-a local path, the module checks the chart's `values.yaml`. If the key is
-missing, the plan fails with an error that names the key, so the setting is
-never silently dropped:
+Some module inputs need chart values that not every version of
+`deploy/helm/haltsql` has. A module input only sends its value when you use
+it. When the chart is a local path, the module checks the chart's
+`values.yaml`. If the key is missing, the plan fails with an error that names
+the key, so the setting is never silently dropped:
 
-| Module input | Chart value it needs |
-|---|---|
-| `bundle_sources` | `extraPolicies`: a list appended to the rendered `policies` |
-| `config`, `config_yaml` | `extraConfig`: deep-merged into the rendered Config |
-| `secret_env` | `extraEnv`: appended to the container's `env` |
-| `network_policy.egress` | `networkPolicy.egress`: replaces the chart's deny-all `egress: []` |
-| `proxy` | `proxy.{enabled,replicas,port,config}`: a haltsql-proxy Deployment and Service |
+| Module input | Chart value it needs | In the chart |
+|---|---|---|
+| `bundle_sources` | `extraPolicies`: a list appended to the rendered `policies` | Yes. `bundle_source` entries without `cache_dir` get `<cache.mountPath>/bundles` on the chart's `cache` volume |
+| `config`, `config_yaml` | `extraConfig`: deep-merged into the rendered Config | Yes (`extraConfig.policies` is refused; use `extraPolicies`) |
+| `secret_env` | `extraEnv`: appended to the container's `env` | Not yet |
+| `network_policy.egress` | `networkPolicy.egress`: replaces the chart's deny-all `egress: []` | Not yet |
+| `proxy` | `proxy.{enabled,replicas,port,config}`: a haltsql-proxy Deployment and Service | Not yet |
 
 The chart's NetworkPolicy denies all egress. Without `egress` rules, OIDC
 key fetches, bundle downloads, cloud audit sinks and secret providers all
@@ -395,7 +395,8 @@ Before destroying, each job checks that the deployment is healthy:
   `server.auth.mtls` identities cannot be used there. Use tokens or OIDC,
   or the Kubernetes module with `tls`.
 - **The Kubernetes module depends on the Helm chart for some features.**
-  `bundle_sources`, `config`/`config_yaml`, `secret_env`,
-  `network_policy.egress` and `proxy` need the chart extensions listed
-  above. Until the chart has them, the plan fails when you use them. PDBs
+  `secret_env`, `network_policy.egress` and `proxy` need chart values the
+  chart does not have yet (see [Chart extensions](#chart-extensions)); the
+  plan fails when you use them. `bundle_sources` and `config`/`config_yaml`
+  work with the bundled chart. PDBs
   support only `minAvailable`.

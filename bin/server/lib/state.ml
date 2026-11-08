@@ -43,6 +43,9 @@ type t = {
   mutable bundle_sources : Haltsql_bundle_source.t list;
       (** running pollers (started by [Bundle_sources.start]) *)
   mutable generation : int;  (** incremented by every successful reload *)
+  mutable audit_restart_pending : bool;
+      (** the last successful reload carried different audit sinks than the running
+          ones; they only take effect after a restart (the running sinks stay) *)
 }
 
 (* ---- integration hooks (set by the integrator before [Server.main]) ---- *)
@@ -174,9 +177,22 @@ let check_policy_refs (cfg : Config.t) =
         cfg.mtls
     @ List.concat_map
         (fun (provider, (g : Config.groups_policy)) ->
-          let who = Printf.sprintf "oidc provider %S policy_from_groups" provider in
-          List.map (fun (r : Config.group_rule) -> (who, r.group_policy)) g.group_rules
-          @ match g.group_default with Some d -> [ (who, d) ] | None -> [])
+          (* Located like Config's own reference errors, so the entry to fix is
+             named even when the policy only went missing in a later bundle. *)
+          let base =
+            match
+              List.find_index (fun (o : Config.oidc_provider) -> o.oidc_name = provider) cfg.oidc
+            with
+            | Some i -> Printf.sprintf "server.auth.oidc[%d].policy_from_groups" i
+            | None -> "policy_from_groups"
+          in
+          let who loc = Printf.sprintf "oidc provider %S (%s.%s)" provider base loc in
+          List.mapi
+            (fun j (r : Config.group_rule) ->
+              (who (Printf.sprintf "map[%d].policy" j), r.group_policy))
+            g.group_rules
+          @
+          match g.group_default with Some d -> [ (who "default", d) ] | None -> [])
         cfg.oidc_group_policies
   in
   match List.filter (fun (_, n) -> not (have n)) refs with
@@ -361,9 +377,15 @@ let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.
     remote = [];
     bundle_sources = [];
     generation = 1;
+    audit_restart_pending = false;
   }
 
 let close t = List.iter Audit.close t.sinks
+
+(* Audit sinks (stdout/file/s3/gcs and elasticsearch/kafka) are opened once at
+   startup: two sinks on one file, prefix or topic would fork the hash chain. *)
+let audit_sinks_differ (running : Config.t) (cfg : Config.t) =
+  running.sinks <> cfg.sinks || running.stream_sinks <> cfg.stream_sinks
 
 (* Reloads every source (policies, auth settings, TLS material). Swaps
    atomically only if everything loaded. TLS cannot be switched on or off
@@ -400,6 +422,17 @@ let reload ?(reason = "manual") ?resolver ?remote t =
       t.snap <- snapshot_of_config ?config_file:t.sources.config_file ~previous:t.snap cfg;
       t.remote <- candidate_remote;
       t.generation <- t.generation + 1;
+      t.audit_restart_pending <- audit_sinks_differ t.cfg cfg;
+      (* Never silently ignore a changed audit.sinks: records keep going to the
+         running sinks, and the operator is told the new ones are not in use. *)
+      if t.audit_restart_pending then
+        Log.warn "audit sink changes need a restart; keeping the current audit sinks"
+          ~fields:
+            [
+              ("reason", `String reason);
+              ( "running_audit_sinks",
+                `List (List.map (fun (s : Audit.sink) -> `String s.name) t.sinks) );
+            ];
       Admin_report.reconfigure t.report cfg.admin;
       (match tls with Some _ -> t.tls <- tls | None -> ());
       t.signatures <- signatures t.snap.watched;

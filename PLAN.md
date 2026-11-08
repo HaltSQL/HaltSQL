@@ -724,10 +724,16 @@ Open questions:
 
 ## 14. Enterprise integrations status
 
-Status as of 2026-11-07 (unreleased, on top of 0.1.0). "Tier 1" is what an
+Status as of 2026-11-08 (unreleased, on top of 0.1.0). "Tier 1" is what an
 enterprise needs to deploy the sidecar and call it from its stack; "Tier 2"
-is the policy lifecycle and database-side tooling around it. Every item fails
-closed and is tested against in-process fakes or the lab Postgres 17.
+is the policy lifecycle and database-side tooling around it; "Tier 3" is
+operating it at scale (SIEM, remote bundles, IdP groups, OPA, Kubernetes,
+Terraform, release builds). Every item fails closed. Tier 1 and Tier 2 are
+tested against in-process fakes or the lab Postgres 17. Tier 3 is tested
+against the real software in containers (Kafka, Elasticsearch, OpenSearch,
+OPA, Keycloak, `registry:2`, MinIO, kind, envtest) and the lab Postgres 17,
+with no mocks or emulators of external services; what could not be run that
+way is listed under known gaps.
 
 ### Tier 1: deploy and integrate
 
@@ -737,7 +743,7 @@ closed and is tested against in-process fakes or the lab Postgres 17.
 | OIDC/JWT callers (discovery, JWKS cache, claim-derived context, policy from claim) | Implemented | `lib/auth` (`haltsql-server.auth`) | HTTPS IdP only via system CAs or the `State.oidc_fetch` hook; no ES512/PS384/PS512 |
 | mTLS identities (SPIFFE ID, CN) with static context | Implemented | `lib/auth/mtls.ml` | — |
 | Secret providers (`${vault:}`, `${aws-sm:}`, `${gcp-sm:}`) for CLI and server, async prefetch on reload | Implemented | `lib/cloud/secrets.ml`, `bin/server/lib/integrations.ml`, `bin/haltsql/cmds.ml`; [secrets.md](docs/secrets.md) | Reload prefetch scans raw text, so YAML-escaped placeholders fail closed; no `~/.aws` or ECS credentials |
-| S3 / GCS audit sinks with `on_error` (fail closed or bounded buffer), `/readyz` health, sink metrics | Implemented | `lib/cloud` (`haltsql.cloud`), `bin/server/lib/audit.ml`; [audit-sinks.md](docs/audit-sinks.md) | No `spool_dir` config key yet; sinks are not reopened on reload |
+| S3 / GCS audit sinks with `on_error` (fail closed or bounded buffer), `/readyz` health, sink metrics | Implemented | `lib/cloud` (`haltsql.cloud`), `bin/server/lib/audit.ml`; [audit-sinks.md](docs/audit-sinks.md) | Sinks are not reopened on reload (restart to change them) |
 | OpenTelemetry (OTLP/HTTP JSON) spans per verify and mirrored metrics | Implemented | `lib/telemetry` (`haltsql-server.telemetry`), `bin/server/lib/telemetry.ml`; [observability.md](docs/observability.md) | No protobuf or gRPC; fixed-Huffman gzip only |
 | Python SDK + guarded execution (psycopg 3, asyncpg, SQLAlchemy) | Implemented | `clients/python`; [sdk-python.md](docs/sdk-python.md) | Not published to PyPI |
 | TypeScript, Go and Java SDKs with guarded execution | Implemented | `clients/{typescript,go,java}`; `docs/sdk-*.md` | Java refuses SQL containing `?`, `{` or `}`; not published |
@@ -749,11 +755,34 @@ closed and is tested against in-process fakes or the lab Postgres 17.
 
 | Item | Status | Where | Known gaps |
 |---|---|---|---|
-| `haltsql-proxy` wire-protocol firewall (SCRAM / client-cert auth, Bind rewriting, TLS) | Implemented | `lib/pgwire` (`haltsql-proxy.pgwire`), `bin/proxy`; [proxy.md](docs/proxy.md) | No pooling, hot reload or metrics endpoint; COPY, LISTEN and savepoints unavailable |
+| `haltsql-proxy` wire-protocol firewall (SCRAM / client-cert auth, Bind rewriting, TLS) | Implemented | `lib/pgwire` (`haltsql-proxy.pgwire`), `bin/proxy`; [proxy.md](docs/proxy.md) | No pooling or metrics endpoint; COPY, LISTEN and savepoints unavailable |
 | `haltsql rls generate` / `rls check` | Implemented | `lib/rlsgen`; [rls-generation.md](docs/rls-generation.md) | Expression comparison in `check` is heuristic; tested on PG 17 only |
 | `haltsql schema pull` / `schema import` (dbt, DataHub, Unity Catalog, Atlan, Collibra) / `policy draft` | Implemented | `lib/catalog_tools`; [schema-and-pii.md](docs/schema-and-pii.md) | No SASLprep, no channel binding; 4 MB document limit |
-| Signed policy bundles (`haltsql bundle`), server loading with reference re-validation, hot reload re-verification | Implemented | `lib/bundle`, `bin/server/lib/integrations.ml`; [policy-bundles.md](docs/policy-bundles.md) | Bundles from URLs/OCI are documented commands, not built in |
+| Signed policy bundles (`haltsql bundle`), server loading with reference re-validation, hot reload re-verification | Implemented | `lib/bundle`, `bin/server/lib/integrations.ml`; [policy-bundles.md](docs/policy-bundles.md) | Remote sources (OCI, S3, HTTPS) are built in now (see Tier 3); no GCS source |
 | GitHub Action, GitLab templates, pre-commit hooks | Implemented | `action.yml`, `.github/actions/policy-ci`, `ci/gitlab`; [policy-ci.md](docs/policy-ci.md) | Not yet exercised on real GitHub/GitLab runners |
+
+### Tier 3: operate at scale
+
+| Item | Status | Where | Known gaps |
+|---|---|---|---|
+| Shadow reports: `haltsql report` (`--suggest`, `--apply-to`), `GET /v1/admin/report`, `GET /v1/admin/status` | Implemented | `lib/report`, `bin/haltsql/cmd_report.ml`, `bin/server/lib/report_api.ml`; [shadow-reports.md](docs/shadow-reports.md) | The admin report window is in memory and starts empty after a restart; suggestions never touch tenancy or writes (by design) |
+| Proxy hash-chained audit with multiple sinks, proxy hot reload (`SIGHUP`, `reload.watch`), `haltsql audit verify` | Implemented | `lib/pgwire/paudit.ml`, `lib/pgwire/server.ml`, `bin/haltsql/cmd_audit.ml`; [proxy.md](docs/proxy.md), [audit-verify.md](docs/audit-verify.md) | Proxy has no Kafka/Elasticsearch sinks and no metrics endpoint; a full rewrite of a log rebuilds a valid chain unless the head is kept elsewhere (`--expect-head`, a second sink or WORM storage) |
+| SIEM stream sinks: Kafka and Elasticsearch/OpenSearch | Implemented | `lib/siem` (`haltsql.siem`), `bin/server/lib/state.ml`; [audit-sinks.md](docs/audit-sinks.md#streaming-sinks-elasticsearch-opensearch-kafka) | Kafka is at least once with no idempotent producer and no compression; no spool, so records queued in memory are lost on a crash; Kafka mTLS is implemented but not integration-tested (SASL and server TLS are) |
+| Remote bundle sources (OCI via `registry:2`, S3 via MinIO, HTTPS), `haltsql bundle push/pull --oci`, `cache_dir`, rollback refusal, hot reload | Implemented | `lib/bundle_source`, `bin/server/lib/bundle_sources.ml`, `bin/haltsql/cmd_bundle_oci.ml`; [policy-bundles.md](docs/policy-bundles.md) | OCI over TLS is tested against nginx with a private CA, not a real registry over TLS; blob redirects to object storage are untested; no GCS source (dropped) |
+| Policies from IdP groups (`policy_from_groups`: Okta, Keycloak, Auth0, Entra ID overage) | Implemented | `lib/auth/group_policy.ml`, `lib/auth/oidc.ml`; [authentication.md](docs/authentication.md#policies-from-idp-groups) | Only Keycloak 26 is tested live; the Okta, Auth0 and Entra claim shapes (including overage) are covered by unit tests with real token layouts |
+| OPA external policy (deny-only), reason code `E_EXTERNAL_POLICY` | Implemented | `lib/opa`, `bin/server/lib/http.ml`, `examples/opa`; [opa.md](docs/opa.md) | Server only (not the proxy); one OPA request per allowed query, no decision cache |
+| Kubernetes operator (`haltsql.dev/v1alpha1`: `HaltSQLPolicy`, `HaltSQLServer`) | Implemented | `deploy/operator`; [kubernetes-operator.md](docs/kubernetes-operator.md) | No admission webhook; no GCS bundle sources; no persistent `spool_dir` volume; secret rotation needs a manual rollout restart |
+| Terraform modules: `haltsql-kubernetes`, `haltsql-aws` (ECS Fargate), `haltsql-azure` (Container Apps), `haltsql-gcp` (Cloud Run) | Kubernetes applied on kind; cloud modules static checks only | `deploy/terraform`; [terraform.md](docs/terraform.md) | AWS, Azure and GCP modules have never been applied (only `terraform validate`, tflint with the cloud rulesets, trivy). Azure open questions: `sub_path` on Container Apps secret volumes, and Key Vault role-assignment propagation on the first apply. The ECS task role is unsupported because the server's AWS credential chain does not read the ECS/Pod Identity container credentials endpoint. The Kubernetes module's `secret_env`, `network_policy.egress` and `proxy` inputs need chart values (`extraEnv`, `networkPolicy.egress`, `proxy`) the chart does not have yet |
+| Helm chart `extraPolicies`, `extraConfig`, bundle cache volume | Implemented | `deploy/helm/haltsql`; [deployment.md](docs/deployment.md#kubernetes-helm-chart) | Not exercised by the kind apply test (`deploy/terraform/test/e2e-kind.sh` uses no bundle source or extra config) |
+| Static musl binaries, `build-images.yml`, `scripts/docker-smoke.sh`, benchmark harness and CI gate | Implemented | `Dockerfile`, `.github/workflows/{build-images,release}.yml`, `bench/`, `scripts/bench.sh`; [performance.md](docs/performance.md) | Benchmark numbers come from a loaded M1 Max with Postgres in Docker Desktop; the CI gate is calibration-normalized and deliberately loose (fails only above 2.5x the baseline) |
+| DB compatibility suite (`lab/compat`) and `compat-cloud.yml` | Local engines run (PG 18, Supabase Postgres, AlloyDB Omni, Citus, TimescaleDB) | `lab/compat`, `.github/workflows/compat-cloud.yml`; [compatibility.md](docs/compatibility.md) | Managed databases not run: Aurora, Neon, hosted Supabase, AlloyDB; Redshift only through the offline grammar suite; `compat-cloud.yml` has never run |
+| Agent frameworks: OpenAI Agents SDK, LangGraph, Semantic Kernel, CrewAI, Google ADK | Implemented | `integrations/`; [agent-frameworks.md](docs/agent-frameworks.md) | The OpenAI Agents and ADK tests drive tool calls through private framework internals, so they are pinned to exact versions (`constraints.txt`); not published to PyPI |
+| Container integration CI (`integration.yml`), `HALTSQL_SKIP_DOCKER` | Implemented | `.github/workflows/integration.yml`, `test/*/docker_util.ml` | Not yet exercised on GitHub runners |
+
+Dropped by design: Splunk, Datadog and Microsoft Sentinel sinks (Kafka and
+Elasticsearch/OpenSearch feed them), the Bedrock agent integration, and GCS
+bundle sources. A Splunk sink could be tested for real against the
+`splunk/splunk` container if its licence is accepted.
 
 ### Packaging
 
@@ -777,5 +806,5 @@ closed and is tested against in-process fakes or the lab Postgres 17.
 - Three small Postgres v3 clients exist (`lib/rlsgen/pg_wire.ml`,
   `lib/catalog_tools/pg_wire.ml`, `lib/pgwire/upstream.ml`). They should be
   merged into one library.
-- The musl static build of the new C stubs (mirage-crypto, zarith) has not
-  run in the release pipeline yet.
+- The musl static build (Dockerfile `builder`/`dist`/`scratch` stages, used by
+  `release.yml` and `build-images.yml`) has not run on GitHub's runners yet.

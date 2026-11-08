@@ -8,6 +8,7 @@ answers `POST /v1/verify`. This directory has:
 |---|---|
 | `../Dockerfile` | Multi-stage image: static musl binaries on `distroless/static:nonroot` (uid 65532). |
 | `helm/haltsql/` | Helm chart: Deployment, Service, ConfigMaps (config + policies), Secret (token hashes), PDB, HPA, NetworkPolicy, ServiceMonitor, ServiceAccount. |
+| `operator/` | Kubernetes operator (Go, API `haltsql.dev/v1alpha1`): `HaltSQLPolicy` and `HaltSQLServer` CRDs reconciled into policy ConfigMaps and a haltsql-server Deployment. See [docs/kubernetes-operator.md](../docs/kubernetes-operator.md). |
 | `k8s/sidecar-example.yaml` | haltsql as a sidecar next to an agent, reached over `127.0.0.1`. |
 | `systemd/haltsql-server.service` | Hardened unit for VMs and bare metal. |
 
@@ -215,6 +216,25 @@ helm install haltsql deploy/helm/haltsql \
   account token. The NetworkPolicy allows ingress only on the HTTP port, and
   denies all egress.
 - `serviceMonitor.enabled=true` requires the Prometheus Operator CRDs.
+- `extraPolicies` is a list of Config `policies[]` entries appended to the
+  rendered `policies` (for example `bundle_source` entries pulling signed
+  bundles from an OCI registry, S3 or HTTPS). A `bundle_source` entry without
+  `cache_dir` gets `<cache.mountPath>/bundles`.
+- `extraConfig` is a map deep-merged into the rendered Config document:
+  nested maps merge key by key and `extraConfig` wins; lists and scalars
+  replace the rendered value. Use it for settings the chart has no value for
+  (`telemetry.otlp`, `secrets`, `opa`, `server.admin`, ...). `policies` is
+  refused there (use `extraPolicies`), and the server still validates the
+  merged document at startup, so an unknown key fails closed.
+- `cache` is a writable volume for bundle-source caches (the root filesystem
+  is read-only), mounted at `cache.mountPath` (default `/var/cache/haltsql`).
+  The default `emptyDir` survives container restarts but not rescheduling;
+  to keep the cache across rescheduling, replace it with exactly one other
+  volume source, e.g.
+  `--set cache.volume.emptyDir=null --set cache.volume.persistentVolumeClaim.claimName=haltsql-cache`.
+- Outbound features (bundle sources, OIDC, Kafka/Elasticsearch sinks, OPA)
+  need egress, which the chart's NetworkPolicy denies: allow it explicitly or
+  disable `networkPolicy`.
 
 ## systemd
 

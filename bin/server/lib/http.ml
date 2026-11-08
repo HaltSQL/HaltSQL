@@ -579,6 +579,7 @@ let handle_admin_status (st : State.t) ~conn ~rid req =
              ( "bundle_sources",
                `List (List.map Bundle_sources.status_json st.bundle_sources) );
              ("audit_sinks", `List (List.map sink_json st.sinks));
+             ("audit_restart_pending", `Bool st.audit_restart_pending);
              ("opa", opa);
              ( "report",
                `Assoc

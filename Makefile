@@ -15,7 +15,7 @@ LAB = $(LAB_DIR)/run.sh
 endif
 
 .DEFAULT_GOAL := build
-.PHONY: help deps build test fmt fmt-check coverage bench lab-up lab-down lab-run docker clean
+.PHONY: help deps build test fmt fmt-check coverage bench lab-up lab-down lab-run docker smoke clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -60,8 +60,11 @@ lab-run: ## Run lab scenarios; report is written under lab/out/
 lab-down: ## Stop the lab and remove its containers and volumes
 	$(LAB) down
 
-docker: ## Build the container image locally
-	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):dev .
+docker: ## Build the container image locally (also tagged haltsql-local:dev for scripts/docker-smoke.sh)
+	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):dev -t haltsql-local:dev .
+
+smoke: ## Smoke-test the haltsql-local:dev image (scripts/docker-smoke.sh; run `make docker` first)
+	scripts/docker-smoke.sh
 
 clean: ## Remove build and coverage outputs
 	$(DUNE) clean

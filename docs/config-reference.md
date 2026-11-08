@@ -301,7 +301,8 @@ and `name_prefix` only with `bundle` or `bundle_source`.
 Bundles and bundle sources are parsed and checked when the config loads, but
 they are fetched, verified and loaded by the server afterwards. So when a
 config lists bundles (of either form), a policy
-name used by a token, OIDC provider, mTLS identity or `default_policy` that is
+name used by a token, OIDC provider (including `policy_from_groups` map entries
+and `default`), mTLS identity or `default_policy` that is
 not one of the plain policies is accepted at config load time. If every bundle
 and bundle source has a `name_prefix`, such a name must start with one of them. The server
 re-validates every reference after loading the bundles and refuses to start
@@ -328,7 +329,7 @@ applies, and what needs a restart:
 |---|---|
 | `policies` (paths, inline policies, local `bundle` files and their signatures) and `default_policy` | `server.listen`, the health listener |
 | `server.auth.tokens`, `allow_unauthenticated` | enabling or disabling `server.tls` (certificates and keys themselves reload) |
-| `server.auth.oidc` (including `policy_from_groups`; key caches of unchanged providers are kept) and `server.auth.mtls` | `audit` (all sinks, `log_raw_sql`): two writers on one chain would fork it |
+| `server.auth.oidc` (including `policy_from_groups`; key caches of unchanged providers are kept) and `server.auth.mtls` | `audit` (all sinks, `log_raw_sql`): two writers on one chain would fork it. A reload that changes `audit.sinks` keeps the running sinks, logs a warning and sets `audit_restart_pending` in `GET /v1/admin/status` |
 | `server.tls` certificate, key and client CA files | the list of `bundle_source` entries: adding, removing or changing an entry needs a restart (the running pollers keep their settings; new bundles they fetch are applied as reloads) |
 | `opa` (url, decision path, timeout, `on_error`, headers) | `limits`, `logging`, `telemetry.metrics.prometheus` |
 | `server.admin` (enabling, callers, `report_window`, `max_tracked_queries`; disabling it drops the report window) | |

@@ -92,7 +92,7 @@ policies.
 | `upstream.host`, `upstream.port` | -, `5432` | The real server. Every resolved address is tried in order. |
 | `upstream.database`, `upstream.user` | required | Service credentials. Clients must ask for exactly this database name. |
 | `upstream.password` | none | For SCRAM-SHA-256, MD5 or cleartext (cleartext only over TLS). Omit for `trust`. |
-| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name). |
+| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name; the host name is checked against DNS SubjectAltName entries only, so a server certificate that carries the name only in its CN is rejected). |
 | `upstream.tls.ca` | none | PEM CA bundle; required for `verify-full`. |
 | `upstream.connect_timeout_seconds` | `10` | TCP connect timeout (authentication gets three times this). |
 | `policies` | required | List of `{path: file}` or `{inline: {...policy...}}`. Each is referenced by its `metadata.name`. |
@@ -131,7 +131,10 @@ Passwords should be ASCII (SASLprep is the identity for ASCII).
 **Client certificates** (`auth.method: cert`). The TLS handshake verifies the
 chain against `tls.client_ca`; the proxy then matches the leaf's subject CN or a
 `spiffe://` URI SAN against `auth.identities`. The startup user name is not used
-for authorization. Certificate revocation lists are not checked.
+for authorization. Certificate revocation lists are not checked. The CN is
+decoded from UTF8String, PrintableString, BMPString or UniversalString; a CN
+that is a TeletexString, malformed, empty or contains control characters never
+matches a `subject_cn` identity (fail closed).
 
 **Upstream.** The proxy authenticates to PostgreSQL with `trust`, cleartext
 (only over TLS), MD5 or SCRAM-SHA-256, and verifies the server's SCRAM

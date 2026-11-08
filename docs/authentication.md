@@ -111,7 +111,14 @@ server:
 - `spiffe_id` matches the certificate's URI SAN exactly. Following the
   X.509-SVID rules, a certificate with more than one URI SAN has no SPIFFE ID
   and never matches a `spiffe_id` entry.
-- `subject_cn` matches the subject common name exactly (case-sensitive).
+- `subject_cn` matches the subject common name exactly (case-sensitive). The
+  CN is decoded from UTF8String, PrintableString, BMPString or
+  UniversalString; a TeletexString, malformed, empty or control-character CN
+  never matches (fail closed).
+- Server certificates that haltsql-server checks (OIDC issuers, bundle
+  sources, OPA, audit sinks) are matched by host name against DNS
+  SubjectAltName entries only: a certificate with the name only in its CN is
+  rejected.
 - The first matching identity in configuration order wins.
 - Audit records carry `caller_type: "mtls"` and `subject` set to the SPIFFE
   ID, or the CN.

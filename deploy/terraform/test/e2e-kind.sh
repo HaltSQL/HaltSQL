@@ -115,6 +115,9 @@ log "cluster objects"
 READY="$("${KCTL[@]}" -n "$NS" get deploy "$SVC" -o jsonpath='{.status.readyReplicas}')"
 [ "$READY" = 2 ] || fail "expected 2 ready replicas, got '$READY'"
 echo "ready replicas: $READY"
+CACHE_MOUNT="$("${KCTL[@]}" -n "$NS" get deploy "$SVC" -o jsonpath='{.spec.template.spec.containers[0].volumeMounts[?(@.name=="cache")].mountPath}')"
+[ "$CACHE_MOUNT" = /var/cache/haltsql ] || fail "no writable bundle cache volume at /var/cache/haltsql (got '$CACHE_MOUNT')"
+echo "bundle cache volume: $CACHE_MOUNT"
 PSS="$("${KCTL[@]}" get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')"
 [ "$PSS" = restricted ] || fail "namespace is not labelled pod-security enforce=restricted"
 echo "namespace pod-security enforce: $PSS"
@@ -168,6 +171,12 @@ echo "     bind_params: \$1 = acme"
 verify "tenant literal is denied (bound mode)" "SELECT id FROM orders WHERE tenant_id = 'acme' LIMIT 10" false
 verify "delete is denied" "DELETE FROM orders WHERE tenant_id = 'acme'" false
 verify "unknown table is denied" "SELECT * FROM pg_shadow LIMIT 1" false
+
+# extraConfig (module input `config`) deep-merged server.admin into the Config.
+check_status "GET /v1/admin/status (extraConfig server.admin)" 200 "$BASE/v1/admin/status" \
+  -H "Authorization: Bearer $TOKEN"
+grep -q '"tf-analytics"' "$WORK/body" || { echo "body: $(head -c 400 "$WORK/body")"; fail "admin status does not list tf-analytics"; }
+check_status "GET /v1/admin/status without a token" 401 "$BASE/v1/admin/status"
 
 check_status "POST /v1/verify without a token" 401 "$BASE/v1/verify" \
   -H 'Content-Type: application/json' -d '{"sql":"SELECT 1"}'

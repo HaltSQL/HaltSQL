@@ -1,11 +1,13 @@
 # haltsql-server on any Kubernetes cluster (EKS, AKS, GKE, kind, self-managed)
 # through the deploy/helm/haltsql chart.
 #
-# The module only renders chart values; the chart owns the manifests. Values
-# that the chart does not implement yet (extraConfig, extraPolicies,
-# extraEnv, networkPolicy.egress, proxy) are only sent when used, and the
-# plan fails with a precondition error when a local chart lacks them, so a
-# setting is never silently dropped.
+# The module only renders chart values; the chart owns the manifests. Chart
+# extension values (extraConfig, extraPolicies, extraEnv, networkPolicy.egress,
+# proxy) are only sent when used, and the plan fails with a precondition error
+# when a local chart lacks them, so a setting is never silently dropped. The
+# chart in this repository has extraConfig and extraPolicies (bundle_source
+# entries without cache_dir cache on its `cache` volume); extraEnv,
+# networkPolicy.egress and proxy are not implemented yet.
 
 locals {
   chart_local_path = coalesce(var.chart_path, "${path.module}/../../../helm/haltsql")

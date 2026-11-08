@@ -48,6 +48,15 @@ module "haltsql" {
     log_level = "info"
   }
 
+  # Exercises the chart's extraConfig deep merge: server.admin is merged into
+  # the rendered server block next to listen and auth (e2e-kind.sh checks
+  # GET /v1/admin/status).
+  config = {
+    server = {
+      admin = { enabled = true, callers = ["token:e2e-agent"] }
+    }
+  }
+
   # kindnet enforces NetworkPolicy; port-forwarded traffic enters through the
   # pod's own network namespace.
   network_policy = {

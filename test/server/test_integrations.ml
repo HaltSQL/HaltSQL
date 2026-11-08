@@ -247,6 +247,160 @@ let test_bundle_hot_reload () =
   Alcotest.(check string) "last good kept" v2 (version_of st "shop");
   State.close st
 
+(* oidc_group_policies naming a policy that only a bundle provides: the
+   reference cannot be checked when the config is parsed, so the server must
+   re-check it once the bundle is loaded (startup fails closed) and on every
+   reload (a bundle that drops the policy is rejected, last good set kept). *)
+let groups_config ~name ~bundle =
+  let f = tmp name in
+  write_file f
+    (String.concat "\n"
+       [
+         "apiVersion: haltsql.dev/v1";
+         "kind: Config";
+         "server:";
+         "  auth:";
+         "    tokens:";
+         Printf.sprintf "      - { name: agent, token_sha256: %s, policy: prod-shop }"
+           (sha token);
+         "    oidc:";
+         "      - name: corp";
+         "        issuer: https://idp.haltsql.invalid/realms/corp";
+         "        audiences: [haltsql]";
+         "        policy_from_groups:";
+         "          claim: groups";
+         "          map:";
+         "            - { group: shop, policy: prod-shop }";
+         "            - { group: finance, policy: prod-billing }";
+         "          default: prod-reports";
+         "policies:";
+         Printf.sprintf "  - { bundle: %s, public_keys: [%s], name_prefix: prod- }" bundle
+           (pub key);
+         "";
+       ]);
+  f
+
+let group_policy_names (st : State.t) =
+  match Haltsql_auth.Oidc_client.providers st.snap.oidc with
+  | [ p ] -> (
+      match Haltsql_auth.Oidc_client.groups p with
+      | Some g ->
+          List.map (fun (r : Haltsql.Config.group_rule) -> r.group_policy) g.group_rules
+          @ Option.to_list g.group_default
+      | None -> Alcotest.fail "provider has no policy_from_groups")
+  | ps -> Alcotest.failf "expected one OIDC provider, got %d" (List.length ps)
+
+let test_bundle_group_refs_startup () =
+  let path = tmp "groups-start.haltsqlbundle" in
+  (* prod-billing (map[1]) is missing from the bundle *)
+  write_bundle ~path ~version:"1" [ "shop"; "reports" ];
+  let f = groups_config ~name:"g1.yaml" ~bundle:path in
+  Alcotest.(check string)
+    "map entry re-checked"
+    "oidc provider \"corp\" (server.auth.oidc[0].policy_from_groups.map[1].policy) \
+     references policy \"prod-billing\", which is not loaded"
+    (load_err f);
+  (* prod-reports (default) is missing *)
+  write_bundle ~path ~version:"2" [ "shop"; "billing" ];
+  Alcotest.(check string)
+    "default re-checked"
+    "oidc provider \"corp\" (server.auth.oidc[0].policy_from_groups.default) references \
+     policy \"prod-reports\", which is not loaded"
+    (load_err f);
+  (* complete bundle: loads *)
+  write_bundle ~path ~version:"3" [ "shop"; "billing"; "reports" ];
+  ignore (load_ok f)
+
+let test_bundle_group_refs_reload () =
+  let path = tmp "groups-reload.haltsqlbundle" in
+  write_bundle ~path ~version:"1" [ "shop"; "billing"; "reports" ];
+  let f = groups_config ~name:"g2.yaml" ~bundle:path in
+  let src = sources f in
+  let st = State.create ~sources:src (load_ok f) in
+  Fun.protect
+    ~finally:(fun () -> State.close st)
+    (fun () ->
+      let gen = st.generation in
+      let v1 = version_of st "prod-billing" in
+      (* a validly signed bundle that drops prod-billing *)
+      Unix.sleepf 1.1;
+      write_bundle ~columns:"[id, tenant_id]" ~path ~version:"2" [ "shop"; "reports" ];
+      Alcotest.(check bool) "change detected" true (State.changed st);
+      (match run (State.reload_lwt ~reason:"test" st) with
+      | Ok () -> Alcotest.fail "reload with a missing group policy must fail"
+      | Error e ->
+          check_contains "reload error" (String.concat "; " e)
+            "policy_from_groups.map[1].policy) references policy \"prod-billing\", which \
+             is not loaded");
+      Alcotest.(check int) "generation unchanged" gen st.generation;
+      Alcotest.(check string) "last good prod-billing kept" v1 (version_of st "prod-billing");
+      Alcotest.(check (list string))
+        "policies unchanged"
+        [ "prod-shop"; "prod-billing"; "prod-reports" ]
+        (List.map fst st.snap.policies);
+      Alcotest.(check (list string))
+        "group mapping unchanged"
+        [ "prod-shop"; "prod-billing"; "prod-reports" ]
+        (group_policy_names st))
+
+(* audit.sinks changed by a reload: the running sinks stay (a second writer
+   would fork the chain), but the change is reported, never silently ignored. *)
+let test_audit_sink_change_reported () =
+  let audit1 = tmp "reload-audit-1.jsonl" and audit2 = tmp "reload-audit-2.jsonl" in
+  List.iter (fun f -> try Sys.remove f with Sys_error _ -> ()) [ audit1; audit2 ];
+  let pol = tmp "audit-reload-policy.yaml" in
+  ignore (policy_of_yaml ~name:"shop" ());
+  write_file pol (read_file (tmp "shop.policy.yaml"));
+  let f = tmp "audit-reload.yaml" in
+  let write_config sinks =
+    write_file f
+      (String.concat "\n"
+         [
+           "apiVersion: haltsql.dev/v1";
+           "kind: Config";
+           "server:";
+           "  auth:";
+           "    tokens:";
+           Printf.sprintf "      - { name: agent, token_sha256: %s, policy: shop }"
+             (sha token);
+           "policies:";
+           "  - path: " ^ pol;
+           "audit:";
+           "  sinks:";
+           String.concat "\n"
+             (List.map (fun p -> Printf.sprintf "    - { type: file, path: %s }" p) sinks);
+           "";
+         ])
+  in
+  write_config [ audit1 ];
+  let src = sources f in
+  let st = State.create ~sources:src (load_ok f) in
+  Fun.protect
+    ~finally:(fun () -> State.close st)
+    (fun () ->
+      Alcotest.(check bool) "nothing pending at start" false st.audit_restart_pending;
+      (* unrelated change (same sinks): no restart needed *)
+      write_config [ audit1 ];
+      (match State.reload ~reason:"test" st with
+      | Ok () -> ()
+      | Error e -> Alcotest.failf "reload: %s" (String.concat "; " e));
+      Alcotest.(check bool) "same sinks: not pending" false st.audit_restart_pending;
+      write_config [ audit1; audit2 ];
+      (match State.reload ~reason:"test" st with
+      | Ok () -> ()
+      | Error e -> Alcotest.failf "reload: %s" (String.concat "; " e));
+      Alcotest.(check bool) "changed sinks: pending" true st.audit_restart_pending;
+      Alcotest.(check (list string))
+        "running sinks kept" [ audit1 ]
+        (List.map (fun (s : Audit.sink) -> s.name) st.sinks);
+      Alcotest.(check bool) "new sink not opened" false (Sys.file_exists audit2);
+      (* reverting clears the flag *)
+      write_config [ audit1 ];
+      (match State.reload ~reason:"test" st with
+      | Ok () -> ()
+      | Error e -> Alcotest.failf "reload: %s" (String.concat "; " e));
+      Alcotest.(check bool) "reverted: not pending" false st.audit_restart_pending)
+
 (* ------------------------------------------------------------ fakes *)
 
 type fake = { port : int; mutable requests : (Cohttp.Request.t * string) list }
@@ -547,6 +701,11 @@ let () =
           tc "duplicate bundle policy refused" test_bundle_duplicate;
           tc "no loader fails closed" test_bundle_without_loader;
           tc "hot reload re-verifies" test_bundle_hot_reload;
+          tc "policy_from_groups refs re-checked at startup"
+            test_bundle_group_refs_startup;
+          tc "policy_from_groups refs: reload keeps last good"
+            test_bundle_group_refs_reload;
+          tc "audit sink change on reload is reported" test_audit_sink_change_reported;
         ] );
       ( "secrets",
         [

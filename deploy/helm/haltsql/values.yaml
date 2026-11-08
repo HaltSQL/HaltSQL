@@ -96,7 +96,7 @@ existingPolicyFiles: []
 
 # Extra Config policies[] entries, appended to the policies rendered from
 # `policies` / `existingPolicyFiles`. Each entry is a full Config policy entry
-# (path, inline, bundle or bundle_source; see docs/configuration.md). A
+# (path, inline, bundle or bundle_source; see docs/config-reference.md). A
 # bundle_source entry without cache_dir gets "<cache.mountPath>/bundles", so a
 # restarted pod can start from its last verified bundle while the source is
 # down. Secrets (registry passwords, tokens) belong in ${env:...} placeholders,
@@ -117,7 +117,8 @@ extraConfig: {}
 #  telemetry:
 #    otlp: { endpoint: "http://otel-collector.monitoring:4318" }
 #  opa:
-#    url: "http://opa.policy:8181/v1/data/haltsql/allow"
+#    url: "https://opa.policy.svc:8181"
+#    decision_path: haltsql/allow
 
 # Writable volume for bundle-source caches (the root filesystem is read-only).
 # It is mounted at mountPath, and bundle_source entries in extraPolicies

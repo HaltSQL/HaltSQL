@@ -10,10 +10,14 @@
    - an OCI bundle_source (registry:2), pushed with `haltsql bundle push --oci`:
      startup, update by polling, a bundle signed with the wrong key rejected (last
      good kept), restart from the verified cache with the registry down, and fail
-     closed at startup without a cache;
+     closed at startup without a cache; a bundle lacking a policy named by
+     policy_from_groups fails startup, and on a running server is rejected with
+     the last good set kept;
    - a Kafka audit sink (apache/kafka, KRaft) plugged into the audit path: records
      consumed with kafka-console-consumer, hash chain intact, /metrics and
-     /readyz, fail closed while the broker is paused.
+     /readyz, fail closed while the broker is paused;
+   - an elasticsearch audit sink (opensearchproject/opensearch) as the only sink:
+     every verdict is indexed and queried back.
 
    Host ports 18400-18409; containers are named haltsql-wiring-*. Docker tests
    skip with a message when Docker is unavailable (or HALTSQL_SKIP_DOCKER=1). *)
@@ -574,6 +578,121 @@ let bundle_source () =
       (String.concat " " (Array.to_list (Sys.readdir dir)))
       log
 
+(* ---- policy_from_groups references re-checked after bundle sources ---- *)
+
+let groups_reference = Printf.sprintf "localhost:%d/haltsql/groups:prod" registry_port
+
+let push_policies ~dir ~key ~version ~extra_columns names =
+  let files =
+    List.map
+      (fun n ->
+        let f = Filename.concat dir (Printf.sprintf "%s-%s.yaml" n version) in
+        write_file f (policy ~extra_columns n);
+        f)
+      names
+  in
+  let bundle = Filename.concat dir (Printf.sprintf "groups-%s.haltsqlbundle" version) in
+  ignore
+    (cli_ok
+       (("bundle" :: "build" :: files)
+       @ [ "--name"; "groups"; "--bundle-version"; version; "-o"; bundle ]));
+  ignore (cli_ok [ "bundle"; "sign"; bundle; "--key"; key ]);
+  ignore
+    (cli_ok [ "bundle"; "push"; "--oci"; groups_reference; "--plain-http"; bundle ])
+
+(* The OIDC issuer is never contacted: keys are fetched on the first token, and
+   this test sends none. *)
+let groups_config ~dir ~cache ~key =
+  Printf.sprintf
+    {|apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:%d
+  auth:
+    tokens:
+%s
+    oidc:
+      - name: corp
+        issuer: https://idp.haltsql.invalid/realms/corp
+        audiences: [haltsql]
+        policy_from_groups:
+          claim: groups
+          map:
+            - { group: finance, policy: remote-billing }
+          default: remote-shop
+  admin: { enabled: true, callers: [token:agent] }
+policies:
+  - bundle_source: { oci: %s, plain_http: true }
+    public_keys: [%s.pub]
+    name_prefix: remote-
+    poll_interval_s: 10
+    cache_dir: %s
+audit:
+  sinks:
+    - { type: file, path: %s/audit.jsonl }
+|}
+    bundle_server_port
+    (tokens_yaml [ ("agent", "agent-token", "remote-shop") ])
+    groups_reference key cache dir
+
+let bundle_group_refs () =
+  ok_or_fail (Docker_util.ensure_image "registry:2");
+  ok_or_fail
+    (Docker_util.start ~name:registry_container
+       [ "-p"; Printf.sprintf "127.0.0.1:%d:5000" registry_port; "registry:2" ]);
+  wait_until "registry to start" (fun () ->
+      match
+        run (Http.request ~timeout:2. `GET (Uri.of_string (base registry_port ^ "/v2/")))
+      with
+      | Ok { status = 200; _ } -> true
+      | _ -> false);
+  let dir = tmpdir "groups" in
+  let key = Filename.concat dir "release.key" in
+  ignore (cli_ok [ "bundle"; "keygen"; "-o"; key ]);
+  (* startup: the bundle lacks remote-billing (named by policy_from_groups) *)
+  push_policies ~dir ~key ~version:"1.0.0" ~extra_columns:[] [ "shop" ];
+  let code, log =
+    expect_startup_failure ~dir ~port:bundle_server_port
+      (groups_config ~dir ~cache:(Filename.concat dir "cache-1") ~key)
+  in
+  Alcotest.(check int) "startup refused" 2 code;
+  if
+    not
+      (contains log
+         "policy_from_groups.map[0].policy) references policy \\\"remote-billing\\\", \
+          which is not loaded")
+  then Alcotest.failf "startup failure message missing (exit %d):\n%s" code log;
+  (* a complete bundle starts; a later bundle that drops remote-billing is
+     rejected and the last good set stays *)
+  push_policies ~dir ~key ~version:"1.1.0" ~extra_columns:[] [ "shop"; "billing" ];
+  with_server ~dir ~port:bundle_server_port
+    (groups_config ~dir ~cache:(Filename.concat dir "cache-2") ~key)
+    (fun s ->
+      let p = s.port in
+      Alcotest.(check string) "version 1.1.0" "1.1.0" (current_version p);
+      push_policies ~dir ~key ~version:"1.2.0" ~extra_columns:[ "status" ] [ "shop" ];
+      wait_until ~timeout:45. "bundle without remote-billing rejected" (fun () ->
+          match member "last_error" (source_status p) with
+          | `Null -> false
+          | e -> contains (str (member "message" e)) "remote-billing");
+      Alcotest.(check string) "still 1.1.0" "1.1.0" (current_version p);
+      let status = request ~token:"agent-token" p "/v1/admin/status" in
+      let names =
+        match member "policies" (Yojson.Safe.from_string status.body) with
+        | `List l -> List.map (fun j -> str (member "name" j)) l
+        | j -> Alcotest.failf "policies: %s" (Yojson.Safe.to_string j)
+      in
+      Alcotest.(check (list string))
+        "last good policies kept" [ "remote-shop"; "remote-billing" ] names;
+      let _, v = verify p "SELECT status FROM orders" in
+      Alcotest.(check bool)
+        "rejected bundle not applied" false
+        (member "allowed" v = `Bool true);
+      Alcotest.(check bool)
+        "reload error counted" true
+        (contains (request p "/metrics").body
+           "haltsql_policy_reload_total{result=\"error\"}"))
+
 (* ======================================================================= *)
 (* Kafka audit sink                                                        *)
 
@@ -612,7 +731,13 @@ let kafka_sh tool args =
 let kafka_sink () =
   ok_or_fail (Docker_util.ensure_image kafka_image);
   let cfgdir = tmpdir "kafka-cfg" in
-  write_file (Filename.concat cfgdir "server.properties") kafka_properties;
+  let props = Filename.concat cfgdir "server.properties" in
+  write_file props kafka_properties;
+  (* Filename.temp_dir creates the directory 0700; the broker runs as the
+     image's own user (appuser), which must be able to read the mounted
+     properties file (no secrets in it). *)
+  Unix.chmod cfgdir 0o755;
+  Unix.chmod props 0o644;
   ok_or_fail
     (Docker_util.start ~name:kafka_container
        [
@@ -723,6 +848,105 @@ audit:
       let status, _ = verify p "SELECT id FROM orders" in
       Alcotest.(check int) "verify after recovery" 200 status)
 
+(* ======================================================================= *)
+(* Elasticsearch-API audit sink as the only sink (real OpenSearch)          *)
+
+let os_port = 18407
+let os_server_port = 18408
+let os_image = "opensearchproject/opensearch:2.17.1"
+let os_container = "haltsql-wiring-opensearch"
+let os_base = Printf.sprintf "http://127.0.0.1:%d" os_port
+
+let os_get path =
+  match run (Http.request ~timeout:10. `GET (Uri.of_string (os_base ^ path))) with
+  | Ok r -> Some r
+  | Error _ -> None
+
+(* Only an elasticsearch sink (no stdout/file sink): every verdict must reach
+   the cluster through the stream-sink path, never be silently dropped. *)
+let opensearch_only_sink () =
+  ok_or_fail (Docker_util.ensure_image os_image);
+  let e k v = [ "-e"; k ^ "=" ^ v ] in
+  ok_or_fail
+    (Docker_util.start ~name:os_container
+       ([ "-p"; Printf.sprintf "127.0.0.1:%d:9200" os_port ]
+       @ e "discovery.type" "single-node"
+       @ e "DISABLE_SECURITY_PLUGIN" "true"
+       @ e "DISABLE_INSTALL_DEMO_CONFIG" "true"
+       @ e "OPENSEARCH_JAVA_OPTS" "-Xms512m -Xmx512m"
+       @ e "cluster.routing.allocation.disk.threshold_enabled" "false"
+       @ [ os_image ]));
+  wait_until ~timeout:240. "opensearch to start" (fun () ->
+      match os_get "/_cluster/health" with
+      | Some { status = 200; body; _ } ->
+          let st = str (member "status" (Yojson.Safe.from_string body)) in
+          st = "green" || st = "yellow"
+      | _ -> false);
+  let index = "haltsql-wiring-audit" in
+  let dir = tmpdir "opensearch" in
+  write_file (Filename.concat dir "shop.yaml") (policy "shop");
+  let config =
+    Printf.sprintf
+      {|apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:%d
+  auth:
+    tokens:
+%s
+policies:
+  - path: %s/shop.yaml
+audit:
+  sinks:
+    - type: elasticsearch
+      url: %s
+      index: %s
+      batch: { flush_interval_ms: 50 }
+|}
+      os_server_port
+      (tokens_yaml [ ("agent", "agent-token", "shop") ])
+      dir os_base index
+  in
+  with_server ~dir ~port:os_server_port config (fun s ->
+      let p = s.port in
+      let sqls =
+        [ "SELECT id FROM orders"; "SELECT secret FROM orders"; "SELECT id FROM invoices" ]
+      in
+      List.iter
+        (fun sql ->
+          let status, _ = verify p sql in
+          Alcotest.(check int) ("verify " ^ sql) 200 status)
+        sqls;
+      let hits = ref [] in
+      wait_until ~timeout:60. "3 audit documents in OpenSearch" (fun () ->
+          ignore (os_get (Printf.sprintf "/%s/_refresh" index));
+          match
+            os_get (Printf.sprintf "/%s/_search?size=10" index)
+          with
+          | Some { status = 200; body; _ } -> (
+              match
+                member "hits" (member "hits" (Yojson.Safe.from_string body))
+              with
+              | `List l when List.length l = 3 ->
+                  hits := List.map (member "_source") l;
+                  true
+              | _ -> false)
+          | _ -> false);
+      let allowed =
+        List.filter (fun j -> member "allowed" j = `Bool true) !hits |> List.length
+      in
+      Alcotest.(check int) "2 allowed, 1 denied (secret column)" 2 allowed;
+      List.iter
+        (fun j ->
+          Alcotest.(check bool) "no raw SQL" true (member "sql" j = `Null);
+          Alcotest.(check int) "sha256 hash" 64 (String.length (str (member "hash" j))))
+        !hits;
+      Alcotest.(check bool)
+        "stream sink metrics" true
+        (contains (request p "/metrics").body
+           "haltsql_audit_stream_sink_records_delivered");
+      Alcotest.(check int) "readyz" 200 (request p "/readyz").status)
+
 let () =
   Mirage_crypto_rng_unix.use_default ();
   let slow n f = Alcotest.test_case n `Slow f in
@@ -731,7 +955,16 @@ let () =
       ("admin", [ slow "admin API, report feed, CLI on the audit file" admin_api ]);
       ("opa", [ slow "OPA after verify (real OPA)" (docker_test "opa" opa_check) ]);
       ( "bundle_source",
-        [ slow "OCI bundle source (real registry)" (docker_test "bundle" bundle_source) ]
+        [
+          slow "OCI bundle source (real registry)" (docker_test "bundle" bundle_source);
+          slow "policy_from_groups refs re-checked after bundle_source (real registry)"
+            (docker_test "bundle" bundle_group_refs);
+        ]
       );
       ("kafka", [ slow "Kafka audit sink (real Kafka)" (docker_test "kafka" kafka_sink) ]);
+      ( "elasticsearch",
+        [
+          slow "OpenSearch as the only audit sink (real OpenSearch)"
+            (docker_test "elasticsearch" opensearch_only_sink);
+        ] );
     ]
