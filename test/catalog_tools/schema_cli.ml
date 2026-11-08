@@ -57,7 +57,9 @@ let () =
       [
         Cmd.group (Cmd.info "schema")
           (Cmd_schema.cmds @ [ Cmd_schema_fetch.cmd_with ~providers:[ (module Fake) ] ]);
-        Cmd.group (Cmd.info "schema-noproviders") [ Cmd_schema_fetch.cmd ];
+        Cmd.group
+          (Cmd.info "schema-noproviders")
+          [ Cmd_schema_fetch.cmd_with ~providers:[] ];
         Cmd_policy_draft.cmd;
       ]
   in

@@ -1,0 +1,6 @@
+{
+  "timestamp": 1794171197038,
+  "status": 401,
+  "error": "Unauthorized",
+  "path": "/api/graphql"
+}
