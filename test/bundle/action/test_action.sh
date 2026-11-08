@@ -288,7 +288,8 @@ if grep -q "PRIVATE KEY" "$o/stdout" "$o/stderr"; then ko "key not logged"; else
 o2="$work/out-bundle2"
 mkdir -p "$o2"
 : >"$o2/gh_output"
-(cd "$work/repo" && env -u HALTSQL_SIGNING_KEY HALTSQL="$bundle_bin" HALTSQL_CI_OUT="$o2" \
+(cd "$work/repo" && env -u HALTSQL_SIGNING_KEY -u GITHUB_REPOSITORY -u GITHUB_SERVER_URL \
+  HALTSQL="$bundle_bin" HALTSQL_CI_OUT="$o2" \
   GITHUB_OUTPUT="$o2/gh_output" INPUT_POLICIES="policies" bash "$scripts/bundle.sh") \
   >/dev/null 2>"$o2/stderr"
 check "unsigned bundle default name" "$o2/policies.haltsqlbundle" "$(output_of bundle-path "$o2/gh_output")"
