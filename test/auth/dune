@@ -4,6 +4,7 @@
 
 (test
  (name test_auth)
+ (modules test_auth)
  (package haltsql-server)
  (libraries
   haltsql
@@ -20,4 +21,49 @@
   digestif
   mirage-crypto-rng.unix
   mirage-crypto-pk
-  mirage-crypto-ec))
+  mirage-crypto-ec
+  x509
+  ptime
+  ptime.clock.os))
+
+; policy_from_groups: pure claim handling for Okta / Keycloak / Auth0 / Entra ID
+; token shapes, first-match selection, overage, and the Oidc.verify hook.
+
+(test
+ (name test_groups)
+ (modules test_groups)
+ (package haltsql-server)
+ (libraries
+  haltsql
+  haltsql-server.auth
+  alcotest
+  yojson
+  mirage-crypto-rng.unix
+  mirage-crypto-pk))
+
+; policy_from_groups against a real Keycloak (Docker, 127.0.0.1:18190): realm,
+; client, groups and users created through the admin REST API, real tokens.
+; Skips with a message when Docker is unavailable.
+
+(test
+ (name test_keycloak)
+ (modules test_keycloak docker_util)
+ (package haltsql-server)
+ (deps ../../bin/server/main.exe)
+ (action
+  (setenv
+   HALTSQL_SERVER_BIN
+   %{dep:../../bin/server/main.exe}
+   (run %{test})))
+ (libraries
+  haltsql
+  haltsql.cloud
+  haltsql-server.auth
+  alcotest
+  lwt
+  lwt.unix
+  uri
+  cohttp
+  yojson
+  mirage-crypto-rng.unix
+  unix))

@@ -20,6 +20,8 @@ type snapshot = {
       (** [server.auth.allow_unauthenticated]; reloadable so that turning anonymous access
           off takes effect without a restart *)
   watched : string list;  (** files whose changes trigger a reload *)
+  opa : Config.opa option;  (** [opa]; reloadable *)
+  admin : Config.admin;  (** [server.admin]; reloadable *)
 }
 (** The settings that hot reload replaces. *)
 
@@ -46,7 +48,18 @@ type t = {
   mutable draining : bool;
       (** set when graceful shutdown begins: readiness fails and responses close their
           connection *)
-  reload_lock : Lwt_mutex.t;  (** internal: serialises {!reload_lwt} *)
+  report : Admin_report.t;  (** shadow analytics window for [GET /v1/admin/report] *)
+  mutable remote : (string * (string * Policy.t) list) list;
+      (** policies of the last accepted bundle of each [bundle_source], by source id *)
+  mutable bundle_sources : Haltsql_bundle_source.t list;
+      (** running pollers (started by {!Bundle_sources.start}) *)
+  mutable generation : int;  (** incremented by every successful reload *)
+  reload_lock : Lwt_mutex.t;
+      (** internal: serialises {!reload_lwt}, so a reload that waits on the secret
+          prefetch never commits a [remote] computed before another reload committed *)
+  mutable audit_restart_pending : bool;
+      (** the last successful reload carried different audit sinks than the running ones;
+          they only take effect after a restart (the running sinks stay) *)
 }
 
 (** {1 Integration hooks}
@@ -68,6 +81,9 @@ val bundle_loader :
 val oidc_fetch : Haltsql_auth.Oidc_client.fetch option ref
 (** HTTP fetcher for OIDC discovery and JWKS (tests substitute a fake). *)
 
+val stream_sink : (Config.stream_sink -> (Audit.sink, string) result) option ref
+(** Opens a SIEM streaming audit sink ([audit.streams]). *)
+
 val secret_prefetch : (file:string -> Config.secrets -> Config.resolver Lwt.t) option ref
 (** Asynchronous secret resolution for reloads, which run inside the Lwt loop: fetches
     every provider placeholder of [file] concurrently and returns a resolver serving only
@@ -75,12 +91,29 @@ val secret_prefetch : (file:string -> Config.secrets -> Config.resolver Lwt.t) o
 
 (** {1 Loading} *)
 
-val load : ?resolver:Config.resolver -> sources -> (Config.t, string list) result
-(** Loads the config file (or only [HALTSQL_*] variables without one), signed bundles and
-    the [--policy] files, applies the overrides and checks that every policy referenced by
+val load :
+  ?resolver:Config.resolver ->
+  ?remote:(string * (string * Policy.t) list) list ->
+  sources ->
+  (Config.t, string list) result
+(** Loads the config file (or only [HALTSQL_*] variables without one), signed bundles, the
+    policies of the remote bundle sources already fetched ([remote], by source id) and the
+    [--policy] files, applies the overrides and checks that every policy referenced by
     tokens, [default_policy], OIDC providers and mTLS identities is loaded. Bundle
     policies may not shadow config-file policies or each other; [--policy] files replace
     policies of the same name. *)
+
+val load_unchecked :
+  ?resolver:Config.resolver ->
+  ?remote:(string * (string * Policy.t) list) list ->
+  sources ->
+  (Config.t, string list) result
+(** {!load} without the policy-reference check (used at startup to read [bundle_sources]
+    before they are fetched). *)
+
+val check_policy_refs : Config.t -> (unit, string list) result
+(** Every policy referenced by tokens, [default_policy], OIDC providers and mTLS
+    identities must be loaded. *)
 
 val create : ?sources:sources -> Config.t -> t
 (** Builds the state: loads TLS material and opens the audit sinks. Raises [Failure] on
@@ -93,14 +126,26 @@ val close : t -> unit
 (** {1 Reloading} *)
 
 val reload :
-  ?reason:string -> ?resolver:Config.resolver -> t -> (unit, string list) result
+  ?reason:string ->
+  ?resolver:Config.resolver ->
+  ?remote:(string * (string * Policy.t) list) list ->
+  t ->
+  (unit, string list) result
 (** Reloads every source and swaps the snapshot atomically if all of it loaded. TLS can be
-    rotated but not switched on or off without a restart. Logs and counts the outcome. *)
+    rotated but not switched on or off without a restart. [remote] (default {!t.remote})
+    replaces the bundle-source policies and is committed only on success. Logs and counts
+    the outcome. *)
 
-val reload_lwt : ?reason:string -> t -> (unit, string list) result Lwt.t
-(** {!reload} from inside the Lwt loop (file watcher, SIGHUP): secrets from providers are
-    prefetched asynchronously first, with a fresh cache, so rotated secrets are picked up.
-    Serialised with other calls. *)
+val reload_lwt :
+  ?reason:string ->
+  ?update_remote:
+    ((string * (string * Policy.t) list) list -> (string * (string * Policy.t) list) list) ->
+  t ->
+  (unit, string list) result Lwt.t
+(** {!reload} from inside the Lwt loop (file watcher, SIGHUP, bundle sources): secrets
+    from providers are prefetched asynchronously first, with a fresh cache, so rotated
+    secrets are picked up. Serialised with other calls; [update_remote] derives the new
+    [remote] from {!t.remote} as it is once the lock is held. *)
 
 val changed : t -> bool
 (** Whether a watched file changed since the last reload attempt. *)

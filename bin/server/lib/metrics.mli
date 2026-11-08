@@ -44,5 +44,17 @@ val observe_auth : meth:string -> result:string -> unit
 val observe_tls_reload : ok:bool -> unit
 (** One TLS certificate reload attempt. *)
 
+val observe_opa : outcome:string -> seconds:float -> unit
+(** One OPA check: [outcome] is ["skipped"], ["allowed"], ["denied"], ["error_allowed"] or
+    ["error_denied"]; [seconds] (time spent waiting for OPA) is recorded unless
+    ["skipped"]. *)
+
+val observe_admin : endpoint:string -> result:string -> unit
+(** One admin API request: [result] is ["ok"], ["disabled"], ["unauthenticated"] or
+    ["forbidden"]. *)
+
+val escape_label : string -> string
+(** Escapes a Prometheus label value (backslash, double quote, newline). *)
+
 val render : version:string -> pg:string -> policies_loaded:int -> string
 (** The exposition text. *)

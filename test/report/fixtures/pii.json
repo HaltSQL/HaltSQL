@@ -1,0 +1,10 @@
+{
+  "metadata": { "generated_by": "report tests" },
+  "tables": {
+    "app.orders": {
+      "columns": {
+        "shipping_address": { "classifications": ["PII", "address"], "source": "dbt" }
+      }
+    }
+  }
+}

@@ -27,6 +27,13 @@ these outbound calls:
 | OIDC discovery / JWKS | OIDC callers, cached | `server.auth.oidc` |
 | OTLP/HTTP | traces and metrics export | `telemetry.otlp` |
 
+> **Terraform.** To provision these patterns as code, use the modules in
+> [`deploy/terraform`](../deploy/terraform/) ([terraform.md](terraform.md)):
+> `haltsql-aws` runs `haltsql-server` on ECS on Fargate, and `haltsql-kubernetes` installs
+> the Helm chart on any cluster. This guide explains the architecture and the
+> settings those modules expose; the manifests in
+> [`deploy/cloud/aws/`](../deploy/cloud/aws/) are the equivalent by hand.
+
 ## Choosing a pattern
 
 | Pattern | Pick it when | Enforcement | Audit on AWS |

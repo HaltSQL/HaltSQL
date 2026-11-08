@@ -14,6 +14,8 @@ type snapshot = {
       (** [server.auth.allow_unauthenticated]; reloadable so that turning anonymous access
           off takes effect without a restart *)
   watched : string list;  (** files whose changes trigger a reload *)
+  opa : Config.opa option;  (** [opa]; reloadable *)
+  admin : Config.admin;  (** [server.admin]; reloadable *)
 }
 
 type sources = {
@@ -35,7 +37,18 @@ type t = {
   sinks : Audit.sink list;
   started : float;
   mutable draining : bool;
+  report : Admin_report.t;  (** shadow analytics window for GET /v1/admin/report *)
+  mutable remote : (string * (string * Policy.t) list) list;
+      (** policies of the last accepted bundle of each [bundle_source], by source id *)
+  mutable bundle_sources : Haltsql_bundle_source.t list;
+      (** running pollers (started by [Bundle_sources.start]) *)
+  mutable generation : int;  (** incremented by every successful reload *)
   reload_lock : Lwt_mutex.t;
+      (** serializes [reload_lwt]: a reload that waits on the secret prefetch must not
+          commit a [remote] computed before another reload committed *)
+  mutable audit_restart_pending : bool;
+      (** the last successful reload carried different audit sinks than the running ones;
+          they only take effect after a restart (the running sinks stay) *)
 }
 
 (* ---- integration hooks (set by the integrator before [Server.main]) ---- *)
@@ -53,6 +66,9 @@ let bundle_loader :
   ref None
 
 let oidc_fetch : Oidc_client.fetch option ref = ref None
+
+let stream_sink : (Config.stream_sink -> (Audit.sink, string) result) option ref =
+  ref None
 
 (* Asynchronous secret resolution for reloads, which run inside the Lwt loop
    (no nested [Lwt_main.run]): fetches every provider placeholder of [file]
@@ -105,9 +121,10 @@ let check_bundle_duplicates (cfg : Config.t) bundled =
   in
   match go [] [] bundled with [] -> Ok bundled | errs -> Error errs
 
-let load_bundles (cfg : Config.t) =
+let load_bundles ?(remote = []) (cfg : Config.t) =
+  let remote_policies = List.concat_map snd remote in
   match (cfg.policy_bundles, !bundle_loader) with
-  | [], _ -> Ok []
+  | [], _ -> check_bundle_duplicates cfg remote_policies
   | _ :: _, None ->
       Error
         [
@@ -131,7 +148,8 @@ let load_bundles (cfg : Config.t) =
                           (prefix ^ n, { p with Policy.name = prefix ^ p.name }))
                         loaded)))
         (Ok []) bundles
-      |> fun r -> Result.bind r (check_bundle_duplicates cfg)
+      |> fun r ->
+      Result.bind r (fun ps -> check_bundle_duplicates cfg (ps @ remote_policies))
 
 (* Every policy referenced by tokens, default_policy, OIDC and mTLS must be
    loaded: Config can only check this when no bundles are involved. *)
@@ -160,6 +178,26 @@ let check_policy_refs (cfg : Config.t) =
           in
           (Printf.sprintf "mtls identity %S" who, m.mtls_policy))
         cfg.mtls
+    @ List.concat_map
+        (fun (provider, (g : Config.groups_policy)) ->
+          (* Located like Config's own reference errors, so the entry to fix is
+             named even when the policy only went missing in a later bundle. *)
+          let base =
+            match
+              List.find_index
+                (fun (o : Config.oidc_provider) -> o.oidc_name = provider)
+                cfg.oidc
+            with
+            | Some i -> Printf.sprintf "server.auth.oidc[%d].policy_from_groups" i
+            | None -> "policy_from_groups"
+          in
+          let who loc = Printf.sprintf "oidc provider %S (%s.%s)" provider base loc in
+          List.mapi
+            (fun j (r : Config.group_rule) ->
+              (who (Printf.sprintf "map[%d].policy" j), r.group_policy))
+            g.group_rules
+          @ match g.group_default with Some d -> [ (who "default", d) ] | None -> [])
+        cfg.oidc_group_policies
   in
   match List.filter (fun (_, n) -> not (have n)) refs with
   | [] -> Ok ()
@@ -170,9 +208,17 @@ let check_policy_refs (cfg : Config.t) =
              Printf.sprintf "%s references policy %S, which is not loaded" who n)
            missing)
 
-(* Loads the config file (if any), bundles and the --policy files, then
-   applies flag overrides. Fails if anything fails to load. *)
-let load ?resolver (src : sources) : (Config.t, string list) result =
+(* Loads the config file (if any), bundles, the policies of the remote bundle
+   sources already fetched ([remote]) and the --policy files, then applies flag
+   overrides. Fails if anything fails to load. [load_unchecked] skips the
+   policy-reference check (used at startup to read [bundle_sources] before
+   they are fetched). *)
+let rec load ?resolver ?remote (src : sources) : (Config.t, string list) result =
+  match load_unchecked ?resolver ?remote src with
+  | Error e -> Error e
+  | Ok cfg -> ( match check_policy_refs cfg with Ok () -> Ok cfg | Error e -> Error e)
+
+and load_unchecked ?resolver ?remote (src : sources) : (Config.t, string list) result =
   let base =
     match src.config_file with
     | None -> (
@@ -194,9 +240,9 @@ let load ?resolver (src : sources) : (Config.t, string list) result =
   match base with
   | Error e -> Error e
   | Ok cfg -> (
-      match load_bundles cfg with
+      match load_bundles ?remote cfg with
       | Error e -> Error e
-      | Ok bundled -> (
+      | Ok bundled ->
           let loaded, errs =
             List.fold_left
               (fun (ok, errs) f ->
@@ -232,17 +278,17 @@ let load ?resolver (src : sources) : (Config.t, string list) result =
                   @ List.map (fun (_, _, f) -> f) loaded;
               }
             in
-            let cfg = src.overrides cfg in
-            match check_policy_refs cfg with Ok () -> Ok cfg | Error e -> Error e))
+            Ok (src.overrides cfg))
 
 let tls_files (cfg : Config.t) =
   match cfg.tls with Some t -> Tls_setup.files t | None -> []
 
 let snapshot_of_config ?config_file ?previous (cfg : Config.t) =
+  let group_policies = cfg.oidc_group_policies in
   let oidc =
     match previous with
-    | Some (p : snapshot) -> Oidc_client.update p.oidc cfg.oidc
-    | None -> Oidc_client.registry ?fetch:!oidc_fetch cfg.oidc
+    | Some (p : snapshot) -> Oidc_client.update ~group_policies p.oidc cfg.oidc
+    | None -> Oidc_client.registry ?fetch:!oidc_fetch ~group_policies cfg.oidc
   in
   {
     policies = cfg.policies;
@@ -253,6 +299,8 @@ let snapshot_of_config ?config_file ?previous (cfg : Config.t) =
     allow_unauthenticated = cfg.allow_unauthenticated;
     watched =
       Option.to_list (Option.map abs config_file) @ cfg.policy_files @ tls_files cfg;
+    opa = cfg.opa;
+    admin = cfg.admin;
   }
 
 let signature path =
@@ -280,11 +328,33 @@ let open_sink (s : Config.sink) =
           | Ok sink -> sink
           | Error e -> failwith (Printf.sprintf "audit sink %s: %s" kind e)))
 
-(* Opens every sink; on failure closes the ones already opened. *)
+let open_stream_sink (s : Config.stream_sink) =
+  let kind =
+    match s.stream with
+    | Config.Stream_elasticsearch _ -> "elasticsearch"
+    | Config.Stream_kafka _ -> "kafka"
+  in
+  match !stream_sink with
+  | None ->
+      failwith
+        (Printf.sprintf
+           "audit sink type %s (audit.sinks[%d]) is configured, but this build of \
+            haltsql-server does not support it"
+           kind s.sink_index)
+  | Some make -> (
+      match make s with
+      | Ok sink -> sink
+      | Error e ->
+          failwith
+            (Printf.sprintf "audit sink %s (audit.sinks[%d]): %s" kind s.sink_index e))
+
+(* Opens every sink (stdout/file/s3/gcs, then elasticsearch/kafka); on failure
+   closes the ones already opened. *)
 let open_sinks (cfg : Config.t) =
   let opened = ref [] in
   try
     List.iter (fun s -> opened := open_sink s :: !opened) cfg.sinks;
+    List.iter (fun s -> opened := open_stream_sink s :: !opened) cfg.stream_sinks;
     List.rev !opened
   with e ->
     List.iter Audit.close !opened;
@@ -308,17 +378,28 @@ let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.
     sinks = open_sinks cfg;
     started = Unix.gettimeofday ();
     draining = false;
+    report = Admin_report.create cfg.admin;
+    remote = [];
+    bundle_sources = [];
+    generation = 1;
     reload_lock = Lwt_mutex.create ();
+    audit_restart_pending = false;
   }
 
 let close t = List.iter Audit.close t.sinks
 
+(* Audit sinks (stdout/file/s3/gcs and elasticsearch/kafka) are opened once at
+   startup: two sinks on one file, prefix or topic would fork the hash chain. *)
+let audit_sinks_differ (running : Config.t) (cfg : Config.t) =
+  running.sinks <> cfg.sinks || running.stream_sinks <> cfg.stream_sinks
+
 (* Reloads every source (policies, auth settings, TLS material). Swaps
    atomically only if everything loaded. TLS cannot be switched on or off
    without a restart. *)
-let reload ?(reason = "manual") ?resolver t =
+let reload ?(reason = "manual") ?resolver ?remote t =
+  let candidate_remote = Option.value remote ~default:t.remote in
   let result =
-    match load ?resolver t.sources with
+    match load ?resolver ~remote:candidate_remote t.sources with
     | Error e -> Error e
     | Ok cfg -> (
         match (t.tls, cfg.tls) with
@@ -345,6 +426,20 @@ let reload ?(reason = "manual") ?resolver t =
   match result with
   | Ok (cfg, tls) ->
       t.snap <- snapshot_of_config ?config_file:t.sources.config_file ~previous:t.snap cfg;
+      t.remote <- candidate_remote;
+      t.generation <- t.generation + 1;
+      t.audit_restart_pending <- audit_sinks_differ t.cfg cfg;
+      (* Never silently ignore a changed audit.sinks: records keep going to the
+         running sinks, and the operator is told the new ones are not in use. *)
+      if t.audit_restart_pending then
+        Log.warn "audit sink changes need a restart; keeping the current audit sinks"
+          ~fields:
+            [
+              ("reason", `String reason);
+              ( "running_audit_sinks",
+                `List (List.map (fun (s : Audit.sink) -> `String s.name) t.sinks) );
+            ];
+      Admin_report.reconfigure t.report cfg.admin;
       (match tls with Some _ -> t.tls <- tls | None -> ());
       t.signatures <- signatures t.snap.watched;
       Metrics.observe_reload ~ok:true;
@@ -375,22 +470,28 @@ let reload ?(reason = "manual") ?resolver t =
           ];
       Error errs
 
-(* Reload from inside the Lwt loop (file watcher, SIGHUP): secrets from
-   providers are prefetched asynchronously first, with a fresh cache, so
-   rotated secrets are picked up. *)
-let reload_lwt ?reason t =
-  (* Serialised: a SIGHUP and a file-change reload must not interleave, or a
-     slower reload holding older prefetched secrets could finish last and
-     replace a newer snapshot. *)
+(* Reload from inside the Lwt loop (file watcher, SIGHUP, bundle sources):
+   secrets from providers are prefetched asynchronously first, with a fresh
+   cache, so rotated secrets are picked up.
+
+   Reloads are serialized by [t.reload_lock], held across the prefetch and the
+   commit. [update_remote] derives the new [remote] from [t.remote] as it is
+   once the lock is held, so two bundle sources updating while a prefetch is
+   pending never overwrite each other's policies with older ones. *)
+let reload_lwt ?reason ?update_remote t =
   Lwt_mutex.with_lock t.reload_lock (fun () ->
+      let run ?resolver () =
+        let remote = Option.map (fun f -> f t.remote) update_remote in
+        reload ?reason ?resolver ?remote t
+      in
       match (t.sources.config_file, !secret_prefetch) with
       | Some f, Some prefetch -> (
           match Config.secrets_of_file f with
-          | Error _ -> Lwt.return (reload ?reason t) (* reports the located errors *)
+          | Error _ -> Lwt.return (run ()) (* reports the located errors *)
           | Ok secrets ->
               Lwt.bind (prefetch ~file:f secrets) (fun resolver ->
-                  Lwt.return (reload ?reason ~resolver t)))
-      | _ -> Lwt.return (reload ?reason t))
+                  Lwt.return (run ~resolver ())))
+      | _ -> Lwt.return (run ()))
 
 let changed t = List.exists (fun (f, sg) -> signature f <> sg) t.signatures
 let snapshot_find_policy (snap : snapshot) name = List.assoc_opt name snap.policies

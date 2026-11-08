@@ -259,7 +259,7 @@ git commit -s -m "Describe the change"
 
 This adds a `Signed-off-by: Your Name <you@example.com>` line, which certifies
 that you wrote the change or otherwise have the right to submit it under the
-Apache-2.0 license. To sign off commits you already made:
+MIT license. To sign off commits you already made:
 `git rebase --signoff main`.
 
 ## Commit and pull request style

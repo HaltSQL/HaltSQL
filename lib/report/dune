@@ -1,0 +1,10 @@
+; haltsql.report: shadow-mode analytics over audit records (haltsql-server sinks and
+; haltsql-proxy) and conservative policy suggestions. Pure: no network, no analyzer
+; dependency (callers that want table probing pass Haltsql.verify in).
+
+(library
+ (name haltsql_report)
+ (public_name haltsql.report)
+ (libraries haltsql.core haltsql.load yojson)
+ (instrumentation
+  (backend bisect_ppx)))

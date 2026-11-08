@@ -235,6 +235,161 @@ type bundle_ref = {
       (** prepended to the names of the policies loaded from this bundle *)
 }
 
+(** {1 audit.sinks: streaming sinks (elasticsearch, kafka)}
+
+    These are listed in the same [audit.sinks] list as the stdout/file/s3/gcs sinks but
+    are decoded into {!t.stream_sinks}, so existing consumers of {!t.sinks} are
+    unaffected. *)
+
+type stream_on_error =
+  | Stream_fail_closed  (** refuse requests when the sink cannot be written (default) *)
+  | Stream_buffer  (** keep up to [max_buffer_records] in memory and retry *)
+  | Stream_drop
+      (** drop records the sink cannot take (counted, logged); not fail closed *)
+
+type stream_batch = {
+  batch_max_records : int;  (** default 500, 1..100000 *)
+  batch_max_bytes : int;  (** default 5 MiB, 1024..100 MiB *)
+  flush_interval_ms : int;  (** default 1000, 10..60000 *)
+}
+
+type es_auth =
+  | Es_api_key of string
+      (** secret: the encoded API key sent as [Authorization: ApiKey <value>] *)
+  | Es_basic of { username : string; password : string  (** secret *) }
+
+type es_target = Es_index of string | Es_data_stream of string
+
+type es_sink = {
+  es_urls : string list;
+      (** non-empty, unique; https, or http for loopback hosts only; no query *)
+  es_target : es_target;
+  es_auth : es_auth option;
+  es_pipeline : string option;  (** ingest pipeline name *)
+  es_ca : pem option;  (** [tls.ca_file]; only with an https URL *)
+  es_timeout_ms : int;  (** default 10000, 100..120000 *)
+  es_batch : stream_batch;
+}
+
+type kafka_acks = Acks_all  (** default *) | Acks_leader  (** [acks: 1] *)
+type sasl_mechanism = Sasl_plain | Sasl_scram_sha_256 | Sasl_scram_sha_512
+
+type kafka_tls = {
+  kafka_ca : pem option;
+  kafka_cert : pem option;  (** client certificate; set together with [kafka_key] *)
+  kafka_key : pem option;  (** redacted *)
+}
+
+type kafka_sasl = {
+  sasl_mechanism : sasl_mechanism;
+  sasl_username : string;
+  sasl_password : string;  (** secret *)
+}
+
+type kafka_sink = {
+  kafka_brokers : string list;  (** non-empty, unique [host:port] *)
+  kafka_topic : string;
+  kafka_client_id : string;  (** default ["haltsql"] *)
+  kafka_acks : kafka_acks;
+  kafka_tls : kafka_tls option;  (** [Some] when TLS is enabled *)
+  kafka_sasl : kafka_sasl option;
+      (** PLAIN without TLS is only accepted when every broker is a loopback address *)
+  kafka_batch : stream_batch;
+}
+
+type stream_sink_kind = Stream_elasticsearch of es_sink | Stream_kafka of kafka_sink
+
+type stream_sink = {
+  stream : stream_sink_kind;
+  stream_on_error : stream_on_error;
+  max_buffer_records : int;
+      (** default [max 10000 batch_max_records], 1..1000000, >= batch max_records. Only
+          settable with [on_error: buffer]. *)
+  sink_index : int;  (** position in [audit.sinks], for messages *)
+}
+
+(** {1 policies: remote bundle sources} *)
+
+type oci_source = {
+  oci_reference : string;  (** as written, e.g. [ghcr.io/corp/policies:prod] *)
+  oci_registry : string;  (** [host[:port]] *)
+  oci_repository : string;
+  oci_tag : string option;
+  oci_digest : string option;  (** [sha256:<hex>] or [sha512:<hex>] *)
+  oci_plain_http : bool;  (** default false; only for loopback registries *)
+}
+
+type s3_source = {
+  src_bucket : string;
+  src_key : string;
+  src_region : string;
+  src_endpoint : string option;  (** S3-compatible endpoint (MinIO) *)
+  src_credentials : s3_credentials;  (** default [S3_env] *)
+}
+
+type bundle_location =
+  | Source_oci of oci_source
+  | Source_s3 of s3_source
+  | Source_https of string  (** https URL (http for loopback only), no query *)
+
+type source_auth =
+  | Source_basic of { username : string; password : string  (** secret *) }
+  | Source_token of string  (** secret bearer token *)
+
+type bundle_source = {
+  location : bundle_location;
+  source_public_keys : public_key list;
+      (** non-empty: signature verification is mandatory *)
+  source_name_prefix : string option;
+  poll_interval_s : int;  (** default 60, 10..86400 *)
+  cache_dir : string option;  (** absolute *)
+  source_auth : source_auth option;  (** oci and https only *)
+}
+
+(** {1 server.auth.oidc[].policy_from_groups} *)
+
+type group_rule = { group : string; group_policy : string }
+
+type groups_policy = {
+  groups_claim : string;
+      (** default ["groups"]; looked up like [context_claims] paths (exact claim name,
+          then dot path) *)
+  group_rules : group_rule list;  (** non-empty, ordered, unique groups *)
+  group_default : string option;  (** policy when no rule matches; [None]: reject *)
+}
+
+(** {1 opa} *)
+
+type opa_on_error =
+  | Opa_deny  (** default: an OPA failure denies the query *)
+  | Opa_allow_haltsql_verdict  (** an OPA failure keeps HaltSQL's verdict *)
+
+type opa = {
+  opa_url : string;  (** base URL, https or loopback http, no query *)
+  decision_path : string;  (** below [/v1/data], e.g. [haltsql/allow] *)
+  opa_timeout_ms : int;  (** default 500, 10..5000 *)
+  opa_on_error : opa_on_error;
+  opa_headers : (string * string) list;  (** resolved values; secret, redacted *)
+  opa_ca : pem option;  (** [tls.ca_file]; only with an https url *)
+}
+
+(** {1 server.admin} *)
+
+type admin_caller =
+  | Admin_token of string  (** [token:<name>]: a [server.auth.tokens] name *)
+  | Admin_oidc of string  (** [oidc:<provider>]: any token verified by that provider *)
+  | Admin_mtls of mtls_match
+      (** [mtls:<spiffe-id>] or [mtls:<CN>]: a configured mTLS identity *)
+
+type admin = {
+  admin_enabled : bool;  (** default false *)
+  admin_callers : admin_caller list;  (** non-empty when enabled; each must exist *)
+  report_window_seconds : int;  (** [report_window], default 24h, 1m..30d *)
+  max_tracked_queries : int;  (** default 10000, 1..1000000 *)
+}
+
+val default_admin : admin
+
 (** {1 The configuration} *)
 
 type t = {
@@ -259,17 +414,42 @@ type t = {
   oidc : oidc_provider list;
   mtls : mtls_identity list;  (** [server.auth.mtls.identities] *)
   otlp : otlp option;  (** from [telemetry.otlp] or legacy [telemetry.otlp_endpoint] *)
-  sinks : sink list;  (** every audit sink; default [[{Sink_stdout; Fail_closed}]] *)
+  sinks : sink list;
+      (** the stdout, file, s3 and gcs audit sinks; default [[{Sink_stdout; Fail_closed}]]
+          when [audit.sinks] is absent. Streaming sinks are in [stream_sinks]. *)
   secrets : secrets;
   policy_bundles : bundle_ref list;
       (** Bundle references, parsed but neither loaded nor verified. When this is
           non-empty, policy names referenced by tokens, OIDC, mTLS and [default_policy]
           that are not among the plain policies are accepted at load time (restricted to
           the bundles' [name_prefix]es when every bundle has one); the server must
-          re-validate them after loading the bundles. *)
+          re-validate them after loading the bundles. The same applies to
+          [bundle_sources]. *)
+  stream_sinks : stream_sink list;
+      (** elasticsearch and kafka entries of [audit.sinks] (they are not in [sinks]) *)
+  bundle_sources : bundle_source list;
+      (** remote signed bundles, neither fetched nor verified *)
+  oidc_group_policies : (string * groups_policy) list;
+      (** OIDC provider name -> [policy_from_groups]. For such a provider [oidc_policy] is
+          the fail-closed placeholder [Oidc_from_claim { claim; allowed = [] }], which
+          accepts no token, so a consumer that does not look here rejects every token of
+          that provider. Use {!groups_policy_of}. *)
+  opa : opa option;
+  admin : admin;  (** [server.admin]; default {!default_admin} (disabled) *)
 }
 
 val default : t
+
+val groups_policy_of : t -> oidc_provider -> groups_policy option
+(** The provider's [policy_from_groups], if it has one. *)
+
+val groups_of_claim : Yojson.Safe.t -> string list option
+(** The groups in a claim value: a string is one group (never split on spaces), an array
+    must contain only strings. Anything else is [None] (malformed; reject the token). *)
+
+val select_group_policy : groups_policy -> string list -> string option
+(** The policy of the first rule (in config order) whose group is in [groups], else
+    [group_default]. [None]: no policy, reject the token. *)
 
 type resolver = scheme:string -> reference:string -> (string, string) result
 (** Resolves a [vault] / [aws-sm] / [gcp-sm] placeholder; see the module doc. *)
@@ -303,4 +483,6 @@ val secrets_of_file :
 val to_json_redacted : t -> Yojson.Safe.t
 (** Effective config for [haltsql config show]; secrets replaced by ["<redacted>"]: token
     hashes, the TLS key, OTLP header values, static S3 credentials, Vault tokens, role ids
-    and secret ids. *)
+    and secret ids, Elasticsearch API keys and passwords, the Kafka SASL password and TLS
+    key, bundle source passwords/tokens (and static S3 credentials) and OPA header values.
+    Stream sinks are listed after the other sinks in [audit.sinks]. *)

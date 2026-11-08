@@ -39,6 +39,13 @@ belong to the agent, the CSI driver or Container Apps platform (to read Key
 Vault), and the log shipper (to write Blob). Keep the `haltsql` container out
 of every identity binding.
 
+> **Terraform.** To provision these patterns as code, use the modules in
+> [`deploy/terraform`](../deploy/terraform/) ([terraform.md](terraform.md)):
+> `haltsql-azure` runs `haltsql-server` on Container Apps, and `haltsql-kubernetes` installs
+> the Helm chart on any cluster. This guide explains the architecture and the
+> settings those modules expose; the manifests in
+> [`deploy/cloud/azure/`](../deploy/cloud/azure/) are the equivalent by hand.
+
 ## Choosing a pattern
 
 ```mermaid

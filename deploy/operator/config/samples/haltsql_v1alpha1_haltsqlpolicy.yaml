@@ -1,0 +1,47 @@
+apiVersion: haltsql.dev/v1alpha1
+kind: HaltSQLPolicy
+metadata:
+  name: analytics
+spec:
+  policy: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata:
+      name: analytics-agent
+    dialect: postgres
+    search_path: [app]
+    statements:
+      allow: [select]
+    require_limit:
+      max: 1000
+    tenancy:
+      mode: bound
+      keys:
+        tenant: ${ctx.tenant_id}
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_columns:
+          tenant_id: tenant
+    functions:
+      presets: [aggregates, datetime]
+---
+# A signed bundle that haltsql-server pulls from a registry and polls.
+apiVersion: haltsql.dev/v1alpha1
+kind: HaltSQLPolicy
+metadata:
+  name: prod-bundle
+spec:
+  bundleSource:
+    oci:
+      ref: ghcr.io/corp/haltsql-policies:prod
+      auth:
+        type: basic
+        secretName: registry-credentials     # keys: username, password
+    publicKeys:                              # replace with your release key
+      - |
+        -----BEGIN PUBLIC KEY-----
+        MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=
+        -----END PUBLIC KEY-----
+    namePrefix: prod.
+    pollIntervalSeconds: 60

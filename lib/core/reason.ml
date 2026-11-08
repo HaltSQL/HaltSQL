@@ -32,6 +32,9 @@ type code =
   | E_WRITE_DENIED  (** write to a table or column the policy does not allow *)
   | E_UNSUPPORTED  (** syntax HaltSQL does not analyze; always denied *)
   | E_INTERNAL  (** analyzer bug; fails closed *)
+  | E_EXTERNAL_POLICY
+      (** an external policy engine (OPA, [opa] in the server config) denied a query
+          HaltSQL allowed, or could not be asked and [on_error] is [deny] *)
 
 (** Every code, in documentation order. *)
 let all_codes =
@@ -61,6 +64,7 @@ let all_codes =
     E_WRITE_DENIED;
     E_UNSUPPORTED;
     E_INTERNAL;
+    E_EXTERNAL_POLICY;
   ]
 
 (** The stable string form, identical to the constructor name (e.g. ["E_PARSE"]). *)
@@ -90,6 +94,7 @@ let code_to_string = function
   | E_WRITE_DENIED -> "E_WRITE_DENIED"
   | E_UNSUPPORTED -> "E_UNSUPPORTED"
   | E_INTERNAL -> "E_INTERNAL"
+  | E_EXTERNAL_POLICY -> "E_EXTERNAL_POLICY"
 
 (** Inverse of {!code_to_string}. *)
 let code_of_string s =

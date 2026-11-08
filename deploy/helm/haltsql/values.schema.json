@@ -164,7 +164,12 @@
           }
         },
         "extraConfig": {
-          "type": "object"
+          "type": "object",
+          "not": {
+            "required": [
+              "policies"
+            ]
+          }
         }
       }
     },
@@ -261,6 +266,41 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Za-z0-9._-]+$"
+      }
+    },
+    "extraPolicies": {
+      "description": "Config policies[] entries appended to the rendered policies (path, inline, bundle or bundle_source).",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "extraConfig": {
+      "description": "Config keys deep-merged into the rendered Config document after server.extraConfig. `policies` is refused: use extraPolicies.",
+      "type": "object",
+      "not": {
+        "required": [
+          "policies"
+        ]
+      }
+    },
+    "cache": {
+      "description": "Writable volume for bundle-source caches.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mountPath",
+        "volume"
+      ],
+      "properties": {
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "volume": {
+          "type": "object",
+          "minProperties": 1
+        }
       }
     },
     "extraArgs": {
@@ -675,42 +715,53 @@
           }
         },
         "egress": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "allowHTTPS": {
-              "oneOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "string",
-                  "enum": [
-                    "auto"
+          "description": "Either toggles (allowHTTPS/allowDNS/extraRules) or a list of NetworkPolicyEgressRule objects rendered verbatim.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowHTTPS": {
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "auto"
+                      ]
+                    }
                   ]
-                }
-              ]
-            },
-            "allowDNS": {
-              "oneOf": [
-                {
-                  "type": "boolean"
                 },
-                {
-                  "type": "string",
-                  "enum": [
-                    "auto"
+                "allowDNS": {
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "auto"
+                      ]
+                    }
                   ]
+                },
+                "extraRules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
                 }
-              ]
+              }
             },
-            "extraRules": {
+            {
               "type": "array",
               "items": {
                 "type": "object"
               }
             }
-          }
+          ]
         }
       }
     },

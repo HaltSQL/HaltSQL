@@ -8,6 +8,22 @@ type ctx = Cohttp_lwt_unix.Net.ctx option
 
 let default_ctx = None
 
+let ctx_of_certs certs =
+  let tls_authenticator =
+    X509.Authenticator.chain_of_trust ~time:(fun () -> Some (Ptime_clock.now ())) certs
+  in
+  Lwt.catch
+    (fun () ->
+      Conduit_lwt_unix.init ~tls_authenticator () >|= fun ctx ->
+      Ok (Some (Cohttp_lwt_unix.Net.init ~ctx ())))
+    (fun e -> Lwt.return (Error ("TLS setup failed: " ^ Printexc.to_string e)))
+
+let ctx_of_ca_pem pem =
+  match X509.Certificate.decode_pem_multiple pem with
+  | Error (`Msg m) -> Lwt.return (Error ("invalid CA PEM: " ^ m))
+  | Ok [] -> Lwt.return (Error "CA PEM contains no certificate")
+  | Ok certs -> ctx_of_certs certs
+
 let ctx_of_ca_file path =
   match In_channel.with_open_bin path In_channel.input_all with
   | exception Sys_error m -> Lwt.return (Error ("cannot read CA file: " ^ m))
@@ -15,17 +31,7 @@ let ctx_of_ca_file path =
       match X509.Certificate.decode_pem_multiple pem with
       | Error (`Msg m) -> Lwt.return (Error ("invalid CA file " ^ path ^ ": " ^ m))
       | Ok [] -> Lwt.return (Error ("CA file " ^ path ^ " contains no certificate"))
-      | Ok certs ->
-          let tls_authenticator =
-            X509.Authenticator.chain_of_trust
-              ~time:(fun () -> Some (Ptime_clock.now ()))
-              certs
-          in
-          Lwt.catch
-            (fun () ->
-              Conduit_lwt_unix.init ~tls_authenticator () >|= fun ctx ->
-              Ok (Some (Cohttp_lwt_unix.Net.init ~ctx ())))
-            (fun e -> Lwt.return (Error ("TLS setup failed: " ^ Printexc.to_string e))))
+      | Ok certs -> ctx_of_certs certs)
 
 let header r name =
   let name = String.lowercase_ascii name in
@@ -58,19 +64,27 @@ let host_header u =
   | Some 80, Some "http" | Some 443, Some "https" | None, _ -> h
   | Some p, _ -> Printf.sprintf "%s:%d" h p
 
-let loopback_host h =
-  h = "localhost" || h = "::1" || h = "[::1]"
-  || (String.length h > 4 && String.sub h 0 4 = "127.")
+let loopback_host = Haltsql_core.Loopback.is_host
+
+(* ocaml-uri stops the host at the longest IP-address prefix: "http://127.0.0.1.nip.io/"
+   parses as host 127.0.0.1 with path ".nip.io/". With an authority the path must be
+   empty or start with '/'; anything else is refused (fail closed). *)
+let authority_well_formed u =
+  let p = Uri.path u in
+  p = "" || p.[0] = '/'
 
 let is_loopback_http s =
   let u = Uri.of_string s in
   Uri.scheme u = Some "http"
+  && authority_well_formed u
   && match Uri.host u with Some h -> loopback_host h | None -> false
 
 let check_endpoint ~what s =
   let u = Uri.of_string s in
   match (Uri.scheme u, Uri.host u) with
   | _, (None | Some "") -> Error (Printf.sprintf "%s: %S is not an absolute URL" what s)
+  | _ when not (authority_well_formed u) ->
+      Error (Printf.sprintf "%s: %S has a malformed host" what s)
   | (Some "https", _ | Some "http", _)
     when Uri.scheme u = Some "https" || is_loopback_http s ->
       if Uri.userinfo u <> None then Error (what ^ ": URL must not contain credentials")

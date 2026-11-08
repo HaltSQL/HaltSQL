@@ -1,3 +1,11 @@
 ; Python framework integrations (not OCaml): not scanned by dune.
 
-(data_only_dirs langchain llamaindex vanna)
+(data_only_dirs
+ crewai
+ google_adk
+ langchain
+ langgraph
+ llamaindex
+ openai_agents
+ semantic_kernel
+ vanna)

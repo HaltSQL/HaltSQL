@@ -20,17 +20,30 @@ let tls_config (u : upstream) =
           u.tls_ca
     | Tls_require | Tls_disable -> fun ?ip:_ ~host:_ _ -> Ok None
   in
-  let ip, peer_name =
+  let peer =
     match Ipaddr.of_string u.host with
-    | Ok ip -> (Some ip, None)
+    | Ok ip -> Ok (Some ip, None)
     | Error _ -> (
         match Result.bind (Domain_name.of_string u.host) Domain_name.host with
-        | Ok h -> (None, Some h)
-        | Error _ -> (None, None))
+        | Ok h -> Ok (None, Some h)
+        | Error _ -> (
+            match u.tls_mode with
+            | Tls_verify_full ->
+                (* without a name or an IP the authenticator checks the chain only:
+                   fail closed *)
+                Error
+                  (Printf.sprintf
+                     "upstream host %s cannot be verified (neither an IP address nor a \
+                      valid DNS host name); tls.mode verify-full needs one"
+                     u.host)
+            | Tls_require | Tls_disable -> Ok (None, None)))
   in
-  match Tls.Config.client ~authenticator ?peer_name ?ip () with
-  | Ok c -> Ok (c, peer_name)
-  | Error (`Msg m) -> Error m
+  match peer with
+  | Error m -> Error m
+  | Ok (ip, peer_name) -> (
+      match Tls.Config.client ~authenticator ?peer_name ?ip () with
+      | Ok c -> Ok (c, peer_name)
+      | Error (`Msg m) -> Error m)
 
 let tcp_connect (u : upstream) =
   let* addrs =

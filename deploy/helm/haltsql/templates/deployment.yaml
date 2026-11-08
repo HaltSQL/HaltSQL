@@ -134,6 +134,8 @@ spec:
               mountPath: /var/log/haltsql
             - name: tmp
               mountPath: /tmp
+            - name: cache
+              mountPath: {{ required "cache.mountPath is required" .Values.cache.mountPath | quote }}
             {{- if .Values.tls.enabled }}
             - name: tls
               mountPath: /etc/haltsql/tls
@@ -162,6 +164,17 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        - name: cache
+          {{- if not (and (kindIs "map" .Values.cache.volume) .Values.cache.volume) }}
+          {{- fail "cache.volume must be a pod volume source (e.g. {emptyDir: {}} or {persistentVolumeClaim: {claimName: ...}})" }}
+          {{- end }}
+          {{- if ne (len .Values.cache.volume) 1 }}
+          {{- fail "cache.volume must have exactly one volume source; when replacing the default, set emptyDir: null (e.g. {emptyDir: null, persistentVolumeClaim: {claimName: ...}})" }}
+          {{- end }}
+          {{- if hasKey .Values.cache.volume "name" }}
+          {{- fail "cache.volume must not set name (the chart names it \"cache\")" }}
+          {{- end }}
+          {{- toYaml .Values.cache.volume | nindent 10 }}
         {{- if .Values.tls.enabled }}
         - name: tls
           secret:

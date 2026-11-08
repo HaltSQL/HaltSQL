@@ -1,0 +1,380 @@
+# Amazon Redshift compatibility (docs/compatibility.md, section "Amazon Redshift").
+# HaltSQL parses with the PostgreSQL 17 grammar (libpg_query). Redshift is NOT
+# PostgreSQL 17: it forked from PostgreSQL 8.0.2 and added its own syntax,
+# functions, SUPER/PartiQL navigation and a different RLS model. This suite
+# pins what that means; it is NOT a claim of Redshift support.
+#  - deny (tag redshift_only): Redshift-only SQL fails closed. Grammar the PG17
+#    parser lacks is E_PARSE; PostgreSQL syntax the analyzer does not model is
+#    E_UNSUPPORTED; Redshift-only functions and pseudo-columns are unknown to
+#    the policy (E_FUNCTION_DENIED, E_COLUMN_UNRESOLVED, E_COLUMN_DENIED);
+#    SUPER navigation and system tables do not resolve (E_COLUMN_UNRESOLVED,
+#    E_TABLE_DENIED).
+#  - allow (tag portable): common analytics SQL that is valid on both
+#    PostgreSQL 17 and Redshift is verified exactly as on PostgreSQL (tenant
+#    proof and bind_params).
+# Policy: saas.yaml (bound tenancy, require_limit 1000). No case was run on a
+# Redshift cluster.
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata:
+  name: compat-redshift
+  description: Redshift-only SQL fails closed; analytics SQL valid on both PostgreSQL 17 and Redshift is handled
+policy: ../fixtures/policies/saas.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: 'both: order by limit (top-n the portable way)'
+    sql: SELECT id, total_cents FROM orders WHERE tenant_id = $1 ORDER BY total_cents DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: count distinct'
+    sql: SELECT count(DISTINCT customer_id) AS buyers FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: revenue by month with date_trunc'
+    sql: SELECT date_trunc('month', created_at) AS month, sum(total_cents) AS revenue FROM orders WHERE tenant_id = $1 GROUP BY 1 ORDER BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: trailing 30 days with interval'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at >= current_date - interval '30 days' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: date_part with a quoted field'
+    sql: SELECT date_part('year', created_at) AS y, count(*) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: extract epoch'
+    sql: SELECT EXTRACT(epoch FROM created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: to_char month label'
+    sql: SELECT to_char(created_at, 'YYYY-MM') AS ym, count(*) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: median via percentile_cont'
+    sql: SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: group by having order by ordinal'
+    sql: SELECT status, count(*), sum(total_cents) FROM orders WHERE tenant_id = $1 GROUP BY status HAVING count(*) > 1 ORDER BY 2 DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: inner join with tenant filter on both sides'
+    sql: SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = $1 WHERE o.tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: left join with tenant filter in on'
+    sql: SELECT c.id, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id AND o.tenant_id = $1 WHERE c.tenant_id = $1 GROUP BY c.id LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: cte top customers'
+    sql: WITH m AS (SELECT customer_id, sum(total_cents) AS s FROM orders WHERE tenant_id = $1 GROUP BY customer_id) SELECT customer_id, s FROM m ORDER BY s DESC LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: in subquery'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND id IN (SELECT order_id FROM invoices WHERE tenant_id = $1) LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: correlated exists'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND EXISTS (SELECT 1 FROM invoices i WHERE i.order_id = orders.id AND i.tenant_id = $1) LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: union all of two tenant tables'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 UNION ALL SELECT id FROM invoices WHERE tenant_id = $1 LIMIT 100
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: except'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 EXCEPT SELECT order_id FROM invoices WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: lag window'
+    sql: SELECT id, lag(total_cents) OVER (ORDER BY created_at) AS prev FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: running total with explicit frame'
+    sql: SELECT id, sum(total_cents) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: dense_rank per partition'
+    sql: SELECT id, dense_rank() OVER (PARTITION BY status ORDER BY total_cents DESC) AS r FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: decimal cast and arithmetic'
+    sql: SELECT id, total_cents::decimal(12,2) / 100 AS amount FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: case bucket'
+    sql: SELECT CASE WHEN total_cents > 1000 THEN 'big' ELSE 'small' END AS bucket, count(*) FROM orders WHERE tenant_id = $1 GROUP BY 1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: ilike and in list'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status ILIKE 'p%' AND currency IN ('USD', 'EUR') LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: coalesce nullif upper split_part'
+    sql: SELECT coalesce(nullif(status, ''), 'none'), upper(currency), split_part(status, '_', 1) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: json_extract_path_text'
+    sql: SELECT json_extract_path_text(metadata, 'segment') FROM customers WHERE tenant_id = $1 LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: distinct with nulls first'
+    sql: SELECT DISTINCT status FROM orders WHERE tenant_id = $1 ORDER BY status NULLS FIRST LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'both: limit offset'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 10 OFFSET 20
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [compat_redshift, portable]
+  - name: 'redshift-only: TOP n'
+    sql: SELECT TOP 10 id, status FROM orders WHERE tenant_id = $1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: QUALIFY on a window alias'
+    sql: SELECT id, row_number() OVER (PARTITION BY status ORDER BY created_at) AS rn FROM orders WHERE tenant_id = $1 QUALIFY rn = 1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: QUALIFY with a window expression'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 QUALIFY row_number() OVER (ORDER BY id) = 1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: MINUS set operator'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 MINUS SELECT order_id FROM invoices WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: APPROXIMATE COUNT DISTINCT'
+    sql: SELECT APPROXIMATE count(DISTINCT customer_id) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: PIVOT'
+    sql: SELECT * FROM (SELECT status, total_cents FROM orders WHERE tenant_id = $1) PIVOT (sum(total_cents) FOR status IN ('paid', 'open')) LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: UNPIVOT'
+    sql: SELECT * FROM (SELECT status, total_cents FROM orders WHERE tenant_id = $1) UNPIVOT (v FOR k IN (total_cents)) LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: GROUP BY ALL'
+    sql: SELECT status, count(*) FROM orders WHERE tenant_id = $1 GROUP BY ALL LIMIT 10
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, syntax]
+  - name: 'redshift-only: CREATE TABLE with DISTKEY and SORTKEY'
+    sql: CREATE TABLE t (id int) DISTKEY(id) SORTKEY(id)
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, ddl]
+  - name: 'redshift-only: CREATE TABLE with DISTSTYLE'
+    sql: CREATE TABLE t (id int) DISTSTYLE EVEN
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, ddl]
+  - name: 'redshift-only: IDENTITY column and ENCODE compression'
+    sql: CREATE TABLE t (id bigint IDENTITY(1,1), v varchar(10) ENCODE zstd)
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, ddl]
+  - name: 'redshift-only: CREATE RLS POLICY (Redshift RLS)'
+    sql: CREATE RLS POLICY p WITH (tenant_id varchar(32)) USING (tenant_id = current_user)
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, rls]
+  - name: 'redshift-only: ATTACH RLS POLICY'
+    sql: ATTACH RLS POLICY p ON orders TO ROLE analyst
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, rls]
+  - name: 'redshift-only: late-binding view'
+    sql: CREATE VIEW v AS SELECT id FROM orders WITH NO SCHEMA BINDING
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, ddl]
+  - name: 'redshift-only: UNLOAD to S3'
+    sql: UNLOAD ('SELECT * FROM orders') TO 's3://bucket/prefix' IAM_ROLE 'arn:aws:iam::123456789012:role/r'
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, exfiltration]
+  - name: 'redshift-only: COPY from S3 with IAM_ROLE'
+    sql: COPY orders FROM 's3://bucket/prefix' IAM_ROLE 'arn:aws:iam::123456789012:role/r'
+    expect: deny
+    codes: [E_PARSE]
+    tags: [compat_redshift, redshift_only, exfiltration]
+  - name: 'redshift-only: GROUP BY ROLLUP'
+    sql: SELECT status, currency, count(*) FROM orders WHERE tenant_id = $1 GROUP BY ROLLUP (status, currency) LIMIT 100
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [compat_redshift, redshift_only, grouping]
+  - name: 'redshift-only: GROUP BY CUBE'
+    sql: SELECT status, currency, count(*) FROM orders WHERE tenant_id = $1 GROUP BY CUBE (status, currency) LIMIT 100
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [compat_redshift, redshift_only, grouping]
+  - name: 'redshift-only: GROUPING SETS'
+    sql: SELECT status, count(*) FROM orders WHERE tenant_id = $1 GROUP BY GROUPING SETS ((status), ()) LIMIT 100
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [compat_redshift, redshift_only, grouping]
+  - name: 'redshift-only: three-part database.schema.table name'
+    sql: SELECT id FROM dev.app.orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_UNSUPPORTED]
+    tags: [compat_redshift, redshift_only, names]
+  - name: 'redshift-only: GETDATE'
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at < getdate() LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: SYSDATE pseudo-column'
+    sql: SELECT sysdate LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_UNRESOLVED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: NVL'
+    sql: SELECT nvl(status, 'none') FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: NVL2'
+    sql: SELECT nvl2(status, 1, 0) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: DECODE as a CASE shorthand'
+    sql: SELECT decode(status, 'paid', 1, 0) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: LEN'
+    sql: SELECT len(status) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: LISTAGG'
+    sql: SELECT listagg(status, ',') WITHIN GROUP (ORDER BY status) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: MEDIAN'
+    sql: SELECT median(total_cents) FROM orders WHERE tenant_id = $1 LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: RATIO_TO_REPORT'
+    sql: SELECT ratio_to_report(total_cents) OVER () FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: DATEADD with a bare datepart'
+    sql: SELECT dateadd(day, 1, created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: DATEDIFF with a bare datepart'
+    sql: SELECT datediff(day, created_at, now()) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: DATE_PART with a bare datepart'
+    sql: SELECT date_part(year, created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: CONVERT_TIMEZONE'
+    sql: SELECT convert_timezone('UTC', 'US/Pacific', created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: MONTHS_BETWEEN'
+    sql: SELECT months_between(now(), created_at) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: REGEXP_SUBSTR'
+    sql: SELECT regexp_substr(status, 'p.') FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: STRTOL'
+    sql: SELECT strtol('ff', 16) LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: JSON_PARSE to SUPER'
+    sql: SELECT json_parse(status) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: IS_VALID_JSON'
+    sql: SELECT is_valid_json(status) FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: PG_LAST_QUERY_ID'
+    sql: SELECT pg_last_query_id() LIMIT 1
+    expect: deny
+    codes: [E_FUNCTION_DENIED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: CURRENT_USER_ID pseudo-column'
+    sql: SELECT current_user_id LIMIT 1
+    expect: deny
+    codes: [E_COLUMN_UNRESOLVED]
+    tags: [compat_redshift, redshift_only, functions]
+  - name: 'redshift-only: SUPER dot navigation'
+    sql: SELECT c.metadata.segment FROM customers c WHERE c.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_COLUMN_UNRESOLVED]
+    tags: [compat_redshift, redshift_only, super]
+  - name: 'redshift-only: PartiQL unnest in FROM'
+    sql: SELECT o.id FROM orders o, o.items i WHERE o.tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [compat_redshift, redshift_only, super]
+  - name: 'redshift-only: STV system table'
+    sql: SELECT * FROM stv_sessions LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [compat_redshift, redshift_only, catalog]
+  - name: 'redshift-only: SVV system view'
+    sql: SELECT * FROM svv_table_info LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [compat_redshift, redshift_only, catalog]
+  - name: 'redshift-only: SET a Redshift session parameter'
+    sql: SET enable_result_cache_for_session TO off
+    expect: deny
+    codes: [E_STATEMENT_KIND]
+    tags: [compat_redshift, redshift_only, session]

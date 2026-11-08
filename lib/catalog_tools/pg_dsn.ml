@@ -32,9 +32,8 @@ type t = {
 let ( let* ) = Result.bind
 
 let is_loopback h =
-  h = "localhost" || h = "::1"
-  || (String.length h > 0 && h.[0] = '/')
-  || (String.length h >= 4 && String.sub h 0 4 = "127.")
+  (String.length h > 0 && h.[0] = '/') (* Unix-domain socket directory *)
+  || Haltsql_core.Loopback.is_host h
 
 let hex_val c =
   match c with

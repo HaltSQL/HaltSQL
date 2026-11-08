@@ -35,6 +35,13 @@ Whatever you pick, keep the database-side controls of
 [defense-in-depth.md](defense-in-depth.md): a least-privilege database role
 and row-level security on Cloud SQL.
 
+> **Terraform.** To provision these patterns as code, use the modules in
+> [`deploy/terraform`](../deploy/terraform/) ([terraform.md](terraform.md)):
+> `haltsql-gcp` runs `haltsql-server` on Cloud Run, and `haltsql-kubernetes` installs
+> the Helm chart on any cluster. This guide explains the architecture and the
+> settings those modules expose; the manifests in
+> [`deploy/cloud/gcp/`](../deploy/cloud/gcp/) are the equivalent by hand.
+
 ## How HaltSQL gets Google credentials
 
 HaltSQL calls two Google APIs: Secret Manager (to resolve `${gcp-sm:...}`

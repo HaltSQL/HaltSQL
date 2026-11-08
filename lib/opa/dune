@@ -1,0 +1,9 @@
+; haltsql-server.opa: the optional Open Policy Agent check that runs after
+; HaltSQL allowed a query (config key `opa`). OPA can only further deny.
+;   pure: input encoding, response parsing, verdict combination
+;   IO:   POST {url}/v1/data/{decision_path} over haltsql.cloud's Http client
+
+(library
+ (name haltsql_opa)
+ (public_name haltsql-server.opa)
+ (libraries haltsql haltsql.cloud yojson uri lwt lwt.unix unix))

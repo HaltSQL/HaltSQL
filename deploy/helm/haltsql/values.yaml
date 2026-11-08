@@ -51,6 +51,7 @@ server:
   # Extra Config keys deep-merged over the rendered document, e.g.
   # telemetry.otlp, secrets.vault, or S3/GCS audit sinks. Outbound calls these
   # make need networkPolicy.egress (below). See docs/config-reference.md.
+  # The top-level extraConfig (below) is merged after this one and wins.
   extraConfig: {}
   #  telemetry:
   #    otlp:
@@ -124,6 +125,47 @@ extraVolumes: []       # pod volumes
 extraVolumeMounts: []  # mounts into the haltsql container
 initContainers: []
 extraContainers: []    # sidecars (e.g. a log shipper for file audit sinks)
+
+# Extra Config policies[] entries, appended to the policies rendered from
+# `policies` / `existingPolicyFiles`. Each entry is a full Config policy entry
+# (path, inline, bundle or bundle_source; see docs/config-reference.md). A
+# bundle_source entry without cache_dir gets "<cache.mountPath>/bundles", so a
+# restarted pod can start from its last verified bundle while the source is
+# down. Secrets (registry passwords, tokens) belong in ${env:...} placeholders,
+# never inline.
+extraPolicies: []
+#  - bundle_source: { oci: "registry.corp.example/haltsql/policies:prod" }
+#    public_keys: ["ed25519:BASE64..."]
+#    name_prefix: prod.
+#    poll_interval_s: 60
+
+# Extra Config keys, deep-merged into the rendered Config document after
+# extraPolicies are appended and after server.extraConfig: nested maps merge
+# key by key and extraConfig wins; lists and scalars replace the rendered
+# value. Use it for settings the chart has no value for (telemetry.otlp,
+# secrets, opa, audit sinks, ...). server.extraConfig is the same mechanism,
+# merged first (the cloud overlays use it); set either. `policies` is refused
+# in both (it would replace the chart's list): use extraPolicies. Outbound
+# calls these settings make need networkPolicy.egress (below).
+extraConfig: {}
+#  telemetry:
+#    otlp: { endpoint: "http://otel-collector.monitoring:4318" }
+#  opa:
+#    url: "https://opa.policy.svc:8181"
+#    decision_path: haltsql/allow
+
+# Writable volume for bundle-source caches (the root filesystem is read-only).
+# It is mounted at mountPath, and bundle_source entries in extraPolicies
+# without their own cache_dir use "<mountPath>/bundles". `volume` is any pod
+# volume source; the default emptyDir survives container restarts but not pod
+# rescheduling. Use a persistentVolumeClaim (or an ephemeral volume) to keep
+# the cache across rescheduling.
+cache:
+  mountPath: /var/cache/haltsql
+  volume:
+    emptyDir:
+      sizeLimit: 256Mi
+  #  persistentVolumeClaim: { claimName: haltsql-cache }
 
 service:
   type: ClusterIP            # ClusterIP | NodePort | LoadBalancer
@@ -221,8 +263,13 @@ networkPolicy:
   metricsFrom: []
   #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
   extraIngress: []   # extra NetworkPolicy ingress rules, rendered verbatim
+  # Egress is denied by default: verification needs no network access.
+  # `egress` takes one of two forms:
+  #   * a map (below): DNS/HTTPS toggles plus extraRules;
+  #   * a list of NetworkPolicyEgressRule objects, rendered verbatim as the
+  #     whole egress section (no automatic DNS/HTTPS rules; [] denies all).
+  #     The Terraform haltsql-kubernetes module uses this form.
   egress:
-    # Egress is denied by default: verification needs no network access.
     # DNS (UDP/TCP 53) is opened whenever any other egress rule is rendered.
     # allowHTTPS: TCP 443 to any destination. "auto" = only when `oidc` is set
     # (discovery + JWKS). Prefer false plus extraRules with the IdP's CIDRs

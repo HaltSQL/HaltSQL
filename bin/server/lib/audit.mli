@@ -29,6 +29,10 @@ type backend =
   | Object of Haltsql_cloud.Object_sink.t
       (** S3 / GCS: the object sink seals records into its own hash chain (continued
           across objects), batches, uploads, and applies [on_error] itself *)
+  | Stream of Haltsql_siem.Stream_sink.t
+      (** Elasticsearch / OpenSearch / Kafka: like [Object], the stream sink seals records
+          into its own chain, batches, ships in the background and applies [on_error]
+          itself *)
 
 type sink = {
   name : string;  (** ["stdout"], the file path, or the custom sink's name *)
@@ -58,6 +62,9 @@ val custom :
 
 val of_object_sink : Haltsql_cloud.Object_sink.t -> sink
 (** Wraps an S3 / GCS object sink. Call {!start} once the sink is registered. *)
+
+val of_stream_sink : Haltsql_siem.Stream_sink.t -> sink
+(** Wraps a SIEM streaming sink. Call {!start} once the sink is registered. *)
 
 val open_stdout : ?on_error:Haltsql.Config.on_error -> unit -> sink
 (** Standard output (new chain). *)
@@ -108,6 +115,12 @@ val healthy : sink -> bool
 
 val object_sinks : sink list -> Haltsql_cloud.Object_sink.t list
 (** The S3 / GCS sinks among these (for their metrics). *)
+
+val stream_sinks : sink list -> Haltsql_siem.Stream_sink.t list
+(** The SIEM streaming sinks among these (for their metrics). *)
+
+val kind : sink -> string
+(** ["stdout"], ["file"], ["custom"], ["object"] (S3 / GCS) or the stream sink's kind. *)
 
 (** {1 Verification} *)
 

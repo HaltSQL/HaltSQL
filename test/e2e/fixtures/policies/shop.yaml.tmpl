@@ -1,0 +1,11 @@
+# Policy template for the e2e scenarios; ${NAME} and ${COLUMNS} are filled in
+# by conftest.render_policy.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: ${NAME} }
+search_path: [app]
+statements: { allow: [select] }
+mode: enforce
+tables:
+  app.orders: { columns: [${COLUMNS}] }
+  app.invoices: { columns: [id, amount] }

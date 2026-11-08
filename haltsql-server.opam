@@ -6,7 +6,7 @@ description:
   "haltsql-server serves POST /v1/verify over HTTP or built-in TLS/mTLS, authenticates callers with static tokens, OIDC/JWT or client certificates, writes a hash-chained audit log to files, S3 or GCS, loads signed policy bundles, resolves secrets from Vault, AWS or GCP, and exports OpenTelemetry traces and metrics."
 maintainer: ["Arnav Dadarya"]
 authors: ["Arnav Dadarya"]
-license: "Apache-2.0"
+license: "MIT"
 homepage: "https://github.com/ardada2468/HaltSQL"
 doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"
 bug-reports: "https://github.com/ardada2468/HaltSQL/issues"
@@ -25,9 +25,9 @@ depends: [
   "lwt" {>= "5.6"}
   "uri" {>= "4.0"}
   "zarith" {>= "1.12"}
-  "tls" {>= "1.0"}
-  "tls-lwt" {>= "1.0"}
-  "x509" {>= "1.2"}
+  "tls" {>= "2.0.4"}
+  "tls-lwt" {>= "2.0.4"}
+  "x509" {>= "1.2.0"}
   "ptime" {>= "1.0"}
   "eqaf" {>= "0.9"}
   "mirage-crypto-pk" {>= "1.0"}

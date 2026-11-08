@@ -105,7 +105,16 @@ let read_body ~max (req : Cohttp.Request.t) body =
    hashes. Callers with an authenticated context (OIDC claims, mTLS static
    context) may only add the request-body context fields they are allowed. *)
 
+(* What authenticated the caller; server.admin.callers match on this, never on the
+   display name. *)
+type identity =
+  | Id_token of string  (** token name *)
+  | Id_oidc of string  (** provider name *)
+  | Id_mtls of Config.mtls_match  (** the matched identity's selector *)
+  | Id_anonymous
+
 type caller = {
+  identity : identity;
   caller_name : string;
   caller_type : string;  (** token | oidc | mtls | anonymous *)
   subject : string option;  (** OIDC sub / SPIFFE id / certificate CN *)
@@ -138,6 +147,7 @@ let static_caller (snap : State.snapshot) header =
       Metrics.observe_auth ~meth:"token" ~result:"ok";
       Ok
         {
+          identity = Id_token t.token_name;
           caller_name = t.token_name;
           caller_type = "token";
           subject = None;
@@ -148,6 +158,7 @@ let static_caller (snap : State.snapshot) header =
       Metrics.observe_auth ~meth:"anonymous" ~result:"ok";
       Ok
         {
+          identity = Id_anonymous;
           caller_name = "anonymous";
           caller_type = "anonymous";
           subject = None;
@@ -176,6 +187,7 @@ let resolve_caller (snap : State.snapshot) ~rid (conn : Conn.t) req =
       let subject = Haltsql_auth.Mtls.subject peer in
       Lwt.return_ok
         {
+          identity = Id_mtls id.mtls_match;
           caller_name = "mtls:" ^ subject;
           caller_type = "mtls";
           subject = Some subject;
@@ -184,44 +196,53 @@ let resolve_caller (snap : State.snapshot) ~rid (conn : Conn.t) req =
         }
   | None -> (
       let header = Cohttp.Header.get (Cohttp.Request.headers req) "authorization" in
-      match bearer_token header with
-      | `Token tok when not (Haltsql_auth.Oidc_client.is_empty snap.oidc) -> (
-          let* r = Haltsql_auth.Oidc_client.authenticate snap.oidc tok in
-          match r with
-          | `Not_applicable -> Lwt.return (static_caller snap header)
-          | `Verified (id : Haltsql_auth.Oidc.identity) ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"ok";
-              Lwt.return_ok
-                {
-                  caller_name = "oidc:" ^ id.provider;
-                  caller_type = "oidc";
-                  subject = id.subject;
-                  pinned = Some id.policy;
-                  auth_context = Some (id.context, id.request_context_fields);
-                }
-          | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
-              (* The underlying fetch error names internal endpoints: log it,
-                 do not send it to the client. *)
-              Log.warn "oidc signing keys unavailable"
-                ~fields:
-                  [
-                    ("request_id", `String rid);
-                    ("error", `String (Haltsql_auth.Jwt.error_to_string e));
-                  ];
-              Lwt.return_error
-                (Auth_unavailable
-                   "the identity provider's signing keys are unavailable; retry later")
-          | `Rejected e ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
-              Log.info "oidc token rejected"
-                ~fields:
-                  [
-                    ("reason", `String (Haltsql_auth.Jwt.error_code e));
-                    ("remote", `String conn.remote);
-                  ];
-              Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
-      | _ -> Lwt.return (static_caller snap header))
+      (* A client that presented a certificate matching no configured mTLS
+         identity, and no bearer token, is rejected rather than treated as
+         anonymous. *)
+      if Option.is_some conn.peer && snap.mtls <> [] && Option.is_none header then (
+        Metrics.observe_auth ~meth:"mtls" ~result:"rejected";
+        Lwt.return_error
+          (Unauthenticated "client certificate does not match any configured identity"))
+      else
+        match bearer_token header with
+        | `Token tok when not (Haltsql_auth.Oidc_client.is_empty snap.oidc) -> (
+            let* r = Haltsql_auth.Oidc_client.authenticate snap.oidc tok in
+            match r with
+            | `Not_applicable -> Lwt.return (static_caller snap header)
+            | `Verified (id : Haltsql_auth.Oidc.identity) ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"ok";
+                Lwt.return_ok
+                  {
+                    identity = Id_oidc id.provider;
+                    caller_name = "oidc:" ^ id.provider;
+                    caller_type = "oidc";
+                    subject = id.subject;
+                    pinned = Some id.policy;
+                    auth_context = Some (id.context, id.request_context_fields);
+                  }
+            | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
+                (* The underlying fetch error names internal endpoints: log it,
+                   do not send it to the client. *)
+                Log.warn "oidc signing keys unavailable"
+                  ~fields:
+                    [
+                      ("request_id", `String rid);
+                      ("error", `String (Haltsql_auth.Jwt.error_to_string e));
+                    ];
+                Lwt.return_error
+                  (Auth_unavailable
+                     "the identity provider's signing keys are unavailable; retry later")
+            | `Rejected e ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
+                Log.info "oidc token rejected"
+                  ~fields:
+                    [
+                      ("reason", `String (Haltsql_auth.Jwt.error_code e));
+                      ("remote", `String conn.remote);
+                    ];
+                Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
+        | _ -> Lwt.return (static_caller snap header))
 
 let unauthorized ~rid msg =
   error ~rid
@@ -234,6 +255,28 @@ let auth_error ~rid = function
       error ~rid
         ~extra:[ ("retry-after", "5") ]
         `Service_unavailable "AUTH_UNAVAILABLE" msg
+
+(* ---- OPA (opa in the config): asked only after HaltSQL allowed ---- *)
+
+let opa_check (snap : State.snapshot) ~caller ~(policy : Policy.t) ~ctx
+    (verdict : Verdict.t) =
+  match snap.opa with
+  | None -> Lwt.return verdict
+  | Some cfg ->
+      let t0 = Unix.gettimeofday () in
+      let* verdict, outcome =
+        Haltsql_opa.Opa.enforce ~code:Reason.E_EXTERNAL_POLICY ~mode:policy.mode ~cfg
+          ~caller:{ caller_name = caller.caller_name; caller_type = caller.caller_type }
+          ~context:ctx verdict
+      in
+      let label = Haltsql_opa.Opa.outcome_label outcome in
+      Metrics.observe_opa ~outcome:label ~seconds:(Unix.gettimeofday () -. t0);
+      (match outcome with
+      | Haltsql_opa.Opa.Failed_open e | Haltsql_opa.Opa.Failed_closed e ->
+          Log.warn "opa check failed"
+            ~fields:[ ("outcome", `String label); ("error", `String e) ]
+      | Haltsql_opa.Opa.Skipped | Haltsql_opa.Opa.Allowed | Haltsql_opa.Opa.Denied _ -> ());
+      Lwt.return verdict
 
 (* ---- /v1/verify ---- *)
 
@@ -294,6 +337,11 @@ let audit_record (st : State.t) ~rid ~caller ~(verdict : Verdict.t) ~sql =
         ~fields:
           [ ("sink", `String name); ("error", `String e); ("request_id", `String rid) ])
     failures;
+  if failures = [] then
+    Admin_report.observe_verdict st.report ~caller:caller.caller_name
+      ~caller_type:caller.caller_type
+      ~sql:(if st.cfg.log_raw_sql then Some sql else None)
+      verdict;
   failures = []
 
 let handle_verify_inner (st : State.t) (snap : State.snapshot) ~conn ~rid ~on_verdict req
@@ -366,8 +414,9 @@ let handle_verify_inner (st : State.t) (snap : State.snapshot) ~conn ~rid ~on_ve
                   | Some policy, Ok ctx ->
                       let t0 = Unix.gettimeofday () in
                       let verdict = Haltsql.verify policy ctx r.sql in
-                      on_verdict verdict;
                       let seconds = Unix.gettimeofday () -. t0 in
+                      let* verdict = opa_check snap ~caller ~policy ~ctx verdict in
+                      on_verdict verdict;
                       let result =
                         if not verdict.allowed then "denied"
                         else if verdict.shadow_reasons <> [] then "shadow_denied"
@@ -448,8 +497,152 @@ let handle_policies (snap : State.snapshot) ~conn ~rid req =
                | _ -> `Null );
            ])
 
+(* ---- admin API (server.admin) ----
+
+   404 while server.admin is disabled (the routes do not exist). Otherwise the
+   caller must authenticate (401) and match one of server.admin.callers (403).
+   Matching uses the identity that authenticated the caller: a token name, an
+   OIDC provider, or the selector of the matched mTLS identity. Anonymous callers
+   never match. *)
+
+let oidc_admin_matches spec ~provider ~subject ~pinned =
+  if String.equal spec provider then true
+  else
+    let n = String.length provider and m = String.length spec in
+    if m > n + 1 && String.sub spec 0 n = provider && (spec.[n] = ':' || spec.[n] = '/')
+    then
+      let qual = String.sub spec (n + 1) (m - n - 1) in
+      subject = Some qual || pinned = Some qual
+    else false
+
+let is_admin (admin : Config.admin) (c : caller) =
+  List.exists
+    (fun (a : Config.admin_caller) ->
+      match (a, c.identity) with
+      | Config.Admin_token n, Id_token t -> String.equal n t
+      | Config.Admin_oidc p, Id_oidc q ->
+          oidc_admin_matches p ~provider:q ~subject:c.subject ~pinned:c.pinned
+      | Config.Admin_mtls m, Id_mtls k -> m = k
+      | (Config.Admin_token _ | Config.Admin_oidc _ | Config.Admin_mtls _), _ -> false)
+    admin.admin_callers
+
+let with_admin (snap : State.snapshot) ~conn ~rid ~endpoint req k =
+  if not snap.admin.admin_enabled then begin
+    Metrics.observe_admin ~endpoint ~result:"disabled";
+    error ~rid `Not_found "NOT_FOUND" "the admin API is disabled (server.admin)"
+  end
+  else
+    let* c = resolve_caller snap ~rid conn req in
+    match c with
+    | Error e ->
+        Metrics.observe_admin ~endpoint ~result:"unauthenticated";
+        auth_error ~rid e
+    | Ok caller when caller.identity = Id_anonymous ->
+        Metrics.observe_admin ~endpoint ~result:"unauthenticated";
+        unauthorized ~rid "the admin API requires an authenticated caller"
+    | Ok caller when not (is_admin snap.admin caller) ->
+        Metrics.observe_admin ~endpoint ~result:"forbidden";
+        Log.info "admin request refused"
+          ~fields:
+            [
+              ("request_id", `String rid);
+              ("caller", `String caller.caller_name);
+              ("endpoint", `String endpoint);
+            ];
+        error ~rid `Forbidden "FORBIDDEN"
+          "this caller is not listed in server.admin.callers"
+    | Ok caller ->
+        Metrics.observe_admin ~endpoint ~result:"ok";
+        k caller
+
+let handle_admin_report (st : State.t) (snap : State.snapshot) ~conn ~rid req =
+  with_admin snap ~conn ~rid ~endpoint:"report" req (fun _caller ->
+      let status, body =
+        Admin_report.handle st.report ~policies:snap.policies
+          ~query:(Uri.query (Cohttp.Request.uri req))
+      in
+      respond ~rid (Cohttp.Code.status_of_code status) body)
+
+let policy_origin (st : State.t) name =
+  if List.exists (fun (_, ps) -> List.mem_assoc name ps) st.remote then "bundle_source"
+  else if List.mem_assoc name st.cfg.policies then "config"
+  else "bundle_or_file"
+
+let handle_admin_status (st : State.t) (snap : State.snapshot) ~conn ~rid req =
+  with_admin snap ~conn ~rid ~endpoint:"status" req (fun _caller ->
+      let now = Unix.gettimeofday () in
+      let sink_json (s : Audit.sink) =
+        `Assoc
+          [
+            ("name", `String s.name);
+            ("type", `String (Audit.kind s));
+            ("healthy", `Bool (Audit.healthy s));
+          ]
+      in
+      let opa =
+        match snap.opa with
+        | None -> `Null
+        | Some o ->
+            `Assoc
+              [
+                ( "host",
+                  match Uri.host (Uri.of_string o.opa_url) with
+                  | Some h -> `String h
+                  | None -> `Null );
+                ("decision_path", `String o.decision_path);
+                ("timeout_ms", `Int o.opa_timeout_ms);
+                ( "on_error",
+                  `String
+                    (match o.opa_on_error with
+                    | Config.Opa_deny -> "deny"
+                    | Config.Opa_allow_haltsql_verdict -> "allow_haltsql_verdict") );
+              ]
+      in
+      respond ~rid `OK
+        (`Assoc
+           [
+             ("version", `String Haltsql.version);
+             ("started", `String (Log.rfc3339 st.started));
+             ("uptime_seconds", `Int (int_of_float (now -. st.started)));
+             ("config_generation", `Int st.generation);
+             ( "default_policy",
+               match State.snapshot_default_policy snap with
+               | Some d -> `String d
+               | None -> `Null );
+             ( "policies",
+               `List
+                 (List.map
+                    (fun (n, (p : Policy.t)) ->
+                      `Assoc
+                        [
+                          ("name", `String n);
+                          ("version", `String p.version);
+                          ( "mode",
+                            `String
+                              (match p.mode with
+                              | Policy.Enforce -> "enforce"
+                              | Policy.Shadow -> "shadow") );
+                          ("origin", `String (policy_origin st n));
+                        ])
+                    snap.policies) );
+             ( "bundle_sources",
+               `List (List.map Bundle_sources.status_json st.bundle_sources) );
+             ("audit_sinks", `List (List.map sink_json st.sinks));
+             ("audit_restart_pending", `Bool st.audit_restart_pending);
+             ("opa", opa);
+             ( "report",
+               `Assoc
+                 [
+                   ("tracked_queries", `Int (Admin_report.tracked_queries st.report));
+                   ("evicted_queries", `Int (Admin_report.evicted st.report));
+                   ("sampled_out", `Int (Admin_report.sampled_out st.report));
+                 ] );
+           ]))
+
 let routes =
   [
+    ("/v1/admin/report", [ `GET ]);
+    ("/v1/admin/status", [ `GET ]);
     ("/v1/verify", [ `POST ]);
     ("/healthz", [ `GET; `HEAD ]);
     ("/readyz", [ `GET; `HEAD ]);
@@ -505,8 +698,12 @@ let route (st : State.t) snap ~health_only ~conn ~rid ~meth ~path req body =
       text ~rid ~content_type:"text/plain; version=0.0.4; charset=utf-8" `OK
         (Metrics.render ~version:Haltsql.version ~pg:Pg_parse.postgres_version
            ~policies_loaded:(List.length snap.State.policies)
-        ^ Haltsql_cloud.Object_sink.metrics_text (Audit.object_sinks st.sinks))
+        ^ Haltsql_cloud.Object_sink.metrics_text (Audit.object_sinks st.sinks)
+        ^ Haltsql_siem.Siem.metrics_text (Audit.stream_sinks st.sinks)
+        ^ Bundle_sources.metrics_text st.bundle_sources)
   | `GET, "/v1/policies" -> handle_policies snap ~conn ~rid req
+  | `GET, "/v1/admin/report" -> handle_admin_report st snap ~conn ~rid req
+  | `GET, "/v1/admin/status" -> handle_admin_status st snap ~conn ~rid req
   | _, p when p <> "/metrics" || st.cfg.metrics -> (
       match List.assoc_opt p routes with
       | Some ms ->

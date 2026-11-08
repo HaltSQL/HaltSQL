@@ -94,10 +94,14 @@ The chart renders a `kind: Config` document into a ConfigMap. See
 | `server.metrics` | `true` | Serve Prometheus `/metrics`. |
 | `server.audit.sinks` | `[{type: stdout}]` | Audit sinks, rendered verbatim. |
 | `server.audit.logRawSql` | `false` | Include raw SQL in audit records. |
-| `server.extraConfig` | `{}` | Deep-merged over the rendered Config: `telemetry.otlp`, `secrets.vault`, S3/GCS audit sinks, etc. Remember `networkPolicy.egress`. |
+| `server.extraConfig` | `{}` | Deep-merged over the rendered Config: `telemetry.otlp`, `secrets.vault`, S3/GCS audit sinks, etc. Remember `networkPolicy.egress`. `policies` is refused (use `extraPolicies`). |
+| `extraConfig` | `{}` | Same as `server.extraConfig`, merged after it (this one wins). Nested maps merge key by key; lists and scalars replace the rendered value. `policies` is refused. Used by the Terraform `haltsql-kubernetes` module. |
 | `policies` | `{}` | Policy documents keyed by file name; rendered into a ConfigMap. |
 | `existingPolicyConfigMap` | `""` | Use your own ConfigMap of policies instead (GitOps, signed bundles). |
 | `existingPolicyFiles` | `[]` | Keys of `existingPolicyConfigMap` to load. |
+| `extraPolicies` | `[]` | Config `policies[]` entries (`path`, `inline`, `bundle` or `bundle_source`) appended to the rendered ones. A `bundle_source` entry without `cache_dir` gets `<cache.mountPath>/bundles`. Put credentials in `${env:...}` placeholders (with `extraEnv`), never inline. |
+| `cache.mountPath` | `/var/cache/haltsql` | Writable mount for bundle-source caches (the root filesystem is read-only). |
+| `cache.volume` | `{emptyDir: {sizeLimit: 256Mi}}` | Any single pod volume source. The emptyDir survives container restarts, not rescheduling; to keep the cache across rescheduling use e.g. `{emptyDir: null, persistentVolumeClaim: {claimName: haltsql-cache}}`. |
 
 ### Authentication and secrets
 
@@ -199,7 +203,15 @@ automatically.
 | `networkPolicy.egress.extraRules` | `[]` | Extra egress rules: OTLP collector, Vault, S3/GCS endpoints. |
 
 Verification itself makes no network calls, so with no OIDC and no extra rules
-the policy denies all egress.
+the policy denies all egress. With `tls.enabled`, ingress to the plain-HTTP
+health port is also allowed (for probes).
+
+`networkPolicy.egress` may instead be a list of `NetworkPolicyEgressRule`
+objects. The list is then the whole egress section, rendered verbatim (no
+automatic DNS or HTTPS rules; `[]` denies all). The Terraform
+`haltsql-kubernetes` module passes this form. Helm logs a harmless
+"cannot overwrite table with non table" notice when a list replaces the
+default map.
 
 ### Prometheus Operator
 

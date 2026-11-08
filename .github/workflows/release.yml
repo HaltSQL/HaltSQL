@@ -21,17 +21,18 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   IMAGE: ghcr.io/ardada2468/haltsql
   OCAML_VERSION: "5.2"
-  # Builder for the static Linux tarballs, pinned by digest (re-pin with
-  # `docker buildx imagetools inspect ocaml/opam:alpine-3.20-ocaml-5.2`).
-  BUILDER_IMAGE: ocaml/opam:alpine-3.20-ocaml-5.2@sha256:a1150220b350c6b8f92ad642705501daa9f5330524d398bab3aab7decacefc7d
-  # opam-repository commit the dependencies are resolved against. Keep in sync
-  # with OPAM_REPOSITORY_COMMIT in the Dockerfile so tarballs and the image
-  # ship the same dependency versions.
-  OPAM_REPOSITORY_COMMIT: 1e8ccc4347bd42cdf513d376cdad11075f385a8c
+  # The static Linux tarballs are built from the `dist` stage of the Dockerfile,
+  # which pins the builder image by digest and the opam-repository commit
+  # (OPAM_REPOSITORY_COMMIT), so tarballs and the image always ship the same
+  # dependency versions.
 
 jobs:
   linux-static:
     name: Linux ${{ matrix.arch }} (static, musl)
+    # Built exactly like the container image: the `dist` stage of the Dockerfile
+    # (Alpine/musl builder, HALTSQL_STATIC=1, pinned opam-repository commit), on a
+    # native runner per architecture. The builder stage itself fails unless every
+    # binary is statically linked and runs.
     strategy:
       fail-fast: false
       matrix:
@@ -48,43 +49,46 @@ jobs:
           persist-credentials: false
           ref: ${{ env.TAG }}
 
-      - name: Build static binaries in Alpine
-        run: |
-          mkdir -p dist && chmod 777 dist
-          docker run --rm \
-            -v "$PWD:/src:ro" -v "$PWD/dist:/dist" \
-            -e TAG -e ARCH=${{ matrix.arch }} -e OPAM_REPOSITORY_COMMIT \
-            "${BUILDER_IMAGE}" \
-            sh -euxc '
-              sudo apk add --no-cache build-base linux-headers file gmp-dev
-              cp -r /src "$HOME/haltsql" && cd "$HOME/haltsql"
-              repo="$HOME/opam-repository"
-              git -C "$repo" fetch -q --depth=1 origin "$OPAM_REPOSITORY_COMMIT"
-              git -C "$repo" checkout -q -B master "$OPAM_REPOSITORY_COMMIT"
-              opam update --yes default
-              opam install . --deps-only --yes
-              # Fully static executables (musl); see bin/link_flags.ml.
-              HALTSQL_STATIC=1 opam exec -- dune build @install --profile release
-              out="haltsql-${TAG}-linux-${ARCH}"
-              mkdir -p "$out"
-              # Every release ships all three binaries; a missing one fails the build.
-              for b in haltsql haltsql-server haltsql-proxy; do
-                cp "_build/install/default/bin/$b" "$out/"
-                strip "$out/$b"
-                file "$out/$b"
-                file "$out/$b" | grep -q "statically linked" || { echo "$b is not static"; exit 1; }
-              done
-              cp LICENSE NOTICE README.md "$out/" && cp vendor/libpg_query/LICENSE "$out/LICENSE.libpg_query"
-              tar -czf "/dist/$out.tar.gz" "$out"
-            '
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Smoke test
+      - name: Build static binaries (Dockerfile target "dist")
         run: |
-          tar -xzf "dist/haltsql-${TAG}-linux-${{ matrix.arch }}.tar.gz" -C /tmp
-          d=/tmp/haltsql-${TAG}-linux-${{ matrix.arch }}
-          "$d/haltsql" version
-          "$d/haltsql-server" --help=plain > /dev/null
-          "$d/haltsql-proxy" --help=plain > /dev/null
+          docker buildx build --platform "linux/${{ matrix.arch }}" \
+            --target dist --output "type=local,dest=out" \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-to "type=gha,mode=max,scope=static-${{ matrix.arch }}" .
+
+      - name: Check the binaries are static and run on an empty filesystem
+        run: |
+          set -eu
+          for b in haltsql haltsql-server haltsql-proxy; do
+            file "out/$b"
+            file "out/$b" | grep -Eq "statically linked|static-pie linked" \
+              || { echo "$b is not static"; exit 1; }
+            if ldd "out/$b"; then echo "$b has dynamic dependencies"; exit 1; fi
+          done
+          docker buildx build --platform "linux/${{ matrix.arch }}" --target scratch \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --load -t haltsql-scratch:ci .
+          for b in haltsql haltsql-server haltsql-proxy; do
+            docker run --rm --entrypoint "/usr/local/bin/$b" haltsql-scratch:ci --version
+          done
+          out/haltsql version
+          out/haltsql-server --help=plain > /dev/null
+          out/haltsql-proxy --help=plain > /dev/null
+
+      - name: Package
+        run: |
+          set -eu
+          out="haltsql-${TAG}-linux-${{ matrix.arch }}"
+          mkdir -p "$out" dist
+          # Every release ships all three binaries; a missing one fails the build.
+          for b in haltsql haltsql-server haltsql-proxy; do
+            install -m 0755 "out/$b" "$out/$b"
+          done
+          cp out/LICENSE out/NOTICE out/LICENSE.libpg_query README.md "$out/"
+          tar -czf "dist/$out.tar.gz" "$out"
+          tar -tzvf "dist/$out.tar.gz"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -166,7 +170,23 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
           labels: |
             org.opencontainers.image.title=haltsql
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and smoke-test the amd64 image before pushing
+        run: |
+          docker buildx build --platform linux/amd64 --load -t haltsql-local:dev \
+            --cache-from type=gha .
+          docker buildx build --platform linux/amd64 --target scratch --load \
+            -t haltsql-local:scratch --cache-from type=gha .
+          docker run -d --name haltsql-release-pg -p 5417:5432 \
+            -e POSTGRES_PASSWORD="ci-${{ github.run_id }}" postgres:17-alpine
+          for _ in $(seq 60); do
+            docker exec haltsql-release-pg pg_isready -U postgres > /dev/null 2>&1 && break
+            sleep 1
+          done
+          HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 SCRATCH_IMAGE=haltsql-local:scratch \
+            scripts/docker-smoke.sh
+          docker rm -f haltsql-release-pg
 
       - name: Build metadata
         id: buildinfo

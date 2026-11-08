@@ -385,6 +385,13 @@ set-returning functions in `FROM`, must be allowed; anything else is
 `E_FUNCTION_DENIED`. Names are case-insensitive unless quoted. An unqualified
 entry such as `lower` also matches `pg_catalog.lower`.
 
+Built-in functions that run a SQL string (or dump a whole table, schema or
+database) passed as an argument are always `E_FUNCTION_DENIED`, even when they
+are listed in `allow`: `ts_rewrite`, `ts_stat`, `query_to_xml*`,
+`cursor_to_xml*`, `table_to_xml*`, `schema_to_xml*`, `database_to_xml*` and
+the `dblink` family. HaltSQL only sees a string literal there, so table,
+column and tenancy rules could not apply to the SQL they run.
+
 Built-in presets. The authoritative lists are in
 `Policy_load.function_presets` (`lib/load/policy_impl.ml`); they may grow in
 minor releases, but never to include functions with side effects. An unknown

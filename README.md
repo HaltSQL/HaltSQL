@@ -1,7 +1,7 @@
 # HaltSQL
 
 [![CI](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Status: pre-1.0](https://img.shields.io/badge/status-0.1.0%20preview-orange.svg)
 
 **A policy firewall for LLM-generated PostgreSQL.**
@@ -49,14 +49,29 @@ HaltSQL ships as:
 - a **CLI** (`haltsql`) for scripts, CI, and debugging, plus RLS generation,
   catalog and PII import, policy drafting and signed policy bundles,
 - an **HTTP sidecar** (`haltsql-server`) for agents written in any language,
-  with built-in TLS/mTLS, OIDC, S3/GCS audit sinks, secret providers and
-  OpenTelemetry ([authentication](docs/authentication.md)),
+  with built-in TLS/mTLS, OIDC (including [policies from IdP
+  groups](docs/authentication.md#policies-from-idp-groups)), secret providers,
+  OpenTelemetry, an optional deny-only [Open Policy Agent](docs/opa.md) check,
+  and an admin API for live [shadow reports](docs/shadow-reports.md)
+  ([authentication](docs/authentication.md)),
+- **hash-chained audit** to files, S3, GCS, Kafka and
+  Elasticsearch/OpenSearch ([audit sinks](docs/audit-sinks.md)), checked with
+  `haltsql audit verify` ([audit-verify.md](docs/audit-verify.md)),
 - a **PostgreSQL wire-protocol proxy** (`haltsql-proxy`) that verifies every
-  statement an unmodified driver sends ([proxy.md](docs/proxy.md)),
+  statement an unmodified driver sends, with its own chained audit and hot
+  reload ([proxy.md](docs/proxy.md)),
+- **signed policy bundles** that the server can pull from an OCI registry,
+  S3 or HTTPS and hot-reload ([policy-bundles.md](docs/policy-bundles.md)),
 - **client SDKs** for [Python](docs/sdk-python.md),
   [TypeScript](docs/sdk-typescript.md), [Go](docs/sdk-go.md) and
-  [Java](docs/sdk-java.md), an [MCP server](docs/mcp.md), and LangChain,
-  LlamaIndex and Vanna integrations (`integrations/`), and
+  [Java](docs/sdk-java.md), an [MCP server](docs/mcp.md), LangChain,
+  LlamaIndex and Vanna integrations, and tools for the OpenAI Agents SDK,
+  LangGraph, Semantic Kernel, CrewAI and Google ADK
+  ([agent frameworks](docs/agent-frameworks.md)),
+- deployment tooling: static musl binaries and a distroless image, a
+  [Kubernetes operator](docs/kubernetes-operator.md) and
+  [Terraform modules](docs/terraform.md) for Kubernetes, AWS, Azure and GCP
+  (the cloud modules are statically checked only, not yet applied), and
 - a **GitHub Action**, GitLab CI templates and pre-commit hooks for
   [policy CI](docs/policy-ci.md).
 
@@ -158,7 +173,9 @@ When the query passes, `bind_params` tells you what to bind:
   `apiVersion`, and HTTP `/v1`.
 - **YAML or JSON, one meaning.** Same schema, same `policy_version` hash.
   Unknown keys and duplicate keys are errors, so a typo cannot loosen a policy.
-- **Shadow mode** for rolling out a new policy without enforcing it.
+- **Shadow mode** for rolling out a new policy without enforcing it, with
+  [reports](docs/shadow-reports.md) of what would have been denied and
+  conservative policy suggestions (`haltsql report --suggest`).
 - **Policy tests in CI** with `kind: TestSuite` and `haltsql test`.
 
 ## Status
@@ -173,7 +190,11 @@ HaltSQL is **0.1.0, a pre-1.0 preview**. Limits to know about:
   never renamed or reused.
 - No third-party security audit has happened yet. One is planned before 1.0.
 - Performance targets (p99 under 1 ms in-process, under 3 ms over the sidecar
-  for queries under 8 KB) are goals, not measured guarantees.
+  for queries under 8 KB) are goals, not guarantees. One measured run (p50 of
+  50–250 µs per verify in process) is in [performance.md](docs/performance.md).
+- Tested on PostgreSQL 17 and 18 and several Postgres-compatible engines in
+  containers; managed services have not been run yet
+  ([compatibility.md](docs/compatibility.md)).
 
 ## Install
 
@@ -206,9 +227,9 @@ with `SHA256SUMS`, a CycloneDX SBOM, and cosign signatures. See
 | Reference | [Policy](docs/policy-reference.md) · [Config](docs/config-reference.md) · [Verdict](docs/verdict.md) · [Reason codes](docs/reason-codes.md) |
 | How it works | [Architecture](docs/how-it-works/architecture.md) · [Verification pipeline](docs/how-it-works/verification-pipeline.md) · [Deployment modes](docs/how-it-works/deployment-modes.md) · [All explainers](docs/index.md#how-it-works) |
 | Concepts | [Tenancy semantics](docs/tenancy.md) · [Threat model](docs/threat-model.md) · [Defense in depth](docs/defense-in-depth.md) |
-| Operate | [Deployment](docs/deployment.md) · [Authentication and TLS](docs/authentication.md) · [Secrets](docs/secrets.md) · [Audit sinks](docs/audit-sinks.md) · [Observability](docs/observability.md) · [Testing](docs/testing.md) |
-| Clients | [Integrations](docs/integrations.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md) · [Go](docs/sdk-go.md) · [Java](docs/sdk-java.md) · [MCP](docs/mcp.md) |
-| Policy lifecycle | [Schema and PII import](docs/schema-and-pii.md) · [Signed bundles](docs/policy-bundles.md) · [Policy CI](docs/policy-ci.md) · [RLS generation](docs/rls-generation.md) |
+| Operate | [Deployment](docs/deployment.md) · [Kubernetes operator](docs/kubernetes-operator.md) · [Terraform](docs/terraform.md) · [Authentication and TLS](docs/authentication.md) · [Secrets](docs/secrets.md) · [Audit sinks](docs/audit-sinks.md) · [Audit verify](docs/audit-verify.md) · [Observability](docs/observability.md) · [Performance](docs/performance.md) · [Compatibility](docs/compatibility.md) · [Testing](docs/testing.md) |
+| Clients | [Integrations](docs/integrations.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md) · [Go](docs/sdk-go.md) · [Java](docs/sdk-java.md) · [MCP](docs/mcp.md) · [Agent frameworks](docs/agent-frameworks.md) |
+| Policy lifecycle | [Schema and PII import](docs/schema-and-pii.md) · [Signed bundles](docs/policy-bundles.md) · [Policy CI](docs/policy-ci.md) · [Shadow reports](docs/shadow-reports.md) · [Open Policy Agent](docs/opa.md) · [RLS generation](docs/rls-generation.md) |
 | Proxy | [haltsql-proxy](docs/proxy.md) |
 | Project | [ADRs](docs/adr/) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Governance](GOVERNANCE.md) |
 
@@ -227,5 +248,5 @@ Please do not report vulnerabilities or policy bypasses in public issues. See
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy
+MIT License. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy
 design is inspired by the MIT-licensed sql-guardrail project.

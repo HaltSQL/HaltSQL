@@ -12,12 +12,12 @@ placeholder values: account `111122223333`, region `eu-west-1`, bucket
 | `eks/networkpolicy-shared.yaml` | Replaces the chart's deny-all-egress NetworkPolicy, so that STS, S3 and the ADOT collector are reachable. |
 | `ecs/task-definition.json` | ECS Fargate shared service: `haltsql-server` on `:8443` with TLS, secrets injected from Secrets Manager, audit to CloudWatch Logs (`awslogs`, blocking mode), and an ADOT sidecar that sends traces to X-Ray and metrics to AMP. |
 | `ecs/Dockerfile`, `ecs/config.yaml`, `ecs/policies/` | Derived image that bakes in the config and policies, since ECS has no ConfigMaps. |
-| `ecs/proxy-task-definition.json`, `ecs/Dockerfile.proxy`, `ecs/proxy.yaml` | `haltsql-proxy` on Fargate behind an internal NLB, in front of RDS. An init container writes the TLS certificate and key files, because the proxy only reads TLS material from files. |
+| `ecs/proxy-task-definition.json`, `ecs/Dockerfile.proxy`, `ecs/proxy.yaml` | `haltsql-proxy` on Fargate behind an internal NLB, in front of RDS. An init container writes the TLS certificate and key files. (The proxy also accepts inline PEM, for example through `${env:...}`.) |
 | `iam/haltsql-policy.json` | Least privilege for `haltsql-server`: `s3:PutObject` and `s3:PutObjectRetention` on the audit prefix, `secretsmanager:GetSecretValue` on named secrets, and KMS restricted with `kms:ViaService`. |
 | `iam/irsa-trust-policy.json` | Trust policy that lets one Kubernetes service account assume the role. |
 | `iam/ecs-task-execution-policy.json` | Lets the ECS execution role inject the secrets. |
 | `iam/adot-task-role-policy.json` | ADOT sidecar permissions: X-Ray writes and `aps:RemoteWrite`. |
-| `terraform/` | Minimal module: KMS key, Object Lock audit bucket (versioning, SSE-KMS, TLS-only, no public access, Glacier IR lifecycle), the IAM policy, and an optional IRSA role. |
+| `terraform/` | Supporting resources, not the server itself (for that, see `deploy/terraform/modules/haltsql-aws` and [terraform.md](../../../docs/terraform.md)):  KMS key, Object Lock audit bucket (versioning, SSE-KMS, TLS-only, no public access, Glacier IR lifecycle), the IAM policy, and an optional IRSA role. |
 
 ## Validation
 

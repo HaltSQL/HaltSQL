@@ -41,12 +41,21 @@ val set_logger : ([ `Info | `Warn ] -> string -> (string * string) list -> unit)
 type provider
 
 val provider :
-  ?fetch:fetch -> ?now:(unit -> float) -> Haltsql.Config.oidc_provider -> provider
+  ?fetch:fetch ->
+  ?now:(unit -> float) ->
+  ?groups:Haltsql.Config.groups_policy ->
+  Haltsql.Config.oidc_provider ->
+  provider
 (** [fetch] defaults to [http_fetch ()], [now] to [Unix.gettimeofday]. No IO happens until
-    the first verification or {!refresh}. *)
+    the first verification or {!refresh}. [groups] is the provider's [policy_from_groups]
+    ({!Haltsql.Config.groups_policy_of}); when given, verification selects the policy with
+    {!Group_policy.select} (see {!Oidc.verify}). *)
 
 val config : provider -> Haltsql.Config.oidc_provider
 (** The provider's configuration. *)
+
+val groups : provider -> Haltsql.Config.groups_policy option
+(** The provider's [policy_from_groups] mapping, if any. *)
 
 val refresh : provider -> (int, string) result Lwt.t
 (** Fetches (discovery if needed, then) the JWKS now; [Ok n] is the number of usable keys.
@@ -62,12 +71,25 @@ val verify : provider -> string -> (Oidc.identity, Jwt.error) result Lwt.t
 type registry
 
 val registry :
-  ?fetch:fetch -> ?now:(unit -> float) -> Haltsql.Config.oidc_provider list -> registry
-(** One {!type-provider} per configuration entry, sharing [fetch] and [now]. *)
+  ?fetch:fetch ->
+  ?now:(unit -> float) ->
+  ?group_policies:(string * Haltsql.Config.groups_policy) list ->
+  Haltsql.Config.oidc_provider list ->
+  registry
+(** One {!type-provider} per configuration entry, sharing [fetch] and [now].
+    [group_policies] (default [[]]) is [Config.t.oidc_group_policies]: provider name ->
+    [policy_from_groups]. Pass it, or every token of a provider configured with
+    [policy_from_groups] is rejected (its placeholder [oidc_policy] accepts nothing). *)
 
-val update : registry -> Haltsql.Config.oidc_provider list -> registry
+val update :
+  ?group_policies:(string * Haltsql.Config.groups_policy) list ->
+  registry ->
+  Haltsql.Config.oidc_provider list ->
+  registry
 (** A registry for a new provider list that keeps the key caches of providers whose
-    configuration is unchanged (used on hot reload). *)
+    configuration is unchanged (used on hot reload). [group_policies] (default [[]]) must
+    be the new configuration's [oidc_group_policies]; it replaces the providers' previous
+    group mappings. *)
 
 val providers : registry -> provider list
 (** The providers, in configuration order. *)

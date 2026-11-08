@@ -58,22 +58,73 @@ app.kubernetes.io/component: policy-firewall
 {{- default (printf "%s-policies" (include "haltsql.fullname" .)) .Values.existingPolicyConfigMap -}}
 {{- end -}}
 
-{{/*
-The haltsql Config document (kind: Config). Token hashes come from env.
-server.extraConfig, when set, is deep-merged over the rendered document.
-*/}}
-{{- define "haltsql.config" -}}
-{{- if .Values.server.extraConfig -}}
-{{- $base := include "haltsql.baseConfig" . | fromYaml -}}
-{{- if hasKey $base "Error" -}}
-{{- fail (printf "internal error rendering the haltsql Config: %s" (get $base "Error")) -}}
-{{- end -}}
-{{- mustMergeOverwrite $base (deepCopy .Values.server.extraConfig) | toYaml -}}
-{{- else -}}
-{{- include "haltsql.baseConfig" . -}}
-{{- end -}}
+{{/* Directory the bundle-source caches go to (on the cache volume). */}}
+{{- define "haltsql.bundleCacheDir" -}}
+{{- printf "%s/bundles" (trimSuffix "/" (required "cache.mountPath is required" .Values.cache.mountPath)) -}}
 {{- end -}}
 
+{{/*
+extraPolicies, validated. Each entry must be a map (a Config policies[]
+entry). A bundle_source entry without cache_dir gets the chart's cache
+directory, so a restart can start from the last verified bundle.
+*/}}
+{{- define "haltsql.extraPolicies" -}}
+{{- $out := list -}}
+{{- range $i, $p := .Values.extraPolicies -}}
+{{- if not (kindIs "map" $p) -}}
+{{- fail (printf "extraPolicies[%d] must be a map (a Config policies[] entry), got %s" $i (kindOf $p)) -}}
+{{- end -}}
+{{- $e := deepCopy $p -}}
+{{- if and (hasKey $e "bundle_source") (not (hasKey $e "cache_dir")) -}}
+{{- $_ := set $e "cache_dir" (include "haltsql.bundleCacheDir" $) -}}
+{{- end -}}
+{{- $out = append $out $e -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/*
+The haltsql Config document (kind: Config): the chart-rendered base, with
+extraPolicies appended to policies, then server.extraConfig and then
+extraConfig deep-merged on top (maps merge recursively, the later one wins;
+lists and scalars are replaced). `policies` is refused in both: a replaced
+list would silently drop the chart's policies, so use extraPolicies.
+*/}}
+{{- define "haltsql.config" -}}
+{{- if not (kindIs "map" (default dict .Values.server.extraConfig)) -}}
+{{- fail "server.extraConfig must be a map" -}}
+{{- end -}}
+{{- if not (kindIs "map" (default dict .Values.extraConfig)) -}}
+{{- fail "extraConfig must be a map" -}}
+{{- end -}}
+{{- if not (kindIs "slice" (default list .Values.extraPolicies)) -}}
+{{- fail "extraPolicies must be a list" -}}
+{{- end -}}
+{{- $serverExtra := deepCopy (default dict .Values.server.extraConfig) -}}
+{{- if hasKey $serverExtra "policies" -}}
+{{- fail "server.extraConfig.policies is not allowed: add policy entries with extraPolicies (they are appended to the rendered policies)" -}}
+{{- end -}}
+{{- $extra := deepCopy (default dict .Values.extraConfig) -}}
+{{- if hasKey $extra "policies" -}}
+{{- fail "extraConfig.policies is not allowed: add policy entries with extraPolicies (they are appended to the rendered policies)" -}}
+{{- end -}}
+{{- $base := include "haltsql.baseConfig" . | fromYaml -}}
+{{- if hasKey $base "Error" -}}
+{{- fail (printf "internal error rendering the base config: %s" (get $base "Error")) -}}
+{{- end -}}
+{{- $policies := list -}}
+{{- range (default list (get $base "policies")) -}}
+{{- $policies = append $policies . -}}
+{{- end -}}
+{{- range (include "haltsql.extraPolicies" . | fromJsonArray) -}}
+{{- $policies = append $policies . -}}
+{{- end -}}
+{{- $_ := set $base "policies" $policies -}}
+{{- $merged := mergeOverwrite $base $serverExtra $extra -}}
+{{- toYaml $merged -}}
+{{- end -}}
+
+{{/* The chart-rendered part of the Config document. Token hashes come from env. */}}
 {{- define "haltsql.baseConfig" -}}
 apiVersion: haltsql.dev/v1
 kind: Config
@@ -157,12 +208,31 @@ Usage: include "haltsql.probe" (dict "probe" .Values.livenessProbe "root" $)
 {{- toYaml $p -}}
 {{- end -}}
 
-{{/* Whether the NetworkPolicy opens TCP 443 egress. */}}
+{{/*
+Whether the NetworkPolicy opens TCP 443 egress (map form of
+networkPolicy.egress only; the list form is rendered verbatim).
+*/}}
 {{- define "haltsql.egressHTTPS" -}}
-{{- $v := .Values.networkPolicy.egress.allowHTTPS -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- if kindIs "map" $eg -}}
+{{- $v := $eg.allowHTTPS -}}
 {{- if eq (toString $v) "auto" -}}
 {{- if .Values.oidc }}true{{ end -}}
 {{- else if $v -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the NetworkPolicy allows any egress besides DNS: HTTPS or extraRules
+in the map form of networkPolicy.egress, or a non-empty list form.
+*/}}
+{{- define "haltsql.egressConfigured" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- if kindIs "map" $eg -}}
+{{- if or (include "haltsql.egressHTTPS" . | eq "true") $eg.extraRules }}true{{ end -}}
+{{- else if $eg -}}
 true
 {{- end -}}
 {{- end -}}

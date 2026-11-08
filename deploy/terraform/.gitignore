@@ -1,0 +1,11 @@
+# Provider caches, plugin downloads and local state are never committed.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+.tflint.d/
+# Local variable files can hold account ids and must not be committed.
+*.auto.tfvars
+terraform.tfvars

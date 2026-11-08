@@ -66,7 +66,10 @@ limits:
   max_message_bytes: 1048576
   idle_timeout_seconds: 300
 deny_sqlstate: "42501"
-audit: { type: file, path: /var/log/haltsql/proxy-audit.jsonl }
+audit:
+  sinks:
+    - { type: file, path: /var/log/haltsql/proxy-audit.jsonl }   # on_error: fail_closed
+reload: { watch: true }                # also reload on file changes (SIGHUP always works)
 logging: { level: info }
 ```
 
@@ -94,7 +97,7 @@ configured value, so key material does not end up in logs.
 | `upstream.host`, `upstream.port` | -, `5432` | The real server. Every resolved address is tried in order. |
 | `upstream.database`, `upstream.user` | required | Service credentials. Clients must ask for exactly this database name. |
 | `upstream.password` | none | For SCRAM-SHA-256, MD5 or cleartext (cleartext only over TLS). Omit for `trust`. |
-| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name). |
+| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name; the host name is checked against DNS SubjectAltName entries only, so a server certificate that carries the name only in its CN is rejected). With `verify-full`, `upstream.host` must be an IP address or a valid DNS host name (no `_`); a host the certificate check cannot use is a config error. |
 | `upstream.tls.ca` | none | PEM CA bundle; required for `verify-full`. |
 | `upstream.connect_timeout_seconds` | `10` | TCP connect timeout (authentication gets three times this). |
 | `policies` | required | List of `{path: file}` or `{inline: {...policy...}}`. Each is referenced by its `metadata.name`. |
@@ -107,8 +110,12 @@ configured value, so key material does not end up in logs.
 | `limits.auth_timeout_seconds` | `30` | Startup + authentication must finish within this (FATAL 08006). |
 | `deny_sqlstate` | `42501` | SQLSTATE of policy denials. |
 | `allow_transaction_control` | `true` | Let plain `BEGIN`/`START TRANSACTION [modes]`, `COMMIT`, `END`, `ROLLBACK`, `ABORT` through without a policy check, so drivers work outside autocommit. Matching is exact, token by token: comments, quotes, savepoints, `AND CHAIN` and `PREPARE TRANSACTION` are not matched and go to the policy. |
-| `audit.type` | `stdout` | `stdout`, `file` (with `path`; created 0600, append) or `none`. |
+| `audit.type` | `stdout` | Single-sink form: `stdout`, `file` (with `path`) or `none`. |
+| `audit.on_error`, `audit.max_buffer_records` | `fail_closed` | Failure policy of the single sink (see [Audit](#audit-and-logs)). |
+| `audit.sinks[]` | | Several sinks (instead of `type`): `stdout`, `file`, `s3` and `gcs` entries with exactly the keys of the server's `audit.sinks` ([audit-sinks.md](audit-sinks.md)), plus `on_error` (`fail_closed`, `buffer` or `drop`) and `max_buffer_records` (with `buffer`; default 10000 for stdout/file, 100000 for s3/gcs). `elasticsearch` and `kafka` are not supported by the proxy. |
 | `audit.log_raw_sql` | `false` | Include the SQL text in audit records (otherwise only its SHA-256). |
+| `reload.watch` | `false` | Poll the config file and every file it pulled in (policies, TLS material, `${file:...}`) and reload on change. |
+| `reload.poll_interval_seconds` | `2` | Watch interval (0.1 to 3600). |
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error`. Logs are JSON lines on stderr. |
 | `shutdown_grace_seconds` | `10` | On SIGTERM/SIGINT, how long to let sessions finish before closing them. |
 
@@ -129,7 +136,10 @@ Passwords should be ASCII (SASLprep is the identity for ASCII).
 **Client certificates** (`auth.method: cert`). The TLS handshake verifies the
 chain against `tls.client_ca`; the proxy then matches the leaf's subject CN or a
 `spiffe://` URI SAN against `auth.identities`. The startup user name is not used
-for authorization. Certificate revocation lists are not checked.
+for authorization. Certificate revocation lists are not checked. The CN is
+decoded from UTF8String, PrintableString, BMPString or UniversalString; a CN
+that is a TeletexString, malformed, empty or contains control characters never
+matches a `subject_cn` identity (fail closed).
 
 **Upstream.** The proxy authenticates to PostgreSQL with `trust`, cleartext
 (only over TLS), MD5 or SCRAM-SHA-256, and verifies the server's SCRAM
@@ -195,21 +205,108 @@ the proxy apply one statement's tenancy positions to another statement.
 
 ## Audit and logs
 
-One JSON object per verified statement:
+One JSON object per verified statement, per sink, **hash-chained exactly like
+the server's audit log** (same `Audit_chain` code, same sink implementations):
 
 ```json
 {"ts":"2026-11-07T22:45:17.297Z","event":"statement","session":"49fd05aacd53",
  "user":"agent","policy":"proxy-test","policy_version":"sha256:...",
- "protocol":"extended","statement":"","allowed":false,
- "reasons":["E_COLUMN_DENIED"],"shadow_reasons":[],"sql_sha256":"...",
- "fingerprint":"...","tables":["app.users"],"bind_params":[1]}
+ "protocol":"extended","allowed":false,"reasons":["E_COLUMN_DENIED"],
+ "shadow_reasons":[],"sql_sha256":"...","fingerprint":"...",
+ "tables":["app.users"],"bind_params":[1],"statement":"",
+ "prev_hash":"<64 hex>","hash":"<64 hex>"}
 ```
 
+`hash = sha256_hex(prev_hash ^ L)`, where `L` is the compact JSON of the
+record without `hash`; the first record of a chain has `prev_hash` = 64 zeros.
 `bind_params` lists parameter numbers only, never values. Proxy-level denials
 (`bind`, `parse`, `function_call` events) carry `reasons` and `message`.
+Verify any of these outputs with [`haltsql audit verify`](audit-verify.md).
+
+### Sinks
+
+```yaml
+audit:
+  sinks:
+    - type: file
+      path: /var/log/haltsql/proxy-audit.jsonl
+      on_error: fail_closed
+    - type: s3
+      bucket: corp-haltsql-audit
+      region: eu-west-1
+      prefix: haltsql/proxy/
+      spool_dir: /var/lib/haltsql/proxy-spool
+      object_lock: { mode: COMPLIANCE, retain_days: 365 }
+      on_error: buffer
+  log_raw_sql: false
+```
+
+| Sink | Chain |
+|---|---|
+| `stdout` | Starts at genesis in every process. Operational logs go to stderr, so `stdout` carries only audit records (verify a combined log with `--mixed`). |
+| `file` | Appends (created `0640`). The chain continues from the file's last record across restarts; a last line that is not a sealed record stops the proxy from starting (rotate the file). |
+| `s3`, `gcs` | The server's object sinks: batches, ordered create-only uploads, optional spool, one chain across objects (and across restarts with `spool_dir`). Same keys, credentials and object names as in [audit-sinks.md](audit-sinks.md). |
+
+The single-sink form (`audit: {type: file, path: ..., on_error: ...}`) is
+still accepted; `type: none` disables auditing. Two sinks may not share a file
+or a spool directory. Sinks are process-wide: every config generation writes
+into the same chains.
+
+### Failure policy (`on_error`)
+
+| Mode | While a sink cannot be written | Recovery |
+|---|---|---|
+| `fail_closed` (default) | The statement is **refused**: `ERROR`, SQLSTATE **`58030`** (`io_error`), message `haltsql: the audit log could not be written; statement refused`, detail `HaltSQL reasons: PROXY_AUDIT_UNAVAILABLE`. No statement reaches the database without its audit record. Denials are refused the same way. | stdout/file: every statement retries the write, so the proxy recovers with the sink. s3/gcs: writes are refused until a background upload retry succeeds. |
+| `buffer` | Records are queued in memory (in order; sealed when written, so the chain stays intact) and statements keep flowing, up to `max_buffer_records`. At the bound, statements are refused with `58030`. | Buffered records are written before the next record and every second, in order. |
+| `drop` | The record is discarded, **counted and logged** at warn level (`audit sink write failed; record dropped`). Statements keep flowing. Dropped records are never sealed, so the chain has no gap marker: use `drop` only where availability matters more than completeness. | Records written after recovery continue the chain. |
+
+The refusal is in-band like a policy denial: the connection stays usable and,
+inside a transaction, the transaction is aborted. `58030` was chosen because it
+is PostgreSQL's code for an I/O failure outside the statement itself; it is
+distinct from `deny_sqlstate`, so clients can retry it. Every write error is
+logged to stderr (`audit sink write failed; ...`, with the sink name and the
+OS error); a write that fails after part of a line reached a file makes the
+next record start on a new line, so the fragment shows up as one invalid line
+in `haltsql audit verify` rather than corrupting the next record.
+
+### Logs
+
 Operational logs (stderr, JSON lines) record connections, authentication
-results, denials and errors. Neither ever contains passwords, verifiers, SCRAM
-messages, keys or bind values, and SQL text only with `log_raw_sql: true`.
+results, denials, audit failures, reloads and errors. Neither logs nor audit
+records ever contain passwords, verifiers, SCRAM messages, keys, S3 secrets or
+bind values, and SQL text only with `log_raw_sql: true`. On shutdown the
+`stopped` log line carries per-sink audit counters (`records_written`,
+`write_failures`, `dropped`, `buffered`, uploads) and the reload counters.
+
+## Hot reload
+
+`SIGHUP` reloads the config file and everything it pulls in (policies, TLS
+certificates and keys, `${env:...}`/`${file:...}` placeholders), with the
+same `--listen`/`--log-level` overrides. With `reload.watch: true` the proxy
+also polls those files every `reload.poll_interval_seconds` and reloads when
+one changes (write files atomically, e.g. write then rename).
+
+- **New connections** use the new configuration (policies, users, identities,
+  contexts, upstream, limits, `deny_sqlstate`, TLS certificates,
+  `log_raw_sql`, log level). **Existing sessions keep the snapshot** they
+  were accepted under until they close.
+- **Any error keeps the last good configuration**: a parse or validation
+  error, an unreadable policy or certificate, unusable TLS material. The
+  error is logged (`config reload failed; keeping the current configuration`)
+  and the proxy keeps serving. A watched file that stays broken is reported
+  once, and retried when it changes again.
+- The listen address and the audit sinks need a restart: a reload that
+  changes them is applied without that part, with a warning.
+- Each reload logs `trigger` (`sighup` or `watch`), `generation` (1 at start,
+  +1 per successful reload), `reloads` and `reload_failures`. Session logs
+  carry `config_generation`. Cancel requests reach the upstream their session
+  runs on, across reloads.
+
+```bash
+kill -HUP "$(pidof haltsql-proxy)"
+# {"level":"info","msg":"config reloaded","trigger":"sighup","policies":["analytics-agent"],
+#  "generation":2,"reloads":1,"reload_failures":0}
+```
 
 ## Operations
 
@@ -218,7 +315,10 @@ messages, keys or bind values, and SQL text only with `log_raw_sql: true`.
   secrets redacted. Exit 0 valid, 1 invalid, 2 unreadable.
 - `haltsql-proxy scram-verifier [--iterations N]` reads a password from stdin.
 - SIGTERM/SIGINT: stop accepting, drain for `shutdown_grace_seconds`, close the
-  rest, exit 0.
+  rest, flush the audit sinks (final S3/GCS uploads), exit 0.
+- SIGHUP: reload (see [Hot reload](#hot-reload)).
+- `haltsql audit verify FILE|DIR|s3://...` checks the audit chains
+  ([audit-verify.md](audit-verify.md)).
 - Give the upstream user the least privilege that works (for a read-only
   agent: `SELECT` on the policy's tables only, `default_transaction_read_only`),
   and keep row-level security on as a second layer (see
@@ -232,7 +332,8 @@ messages, keys or bind values, and SQL text only with `log_raw_sql: true`.
   `LISTEN`-style asynchronous workflows that need non-SELECT statements, and
   savepoints (unless the policy allows them, which v1 policies cannot) are not
   available through the proxy.
-- No metrics endpoint yet; use the audit stream.
+- No metrics endpoint yet: audit and reload counters are in the logs, and the
+  audit stream itself.
 - Client `options`/GUC startup parameters are ignored, not forwarded.
 
 ## Testing
@@ -252,6 +353,17 @@ overwrite (the client asks for another tenant and gets only its own rows),
 pipelining, transactions, cancel (plain and TLS), COPY, auth failures, protocol
 violations, limits, audit content, log hygiene and graceful shutdown. It skips
 when Postgres or the venv is unavailable.
+
+`test/proxy/test_proxy_audit.ml` runs the binary against database
+`haltsql_audit_proxy`: chained file records (also across a restart), stdout
+records in a combined log verified with `haltsql audit verify --mixed`, a
+failing file sink (a FIFO whose reader goes away, so writes get `EPIPE`) with
+`fail_closed` (statements refused with `58030`, then recovery), `buffer`
+(refusal at the bound, in-order drain) and `drop`, `SIGHUP` and `reload.watch`
+(new sessions get the new policy, existing ones keep theirs, a broken config
+is kept out), and an S3 sink writing to a real MinIO container (host port
+16002) whose objects then verify. `test/proxy/test_proxy_audit_unit.ml`
+covers the `audit`/`reload` config sections and the file sink's chain.
 
 `lab/proxy` runs a haltlab scenario through the proxy and checks parity with
 the CLI, row-for-row equality with directly bound execution (while the client

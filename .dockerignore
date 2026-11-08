@@ -1,12 +1,15 @@
-# Keep the build context small and free of local state and secrets.
-# (vendor/ must NOT be excluded: libpg_query is compiled from
-# vendor/libpg_query inside the image.)
+# The image build needs only: dune-project, the opam files, bin/, lib/, vendor/ and
+# the licences. Everything else is excluded to keep the context small (website/ and
+# clients/ carry node_modules and build caches), the layer cache stable, and local
+# state and secrets out of the image.
+# vendor/ must NOT be excluded: libpg_query is compiled from vendor/libpg_query.
 
-# Build outputs and local state
+# Build outputs and local state.
 _build/
 _build_*/
 _opam/
 _coverage/
+dist/
 *.install
 bisect*.coverage
 .merlin
@@ -20,7 +23,6 @@ bisect*.coverage
 .claude/
 .vscode/
 .idea/
-ci/
 
 # Local secrets and environment files (never bake these into an image)
 .env
@@ -29,14 +31,13 @@ ci/
 *.pem
 *.key
 
-# Language toolchain caches in the non-OCaml SDKs (dune ignores these dirs,
-# but they can be large and make every build upload hundreds of MB)
+# Language toolchain caches (dune ignores these dirs, but they can be large and
+# make every build upload hundreds of MB)
 **/node_modules/
 **/.venv/
 **/__pycache__/
 **/.pytest_cache/
 **/.mypy_cache/
-clients/java/target/
 
 # Stray objects from building libpg_query in the source tree on the host.
 vendor/libpg_query/**/*.o
@@ -45,9 +46,16 @@ vendor/libpg_query/*.so
 vendor/libpg_query/*.dylib
 
 # Not needed to build the binaries.
-lab/
-docs/
-deploy/
-bench/
-website/
 action.yml
+bench/
+ci/
+clients/
+deploy/
+docs/
+examples/
+integrations/
+lab/
+schemas/
+scripts/
+test/
+website/

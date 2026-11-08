@@ -1,0 +1,35 @@
+; End-to-end wiring of haltsql-server's enterprise features through the real
+; haltsql-server and haltsql binaries: admin API + report feed + CLI (no
+; Docker), and real OPA, registry:2 (OCI bundle source) and apache/kafka
+; (audit sink), opensearch (elasticsearch audit sink) containers on host ports
+; 18400-18409. Docker tests skip with a
+; message when Docker is unavailable or HALTSQL_SKIP_DOCKER=1.
+
+(copy_files# ../opa/docker_util.ml)
+
+(test
+ (name test_wiring)
+ (package haltsql-server)
+ (libraries
+  haltsql.cloud
+  alcotest
+  lwt
+  lwt.unix
+  uri
+  yojson
+  digestif
+  str
+  mirage-crypto-rng.unix
+  unix)
+ (deps
+  (source_tree ../../examples/opa)
+  ../../bin/server/main.exe
+  ../../bin/haltsql/main.exe)
+ (action
+  (setenv
+   HALTSQL_SERVER_BIN
+   %{dep:../../bin/server/main.exe}
+   (setenv
+    HALTSQL_BIN
+    %{dep:../../bin/haltsql/main.exe}
+    (run %{test})))))

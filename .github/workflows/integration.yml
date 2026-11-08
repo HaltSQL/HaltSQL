@@ -1,0 +1,281 @@
+name: Integration
+
+# Docker-based integration tests against the REAL software (no fakes, mocks or
+# emulators): Kafka, Elasticsearch, OpenSearch, OPA, Keycloak, registry:2 (with
+# cesanta/docker_auth and the oras CLI), MinIO, nginx, Postgres, a real
+# kube-apiserver (envtest) and kind. The same OCaml suites run in ci.yml with
+# HALTSQL_SKIP_DOCKER=1; here they run for real.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * *" # nightly: also the kind end-to-end jobs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  ocaml-docker:
+    name: OCaml integration (${{ matrix.suite.name }})
+    # Pinned: the Docker-based suites are tuned on Ubuntu 24.04 runners.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: Kafka, Elasticsearch, OpenSearch sinks
+            dirs: test/siem
+          - name: OPA and server wiring
+            dirs: test/opa test/wiring
+          - name: Keycloak policy_from_groups
+            dirs: test/auth
+          - name: OCI, S3 and HTTPS bundle sources
+            dirs: test/bundle_source test/bundle
+          - name: audit verify, proxy audit and reload, shadow reports
+            dirs: test/audit test/proxy test/report
+            # test/proxy drives the proxy with the lab's psycopg client.
+            lab_venv: true
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      # The MinIO-based tests never pull on their own; minio/minio is no longer
+      # published on Docker Hub, so use the pgsty build of the MinIO server.
+      - name: Pull the MinIO server image
+        run: docker pull pgsty/minio:latest
+
+      - if: matrix.suite.lab_venv
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Lab virtualenv
+        if: matrix.suite.lab_venv
+        working-directory: lab
+        run: make venv
+
+      - name: Run (Docker tests must not skip)
+        env:
+          HALTSQL_MINIO_IMAGE: pgsty/minio:latest
+        run: |
+          set -o pipefail
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+          opam exec -- dune test ${{ matrix.suite.dirs }} --force 2>&1 | tee "$RUNNER_TEMP/test.log"
+          if grep -E 'SKIP(PED)? ?\(|SKIP: |\[SKIP\]' "$RUNNER_TEMP/test.log" | grep -viE 'HALTSQL_REQUIRE|not registered'; then
+            echo "::error::a Docker-based test skipped in the integration job"
+            exit 1
+          fi
+
+      - name: Containers left behind
+        if: always()
+        run: docker ps -a --filter name=haltsql- --format '{{.Names}} {{.Status}}'
+
+  e2e:
+    name: E2E
+    # The end-to-end suite (test/e2e, docs/testing.md#end-to-end-suite): the
+    # real services in Docker Compose, the real binaries, a pytest driver.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql, haltsql-server and haltsql-proxy
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Run (stack up, pytest; nothing may skip)
+        run: |
+          unset HALTSQL_SKIP_DOCKER
+          export HALTSQL_E2E_REQUIRE=1
+          set -o pipefail
+          make e2e KEEP=1 E2E_ARGS="--junitxml=$RUNNER_TEMP/e2e-junit.xml --basetemp=$RUNNER_TEMP/e2e" 2>&1 | tee "$RUNNER_TEMP/e2e.log"
+          if grep -E '^SKIPPED |[0-9]+ skipped' "$RUNNER_TEMP/e2e.log"; then
+            echo "::error::an e2e test skipped"
+            exit 1
+          fi
+
+      - name: Service logs
+        if: failure()
+        run: test/e2e/stack.sh logs --tail 300
+
+      - name: Upload haltsql process logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e/**/*.log
+            ${{ runner.temp }}/e2e-junit.xml
+          if-no-files-found: ignore
+
+      - name: Stop the stack
+        if: always()
+        run: test/e2e/stack.sh down
+
+  operator:
+    name: Operator (Go unit + envtest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql (the validator the operator runs)
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: deploy/operator/go.mod
+          cache-dependency-path: deploy/operator/go.sum
+
+      - name: Unit and envtest tests (real kube-apiserver and etcd)
+        working-directory: deploy/operator
+        run: make test
+
+      - name: Generated files are up to date
+        run: git diff --exit-code -- deploy/operator
+
+  operator-e2e:
+    name: Operator end-to-end (kind)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: deploy/operator/go.mod
+          cache-dependency-path: deploy/operator/go.sum
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          install_only: true
+      - name: kind end-to-end
+        working-directory: deploy/operator
+        run: make e2e
+
+  terraform:
+    name: Terraform (fmt, validate, test, tflint, trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - name: Static checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: deploy/terraform/test/static-checks.sh
+
+  terraform-kind:
+    name: Terraform end-to-end (kind)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: "1.14.3"
+          terraform_wrapper: false
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          install_only: true
+      - name: kind end-to-end
+        run: deploy/terraform/test/e2e-kind.sh
+
+  lab-compat:
+    name: Postgres flavours (lab compat, local engines)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+      - name: Build haltsql and haltsql-proxy
+        run: |
+          opam install . --deps-only --yes
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/proxy/main.exe
+          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
+          echo "HALTSQL_PROXY_BIN=$PWD/_build/default/bin/proxy/main.exe" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Lab virtualenv
+        working-directory: lab
+        run: make venv
+      - name: Start the engines
+        run: lab/compat/run.sh up
+      - name: Run
+        run: lab/compat/run.sh local all
+      - name: Results
+        if: always()
+        run: lab/compat/run.sh table >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Stop the engines
+        if: always()
+        run: lab/compat/run.sh down

@@ -34,6 +34,7 @@ const config = {
     hooks: { onBrokenMarkdownLinks: 'warn' },
   },
   themes: ['@docusaurus/theme-mermaid'],
+  clientModules: ['./src/clientModules/d3-transition.js'],
 
   presets: [
     [
@@ -113,7 +114,7 @@ const config = {
             ],
           },
         ],
-        copyright: `HaltSQL is licensed under Apache-2.0. Built with Docusaurus.`,
+        copyright: `HaltSQL is licensed under MIT. Built with Docusaurus.`,
       },
       prism: {
         theme: prismThemes.github,

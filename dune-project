@@ -6,7 +6,7 @@
 
 (generate_opam_files true)
 
-(license Apache-2.0)
+(license MIT)
 
 (authors "Arnav Dadarya")
 
@@ -37,8 +37,6 @@
  (depends
   (ocaml
    (>= 5.1))
-  (dune
-   (>= 3.0))
   (yojson
    (>= 2.0))
   (yaml
@@ -66,11 +64,11 @@
   (ptime
    (>= 1.0))
   (x509
-   (>= 1.2))
+   (>= 1.2.0))
   (tls
-   (>= 1.0))
+   (>= 2.0.4))
   (tls-lwt
-   (>= 1.0))
+   (>= 2.0.4))
   (ca-certs
    (>= 1.0))
   (domain-name
@@ -122,11 +120,11 @@
   (zarith
    (>= 1.12))
   (tls
-   (>= 1.0))
+   (>= 2.0.4))
   (tls-lwt
-   (>= 1.0))
+   (>= 2.0.4))
   (x509
-   (>= 1.2))
+   (>= 1.2.0))
   (ptime
    (>= 1.0))
   (eqaf
@@ -159,11 +157,11 @@
   (lwt
    (>= 5.6))
   (tls
-   (>= 1.0))
+   (>= 2.0.4))
   (tls-lwt
-   (>= 1.0))
+   (>= 2.0.4))
   (x509
-   (>= 1.2))
+   (>= 1.2.0))
   (ptime
    (>= 1.0))
   domain-name

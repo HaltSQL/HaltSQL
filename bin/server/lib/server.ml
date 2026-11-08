@@ -40,15 +40,21 @@ let bind_listen listen =
       in
       let domain = Unix.domain_of_sockaddr (Unix.ADDR_INET (addr, port)) in
       let fd = Lwt_unix.socket domain Unix.SOCK_STREAM 0 in
-      Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
-      Lwt_unix.set_close_on_exec fd;
-      (try Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (addr, port))
-       with Unix.Unix_error (e, _, _) ->
-         (try Unix.close (Lwt_unix.unix_file_descr fd) with Unix.Unix_error _ -> ());
-         raise
-           (Startup_error
-              (Printf.sprintf "cannot bind %s: %s" listen (Unix.error_message e))));
-      Lwt_unix.listen fd 1024;
+      let close_quiet () =
+        try Unix.close (Lwt_unix.unix_file_descr fd) with Unix.Unix_error _ -> ()
+      in
+      (try
+         Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+         Lwt_unix.set_close_on_exec fd;
+         (try Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (addr, port))
+          with Unix.Unix_error (e, _, _) ->
+            raise
+              (Startup_error
+                 (Printf.sprintf "cannot bind %s: %s" listen (Unix.error_message e))));
+         Lwt_unix.listen fd 1024
+       with exn ->
+         close_quiet ();
+         raise exn);
       let actual =
         match Unix.getsockname (Lwt_unix.unix_file_descr fd) with
         | Unix.ADDR_INET (_, p) -> p
@@ -542,118 +548,181 @@ let main ?health_listen ?(limits = default_limits) ~(sources : State.sources) ()
   Haltsql_auth.Oidc_client.set_logger (fun lvl msg fields ->
       let fields = List.map (fun (k, v) -> (k, `String v)) fields in
       match lvl with `Info -> Log.info msg ~fields | `Warn -> Log.warn msg ~fields);
-  match (validate_limits limits, State.load sources) with
-  | Error e, _ ->
+  match validate_limits limits with
+  | Error e ->
       Log.error "invalid connection limits" ~fields:[ ("error", `String e) ];
       2
-  | Ok (), Error errs ->
-      List.iter
-        (fun e ->
-          Log.error "failed to load configuration" ~fields:[ ("error", `String e) ])
-        errs;
-      2
-  | Ok (), Ok cfg -> (
-      Log.setup ~level:cfg.log_level ~format:cfg.log_format;
-      match
-        check_auth cfg;
-        (match Telemetry.configure cfg.otlp with
-        | Ok () -> ()
-        | Error e -> raise (Startup_error e));
-        let st = State.create ~sources cfg in
-        Metrics.set_policies_loaded (List.length st.snap.policies);
-        let fd, port = bind_listen cfg.listen in
-        let health = Option.map bind_listen health_listen in
-        (st, fd, port, health)
-      with
-      | exception Startup_error e ->
-          Log.error e;
-          2
-      | exception Failure e ->
-          Log.error e;
-          2
-      | exception Unix.Unix_error (e, f, a) ->
-          Log.error "startup failed"
-            ~fields:
-              [
-                ("error", `String (Printf.sprintf "%s(%s): %s" f a (Unix.error_message e)));
-              ];
-          2
-      | st, fd, port, health ->
-          let stop, stopper = Lwt.wait () in
-          let stopping = ref false in
-          let shutdown signame _ =
-            if not !stopping then begin
-              stopping := true;
-              Log.info "shutting down" ~fields:[ ("signal", `String signame) ];
-              Lwt.wakeup_later stopper ()
-            end
-          in
-          ignore (Lwt_unix.on_signal Sys.sigterm (shutdown "SIGTERM"));
-          ignore (Lwt_unix.on_signal Sys.sigint (shutdown "SIGINT"));
-          ignore
-            (Lwt_unix.on_signal Sys.sighup (fun _ ->
-                 Lwt.async (fun () ->
-                     let* _ = State.reload_lwt ~reason:"SIGHUP" st in
-                     Lwt.return_unit)));
-          (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
-          (* A bug in one connection's handler must never take the process
-             down: log it and carry on. *)
-          (Lwt.async_exception_hook :=
-             fun e ->
-               Log.error "unhandled exception"
-                 ~fields:[ ("error", `String (Printexc.to_string e)) ]);
-          Log.info "haltsql-server listening"
-            ~fields:
-              ([
-                 ("listen", `String cfg.listen);
-                 ("port", `Int port);
-                 ("version", `String Haltsql.version);
-                 ("policies", `List (List.map (fun (n, _) -> `String n) st.snap.policies));
-                 ( "auth",
-                   `String
-                     (if st.snap.allow_unauthenticated then "optional" else "required") );
-                 ("reload_watch", `Bool cfg.reload_watch);
-                 ("tls", `Bool (st.tls <> None));
-                 ( "client_auth",
-                   `String
-                     (match cfg.tls with
-                     | Some { client_auth = Haltsql.Config.Client_auth_required; _ } ->
-                         "required"
-                     | Some { client_auth = Haltsql.Config.Client_auth_optional; _ } ->
-                         "optional"
-                     | _ -> "none") );
-                 ("oidc_providers", `Int (List.length cfg.oidc));
-                 ("mtls_identities", `Int (List.length cfg.mtls));
-                 ("max_connections", `Int limits.max_connections);
-                 ("max_request_bytes", `Int cfg.max_request_bytes);
-               ]
-              @
-              match health with
-              | Some (_, hp) -> [ ("health_port", `Int hp) ]
-              | None -> []);
-          (* Warm the OIDC key caches; failures are logged and retried on demand. *)
+  | Ok () -> (
+      let bundle_mode = ref (Bundle_sources.Startup (Hashtbl.create 1)) in
+      let pollers = ref [] in
+      let loaded =
+        match State.load_unchecked sources with
+        | Error e -> Error e
+        | Ok cfg when cfg.bundle_sources = [] -> (
+            match State.check_policy_refs cfg with Ok () -> Ok cfg | Error e -> Error e)
+        | Ok cfg -> (
+            (* Fetch and verify every remote bundle (or restore it from its cache)
+           before the policy references can be checked. *)
+            match Lwt_main.run (Bundle_sources.start cfg ~mode:bundle_mode) with
+            | Error e -> Error e
+            | Ok (srcs, remote) -> (
+                pollers := srcs;
+                let loaded =
+                  match State.load ~remote sources with
+                  | Ok cfg -> Ok cfg
+                  | Error e -> (
+                      (* A fresh bundle the startup checks refuse: start from the cached
+                     last good bundles instead, if they pass. *)
+                      match Bundle_sources.restored_remote srcs with
+                      | None -> Error e
+                      | Some (remote', replaced) -> (
+                          match State.load ~remote:remote' sources with
+                          | Ok cfg ->
+                              Bundle_sources.fall_back replaced
+                                ~reason:(String.concat "; " e);
+                              Ok cfg
+                          | Error _ -> Error e))
+                in
+                match loaded with
+                | Ok cfg ->
+                    Bundle_sources.commit srcs;
+                    Ok cfg
+                | Error e ->
+                    List.iter Haltsql_bundle_source.stop srcs;
+                    Error e))
+      in
+      let remote_at_start () =
+        List.filter_map
+          (fun src ->
+            Option.map
+              (fun (u : Haltsql_bundle_source.update) -> (u.source, u.policies))
+              (Haltsql_bundle_source.current src))
+          !pollers
+      in
+      match loaded with
+      | Error errs ->
           List.iter
-            (fun p ->
-              Lwt.async (fun () ->
-                  let* _ = Haltsql_auth.Oidc_client.refresh p in
-                  Lwt.return_unit))
-            (Haltsql_auth.Oidc_client.providers st.snap.oidc);
-          Lwt_main.run
-            (let* () = serve ?health_fd:(Option.map fst health) ~limits st fd ~stop in
-             (* Final flush of batching audit sinks and the OTLP exporter. *)
-             let* () =
-               Lwt_list.iter_s
-                 (fun (s : Audit.sink) ->
-                   let* r = Audit.shutdown s in
-                   (match r with
-                   | Ok () -> ()
-                   | Error e ->
-                       Log.error "audit sink final flush failed"
-                         ~fields:[ ("sink", `String s.name); ("error", `String e) ]);
-                   Lwt.return_unit)
-                 st.sinks
-             in
-             Telemetry.shutdown ());
-          State.close st;
-          Log.info "stopped";
-          0)
+            (fun e ->
+              Log.error "failed to load configuration" ~fields:[ ("error", `String e) ])
+            errs;
+          2
+      | Ok cfg -> (
+          Log.setup ~level:cfg.log_level ~format:cfg.log_format;
+          match
+            check_auth cfg;
+            (match Telemetry.configure cfg.otlp with
+            | Ok () -> ()
+            | Error e -> raise (Startup_error e));
+            let st = State.create ~sources cfg in
+            st.remote <- remote_at_start ();
+            st.bundle_sources <- !pollers;
+            bundle_mode := Bundle_sources.Running st;
+            Metrics.set_policies_loaded (List.length st.snap.policies);
+            let fd, port = bind_listen cfg.listen in
+            let health = Option.map bind_listen health_listen in
+            (st, fd, port, health)
+          with
+          | exception Startup_error e ->
+              Log.error e;
+              2
+          | exception Failure e ->
+              Log.error e;
+              2
+          | exception Unix.Unix_error (e, f, a) ->
+              Log.error "startup failed"
+                ~fields:
+                  [
+                    ( "error",
+                      `String (Printf.sprintf "%s(%s): %s" f a (Unix.error_message e)) );
+                  ];
+              2
+          | st, fd, port, health ->
+              let stop, stopper = Lwt.wait () in
+              let stopping = ref false in
+              let shutdown signame _ =
+                if not !stopping then begin
+                  stopping := true;
+                  Log.info "shutting down" ~fields:[ ("signal", `String signame) ];
+                  Lwt.wakeup_later stopper ()
+                end
+              in
+              ignore (Lwt_unix.on_signal Sys.sigterm (shutdown "SIGTERM"));
+              ignore (Lwt_unix.on_signal Sys.sigint (shutdown "SIGINT"));
+              ignore
+                (Lwt_unix.on_signal Sys.sighup (fun _ ->
+                     Lwt.async (fun () ->
+                         let* _ = State.reload_lwt ~reason:"SIGHUP" st in
+                         Lwt.return_unit)));
+              (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
+              (* A bug in one connection's handler must never take the process
+             down: log it and carry on. *)
+              (Lwt.async_exception_hook :=
+                 fun e ->
+                   Log.error "unhandled exception"
+                     ~fields:[ ("error", `String (Printexc.to_string e)) ]);
+              Log.info "haltsql-server listening"
+                ~fields:
+                  ([
+                     ("listen", `String cfg.listen);
+                     ("port", `Int port);
+                     ("version", `String Haltsql.version);
+                     ( "policies",
+                       `List (List.map (fun (n, _) -> `String n) st.snap.policies) );
+                     ( "auth",
+                       `String
+                         (if st.snap.allow_unauthenticated then "optional" else "required")
+                     );
+                     ("reload_watch", `Bool cfg.reload_watch);
+                     ("tls", `Bool (st.tls <> None));
+                     ( "client_auth",
+                       `String
+                         (match cfg.tls with
+                         | Some { client_auth = Haltsql.Config.Client_auth_required; _ }
+                           ->
+                             "required"
+                         | Some { client_auth = Haltsql.Config.Client_auth_optional; _ }
+                           ->
+                             "optional"
+                         | _ -> "none") );
+                     ("oidc_providers", `Int (List.length cfg.oidc));
+                     ("mtls_identities", `Int (List.length cfg.mtls));
+                     ("max_connections", `Int limits.max_connections);
+                     ("max_request_bytes", `Int cfg.max_request_bytes);
+                     ( "audit_sinks",
+                       `List (List.map (fun (s : Audit.sink) -> `String s.name) st.sinks)
+                     );
+                     ("bundle_sources", `Int (List.length st.bundle_sources));
+                     ("opa", `Bool (st.snap.opa <> None));
+                     ("admin_api", `Bool st.snap.admin.admin_enabled);
+                   ]
+                  @
+                  match health with
+                  | Some (_, hp) -> [ ("health_port", `Int hp) ]
+                  | None -> []);
+              (* Warm the OIDC key caches; failures are logged and retried on demand. *)
+              List.iter
+                (fun p ->
+                  Lwt.async (fun () ->
+                      let* _ = Haltsql_auth.Oidc_client.refresh p in
+                      Lwt.return_unit))
+                (Haltsql_auth.Oidc_client.providers st.snap.oidc);
+              Lwt_main.run
+                (let* () = serve ?health_fd:(Option.map fst health) ~limits st fd ~stop in
+                 (* Final flush of batching audit sinks and the OTLP exporter. *)
+                 let* () =
+                   Lwt_list.iter_s
+                     (fun (s : Audit.sink) ->
+                       let* r = Audit.shutdown s in
+                       (match r with
+                       | Ok () -> ()
+                       | Error e ->
+                           Log.error "audit sink final flush failed"
+                             ~fields:[ ("sink", `String s.name); ("error", `String e) ]);
+                       Lwt.return_unit)
+                     st.sinks
+                 in
+                 Telemetry.shutdown ());
+              Bundle_sources.stop st;
+              State.close st;
+              Log.info "stopped";
+              0))

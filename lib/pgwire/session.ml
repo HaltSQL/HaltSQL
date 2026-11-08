@@ -5,12 +5,14 @@ open Proxy_config
 
 type shared = {
   cfg : Proxy_config.t;
+  generation : int;
   tls_server : Tls.Config.server option;
-  audit : Plog.audit;
+  audit : Paudit.t;
   mock_secret : string;
-  cancel_table : (int, int * int * int) Hashtbl.t;
+  cancel_table : (int, int * int * int * Proxy_config.upstream) Hashtbl.t;
 }
 
+let audit_sqlstate = "58030"
 let sentinel_prefix = "haltsql_deny_"
 let max_startup_packet = 10_000
 let max_sasl_message = 4096
@@ -83,39 +85,61 @@ let audit_base s ~event =
     ("policy", `String b.policy_name);
   ]
 
+(* Fail closed: a statement whose audit record could not be written is refused (in-band,
+   SQLSTATE 58030 io_error), whatever its verdict. *)
+let audit_refusal () =
+  Enforce.local_deny ~sqlstate:audit_sqlstate ~code:"PROXY_AUDIT_UNAVAILABLE"
+    ~hint:
+      "haltsql-proxy refuses statements while an audit sink with on_error: fail_closed \
+       (or a full buffer) cannot be written; retry once the sink has recovered."
+    "the audit log could not be written; statement refused"
+
+let audited s r =
+  match r with
+  | Ok () -> Ok ()
+  | Error e ->
+      log s Plog.Error "statement refused: audit log unavailable" [ ("error", `String e) ];
+      Error (audit_refusal ())
+
 let audit_verdict s ~protocol ?stmt ~sql (v : Haltsql.Verdict.t)
     (r : (unit, Enforce.deny) result) =
   let codes = match r with Ok () -> [] | Error d -> d.codes in
-  Plog.audit s.sh.audit
-    (audit_base s ~event:"statement"
-    @ [
-        ("policy_version", `String v.policy_version);
-        ("protocol", `String protocol);
-        ("allowed", `Bool (Result.is_ok r));
-        ("reasons", `List (List.map (fun c -> `String c) codes));
-        ( "shadow_reasons",
-          `List
-            (List.map
-               (fun (x : Haltsql.Reason.t) ->
-                 `String (Haltsql.Reason.code_to_string x.code))
-               v.shadow_reasons) );
-        ("sql_sha256", `String v.sql_sha256);
-        ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
-        ("tables", `List (List.map (fun t -> `String t) v.tables));
-        ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
-      ]
-    @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
-    @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
+  audited s
+  @@ Paudit.record s.sh.audit
+       (audit_base s ~event:"statement"
+       @ [
+           ("policy_version", `String v.policy_version);
+           ("protocol", `String protocol);
+           ("allowed", `Bool (Result.is_ok r));
+           ("reasons", `List (List.map (fun c -> `String c) codes));
+           ( "shadow_reasons",
+             `List
+               (List.map
+                  (fun (x : Haltsql.Reason.t) ->
+                    `String (Haltsql.Reason.code_to_string x.code))
+                  v.shadow_reasons) );
+           ("sql_sha256", `String v.sql_sha256);
+           ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
+           ("tables", `List (List.map (fun t -> `String t) v.tables));
+           ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
+         ]
+       @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+       @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
 
 let audit_local s ~event ?stmt (d : Enforce.deny) =
-  Plog.audit s.sh.audit
-    (audit_base s ~event
-    @ [
-        ("allowed", `Bool false);
-        ("reasons", `List (List.map (fun c -> `String c) d.codes));
-        ("message", `String d.message);
-      ]
-    @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+  audited s
+  @@ Paudit.record s.sh.audit
+       (audit_base s ~event
+       @ [
+           ("allowed", `Bool false);
+           ("reasons", `List (List.map (fun c -> `String c) d.codes));
+           ("message", `String d.message);
+         ]
+       @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+
+(* A proxy-level denial, replaced by the audit refusal if it cannot be audited. *)
+let local_denial s ~event ?stmt d =
+  match audit_local s ~event ?stmt d with Ok () -> d | Error refusal -> refusal
 
 (* ------------------------------------------------------------------ *)
 (* Startup                                                              *)
@@ -156,10 +180,67 @@ let valid_app_name a =
 let peer_identity t =
   match Tls_lwt.Unix.epoch t with Error () -> None | Ok e -> e.Tls.Core.peer_certificate
 
+(* X.509 >= 1.2 returns the CN as content octets in their declared ASN.1 string encoding.
+   Decode the encodings with an unambiguous Unicode mapping to UTF-8 and treat anything
+   else (TeletexString, malformed content, control characters) as no CN, so it never
+   matches a [subject_cn] identity. Same rules as Haltsql_auth.Mtls.cn_text. *)
+let cn_text (cn : X509.Distinguished_name.Common_name.t) =
+  let module E = X509.Distinguished_name.Encoded_string in
+  let enc = X509.Distinguished_name.Common_name.encoded cn in
+  let raw = E.to_string enc in
+  let wide ~width get =
+    let len = String.length raw in
+    if len mod width <> 0 then None
+    else
+      let b = Buffer.create len in
+      let rec go i =
+        if i >= len then Some (Buffer.contents b)
+        else
+          match get i with
+          | Some u ->
+              Buffer.add_utf_8_uchar b u;
+              go (i + width)
+          | None -> None
+      in
+      go 0
+  in
+  let text =
+    match E.encoding enc with
+    | `UTF8 -> if String.is_valid_utf_8 raw then Some raw else None
+    | `Printable ->
+        if String.for_all (fun c -> Char.code c < 0x80) raw then Some raw else None
+    | `BMP ->
+        (* UTF-16BE; a surrogate pair spans two units, so decode with the stdlib. *)
+        let len = String.length raw in
+        let b = Buffer.create len in
+        let rec go i =
+          if i >= len then Some (Buffer.contents b)
+          else
+            let d = String.get_utf_16be_uchar raw i in
+            if Uchar.utf_decode_is_valid d then (
+              Buffer.add_utf_8_uchar b (Uchar.utf_decode_uchar d);
+              go (i + Uchar.utf_decode_length d))
+            else None
+        in
+        go 0
+    | `Universal ->
+        wide ~width:4 (fun i ->
+            let cp = Int32.to_int (String.get_int32_be raw i) land 0xFFFF_FFFF in
+            if Uchar.is_valid cp then Some (Uchar.of_int cp) else None)
+    | `Teletex -> None
+  in
+  match text with
+  | Some t
+    when t <> "" && String.for_all (fun c -> Char.code c >= 0x20 && Char.code c <> 0x7f) t
+    ->
+      Some t
+  | _ -> None
+
 let match_identity ids cert =
   let cn =
-    Option.map X509.Distinguished_name.Common_name.to_string
+    Option.bind
       (X509.Distinguished_name.common_name (X509.Certificate.subject cert))
+      cn_text
   in
   let uris =
     match
@@ -170,11 +251,18 @@ let match_identity ids cert =
         Option.value ~default:[] (X509.General_name.find X509.General_name.URI gn)
     | None -> []
   in
+  let spiffe_id =
+    let prefix = "spiffe://" in
+    let plen = String.length prefix in
+    match uris with
+    | [ u ] when String.length u >= plen && String.sub u 0 plen = prefix -> Some u
+    | _ -> None
+  in
   List.find_opt
     (fun id ->
       match id.id_match with
       | Subject_cn c -> cn = Some c
-      | Spiffe_id sid -> List.mem sid uris)
+      | Spiffe_id sid -> spiffe_id = Some sid)
     ids
 
 let auth_failed user =
@@ -258,7 +346,7 @@ let register_cancel s ~upid ~ukey =
   in
   let pid = fresh () in
   let key = Sec.random_int32 () in
-  Hashtbl.replace tbl pid (key, upid, ukey);
+  Hashtbl.replace tbl pid (key, upid, ukey, s.sh.cfg.upstream);
   s.proxy_pid <- Some pid;
   (pid, key)
 
@@ -330,19 +418,21 @@ let handle_client_message s tag payload =
           Enforce.simple ~sqlstate:(sqlstate s)
             ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) sql
         in
-        audit_verdict s ~protocol:"simple" ~sql v r;
-        match r with
-        | Ok () ->
-            Stmt_state.drop_unnamed s.st;
-            Stmt_state.end_segment s.st;
-            forward s (Wire.frame 'Q' payload)
-        | Error d ->
-            log s Plog.Info "statement denied"
-              [
-                ("protocol", `String "simple");
-                ("reasons", `List (List.map (fun c -> `String c) d.codes));
-              ];
-            deny_simple s d)
+        match audit_verdict s ~protocol:"simple" ~sql v r with
+        | Error refusal -> deny_simple s refusal
+        | Ok () -> (
+            match r with
+            | Ok () ->
+                Stmt_state.drop_unnamed s.st;
+                Stmt_state.end_segment s.st;
+                forward s (Wire.frame 'Q' payload)
+            | Error d ->
+                log s Plog.Info "statement denied"
+                  [
+                    ("protocol", `String "simple");
+                    ("reasons", `List (List.map (fun c -> `String c) d.codes));
+                  ];
+                deny_simple s d))
   | 'P' -> (
       if s.discarding then Lwt.return_unit
       else
@@ -351,34 +441,36 @@ let handle_client_message s tag payload =
           Enforce.parse ~sqlstate:(sqlstate s)
             ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) p.query
         in
-        audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r;
-        match r with
-        | Error d ->
-            log s Plog.Info "statement denied"
-              [
-                ("protocol", `String "extended");
-                ("reasons", `List (List.map (fun c -> `String c) d.codes));
-              ];
-            deny_extended s d
+        match audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r with
+        | Error refusal -> deny_extended s refusal
         | Ok () -> (
-            let* existing =
-              if p.stmt = "" then Lwt.return Stmt_state.Missing else resolve s p.stmt
-            in
-            match existing with
-            | Stmt_state.Found _ ->
-                let d =
-                  Enforce.local_deny ~sqlstate:"42P05" ~code:"PROXY_STATEMENT_EXISTS"
-                    (Printf.sprintf "prepared statement \"%s\" already exists" p.stmt)
-                in
-                audit_local s ~event:"parse" ~stmt:p.stmt d;
+            match r with
+            | Error d ->
+                log s Plog.Info "statement denied"
+                  [
+                    ("protocol", `String "extended");
+                    ("reasons", `List (List.map (fun c -> `String c) d.codes));
+                  ];
                 deny_extended s d
-            | _ ->
-                Stmt_state.note_parse s.st p.stmt v;
-                (* Never let the client choose how the injected tenant value
-                   is decoded: forward tenancy parameters as unspecified. *)
-                let p' = Enforce.reset_tenancy_param_types v p in
-                forward s
-                  (if p' == p then Wire.frame 'P' payload else Wire.encode_parse p')))
+            | Ok () -> (
+                let* existing =
+                  if p.stmt = "" then Lwt.return Stmt_state.Missing else resolve s p.stmt
+                in
+                match existing with
+                | Stmt_state.Found _ ->
+                    let d =
+                      Enforce.local_deny ~sqlstate:"42P05" ~code:"PROXY_STATEMENT_EXISTS"
+                        (Printf.sprintf "prepared statement \"%s\" already exists" p.stmt)
+                    in
+                    deny_extended s (local_denial s ~event:"parse" ~stmt:p.stmt d)
+                | _ ->
+                    Stmt_state.note_parse s.st p.stmt v;
+                    (* Never let the client choose how the injected tenant value is
+                       decoded: forward tenancy parameters as unspecified. *)
+                    let p' = Enforce.reset_tenancy_param_types v p in
+                    forward s
+                      (if p' == p then Wire.frame 'P' payload else Wire.encode_parse p')))
+      )
   | 'B' -> (
       if s.discarding then Lwt.return_unit
       else
@@ -392,16 +484,13 @@ let handle_client_message s tag payload =
                 forward s
                   (if v.bind_params = [] then Wire.frame 'B' payload
                    else Wire.encode_bind b')
-            | Error d ->
-                audit_local s ~event:"bind" ~stmt:b.bstmt d;
-                deny_extended s d)
+            | Error d -> deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
         | Stmt_state.Missing | Stmt_state.Wait ->
             let d =
               Enforce.local_deny ~sqlstate:"26000" ~code:"PROXY_STATEMENT_UNKNOWN"
                 (Printf.sprintf "prepared statement \"%s\" does not exist" b.bstmt)
             in
-            audit_local s ~event:"bind" ~stmt:b.bstmt d;
-            deny_extended s d)
+            deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
   | 'D' ->
       if s.discarding then Lwt.return_unit
       else (
@@ -443,8 +532,7 @@ let handle_client_message s tag payload =
           Enforce.local_deny ~sqlstate:(sqlstate s) ~code:"PROXY_FUNCTION_CALL"
             "the fastpath function call protocol is not allowed"
         in
-        audit_local s ~event:"function_call" d;
-        deny_simple s d
+        deny_simple s (local_denial s ~event:"function_call" d)
   | 'd' | 'c' | 'f' ->
       fatal "08P01" "COPY sub-protocol is not allowed through haltsql-proxy"
   | 'p' -> fatal "08P01" "unexpected password message"
@@ -455,14 +543,9 @@ let read_client s =
   let idle = s.sh.cfg.limits.idle_timeout in
   if idle <= 0. then p
   else
+    let msg_p = Lwt.map (fun m -> `Msg m) (Lwt.no_cancel p) in
     let rec wait () =
-      let* r =
-        Lwt.pick
-          [
-            Lwt.map (fun m -> `Msg m) (Lwt.no_cancel p);
-            Lwt.map (fun () -> `Timeout) (Lwt_unix.sleep idle);
-          ]
-      in
+      let* r = Lwt.pick [ msg_p; Lwt.map (fun () -> `Timeout) (Lwt_unix.sleep idle) ] in
       match r with
       | `Msg m -> Lwt.return m
       | `Timeout ->
@@ -577,13 +660,17 @@ let run s =
             s.binding <- Some b;
             let* () = Io.write s.client Wire.auth_ok in
             log s Plog.Info "client authenticated"
-              [ ("policy", `String b.policy_name); ("tls", `Bool tls_on) ];
+              [
+                ("policy", `String b.policy_name);
+                ("tls", `Bool tls_on);
+                ("config_generation", `Int s.sh.generation);
+              ];
             Lwt.return (`Session app))
   in
   match startup with
   | `Cancel (pid, key) -> (
       match Hashtbl.find_opt s.sh.cancel_table pid with
-      | Some (k, upid, ukey) ->
+      | Some (k, upid, ukey, upstream) ->
           let enc x =
             let b = Bytes.create 4 in
             Bytes.set_int32_be b 0 (Int32.of_int x);
@@ -591,7 +678,7 @@ let run s =
           in
           if Sec.ct_equal (enc k) (enc key) then (
             log s Plog.Info "forwarding cancel request" [];
-            Upstream.send_cancel cfg.upstream ~pid:upid ~key:ukey)
+            Upstream.send_cancel upstream ~pid:upid ~key:ukey)
           else (
             log s Plog.Warn "cancel request with wrong key" [];
             Lwt.return_unit)

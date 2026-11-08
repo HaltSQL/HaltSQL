@@ -9,8 +9,8 @@ info:
     Denials are returned as `200` verdicts with `allowed: false`. Clients must
     treat any non-200 response, timeout, or connection error as a denial.
   license:
-    name: Apache-2.0
-    identifier: Apache-2.0
+    name: MIT
+    identifier: MIT
   contact:
     url: https://github.com/ardada2468/HaltSQL
 servers:
@@ -26,6 +26,7 @@ tags:
   - name: verify
   - name: policies
   - name: operations
+  - name: admin
 paths:
   /v1/verify:
     post:
@@ -85,6 +86,82 @@ paths:
                     items:
                       $ref: "#/components/schemas/PolicySummary"
         "401": { $ref: "#/components/responses/Error" }
+  /v1/admin/status:
+    get:
+      tags: [admin]
+      operationId: adminStatus
+      summary: Live policy versions, bundle sources and audit sink health (server.admin)
+      description: >-
+        Only when server.admin is enabled (404 otherwise). The caller must be listed in
+        server.admin.callers.
+      responses:
+        "200":
+          description: Server status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, policies, bundle_sources, audit_sinks]
+                properties:
+                  version: { type: string }
+                  started: { type: string, format: date-time }
+                  uptime_seconds: { type: integer }
+                  config_generation: { type: integer }
+                  default_policy: { type: [string, "null"] }
+                  policies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        version: { type: string }
+                        mode: { type: string, enum: [enforce, shadow] }
+                        origin: { type: string, enum: [config, bundle_source, bundle_or_file] }
+                  bundle_sources:
+                    type: array
+                    items: { type: object }
+                  audit_sinks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        type: { type: string }
+                        healthy: { type: boolean }
+                  opa: { type: [object, "null"] }
+                  report: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/admin/report:
+    get:
+      tags: [admin]
+      operationId: adminReport
+      summary: Shadow-mode analytics and policy suggestions (server.admin)
+      parameters:
+        - { name: since, in: query, required: false, schema: { type: string }, description: "RFC 3339, YYYY-MM-DD or a duration (1h); clamped to the window." }
+        - { name: policy, in: query, required: false, schema: { type: string } }
+        - { name: suggest, in: query, required: false, schema: { type: boolean, default: true } }
+        - { name: top, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: The report (see docs/shadow-reports.md), plus window counters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window_seconds: { type: integer }
+                  max_tracked_queries: { type: integer }
+                  tracked_queries: { type: integer }
+                  tracked_records: { type: integer }
+                  evicted_queries: { type: integer }
+                  records_per_query: { type: integer }
+                  sampled_out: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /healthz:
     get:
       tags: [operations]
@@ -219,6 +296,7 @@ components:
         - E_WRITE_DENIED
         - E_UNSUPPORTED
         - E_INTERNAL
+        - E_EXTERNAL_POLICY
     Reason:
       type: object
       required: [code, message, rule]

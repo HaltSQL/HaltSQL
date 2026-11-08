@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haltsql-crewai"
+version = "0.1.0"
+description = "HaltSQL verified read-only SQL tool for CrewAI"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10,<3.14"
+dependencies = ["haltsql[psycopg]>=0.1.0", "crewai>=1.15,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "psycopg[binary]>=3.2", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+haltsql_crewai = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs the real haltsql binaries and the lab Postgres (skipped when unavailable)"]

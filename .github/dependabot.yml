@@ -3,7 +3,8 @@
 # "# vX.Y.Z" comments current). `cooldown` delays brand-new releases a few days
 # so a compromised upstream release is likely to be caught and yanked before it
 # is proposed here. OCaml (opam) dependencies are not supported by Dependabot:
-# they are pinned through OPAM_REPOSITORY_COMMIT (Dockerfile, release.yml).
+# they are pinned through OPAM_REPOSITORY_COMMIT in the Dockerfile (release.yml
+# builds the static tarballs from its `dist` stage).
 version: 2
 updates:
   - package-ecosystem: github-actions

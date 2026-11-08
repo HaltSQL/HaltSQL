@@ -999,6 +999,40 @@ let test_web_identity () =
        [ c.access_key_id; c.secret_access_key; Option.get c.session_token ];
      Alcotest.(check int) "cached until expiry" 1 (C.Aws_creds.fetch_count p))
 
+let test_container_credentials () =
+  run
+    (let auth_seen = ref "" in
+     let srv =
+       Fake_http.start (fun req _ ->
+           auth_seen := Option.value ~default:"" (Fake_http.header req "authorization");
+           if Fake_http.path req <> "/v2/credentials/task-role" then
+             Fake_http.respond ~status:404 ""
+           else if !auth_seen <> "ecs-secret-token" then
+             Fake_http.respond ~status:403 {|{"Code":"AccessDenied"}|}
+           else
+             Fake_http.respond
+               {|{"AccessKeyId":"ASIACONT","SecretAccessKey":"contsecret","Token":"conttok","Expiration":"2099-01-01T00:00:00Z"}|})
+     in
+     let tok_file = tmp_file "ecs-secret-token\r\n" in
+     let env =
+       env_of
+         [
+           ( "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+             Fake_http.url srv "/v2/credentials/task-role" );
+           ("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", tok_file);
+           ("AWS_EC2_METADATA_DISABLED", "true");
+         ]
+     in
+     let p = C.Aws_creds.create ~env C.Aws_creds.default_chain in
+     C.Aws_creds.get p >|= fun r ->
+     srv.stop ();
+     let c = get_ok r in
+     Alcotest.(check string) "auth header" "ecs-secret-token" !auth_seen;
+     Alcotest.(check (list string))
+       "container creds via default_chain"
+       [ "ASIACONT"; "contsecret"; "conttok" ]
+       [ c.access_key_id; c.secret_access_key; Option.get c.session_token ])
+
 (* ================= GCS + metadata server ================= *)
 
 let start_metadata () =
@@ -1867,6 +1901,21 @@ let test_audit_chain () =
     (Error (1, "prev_hash does not match the previous record's hash"))
     (C.Audit_chain.verify_lines [ l2; l1 ])
 
+(* regression: a DNS name starting with "127." is not loopback *)
+let test_loopback_http () =
+  List.iter
+    (fun (u, expected) -> Alcotest.(check bool) u expected (C.Http.is_loopback_http u))
+    [
+      ("http://127.0.0.1:8200/v1", true);
+      ("http://127.3.2.1/x", true);
+      ("http://localhost:8080/", true);
+      ("http://[::1]:8080/", true);
+      ("http://127.attacker.example:8080/", false);
+      ("http://127.0.0.1.nip.io/", false);
+      ("http://127.0.0.300/", false);
+      ("http://example.com/", false);
+    ]
+
 let () =
   Alcotest.run "cloud"
     [
@@ -1879,10 +1928,12 @@ let () =
           Alcotest.test_case "S3 examples" `Quick test_sigv4_s3_examples;
           Alcotest.test_case "helpers" `Quick test_sigv4_helpers;
         ] );
+      ("http", [ Alcotest.test_case "loopback hosts" `Quick test_loopback_http ]);
       ( "credentials",
         [
           Alcotest.test_case "env + static" `Quick test_creds_env_static;
           Alcotest.test_case "web identity" `Quick test_web_identity;
+          Alcotest.test_case "container credentials" `Quick test_container_credentials;
           Alcotest.test_case "refresh margin" `Quick test_creds_refresh_margin;
         ] );
       ( "s3",

@@ -7,7 +7,7 @@ name = "haltsql"
 version = "0.1.0"
 description = "Python client for HaltSQL, a policy firewall for LLM-generated PostgreSQL"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = ["httpx>=0.24,<1"]
 classifiers = [

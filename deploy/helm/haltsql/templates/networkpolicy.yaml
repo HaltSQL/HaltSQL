@@ -1,12 +1,20 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- $np := .Values.networkPolicy }}
-{{- $https := include "haltsql.egressHTTPS" . | eq "true" }}
-{{- $extra := $np.egress.extraRules | default list }}
+{{- $eg := $np.egress }}
+{{- if not (or (kindIs "map" $eg) (kindIs "slice" $eg) (kindIs "invalid" $eg)) }}
+{{- fail "networkPolicy.egress must be a map (allowHTTPS/allowDNS/extraRules) or a list of NetworkPolicyEgressRule objects" }}
+{{- end }}
+{{- $https := false }}
+{{- $extra := list }}
 {{- $dns := false }}
-{{- if eq (toString $np.egress.allowDNS) "auto" }}
+{{- if kindIs "map" $eg }}
+{{- $https = include "haltsql.egressHTTPS" . | eq "true" }}
+{{- $extra = $eg.extraRules | default list }}
+{{- if eq (toString $eg.allowDNS) "auto" }}
 {{- $dns = or $https (gt (len $extra) 0) }}
 {{- else }}
-{{- $dns = $np.egress.allowDNS }}
+{{- $dns = $eg.allowDNS }}
+{{- end }}
 {{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -37,12 +45,25 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
     {{- end }}
+    {{- if .Values.tls.enabled }}
+    # Probes go to the plain-HTTP health port when TLS is enabled.
+    - ports:
+        - port: health
+          protocol: TCP
+    {{- end }}
     {{- with $np.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
   # Verification itself makes no network calls, so egress is denied unless
   # OIDC (JWKS over HTTPS) or networkPolicy.egress rules need it.
-  {{- if or $dns $https $extra }}
+  {{- if kindIs "slice" $eg }}
+  {{- with $eg }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
+  egress: []
+  {{- end }}
+  {{- else if or $dns $https $extra }}
   egress:
     {{- if $dns }}
     - ports:

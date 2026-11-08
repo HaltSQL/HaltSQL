@@ -17,8 +17,8 @@ let write path s =
 
 let dn cn =
   [
-    X509.Distinguished_name.Relative_distinguished_name.singleton
-      (CN (X509.Distinguished_name.Common_name.v cn));
+    X509.Distinguished_name.(
+      Relative_distinguished_name.singleton (CN (Common_name.v cn)));
   ]
 
 let now () = Ptime_clock.now ()

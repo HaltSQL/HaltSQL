@@ -22,7 +22,7 @@ let check_stmt_kind (env : Env.t) k loc =
 (** Rule F: functions. Unqualified or [pg_catalog.]-qualified names must be in
     [policy.functions] by bare name (a [pg_catalog.f] entry is accepted too); any other
     schema [s.f] must be listed as ["s.f"]. *)
-let check_function (env : Env.t) (fname : Ast.qname) loc =
+let check_function_allowlist (env : Env.t) (fname : Ast.qname) loc =
   let fs = env.policy.functions in
   let ok, shown =
     match fname.schema with
@@ -41,6 +41,56 @@ let check_function (env : Env.t) (fname : Ast.qname) loc =
            "Rewrite the query without calling %s(); only allowlisted functions may be \
             used."
            shown)
+
+(** Built-in functions that run a SQL string (or a whole table/schema/database) given as
+    an argument. HaltSQL only sees a string literal there, so table, column and tenancy
+    rules cannot apply: they are denied even when the policy allowlists them. Matched by
+    exact name, unqualified or [pg_catalog.]-qualified. *)
+let dynamic_sql_functions =
+  [
+    "ts_rewrite";
+    "ts_stat";
+    "query_to_xml";
+    "query_to_xmlschema";
+    "query_to_xml_and_xmlschema";
+    "cursor_to_xml";
+    "cursor_to_xmlschema";
+    "table_to_xml";
+    "table_to_xmlschema";
+    "table_to_xml_and_xmlschema";
+    "schema_to_xml";
+    "schema_to_xmlschema";
+    "schema_to_xml_and_xmlschema";
+    "database_to_xml";
+    "database_to_xmlschema";
+    "database_to_xml_and_xmlschema";
+    "dblink";
+    "dblink_exec";
+    "dblink_open";
+    "dblink_fetch";
+    "dblink_send_query";
+  ]
+
+let is_dynamic_sql_function (fname : Ast.qname) =
+  let builtin =
+    match fname.schema with
+    | None -> true
+    | Some s -> String.lowercase_ascii s = "pg_catalog"
+  in
+  builtin && List.mem (String.lowercase_ascii fname.name) dynamic_sql_functions
+
+let check_function (env : Env.t) (fname : Ast.qname) loc =
+  if is_dynamic_sql_function fname then
+    Env.emit env ~loc ~rule:"functions.dynamic_sql" Reason.E_FUNCTION_DENIED
+      (Printf.sprintf
+         "function %s runs SQL that HaltSQL cannot analyze; it is never allowed"
+         fname.name)
+      ~hint:
+        (Printf.sprintf
+           "Rewrite the query without calling %s(); functions that run a SQL string are \
+            denied even when allowlisted."
+           fname.name)
+  else check_function_allowlist env fname loc
 
 (** Rule F: SQL value functions. Date/time values are allowed; identity and session values
     (CURRENT_USER, SESSION_USER, USER, CURRENT_ROLE, CURRENT_CATALOG, CURRENT_SCHEMA, ...)

@@ -49,7 +49,37 @@ type limits = {
   auth_timeout : float;  (** seconds to finish startup + auth; default 30 *)
 }
 
-type audit_sink = Audit_stdout | Audit_file of string | Audit_none
+type audit_sink =
+  | Audit_stdout
+  | Audit_file of string
+  | Audit_none
+      (** Legacy single-sink view of {!t.audit_sinks}: the first stdout or file sink. *)
+
+type audit_on_error =
+  | Audit_fail_closed
+      (** default: a record that cannot be written refuses the statement (SQLSTATE 58030)
+          until the sink accepts writes again *)
+  | Audit_buffer
+      (** keep records in memory (in order, sealed when written) and retry; refuse
+          statements only once [max_buffer_records] are waiting *)
+  | Audit_drop
+      (** drop records the sink cannot take; every drop is counted and logged at warn
+          level (never silent), and statements keep flowing *)
+
+type audit_sink_spec = {
+  sink : Config.sink_kind;
+      (** decoded by {!Haltsql.Config} exactly like the server's [audit.sinks] entries;
+          always [Sink_stdout], [Sink_file], [Sink_s3] or [Sink_gcs] *)
+  sink_on_error : audit_on_error;
+  max_buffer_records : int;
+      (** buffer bound for [Audit_buffer]: default 10000 (stdout/file) or 100000 (s3/gcs,
+          and never less than the sink's [batch.max_records]) *)
+}
+
+type reload = {
+  watch : bool;  (** default false: poll {!t.source_files} and reload on change *)
+  poll_interval : float;  (** seconds, default 2, 0.1..3600 *)
+}
 
 type t = {
   listen_host : string;
@@ -63,10 +93,16 @@ type t = {
   allow_transaction_control : bool;
       (** default true: plain BEGIN/COMMIT/ROLLBACK pass without a policy check (see
           {!Enforce.transaction_control}) *)
-  audit : audit_sink;  (** default stdout *)
+  audit : audit_sink;  (** legacy projection of [audit_sinks]; default stdout *)
+  audit_sinks : audit_sink_spec list;
+      (** default one stdout sink with [Audit_fail_closed]; [[]] for [type: none] *)
   log_raw_sql : bool;  (** default false: audit records carry only the SQL hash *)
   log_level : string;  (** debug | info | warn | error *)
   shutdown_grace : float;  (** seconds; default 10 *)
+  reload : reload;
+  source_files : string list;
+      (** absolute paths of the config file (with {!of_file}) and every file it pulled in:
+          policy files, TLS material and [${file:...}] placeholders *)
 }
 
 val kind : string
@@ -85,6 +121,11 @@ val of_json :
 val of_file : ?env:(string -> string option) -> string -> (t, Load_error.t list) result
 (** {!of_json} on a YAML or JSON file; relative paths resolve against the file's
     directory. *)
+
+val sink_name : Config.sink_kind -> string
+(** ["stdout"], the file path, ["s3://bucket/prefix"] or ["gs://bucket/prefix"]. *)
+
+val on_error_name : audit_on_error -> string
 
 val to_json_redacted : t -> Yojson.Safe.t
 (** Effective configuration with secrets (password, verifiers, keys) redacted. *)

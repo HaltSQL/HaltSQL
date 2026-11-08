@@ -143,6 +143,57 @@ in unauthenticated development mode, every loaded policy.
 }
 ```
 
+## GET /v1/admin/status
+
+Only when [`server.admin`](config-reference.md#serveradmin) is enabled
+(otherwise `404 NOT_FOUND`). The caller must authenticate (`401`) and be
+listed in `server.admin.callers` (`403 FORBIDDEN` otherwise): a
+`token:<name>` entry matches that static token, `oidc:<provider>` any token
+verified by that provider, and `mtls:<spiffe-id or CN>` the configured mTLS
+identity the client certificate matched. Anonymous callers never match.
+
+```json
+{
+  "version": "0.1.0",
+  "started": "2026-11-07T09:12:03.120Z",
+  "uptime_seconds": 5400,
+  "config_generation": 3,
+  "default_policy": null,
+  "policies": [
+    { "name": "remote-saas", "version": "sha256:4f1c9a...", "mode": "enforce", "origin": "bundle_source" }
+  ],
+  "bundle_sources": [
+    {
+      "source": "oci:ghcr.io/corp/haltsql-policies:prod",
+      "current": { "bundle": "prod", "version": "1.4.0", "signed_by": "sha256:a1b2c3d4...",
+                   "revision": "sha256:9c0e...", "origin": "source", "policies": ["remote-saas"] },
+      "checks": 87, "last_success": "2026-11-07T10:42:01.004Z", "last_error": null
+    }
+  ],
+  "audit_sinks": [ { "name": "kafka://kafka-1:9093/haltsql.audit", "type": "kafka", "healthy": true } ],
+  "audit_restart_pending": false,
+  "opa": { "host": "127.0.0.1", "decision_path": "haltsql/decision", "timeout_ms": 500, "on_error": "deny" },
+  "report": { "tracked_queries": 412, "evicted_queries": 0, "sampled_out": 1290 }
+}
+```
+
+`origin` is `config` (a policy in the config file), `bundle_source`, or
+`bundle_or_file` (a local bundle or a `--policy` file).
+`audit_restart_pending` is `true` when the last reload changed `audit.sinks`:
+audit sinks are opened once at startup, so records keep going to the listed
+running sinks until a restart (the reload also logs a warning). `last_error` carries
+the stable bundle-source code and message
+([policy-bundles.md](policy-bundles.md#what-the-poller-does)). Header values
+and credentials are never included.
+
+## GET /v1/admin/report
+
+Shadow-mode analytics over the server's recent verdicts, with policy
+suggestions. Same authorization as `/v1/admin/status`. The query parameters
+(`since`, `policy`, `suggest`, `top`) and the response are described in
+[shadow-reports.md](shadow-reports.md#server-endpoint-get-v1adminreport).
+Every verdict whose audit record was written is fed into the report window.
+
 ## GET /healthz
 
 Liveness. Returns `200 {"status":"ok"}` while the process is running. Also
@@ -155,8 +206,9 @@ policy is loaded, otherwise `503 {"status":"not_ready","policies":0}`. Also
 accepts `HEAD`. A failed hot reload does not
 make the server unready: the last good policies stay active.
 
-It is also `503` while an audit sink refuses writes: an S3/GCS sink in
-`fail_closed` mode after a failed upload, or one whose `buffer` is full. The
+It is also `503` while an audit sink refuses writes: an S3/GCS,
+Elasticsearch/OpenSearch or Kafka sink in `fail_closed` mode after a failed
+delivery, or one whose `buffer` is full. The
 body then lists those sinks:
 `{"status":"not_ready","policies":N,"unhealthy_audit_sinks":["s3://bucket/prefix/"]}`.
 See [audit-sinks.md](audit-sinks.md).
@@ -178,9 +230,19 @@ Metric names (stable within `/v1`):
 | `haltsql_http_requests_total` | counter | `route`, `status` | HTTP requests. |
 | `haltsql_auth_total` | counter | `method` (`token`, `oidc`, `mtls`, `anonymous`, `none`), `result` (`ok`, `rejected`, `unavailable`) | Caller authentication attempts. |
 | `haltsql_tls_reload_total` | counter | `result` | TLS certificate reload attempts. |
+| `haltsql_opa_decisions_total` | counter | `outcome` (`skipped`, `allowed`, `denied`, `error_allowed`, `error_denied`) | OPA checks, when `opa` is configured ([opa.md](opa.md)). |
+| `haltsql_opa_duration_seconds` | summary | none | Time spent waiting for OPA (requests actually sent). |
+| `haltsql_admin_requests_total` | counter | `endpoint` (`status`, `report`), `result` (`ok`, `unauthenticated`, `forbidden`, `disabled`) | Admin API requests. |
+| `haltsql_bundle_source_healthy` | gauge | `source` | 1 when the last poll of the bundle source succeeded. |
+| `haltsql_bundle_source_checks_total` | counter | `source` | Completed polls of the bundle source. |
+
+S3/GCS sinks add the `haltsql_audit_sink_*` metrics and Elasticsearch/Kafka
+sinks the `haltsql_audit_stream_sink_*` metrics described in
+[audit-sinks.md](audit-sinks.md).
 
 Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
-`haltsql_audit_errors_total`, and failed policy reloads.
+`haltsql_audit_errors_total`, `haltsql_opa_decisions_total{outcome="error_denied"}`,
+`haltsql_bundle_source_healthy == 0`, and failed policy reloads.
 
 ## Operational notes
 
@@ -188,9 +250,11 @@ Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
   1 MiB). The policy's `limits.max_bytes` (default 16 KiB) applies to the SQL
   itself and gives `E_LIMIT`.
 - **Hot reload:** `SIGHUP`, or file watching (`--watch` / `reload.watch`,
-  polled every 2 seconds), reloads policies, tokens, OIDC and mTLS settings
-  and TLS material atomically (OIDC key caches of unchanged providers are
-  kept). Enabling or disabling TLS needs a restart.
+  polled every 2 seconds), reloads policies, tokens, OIDC and mTLS settings,
+  `opa`, `server.admin` and TLS material atomically (OIDC key caches of
+  unchanged providers are kept). Enabling or disabling TLS, the audit sinks
+  and the list of bundle sources need a restart
+  ([config-reference.md](config-reference.md#reload)).
   Invalid policies are rejected and the last good set stays active.
 - **Audit:** each request produces an audit event with the caller (token
   name, `oidc:<provider>` or `mtls:<subject>`), `caller_type` (`token`,
