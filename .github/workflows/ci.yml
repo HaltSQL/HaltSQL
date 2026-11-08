@@ -169,7 +169,8 @@ jobs:
   python-sdk-minimum:
     name: Python SDK (Python 3.9, no frameworks)
     needs: lint
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 build in actions/setup-python.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
