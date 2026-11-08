@@ -260,10 +260,10 @@ let import_cmd =
       `P
         "Reads dbt (manifest.json, catalog.json), DataHub (file-sink MCE/MCP, GraphQL), \
          Databricks Unity Catalog (information_schema.column_tags rows, REST table \
-         JSON), Atlan (asset search JSON) or Collibra (asset export) metadata and writes \
-         a PII manifest: {tables: {\"schema.table\": {columns: {col: {classifications, \
-         source}}}}}. Feed it to $(b,haltsql policy draft --pii). See \
-         docs/schema-and-pii.md.";
+         JSON), Atlan (asset search JSON), Collibra (asset export) or OpenMetadata \
+         (table JSON from /api/v1/tables) metadata and writes a PII manifest: {tables: \
+         {\"schema.table\": {columns: {col: {classifications, source}}}}}. Feed it to \
+         $(b,haltsql policy draft --pii). See docs/schema-and-pii.md.";
     ]
     @ man_examples
         [

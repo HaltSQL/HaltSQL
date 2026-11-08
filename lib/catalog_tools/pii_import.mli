@@ -32,12 +32,21 @@
       sensitivity, privacy, confidentiality, personal, PII or security; given as a list of
       [{type:{name}, value}] or as a map), [tags], accepted/suggested data classification
       matches ([classificationMatches]/[dataClassifications], [REJECTED] ignored), and
-      relations to business terms. *)
+      relations to business terms.
+    - [Openmetadata]: OpenMetadata table entities as returned by
+      [GET /api/v1/tables?fields=columns,tags] (one table, a list, or the paged
+      [{"data": [...]}] response). Table from [databaseSchema.name] + [name], else the
+      last two parts of [fullyQualifiedName] (double-quoted parts honoured). Labels are
+      [columns[].tags[].tagFQN]: [source: "Glossary"] is a glossary term, anything else
+      (normally ["Classification"]) a tag; the full FQN is matched, so ["PII.Sensitive"]
+      and ["PersonalData.Personal"] count while ["Tier.Tier1"] does not. Tags on nested
+      [children] (STRUCT fields) apply to the top-level column. Column descriptions and
+      table-level tags are not labels. *)
 
-type source = Dbt | Datahub | Unity | Atlan | Collibra
+type source = Dbt | Datahub | Unity | Atlan | Collibra | Openmetadata
 
 val source_to_string : source -> string
-(** ["dbt"], ["datahub"], ["unity"], ["atlan"], ["collibra"]. *)
+(** ["dbt"], ["datahub"], ["unity"], ["atlan"], ["collibra"], ["openmetadata"]. *)
 
 val source_of_string : string -> source option
 (** Parses a [--from] source name. *)

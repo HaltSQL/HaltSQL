@@ -1,0 +1,207 @@
+{
+  "data": [
+    {
+      "id": "379ebc55-0fdc-45a4-80bd-7da57f7a0f5c",
+      "name": "users",
+      "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users",
+      "version": 0.2,
+      "updatedAt": 1794168610239,
+      "updatedBy": "admin",
+      "href": "http://localhost:8585/api/v1/tables/379ebc55-0fdc-45a4-80bd-7da57f7a0f5c",
+      "tableType": "Regular",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.id",
+          "tags": [],
+          "constraint": "PRIMARY_KEY",
+          "children": []
+        },
+        {
+          "name": "tenant_id",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.tenant_id",
+          "tags": [],
+          "constraint": "NULL",
+          "children": []
+        },
+        {
+          "name": "email",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.email",
+          "tags": [
+            {
+              "tagFQN": "PII.Sensitive",
+              "name": "Sensitive",
+              "description": "PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.",
+              "source": "Classification",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:10.000265Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "full_name",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.full_name",
+          "tags": [
+            {
+              "tagFQN": "Business.PersonalInformation",
+              "name": "PersonalInformation",
+              "displayName": "Personal Information",
+              "description": "Information that identifies a natural person.",
+              "source": "Glossary",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:10.000265Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "role",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.role",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "password_hash",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.password_hash",
+          "tags": [
+            {
+              "tagFQN": "PII.Sensitive",
+              "name": "Sensitive",
+              "description": "PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.",
+              "source": "Classification",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:10.000265Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "created_at",
+          "dataType": "TIMESTAMP",
+          "dataLength": 1,
+          "dataTypeDisplay": "timestamp with time zone",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.created_at",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "last_login_at",
+          "dataType": "TIMESTAMP",
+          "dataLength": 1,
+          "dataTypeDisplay": "timestamp with time zone",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.users.last_login_at",
+          "tags": [],
+          "constraint": "NULL",
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2d45e2e5-0e3d-47e9-8571-07c59e875f5c",
+        "type": "databaseSchema",
+        "name": "app",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app",
+        "displayName": "app",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2d45e2e5-0e3d-47e9-8571-07c59e875f5c"
+      },
+      "database": {
+        "id": "815ffc92-e535-4b8c-989c-57f9dac6a387",
+        "type": "database",
+        "name": "om_src_7341",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341",
+        "displayName": "om_src_7341",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/815ffc92-e535-4b8c-989c-57f9dac6a387"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "changeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.email.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.full_name.tags",
+            "newValue": "[{\"tagFQN\":\"Business.PersonalInformation\",\"name\":\"PersonalInformation\",\"displayName\":\"Personal Information\",\"description\":\"Information that identifies a natural person.\",\"source\":\"Glossary\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.password_hash.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {}
+      },
+      "incrementalChangeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.email.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.full_name.tags",
+            "newValue": "[{\"tagFQN\":\"Business.PersonalInformation\",\"name\":\"PersonalInformation\",\"displayName\":\"Personal Information\",\"description\":\"Information that identifies a natural person.\",\"source\":\"Glossary\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.password_hash.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {}
+      },
+      "deleted": false,
+      "sourceHash": "af5dc3dd73cec5b43e2025a407916f7c",
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    }
+  ],
+  "paging": {
+    "before": "eyJuYW1lIjoidXNlcnMiLCJpZCI6IjM3OWViYzU1LTBmZGMtNDVhNC04MGJkLTdkYTU3ZjdhMGY1YyJ9",
+    "total": 9
+  }
+}
