@@ -27,7 +27,10 @@ let peer_of_certificate cert =
     | [ u ] when starts_with ~prefix:"spiffe://" u -> Some u
     | _ -> None
   in
-  let subject_cn = X509.Distinguished_name.common_name (X509.Certificate.subject cert) in
+  let subject_cn =
+    Option.map X509.Distinguished_name.Common_name.to_string
+      (X509.Distinguished_name.common_name (X509.Certificate.subject cert))
+  in
   let fingerprint =
     let raw = X509.Certificate.fingerprint `SHA256 cert in
     String.concat ""

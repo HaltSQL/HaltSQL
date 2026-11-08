@@ -1395,7 +1395,10 @@ let make_pki dir =
   let now = Unix.gettimeofday () in
   let valid_from = ptime (now -. 3600.) and valid_until = ptime (now +. 86400.) in
   let dn cn =
-    [ X509.Distinguished_name.(Relative_distinguished_name.singleton (CN cn)) ]
+    [
+      X509.Distinguished_name.(
+        Relative_distinguished_name.singleton (CN (Common_name.v cn)));
+    ]
   in
   let ca_key = `RSA (Mirage_crypto_pk.Rsa.generate ~bits:2048 ()) in
   let ca_csr =

@@ -157,7 +157,10 @@ let peer_identity t =
   match Tls_lwt.Unix.epoch t with Error () -> None | Ok e -> e.Tls.Core.peer_certificate
 
 let match_identity ids cert =
-  let cn = X509.Distinguished_name.common_name (X509.Certificate.subject cert) in
+  let cn =
+    Option.map X509.Distinguished_name.Common_name.to_string
+      (X509.Distinguished_name.common_name (X509.Certificate.subject cert))
+  in
   let uris =
     match
       X509.Extension.find X509.Extension.Subject_alt_name

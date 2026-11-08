@@ -15,7 +15,12 @@ let write path s =
   output_string oc s;
   close_out oc
 
-let dn cn = [ X509.Distinguished_name.Relative_distinguished_name.singleton (CN cn) ]
+let dn cn =
+  [
+    X509.Distinguished_name.Relative_distinguished_name.singleton
+      (CN (X509.Distinguished_name.Common_name.v cn));
+  ]
+
 let now () = Ptime_clock.now ()
 
 let span days =
