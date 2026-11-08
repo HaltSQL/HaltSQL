@@ -52,13 +52,19 @@ val provider :
     {!Group_policy.select} (see {!Oidc.verify}). *)
 
 val config : provider -> Haltsql.Config.oidc_provider
+(** The provider's configuration. *)
+
 val groups : provider -> Haltsql.Config.groups_policy option
+(** The provider's [policy_from_groups] mapping, if any. *)
 
 val refresh : provider -> (int, string) result Lwt.t
 (** Fetches (discovery if needed, then) the JWKS now; [Ok n] is the number of usable keys.
     Useful to warm the cache at startup. *)
 
 val verify : provider -> string -> (Oidc.identity, Jwt.error) result Lwt.t
+(** Verifies a token with the cached keys, refreshing them as described in the module
+    description. Never fails the promise: transport problems become
+    [Error (Keys_unavailable _)]. *)
 
 (** {1 Several providers} *)
 
@@ -70,7 +76,8 @@ val registry :
   ?group_policies:(string * Haltsql.Config.groups_policy) list ->
   Haltsql.Config.oidc_provider list ->
   registry
-(** [group_policies] (default [[]]) is [Config.t.oidc_group_policies]: provider name ->
+(** One {!type-provider} per configuration entry, sharing [fetch] and [now].
+    [group_policies] (default [[]]) is [Config.t.oidc_group_policies]: provider name ->
     [policy_from_groups]. Pass it, or every token of a provider configured with
     [policy_from_groups] is rejected (its placeholder [oidc_policy] accepts nothing). *)
 
@@ -85,7 +92,10 @@ val update :
     group mappings. *)
 
 val providers : registry -> provider list
+(** The providers, in configuration order. *)
+
 val is_empty : registry -> bool
+(** [true] when no provider is configured. *)
 
 val authenticate :
   registry ->

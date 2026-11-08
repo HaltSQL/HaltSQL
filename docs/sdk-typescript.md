@@ -81,9 +81,9 @@ response. Everything else rejects with a subclass of `HaltSQLError`, whose
 |---|---|
 | `HaltSQLHttpError` | Non-200 status. `status` and `code` (`UNAUTHORIZED`, `FORBIDDEN`, `POLICY_NOT_FOUND`, `AUDIT_UNAVAILABLE`, ... or `HTTP_<status>`). Redirects are never followed. |
 | `HaltSQLTimeoutError` | An attempt exceeded `timeoutMs` (after retries). |
-| `HaltSQLTransportError` | Connection refused/reset, DNS failure, or the caller aborted. |
+| `HaltSQLTransportError` | Connection refused/reset, DNS or TLS failure, or the caller aborted. |
 | `HaltSQLProtocolError` | Body is not JSON, a required field is missing or mistyped, `allowed` is `true` while `reasons` is not empty, the body is too large, or `sql_sha256` does not equal the SHA-256 of the SQL that was sent. |
-| `HaltSQLUsageError` | Bad options or arguments (a non-integer context value, a token with control characters, a denied verdict passed to `bindParamsToPositional`). |
+| `HaltSQLUsageError` | Bad options or arguments (a non-integer context value, a token or header with control characters, an invalid `requestId`, a denied verdict passed to `bindParamsToPositional`). |
 | `HaltSQLDeniedError` | `guardedQuery` only: the policy denied the SQL. `verdict` and `codes` are available. |
 
 Unknown fields in a verdict are ignored, as the [compatibility
@@ -102,14 +102,58 @@ new HaltSQLClient({
   retryMaxDelayMs: 2000,            // also caps Retry-After
   maxResponseBytes: 8 << 20,
   checkSqlHash: true,
-  headers: { "x-tenant-shard": "eu" },
-  fetch: customFetch,               // e.g. undici with a custom dispatcher
+  headers: { "x-tenant-shard": "eu" }, // cannot set Authorization; CR/LF rejected
+  dispatcher: agent,                // undici Dispatcher: private CA, mTLS, proxy, pool tuning
+  fetch: customFetch,               // a fetch implementation; defaults to the global one
 });
 ```
 
 Per call: `verify(sql, context, { policy, requestId, signal })`. `requestId`
-is sent as `X-Request-Id`; an aborted `signal` stops immediately without
-retrying.
+is sent as `X-Request-Id` (1-200 printable ASCII characters, else a
+`HaltSQLUsageError` before anything is sent); an aborted `signal` stops
+immediately without retrying.
+
+Every request carries `User-Agent: haltsql-client-js/<VERSION>` and an
+`AbortSignal` that fires after `timeoutMs`, so no call can hang. The worst
+case for one `verify()` is about `(maxRetries + 1) * timeoutMs` plus the
+backoff delays. Only `503`, network errors and timeouts are retried (`/readyz`
+never is); `POST /v1/verify` has no side effects, so retrying it is safe.
+
+## TLS, private CAs and mutual TLS
+
+Certificate verification is on by default (Node's bundled CA store, plus
+anything in `NODE_EXTRA_CA_CERTS`). For a private CA or a client certificate,
+pass an undici `Agent` as `dispatcher`; it is forwarded to every `fetch`
+call. Install `undici` yourself (the SDK has no dependencies):
+
+```ts
+import { readFileSync } from "node:fs";
+import { Agent } from "undici";
+
+const haltsql = new HaltSQLClient({
+  baseUrl: "https://haltsql.internal:8443",
+  token: process.env.HALTSQL_TOKEN,
+  dispatcher: new Agent({
+    connect: {
+      ca: readFileSync("/etc/haltsql/ca.crt"),
+      cert: readFileSync("/etc/haltsql/client.crt"), // mTLS
+      key: readFileSync("/etc/haltsql/client.key"),
+    },
+  }),
+});
+```
+
+A TLS failure (untrusted certificate, wrong host name) rejects with
+`HaltSQLTransportError` like any other connection error.
+
+## Secrets, sharing and lifetime
+
+- The token is kept in a private field: it is not visible through
+  `JSON.stringify`, `util.inspect`, or any error message. Errors keep the
+  underlying `fetch` error as `cause` (which never contains request headers).
+- One `HaltSQLClient` is safe to share across concurrent requests; create it
+  once at startup. Connection reuse is handled by `fetch` (or your
+  `dispatcher`).
 
 Other endpoints: `health()` (`GET /healthz`), `ready()` (`GET /readyz`; a 503
 resolves `{ ready: false }` and is not retried), and `policies()`

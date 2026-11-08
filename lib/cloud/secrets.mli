@@ -66,6 +66,9 @@ val load_config :
   ?timeout:float ->
   string ->
   (Haltsql_load.Config.t, Haltsql_core.Load_error.t list) result Lwt.t
+(** Loads a runtime configuration whose [${vault:...}], [${aws-sm:...}] and
+    [${gcp-sm:...}] placeholders are prefetched concurrently and then substituted. Secret
+    values never appear in the returned errors. *)
 
 val load_config_blocking :
   ?env:(string -> string option) ->

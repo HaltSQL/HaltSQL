@@ -1,16 +1,16 @@
-(* Server wiring of the enterprise integrations (Integrations.install):
+(** Server wiring of the enterprise integrations ([Integrations.install]):
 
-   - signed policy bundles: verified before parsing, name_prefix applied,
-     policy references re-checked, duplicates refused, hot reload re-verifies
-     (bundle and .sig are watched; a broken signature keeps the last good set);
-   - secret providers: ${vault:...} resolved at startup (blocking) and on
-     reload (async prefetch inside Lwt), errors never contain secret values;
-   - OpenTelemetry: one span per verify request (traceparent honoured, no SQL
-     exported) and mirrored metrics, against an in-process fake collector;
-   - S3 audit sink: records uploaded to a fake S3, and fail-closed behaviour
-     (503 AUDIT_UNAVAILABLE, /readyz not ready) once uploads fail.
+    - signed policy bundles: verified before parsing, name_prefix applied, policy
+      references re-checked, duplicates refused, hot reload re-verifies (bundle and .sig
+      are watched; a broken signature keeps the last good set);
+    - secret providers: [${vault:...}] resolved at startup (blocking) and on reload (async
+      prefetch inside Lwt), errors never contain secret values;
+    - OpenTelemetry: one span per verify request (traceparent honoured, no SQL exported)
+      and mirrored metrics, against an in-process fake collector;
+    - S3 audit sink: records uploaded to a fake S3, and fail-closed behaviour (503
+      AUDIT_UNAVAILABLE, /readyz not ready) once uploads fail.
 
-   All network peers are in-process fakes on 127.0.0.1. *)
+    All network peers are in-process fakes on 127.0.0.1. *)
 
 open Lwt.Syntax
 open Haltsql_server

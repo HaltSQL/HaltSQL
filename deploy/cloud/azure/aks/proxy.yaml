@@ -1,0 +1,222 @@
+# OPTIONAL: haltsql-proxy (PostgreSQL wire-protocol firewall) in front of
+# Azure Database for PostgreSQL Flexible Server. Agents connect to the proxy
+# as if it were Postgres; only verified statements reach the server.
+#
+# Before applying:
+#   1. Key Vault secrets: pg-haltsql-service-password (the upstream role's
+#      password), haltsql-proxy-tls-crt and haltsql-proxy-tls-key (PEM).
+#      The proxy authenticates upstream with a password: Entra ID token auth
+#      to Flexible Server is not supported by haltsql-proxy (tokens expire
+#      after about an hour and the proxy reads its password once at startup).
+#   2. The Flexible Server CA bundle (DigiCert Global Root G2 + Microsoft RSA
+#      Root Certificate Authority 2017; check the current list in the Azure
+#      docs) as a ConfigMap:
+#        kubectl -n haltsql create configmap azure-pg-ca --from-file=ca.pem=./azure-pg-ca.pem
+#   3. SCRAM verifiers for proxy users: haltsql-proxy scram-verifier
+#   4. A NetworkPolicy / NSG so agents can reach only the proxy, never 5432.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+  annotations:
+    azure.workload.identity/client-id: "REPLACE_PROXY_MI_CLIENT_ID"   # used by the CSI driver only
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    clientID: "REPLACE_PROXY_MI_CLIENT_ID"
+    keyvaultName: "REPLACE_KV"
+    tenantId: "REPLACE_TENANT_ID"
+    objects: |
+      array:
+        - |
+          objectName: pg-haltsql-service-password
+          objectType: secret
+        - |
+          objectName: haltsql-proxy-tls-crt
+          objectType: secret
+        - |
+          objectName: haltsql-proxy-tls-key
+          objectType: secret
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+data:
+  proxy.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: ProxyConfig
+    listen: 0.0.0.0:6432
+    tls:
+      cert: /mnt/secrets/proxy/haltsql-proxy-tls-crt
+      key: /mnt/secrets/proxy/haltsql-proxy-tls-key
+      client_auth: none
+      required: true
+    upstream:
+      host: REPLACE_PG_SERVER.postgres.database.azure.com
+      port: 5432
+      database: app
+      user: haltsql_service              # read-only role: SELECT on the policy's tables only
+      password: ${file:/mnt/secrets/proxy/pg-haltsql-service-password}
+      tls: { mode: verify-full, ca: /etc/haltsql/db-ca/ca.pem }
+    policies:
+      - path: /etc/haltsql/policies/analytics-agent.yaml
+    auth:
+      method: scram
+      users:
+        - name: analytics-agent
+          scram_verifier: "REPLACE_SCRAM_VERIFIER"     # SCRAM-SHA-256$4096:...
+          policy: analytics-agent
+          context: { tenant_id: acme }
+    limits:
+      max_connections: 200
+      idle_timeout_seconds: 300
+    audit: { type: stdout }
+    logging: { level: info }
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent, owner: data-platform }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_column: tenant_id
+      app.currencies:
+        columns: "*"
+    functions:
+      presets: [aggregates, datetime]
+    mode: enforce
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: haltsql-proxy }
+  template:
+    metadata:
+      labels: { app: haltsql-proxy }
+    spec:
+      serviceAccountName: haltsql-proxy
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app: haltsql-proxy }
+      containers:
+        - name: haltsql-proxy
+          image: ghcr.io/ardada2468/haltsql:0.1.0      # pin by digest in production
+          command: ["/usr/local/bin/haltsql-proxy"]
+          args: ["run", "--config", "/etc/haltsql/proxy/proxy.yaml"]
+          ports:
+            - { name: postgres, containerPort: 6432 }
+          # haltsql-proxy has no HTTP health endpoint; TCP probes only.
+          livenessProbe:  { tcpSocket: { port: postgres }, periodSeconds: 10 }
+          readinessProbe: { tcpSocket: { port: postgres }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/haltsql/proxy, readOnly: true }
+            - { name: policies, mountPath: /etc/haltsql/policies, readOnly: true }
+            - { name: db-ca, mountPath: /etc/haltsql/db-ca, readOnly: true }
+            - { name: secrets, mountPath: /mnt/secrets/proxy, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: haltsql-proxy
+            items: [{ key: proxy.yaml, path: proxy.yaml }]
+        - name: policies
+          configMap:
+            name: haltsql-proxy
+            items: [{ key: analytics-agent.yaml, path: analytics-agent.yaml }]
+        - name: db-ca
+          configMap: { name: azure-pg-ca }
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: haltsql-proxy }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  selector: { app: haltsql-proxy }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: haltsql-proxy }
+---
+# Only the agents namespace may connect to the proxy. The proxy's egress is
+# DNS + the Flexible Server subnet on 5432. On the database side, an NSG on
+# the delegated subnet should allow 5432 only from the AKS node subnet, and
+# agent pods must be blocked from 5432 by their own NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  podSelector:
+    matchLabels: { app: haltsql-proxy }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: agents }
+      ports:
+        - { port: 6432, protocol: TCP }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - ipBlock: { cidr: 10.20.3.0/24 }     # REPLACE: the Flexible Server delegated subnet
+      ports:
+        - { port: 5432, protocol: TCP }

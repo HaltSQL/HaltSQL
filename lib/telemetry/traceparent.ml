@@ -1,3 +1,5 @@
+(** W3C traceparent parsing and formatting; see traceparent.mli. *)
+
 type t = { trace_id : string; parent_id : string; flags : int }
 
 let is_lhex c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')

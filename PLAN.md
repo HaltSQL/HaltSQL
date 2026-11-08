@@ -85,16 +85,35 @@ role), which comes from the host application's session.
 
 ## 4. Architecture
 
+```mermaid
+flowchart TB
+    subgraph IN["Inputs"]
+        SQL["SQL string"]
+        POLIN["Policy"]
+        CTX["Context"]
+    end
+    subgraph LIB["haltsql (library)"]
+        P["Parse (libpg_query)"] --> AST["Typed AST"] --> NR["Name resolution"] --> RE["Rule engine"] --> V["Verdict"]
+        CG["Codegen'd node types"] --> AST
+        CAT["Catalog snapshot"] --> NR
+        PC["Policy (compiled, placeholders bound)"] --> RE
+    end
+    subgraph FE["Front ends"]
+        CLI["haltsql CLI"]
+        SRV["haltsql-server (HTTP)"]
+        PRX["haltsql-proxy (PG wire v3)"]
+    end
+    SQL --> P
+    POLIN --> PC
+    CTX --> PC
+    FE -- "embed" --> LIB
 ```
-                 ┌────────────────────────────── haltsql (library) ──────────────────────────────┐
- SQL string ───► │ Parse (libpg_query) ─► Typed AST ─► Name resolution ─► Rule engine ─► Verdict │
- Policy ───────► │                          ▲              ▲                  ▲                  │
- Context ──────► │                     Codegen'd       Catalog          Policy (compiled,        │
-                 │                     node types      snapshot         placeholders bound)      │
-                 └───────────────────────────────────────────────────────────────────────────────┘
-                        ▲                     ▲                           ▲
-                   haltsql CLI         haltsql-server (HTTP)       haltsql-proxy (PG wire v3)
-```
+
+> **As built.** The shipped code keeps this shape with three changes: the typed
+> AST is hand-written (`lib/core/ast.ml`) and filled from libpg_query's JSON
+> output rather than generated from `srcdata/` and decoded from protobuf; the
+> server and proxy use Lwt rather than Eio; and `haltsql verify --batch` uses
+> OCaml 5 domains. See [docs/how-it-works/architecture.md](docs/how-it-works/architecture.md).
 
 ### Key decisions
 
@@ -113,43 +132,51 @@ role), which comes from the host application's session.
 
 ## 5. Repository layout
 
-```
+The layout below is the repository as built. It differs from the first draft of
+this plan: the typed AST is hand-written in `lib/core` and filled from
+libpg_query's JSON output (not generated from `srcdata/` and decoded from
+protobuf), policy and config loading share one `lib/load` library, and the lab
+harness is Python. [docs/how-it-works/architecture.md](docs/how-it-works/architecture.md)
+describes each library and its dependencies.
+
+```text
 haltsql/
 ├── dune-project, haltsql.opam, haltsql-server.opam, haltsql-proxy.opam
-├── vendor/libpg_query/            # pinned git submodule (C)
-├── codegen/                       # srcdata JSON ─► lib/ast/pg_ast.ml + protobuf decoders
+├── vendor/libpg_query/            # vendored libpg_query (C, Postgres 17 grammar)
 ├── lib/
-│   ├── parse/       Pg_parse      # C stubs, limits, protobuf decode ─► Pg_ast.t
-│   ├── ast/         Pg_ast        # GENERATED typed AST (do not edit)
-│   ├── ir/          Ir            # small normalized IR: relations, scopes, predicates, calls
-│   ├── catalog/     Catalog       # tables, columns, types, views; loaded from policy or snapshot
-│   ├── resolve/     Resolve       # scopes, aliases, CTEs, search_path, star expansion
-│   ├── docload/     Docload       # shared YAML/JSON reader: format detection, safe parsing, schema check, located errors
-│   ├── policy/      Policy        # policy types, compile, ${ctx.*} binding
-│   ├── config/      Config        # runtime config types, ${env:}/${file:} resolution, flag/env precedence
-│   ├── rules/       Rules         # one module per rule family (see §6.2)
-│   ├── verdict/     Verdict       # result type, reason codes, JSON encoding
-│   ├── audit/       Audit         # structured events, hash chaining, sinks
-│   └── haltsql.ml                 # public facade: Haltsql.verify, Haltsql.Policy, …
+│   ├── core/        haltsql.core           # Ast, Policy, Context, Catalog, Reason, Verdict
+│   ├── pgquery/     haltsql.pgquery        # C stubs: parse to JSON, fingerprint, worker pool
+│   ├── parse/       haltsql.parse          # limits; libpg_query JSON -> typed Ast, fail closed
+│   ├── analyzer/    haltsql.analyzer       # scopes, name resolution, rule families, tenancy proofs
+│   ├── load/        haltsql.load           # YAML/JSON documents: Policy, Config, Catalog, TestSuite
+│   ├── haltsql/     haltsql                # public facade: Haltsql.verify, Suite_runner
+│   ├── cloud/       haltsql.cloud          # audit hash chain, S3/GCS sinks, secret resolvers
+│   ├── bundle/      haltsql.bundle         # signed policy bundles (Ed25519)
+│   ├── rlsgen/      haltsql.rlsgen         # RLS / grant DDL generation and drift checks
+│   ├── catalog_tools/ haltsql.catalog_tools # schema pull, PII importers, policy drafter
+│   ├── auth/        haltsql-server.auth    # JWT/OIDC/mTLS caller authentication
+│   ├── telemetry/   haltsql-server.telemetry # OTLP traces and metrics
+│   └── pgwire/      haltsql-proxy.pgwire   # PostgreSQL wire protocol v3 sessions
 ├── bin/
-│   ├── haltsql/                   # CLI: verify, lint-policy, schema pull, test, explain
-│   ├── server/                    # HTTP sidecar
-│   └── proxy/                     # PG wire-protocol proxy
-├── clients/ {python, typescript, go}   # thin HTTP clients plus framework adapters
-├── test/
-│   ├── unit/  golden/  conformance/  property/  contract/  fuzz/  bench/  upgrade/
-│   ├── corpus/                    # attack corpus: one .sql file and expected verdict per case
-│   └── benign/                    # realistic allowed queries for false-positive measurement
-├── lab/                           # haltlab: enterprise environment emulation (§8.2)
-│   ├── harness/                   # scenario runner, oracles, reports (OCaml)
-│   ├── scenarios/                 # Scenario files (YAML/JSON)
-│   ├── schemas/                   # synthetic enterprise schema fixtures
-│   ├── datagen/                   # seeded data and honeytoken generator
-│   ├── generators/                # evasion, grammar-based, and LLM red-team query generators
-│   ├── infra/ {compose, kind, terraform}   # local, Kubernetes, and managed-cloud environments
-│   └── chaos/                     # fault injection (Toxiproxy, pod kills, file corruption)
-├── deploy/ {docker, helm, systemd}
-├── docs/                          # mdBook or odoc site
+│   ├── haltsql/                   # CLI: verify, explain, validate, test, bundle, rls, schema, ...
+│   ├── server/                    # HTTP sidecar (haltsql-server)
+│   └── proxy/                     # PG wire-protocol proxy (haltsql-proxy)
+├── clients/ {python, typescript, go, java, mcp, testvectors}   # SDKs, MCP server, shared test vectors
+├── integrations/ {langchain, llamaindex, vanna}
+├── test/                          # alcotest suites per library, plus:
+│   ├── corpus/                    # attack corpus (kind: TestSuite)
+│   ├── golden/  conformance/  property/  fuzz/
+│   └── fixtures/                  # policies and catalogs used by the tests
+├── bench/                         # micro-benchmarks
+├── lab/                           # haltlab: enterprise environment emulation (§8.2), Python
+│   ├── harness/  scenarios/  schemas/  datagen/  generators/  policies/
+│   └── infra/ {compose, kind}
+├── schemas/                       # published JSON Schemas (haltsql schema export)
+├── examples/                      # example policies, configs, catalogs, suites, CI
+├── ci/gitlab/                     # GitLab CI templates
+├── deploy/ {helm, k8s, systemd, diagrams}
+├── docs/                          # Markdown docs (published by website/, Docusaurus)
+├── website/
 └── .github/workflows/
 ```
 

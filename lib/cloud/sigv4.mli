@@ -11,6 +11,7 @@ type credentials = {
 }
 
 val sha256_hex : string -> string
+(** Lower-case hex SHA-256. *)
 
 val hmac_sha256 : key:string -> string -> string
 (** Raw (binary) HMAC-SHA256. *)
@@ -41,7 +42,10 @@ val canonical_request :
 (** [(canonical_request, signed_headers)]; every header given is signed. *)
 
 val credential_scope : date:string -> region:string -> service:string -> string
+(** [date/region/service/aws4_request]. *)
+
 val string_to_sign : amz_date:string -> scope:string -> canonical_request:string -> string
+(** The AWS4-HMAC-SHA256 string to sign. *)
 
 val signing_key :
   secret:string -> date:string -> region:string -> service:string -> string

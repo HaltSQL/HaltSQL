@@ -1,7 +1,7 @@
-(* End-to-end tests for the haltsql CLI. Each test runs the built binary.
+(** End-to-end tests for the haltsql CLI. Each test runs the built binary.
 
-   Tests marked [needs analyzer] depend on the parser + analyzer producing
-   real verdicts; everything else only depends on the CLI and the loaders. *)
+    Tests marked [needs analyzer] depend on the parser + analyzer producing real verdicts;
+    everything else only depends on the CLI and the loaders. *)
 
 let bin =
   let b =

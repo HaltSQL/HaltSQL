@@ -1,4 +1,4 @@
-(* OIDC providers at runtime: discovery, JWKS cache, verification. *)
+(** OIDC providers at runtime: discovery, JWKS cache, verification. *)
 
 open Lwt.Syntax
 module Config = Haltsql.Config
@@ -18,42 +18,38 @@ exception Body_too_large
 
 let http_fetch ?(timeout = 5.0) ?(max_bytes = 1_048_576) () : fetch =
  fun uri ->
-  let body_ref = ref None in
-  let drain () =
-    match !body_ref with
-    | None -> Lwt.return_unit
-    | Some b ->
-        body_ref := None;
-        Lwt.catch (fun () -> Cohttp_lwt.Body.drain_body b) (fun _ -> Lwt.return_unit)
-  in
+  (* One explicit connection per fetch, closed on every exit path: an abandoned,
+     half-read response body would otherwise keep its socket open. TLS uses the
+     default conduit context, i.e. the system trust store (ca-certs). *)
   let get () =
-    let* resp, body = Cohttp_lwt_unix.Client.get uri in
-    body_ref := Some body;
-    let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
-    if status <> 200 then
-      let* () = drain () in
-      Lwt.return_error (Printf.sprintf "HTTP %d" status)
-    else
-      let buf = Buffer.create 4096 in
-      Lwt.catch
-        (fun () ->
-          let* () =
-            Lwt_stream.iter
-              (fun chunk ->
-                if Buffer.length buf + String.length chunk > max_bytes then
-                  raise Body_too_large;
-                Buffer.add_string buf chunk)
-              (Cohttp_lwt.Body.to_stream body)
-          in
-          body_ref := None;
-          Lwt.return_ok (Buffer.contents buf))
-        (function
-          | Body_too_large ->
-              Lwt.async drain;
-              Lwt.return_error (Printf.sprintf "response exceeds %d bytes" max_bytes)
-          | e ->
-              Lwt.async drain;
-              Lwt.reraise e)
+    let ctx = Lazy.force Cohttp_lwt_unix.Net.default_ctx in
+    let* endp = Cohttp_lwt_unix.Net.resolve ~ctx uri in
+    let* conn = Cohttp_lwt_unix.Connection.connect ~ctx ~persistent:true endp in
+    Lwt.finalize
+      (fun () ->
+        let* resp, body = Cohttp_lwt_unix.Connection.call conn `GET uri in
+        let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
+        if status <> 200 then Lwt.return_error (Printf.sprintf "HTTP %d" status)
+        else
+          let buf = Buffer.create 4096 in
+          Lwt.catch
+            (fun () ->
+              let* () =
+                Lwt_stream.iter
+                  (fun chunk ->
+                    if Buffer.length buf + String.length chunk > max_bytes then
+                      raise Body_too_large;
+                    Buffer.add_string buf chunk)
+                  (Cohttp_lwt.Body.to_stream body)
+              in
+              Lwt.return_ok (Buffer.contents buf))
+            (function
+              | Body_too_large ->
+                  Lwt.return_error (Printf.sprintf "response exceeds %d bytes" max_bytes)
+              | e -> Lwt.reraise e))
+      (fun () ->
+        Cohttp_lwt_unix.Connection.close conn;
+        Lwt.return_unit)
   in
   Lwt.catch
     (fun () ->
@@ -61,12 +57,16 @@ let http_fetch ?(timeout = 5.0) ?(max_bytes = 1_048_576) () : fetch =
         [
           get ();
           (let* () = Lwt_unix.sleep timeout in
-           Lwt.async drain;
            Lwt.return_error (Printf.sprintf "timed out after %.0fs" timeout));
         ])
     (fun e ->
-      Lwt.async drain;
-      Lwt.return_error ("request failed: " ^ Printexc.to_string e))
+      let m =
+        match e with
+        | Unix.Unix_error (err, _, _) -> Unix.error_message err
+        | Failure m -> m
+        | e -> Printexc.to_string e
+      in
+      Lwt.return_error ("request failed: " ^ m))
 
 (* ---- one provider ---- *)
 

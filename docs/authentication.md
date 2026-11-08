@@ -10,18 +10,20 @@ static tokens. The configuration keys are listed in
 
 ## The request pipeline
 
-```
-TLS handshake ──► mTLS identity? ──yes──► policy + static context
-     │                 │no
-     │                 ▼
-     │          Bearer token is a JWT from a configured issuer?
-     │                 │yes                         │no
-     │                 ▼                            ▼
-     │          verify with that provider     static token hashes
-     │          (401 / 503 on failure)        (401 if unknown)
-     ▼
- body context ──► only request_context_fields may be added
-                  anything else ─► 403 CONTEXT_NOT_ALLOWED
+```mermaid
+flowchart TD
+    TLS["TLS handshake"] --> M{"client certificate matches a<br/>server.auth.mtls identity?"}
+    M -- yes --> MC["policy + static context<br/>(a bearer token is ignored)"]
+    M -- no --> J{"bearer token is a JWT from<br/>a configured issuer?"}
+    J -- yes --> O["verify with that provider only<br/>(401, or 503 AUTH_UNAVAILABLE, on failure)"]
+    J -- no --> S["static token hashes<br/>(401 if unknown)"]
+    O -- valid --> OC["policy + context_claims"]
+    S -- match --> ST["policy + the request body's context"]
+    MC --> B{"body context adds only<br/>request_context_fields?"}
+    OC --> B
+    B -- yes --> V["verify under the pinned policy"]
+    B -- no --> D["403 CONTEXT_NOT_ALLOWED"]
+    ST --> V
 ```
 
 1. **mTLS.** When the connection presented a client certificate (already

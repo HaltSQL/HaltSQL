@@ -1,3 +1,6 @@
+(** AWS credential providers (env, static, web identity, IMDSv2) with caching; see
+    aws_creds.mli. *)
+
 open Lwt.Infix
 
 type source =

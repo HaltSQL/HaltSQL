@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AdotExportTraces",
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AdotRemoteWriteToAmp",
+      "Effect": "Allow",
+      "Action": "aps:RemoteWrite",
+      "Resource": "arn:aws:aps:eu-west-1:111122223333:workspace/ws-00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

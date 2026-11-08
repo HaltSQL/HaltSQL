@@ -1,0 +1,13 @@
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: support-bot, owner: support-eng }
+search_path: [app]
+statements: { allow: [select] }
+require_limit: { max: 100 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.tickets:
+    columns: [id, tenant_id, status, subject, created_at]
+    tenant_column: tenant_id

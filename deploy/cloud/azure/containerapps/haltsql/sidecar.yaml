@@ -1,0 +1,40 @@
+# haltsql-server config for the Container Apps SIDECAR pattern (app.yaml).
+#
+# - The verify API listens on loopback only; the agent container in the same
+#   replica calls http://localhost:8080. Probes use the plain-HTTP health
+#   listener (--health-listen 0.0.0.0:8081, set in app.yaml), which serves
+#   only /healthz and /readyz.
+# - The token hash comes from Key Vault through a Container Apps secret
+#   reference mounted as a file (secret volume at /mnt/secrets).
+# - Audit records go to stdout -> Log Analytics (ContainerAppConsoleLogs).
+#   HaltSQL has no native Azure Blob sink; see docs/deploy-azure.md.
+# - OTLP/HTTP goes to the otel-collector sidecar on localhost:4318. The
+#   Container Apps managed OpenTelemetry agent only accepts gRPC, which
+#   haltsql-server does not speak.
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 127.0.0.1:8080       # overridden by HALTSQL_LISTEN in the image; app.yaml passes --listen
+  auth:
+    allow_unauthenticated: false
+    tokens:
+      - name: analytics-agent
+        token_sha256: ${file:/mnt/secrets/haltsql-token-sha256}
+        policy: analytics-agent
+policies:
+  - path: /etc/haltsql/policies/analytics-agent.yaml
+audit:
+  sinks:
+    - type: stdout
+  log_raw_sql: false
+telemetry:
+  metrics:
+    prometheus: true
+  otlp:
+    endpoint: http://localhost:4318
+    service_name: haltsql-analytics-agent
+logging:
+  level: info
+  format: json
+limits:
+  max_request_bytes: 1048576

@@ -13,7 +13,24 @@ Treat any non-200 response as a denial (fail closed).
 WARNING: no tokens are configured and allowUnauthenticated is false: every
 /v1 request will be rejected with 401.
 {{- end }}
-{{- if not (or .Values.policies .Values.existingPolicyConfigMap) }}
+{{- if not (or .Values.policies .Values.existingPolicyConfigMap .Values.extraPolicies) }}
 
 WARNING: no policies are configured; /readyz will return 503.
+{{- end }}
+{{- if and .Values.podDisruptionBudget.enabled (lt (include "haltsql.minReplicas" . | int) 2) }}
+
+NOTE: fewer than 2 replicas, so no PodDisruptionBudget was created (one would
+block node drains). Run at least 2 replicas for high availability.
+{{- end }}
+{{- if not .Values.image.digest }}
+
+TIP: pin the image by digest (image.digest) and verify its cosign signature;
+see README.md in the chart.
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (or .Values.server.extraConfig .Values.extraConfig .Values.extraPolicies) (ne (include "haltsql.egressConfigured" .) "true") }}
+
+NOTE: extraConfig, server.extraConfig or extraPolicies is set but the
+NetworkPolicy allows no egress. If those settings call out (OTLP, Vault,
+S3/GCS, OPA, bundle sources), add networkPolicy.egress rules or haltsql-server
+will fail closed on those calls.
 {{- end }}

@@ -10,6 +10,10 @@ List<Long> ids = new JdbcGuard(haltsql).query(conn, sql, Map.of("tenant_id", ten
     rs -> { List<Long> out = new ArrayList<>(); while (rs.next()) out.add(rs.getLong(1)); return out; });
 ```
 
+Every call has a timeout (5 s per attempt by default) and bounded retries; TLS
+verification is on by default, and `sslContext(...)` configures a private CA or
+mutual TLS. The token never appears in exceptions or `toString()`.
+
 Guide (including how `$n` placeholders are run through JDBC): [docs/sdk-java.md](../../docs/sdk-java.md).
 
 Development: `mvn test` (PgJDBC tests skip without Postgres; `make -C lab up`).

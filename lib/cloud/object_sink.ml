@@ -1,3 +1,5 @@
+(** Batching, spooling, hash-chained object-store audit sink; see object_sink.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 
@@ -344,11 +346,11 @@ let create ?(now = Unix.gettimeofday) ?host ?run_id ?spool_dir
               n_rejected = 0;
             }
           in
-          let requeue () =
+          (* [loaded] is non-empty only when there is a spool directory. *)
+          let requeue dir =
             List.iter
               (fun (s, path, lines) ->
                 let body = body_of_lines lines in
-                let dir = Option.get spool_dir in
                 let key =
                   match stored_key ~prefix dir s body with
                   | Some k -> k
@@ -370,11 +372,9 @@ let create ?(now = Unix.gettimeofday) ?host ?run_id ?spool_dir
                   t.pending;
                 t.pending_records <- t.pending_records + List.length lines)
               loaded;
-            match spool_dir with
-            | Some d -> write_head d ~seq:t.seq ~prev:t.prev
-            | None -> ()
+            write_head dir ~seq:t.seq ~prev:t.prev
           in
-          match requeue () with
+          match Option.iter requeue spool_dir with
           | exception Unix.Unix_error (e, _, _) ->
               Error (Printf.sprintf "audit spool: %s" (Unix.error_message e))
           | exception Sys_error m -> Error ("audit spool: " ^ m)
@@ -588,9 +588,17 @@ let stats t =
 
 let metrics_text sinks =
   let b = Buffer.create 512 in
+  (* Prometheus label values escape backslash, double quote and line feed. *)
   let esc s =
-    String.concat "\\\""
-      (String.split_on_char '"' (String.concat "\\\\" (String.split_on_char '\\' s)))
+    let b = Buffer.create (String.length s) in
+    String.iter
+      (function
+        | '\\' -> Buffer.add_string b "\\\\"
+        | '"' -> Buffer.add_string b "\\\""
+        | '\n' -> Buffer.add_string b "\\n"
+        | c -> Buffer.add_char b c)
+      s;
+    Buffer.contents b
   in
   let metric name typ help f =
     Printf.bprintf b "# HELP %s %s\n# TYPE %s %s\n" name help name typ;

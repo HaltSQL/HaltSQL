@@ -1,3 +1,5 @@
+(** Secret placeholder resolution for the runtime configuration; see secrets.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 

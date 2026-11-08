@@ -19,18 +19,20 @@ type tls = {
 
 type jwt_alg = RS256 | RS384 | RS512 | PS256 | ES256 | ES384 | EdDSA
 
-let jwt_algs =
-  [
-    ("RS256", RS256);
-    ("RS384", RS384);
-    ("RS512", RS512);
-    ("PS256", PS256);
-    ("ES256", ES256);
-    ("ES384", ES384);
-    ("EdDSA", EdDSA);
-  ]
+(* Total by construction (an exhaustive match, not a list lookup). *)
+let string_of_jwt_alg = function
+  | RS256 -> "RS256"
+  | RS384 -> "RS384"
+  | RS512 -> "RS512"
+  | PS256 -> "PS256"
+  | ES256 -> "ES256"
+  | ES384 -> "ES384"
+  | EdDSA -> "EdDSA"
 
-let string_of_jwt_alg a = fst (List.find (fun (_, b) -> b = a) jwt_algs)
+let jwt_algs =
+  List.map
+    (fun a -> (string_of_jwt_alg a, a))
+    [ RS256; RS384; RS512; PS256; ES256; ES384; EdDSA ]
 
 type oidc_policy =
   | Oidc_pinned of string

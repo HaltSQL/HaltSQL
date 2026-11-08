@@ -12,3 +12,4 @@ val log : level -> string -> (string * Yojson.Safe.t) list -> unit
 (** [log level msg fields] writes one JSON object to stderr if [level] is enabled. *)
 
 val now_rfc3339 : unit -> string
+(** Current UTC time, RFC 3339 with milliseconds. *)

@@ -1,4 +1,4 @@
-(* Policy vs live database drift. See rls_check.mli. *)
+(** Policy vs live database drift. See rls_check.mli. *)
 
 open Lwt.Syntax
 open Haltsql_core
@@ -170,7 +170,9 @@ let check_body conn (pl : Rls_gen.plan) =
               pg_catalog.pg_namespace n WHERE n.nspname IN %s ORDER BY 1"
              (lit role) (lit role) (in_list pl.schemas))
       in
-      let present_schemas = List.map (fun r -> str_of (List.hd r)) srows in
+      let present_schemas =
+        List.filter_map (function n :: _ -> Some (str_of n) | [] -> None) srows
+      in
       List.iter
         (fun s ->
           if not (List.mem s present_schemas) then

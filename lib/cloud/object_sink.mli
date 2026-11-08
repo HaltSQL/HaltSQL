@@ -72,6 +72,7 @@ val create :
     operational messages (failures, recoveries); never record contents. *)
 
 val name : t -> string
+(** The sink's configured name. *)
 
 val start : t -> unit
 (** Starts the background loop that closes aged batches and retries failed uploads. *)
@@ -102,6 +103,7 @@ type stats = {
 }
 
 val stats : t -> stats
+(** Counters and state for monitoring. *)
 
 val metrics_text : t list -> string
 (** Prometheus exposition lines ([haltsql_audit_sink_*{sink="..."}]) for these sinks. *)

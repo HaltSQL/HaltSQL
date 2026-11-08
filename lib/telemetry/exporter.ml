@@ -1,3 +1,5 @@
+(** OTLP/HTTP JSON span and metric exporter; see exporter.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 module J = Otlp_json
@@ -229,6 +231,27 @@ type outcome =
   | Retryable of string * float option
   | Permanent of string
 
+let max_response_bytes = 65536
+
+exception Enough
+
+(* The first [max] bytes of a response body (truncated, never an error). *)
+let read_prefix ~max body =
+  let buf = Buffer.create 1024 in
+  Lwt.catch
+    (fun () ->
+      Lwt_stream.iter
+        (fun chunk ->
+          let room = max - Buffer.length buf in
+          if String.length chunk >= room then begin
+            Buffer.add_string buf (String.sub chunk 0 room);
+            raise Enough
+          end
+          else Buffer.add_string buf chunk)
+        (Cohttp_lwt.Body.to_stream body))
+    (function Enough -> Lwt.return_unit | e -> Lwt.reraise e)
+  >|= fun () -> Buffer.contents buf
+
 let post t uri payload =
   let body, enc =
     if t.gzip then (Gzip.compress payload, [ ("content-encoding", "gzip") ])
@@ -244,14 +267,27 @@ let post t uri payload =
       @ [ ("content-type", "application/json") ]
       @ enc)
   in
+  (* One explicit connection per export, closed on every exit path (including the
+     timeout cancelling it). At most [max_response_bytes] of the collector's reply are
+     read; the rest is discarded with the connection. *)
   let call () =
-    Cohttp_lwt_unix.Client.call ~headers ~body:(Cohttp_lwt.Body.of_string body) `POST uri
-    >>= fun (resp, rbody) ->
-    Cohttp_lwt.Body.to_string rbody >|= fun rb ->
-    `Resp
-      ( Cohttp.Code.code_of_status (Cohttp.Response.status resp),
-        Cohttp.Response.headers resp,
-        rb )
+    let ctx = Lazy.force Cohttp_lwt_unix.Net.default_ctx in
+    Cohttp_lwt_unix.Net.resolve ~ctx uri >>= fun endp ->
+    Cohttp_lwt_unix.Connection.connect ~ctx ~persistent:true endp >>= fun conn ->
+    Lwt.finalize
+      (fun () ->
+        Cohttp_lwt_unix.Connection.call conn ~headers
+          ~body:(Cohttp_lwt.Body.of_string body)
+          `POST uri
+        >>= fun (resp, rbody) ->
+        read_prefix ~max:max_response_bytes rbody >|= fun rb ->
+        `Resp
+          ( Cohttp.Code.code_of_status (Cohttp.Response.status resp),
+            Cohttp.Response.headers resp,
+            rb ))
+      (fun () ->
+        Cohttp_lwt_unix.Connection.close conn;
+        Lwt.return_unit)
   in
   Lwt.catch
     (fun () -> Lwt.pick [ call (); (Lwt_unix.sleep t.timeout >|= fun () -> `Timeout) ])

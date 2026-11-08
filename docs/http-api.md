@@ -108,12 +108,12 @@ Errors use HTTP status codes and a JSON body:
 | `404` | `POLICY_NOT_FOUND` | The request names an unknown policy, or names none and no default policy is configured. |
 | `404` | `NOT_FOUND` | Unknown path. |
 | `405` | `METHOD_NOT_ALLOWED` | Wrong HTTP method (with an `Allow` header). |
-| `413` | `PAYLOAD_TOO_LARGE` | Body exceeds `server.max_request_bytes`. |
+| `413` | `PAYLOAD_TOO_LARGE` | Body exceeds `server.max_request_bytes`. Checked before authentication, so an oversized request gets `413` even without a token. The connection is then closed. |
 | `500` | `INTERNAL` | Unexpected server error. |
 | `503` | `NOT_READY` | No policy is loaded. |
 | `503` | `POLICY_UNAVAILABLE` | The token's pinned policy is not currently loaded. |
 | `503` | `AUDIT_UNAVAILABLE` | The audit record could not be written, so the request is refused (fail closed). |
-| `503` | `AUTH_UNAVAILABLE` | The OIDC provider's signing keys could not be fetched and no usable cached keys remain (fail closed; sent with `Retry-After`). |
+| `503` | `AUTH_UNAVAILABLE` | The OIDC provider's signing keys could not be fetched and no usable cached keys remain (fail closed; sent with `Retry-After`). The response carries a generic message; the underlying fetch error is logged server-side with the request ID. |
 
 Every response carries an `X-Request-Id` header. Send your own `X-Request-Id`
 to correlate logs; otherwise the server generates one.

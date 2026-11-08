@@ -11,4 +11,5 @@ lab/out/
 .venv/
 node_modules/
 __pycache__/
+deploy/diagrams/.venv/
 .claude/

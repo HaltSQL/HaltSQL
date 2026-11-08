@@ -37,6 +37,14 @@ export interface ClientOptions {
   headers?: Record<string, string>;
   /** `fetch` implementation; defaults to the global one (Node >= 18). */
   fetch?: typeof fetch;
+  /**
+   * An undici `Dispatcher` (e.g. `new Agent({ connect: { ca, cert, key } })`
+   * from the `undici` package) passed to every `fetch` call. Use it for a
+   * private CA, mutual TLS, a proxy or connection-pool tuning with Node's
+   * built-in fetch. TLS certificate verification is on unless you turn it off
+   * here.
+   */
+  dispatcher?: unknown;
 }
 
 export interface VerifyOptions {
@@ -96,6 +104,7 @@ export class HaltSQLClient {
   readonly #checkHash: boolean;
   readonly #headers: Record<string, string>;
   readonly #fetch: typeof fetch;
+  readonly #dispatcher: unknown;
 
   constructor(opts: ClientOptions) {
     let url: URL;
@@ -129,12 +138,16 @@ export class HaltSQLClient {
       if (k.toLowerCase() === "authorization") {
         throw new HaltSQLUsageError("set the token option instead of an Authorization header");
       }
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(k) || typeof v !== "string" || /[\r\n\0]/.test(v)) {
+        throw new HaltSQLUsageError(`header ${JSON.stringify(k)} is not a valid header`);
+      }
       headers[k] = v;
     }
     this.#headers = headers;
     const f = opts.fetch ?? globalThis.fetch;
     if (typeof f !== "function") throw new HaltSQLUsageError("no fetch implementation (Node >= 18 required)");
     this.#fetch = f;
+    this.#dispatcher = opts.dispatcher;
   }
 
   /**
@@ -150,6 +163,9 @@ export class HaltSQLClient {
         throw new HaltSQLUsageError("policy must be a non-empty string");
       }
       body.policy = opts.policy;
+    }
+    if (opts.requestId !== undefined && !/^[\x20-\x7e]{1,200}$/.test(opts.requestId)) {
+      throw new HaltSQLUsageError("requestId must be 1-200 printable ASCII characters");
     }
     const res = await this.#request("POST", "/v1/verify", {
       body: JSON.stringify(body),
@@ -268,14 +284,16 @@ export class HaltSQLClient {
     try {
       let resp: Response;
       try {
-        resp = await this.#fetch(this.baseUrl + path, {
+        const init: RequestInit & { dispatcher?: unknown } = {
           method,
           headers,
           body: o.body,
           signal: ctl.signal,
           redirect: "manual",
           cache: "no-store",
-        });
+        };
+        if (this.#dispatcher !== undefined) init.dispatcher = this.#dispatcher;
+        resp = await this.#fetch(this.baseUrl + path, init);
       } catch (e) {
         if (timedOut) throw new HaltSQLTimeoutError(this.#timeoutMs);
         throw new HaltSQLTransportError(o.signal?.aborted ? "aborted" : describe(e), e);

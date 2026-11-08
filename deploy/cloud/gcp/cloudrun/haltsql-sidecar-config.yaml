@@ -1,0 +1,38 @@
+# haltsql-server config for the Cloud Run sidecar pattern (service-sidecar.yaml).
+# Stored in Secret Manager and mounted as a file, so a config change is a new
+# secret version plus a new revision:
+#
+#   gcloud secrets versions add haltsql-sidecar-config --data-file=haltsql-sidecar-config.yaml
+#
+# The listen address comes from --listen in service-sidecar.yaml (the image's
+# HALTSQL_LISTEN would otherwise win over server.listen).
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  auth:
+    tokens:
+      - name: analytics-agent
+        # Injected by Cloud Run from Secret Manager (secretKeyRef).
+        token_sha256: ${env:HALTSQL_TOKEN_SHA256}
+        policy: analytics-agent
+policies:
+  - path: /etc/haltsql/policies/analytics-agent.yaml
+reload: { watch: false }            # Cloud Run: change config by deploying a revision
+audit:
+  sinks:
+    - type: gcs
+      bucket: ${env:HALTSQL_AUDIT_BUCKET}
+      prefix: haltsql/audit/cloud-run/analytics-agent/
+      credentials: { source: metadata }   # the revision's service account
+      spool_dir: /var/spool/haltsql       # in-memory; see docs/deploy-gcp.md
+      batch: { max_records: 500, max_seconds: 5 }
+      on_error: fail_closed
+  log_raw_sql: false
+telemetry:
+  metrics: { prometheus: true }           # scraped by the collector sidecar
+  otlp:
+    endpoint: http://localhost:4318
+    service_name: haltsql-analytics-agent
+    traces: true
+    metrics: false
+logging: { level: info, format: json }

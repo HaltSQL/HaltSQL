@@ -1,3 +1,6 @@
+(* Policy analysis entry point; see analyzer.mli. Rules A, I and J live here,
+   the others in Walk, Rules, Scope and Tenancy. *)
+
 (** Policy analysis of one parsed statement (deny by default).
 
     Rule families (see the module that implements each):
@@ -30,10 +33,6 @@ type analysis = {
   bind_params : (int * Context.value) list;
 }
 
-let explain_has_analyze analyze options =
-  ignore options;
-  analyze
-
 let rec top (env : Env.t) (stmt : Ast.stmt) : Policy.stmt_kind option =
   match stmt with
   | Ast.Select s ->
@@ -52,12 +51,14 @@ let rec top (env : Env.t) (stmt : Ast.stmt) : Policy.stmt_kind option =
       Rules.check_stmt_kind env Policy.Delete d.del_loc;
       ignore (Walk.walk_delete env Walk.empty_cx d);
       Some Policy.Delete
-  | Ast.Explain { analyze; options; stmt; loc } ->
+  | Ast.Explain { analyze; options = _; stmt; loc } ->
       if not env.policy.allow_explain then
         Env.emit env ~loc ~rule:"statement.explain" Reason.E_STATEMENT_KIND
           "EXPLAIN is not allowed by this policy"
           ~hint:"Send the query itself, without EXPLAIN."
-      else if explain_has_analyze analyze options then
+      else if analyze then
+        (* The parser sets [analyze] unless the ANALYZE option is explicitly
+           false, so an unrecognized option value counts as ANALYZE. *)
         Env.emit env ~loc ~rule:"statement.explain" Reason.E_STATEMENT_KIND
           "EXPLAIN ANALYZE executes the statement and is never allowed"
           ~hint:"Use plain EXPLAIN without ANALYZE.";
@@ -166,6 +167,9 @@ let finalize (env : Env.t) kind : analysis =
     bind_params;
   }
 
+(* The catch-all handler is deliberate: [analyze] must never raise, and any
+   exception (an analyzer bug, or Stack_overflow / Out_of_memory on hostile
+   input) must deny the statement rather than escape to the caller. *)
 let analyze (policy : Policy.t) (ctx : Context.t) (stmt : Ast.stmt) : analysis =
   try
     let env = Env.create policy ctx in

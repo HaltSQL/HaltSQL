@@ -1,4 +1,4 @@
-(* ProxyConfig decoding; see proxy_config.mli. *)
+(** ProxyConfig decoding; see proxy_config.mli. *)
 
 open Haltsql
 
@@ -108,7 +108,10 @@ let read_file ctx path limit =
         (fun () ->
           let n = in_channel_length ic in
           if n > limit then Error (Printf.sprintf "file larger than %d bytes" limit)
-          else Ok (really_input_string ic n))
+          else
+            match really_input_string ic n with
+            | s -> Ok s
+            | exception End_of_file -> Error "file changed while it was being read")
 
 (* ------------------------------------------------------------------ *)
 (* ${env:NAME} / ${file:/path} placeholders                             *)
@@ -309,10 +312,29 @@ let non_empty ctx path = function
 (* ------------------------------------------------------------------ *)
 (* TLS material                                                         *)
 
+(* A TLS value is either inline PEM (what a [${file:...}] or [${env:...}] placeholder
+   expands to) or a path to a PEM file. *)
+let is_inline_pem v =
+  let marker = "-----BEGIN" in
+  let n = String.length v and m = String.length marker in
+  let rec go i = i + m <= n && (String.sub v i m = marker || go (i + 1)) in
+  go 0
+
+(* The reason part of a [read_file] error, without the path: the "path" may be key
+   material that was mistakenly given where a path was expected. *)
+let reason_only e =
+  match String.rindex_opt e ':' with
+  | Some i when i + 1 < String.length e ->
+      String.trim (String.sub e (i + 1) (String.length e - i - 1))
+  | _ -> "unreadable"
+
+let pem_text ctx v =
+  if is_inline_pem v then Ok v else read_file ctx (absolute ctx v) max_secret_file_bytes
+
 let load_certs ctx path p =
-  match read_file ctx (absolute ctx p) max_secret_file_bytes with
+  match pem_text ctx p with
   | Error e ->
-      error ctx path e;
+      error ctx path ("cannot read certificate file: " ^ reason_only e);
       None
   | Ok pem -> (
       match X509.Certificate.decode_pem_multiple pem with
@@ -320,20 +342,22 @@ let load_certs ctx path p =
       | Ok [] ->
           error ctx path "no certificate found";
           None
-      | Error (`Msg m) ->
-          error ctx path ("invalid PEM certificate: " ^ m);
+      | Error (`Msg _) ->
+          error ctx path "invalid PEM certificate";
           None)
 
+(* Never echo the value or the decoder's message: either may contain key bytes. *)
 let load_key ctx path p =
-  match read_file ctx (absolute ctx p) max_secret_file_bytes with
+  match pem_text ctx p with
   | Error e ->
-      error ctx path e;
+      error ctx path
+        ("cannot read private key file: " ^ reason_only e
+       ^ " (give a path to a PEM file, or inline PEM via ${file:...})");
       None
   | Ok pem -> (
       match X509.Private_key.decode_pem pem with
       | Ok k -> Some k
       | Error (`Msg _) ->
-          (* never echo key material *)
           error ctx path "invalid PEM private key";
           None)
 

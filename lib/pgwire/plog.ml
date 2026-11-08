@@ -1,4 +1,4 @@
-(* Structured logs; see plog.mli. The audit log is Paudit. *)
+(** Structured logs; see plog.mli. The audit log is {!Paudit}. *)
 
 type level = Debug | Info | Warn | Error
 

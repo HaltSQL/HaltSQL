@@ -1,3 +1,6 @@
+(** Bounded HTTP client (deadline, size cap, explicit connection lifetime); see http.mli.
+*)
+
 open Lwt.Infix
 
 type response = { status : int; headers : (string * string) list; body : string }
@@ -93,70 +96,62 @@ let check_endpoint ~what s =
 
 exception Body_too_large
 
+(* Reads [body] into a string, failing with [Body_too_large] as soon as more than
+   [max_body] bytes have arrived, whatever the response claims in Content-Length (a
+   chunked or lying server cannot make us buffer more than the cap). *)
+let read_capped ~max_body body =
+  let buf = Buffer.create 4096 in
+  Lwt_stream.iter
+    (fun chunk ->
+      if Buffer.length buf + String.length chunk > max_body then raise Body_too_large;
+      Buffer.add_string buf chunk)
+    (Cohttp_lwt.Body.to_stream body)
+  >|= fun () -> Buffer.contents buf
+
 let request ?(ctx = default_ctx) ?(timeout = 10.) ?(max_body = 8 * 1024 * 1024)
     ?(headers = []) ?body meth uri =
   let headers = Cohttp.Header.of_list headers in
   let body = Option.map Cohttp_lwt.Body.of_string body in
-  let body_ref = ref None in
-  let drain () =
-    match !body_ref with
-    | None -> Lwt.return_unit
-    | Some b ->
-        body_ref := None;
-        Lwt.catch (fun () -> Cohttp_lwt.Body.drain_body b) (fun _ -> Lwt.return_unit)
+  let net_ctx =
+    match ctx with Some c -> c | None -> Lazy.force Cohttp_lwt_unix.Net.default_ctx
   in
+  (* One explicit connection per request, closed on every exit path (success, oversized
+     body, timeout cancellation, exception). With [Cohttp_lwt_unix.Client] a response
+     whose body is abandoned half-read keeps its socket open. *)
   let call () =
-    Cohttp_lwt_unix.Client.call ?ctx ~headers ?body meth uri >>= fun (resp, rbody) ->
-    body_ref := Some rbody;
-    let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
-    let rh = Cohttp.Header.to_list (Cohttp.Response.headers resp) in
-    let too_big =
-      match
-        List.assoc_opt "content-length"
-          (List.map (fun (k, v) -> (String.lowercase_ascii k, v)) rh)
-      with
-      | Some l -> (
-          match int_of_string_opt (String.trim l) with
-          | Some n -> n > max_body
-          | None -> false)
-      | None -> false
-    in
-    if too_big then (
-      Lwt.async drain;
-      Lwt.return `Too_big)
-    else
-      let buf = Buffer.create 4096 in
-      Lwt.catch
-        (fun () ->
-          Lwt_stream.iter
-            (fun chunk ->
-              if Buffer.length buf + String.length chunk > max_body then
-                raise Body_too_large;
-              Buffer.add_string buf chunk)
-            (Cohttp_lwt.Body.to_stream rbody)
-          >|= fun () ->
-          body_ref := None;
-          `Ok { status; headers = rh; body = Buffer.contents buf })
-        (function
-          | Body_too_large ->
-              Lwt.async drain;
-              Lwt.return `Too_big
-          | e ->
-              Lwt.async drain;
-              Lwt.fail e)
+    Cohttp_lwt_unix.Net.resolve ~ctx:net_ctx uri >>= fun endp ->
+    Cohttp_lwt_unix.Connection.connect ~ctx:net_ctx ~persistent:true endp >>= fun conn ->
+    Lwt.finalize
+      (fun () ->
+        Cohttp_lwt_unix.Connection.call conn ~headers ?body meth uri
+        >>= fun (resp, rbody) ->
+        let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
+        let rh = Cohttp.Header.to_list (Cohttp.Response.headers resp) in
+        let declared_too_big =
+          match
+            List.assoc_opt "content-length"
+              (List.map (fun (k, v) -> (String.lowercase_ascii k, v)) rh)
+          with
+          | Some l -> (
+              match int_of_string_opt (String.trim l) with
+              | Some n -> n > max_body
+              | None -> false)
+          | None -> false
+        in
+        if declared_too_big then Lwt.return `Too_big
+        else
+          Lwt.catch
+            (fun () ->
+              read_capped ~max_body rbody >|= fun b ->
+              `Ok { status; headers = rh; body = b })
+            (function Body_too_large -> Lwt.return `Too_big | e -> Lwt.reraise e))
+      (fun () ->
+        Cohttp_lwt_unix.Connection.close conn;
+        Lwt.return_unit)
   in
   Lwt.catch
-    (fun () ->
-      Lwt.pick
-        [
-          call ();
-          ( Lwt_unix.sleep timeout >|= fun () ->
-            Lwt.async drain;
-            `Timeout );
-        ])
-    (fun e ->
-      Lwt.async drain;
-      Lwt.return (`Exn e))
+    (fun () -> Lwt.pick [ call (); (Lwt_unix.sleep timeout >|= fun () -> `Timeout) ])
+    (fun e -> Lwt.return (`Exn e))
   >|= function
   | `Ok r -> Ok r
   | `Too_big ->
@@ -168,6 +163,7 @@ let request ?(ctx = default_ctx) ?(timeout = 10.) ?(max_body = 8 * 1024 * 1024)
       let m =
         match e with
         | Unix.Unix_error (e, _, _) -> Unix.error_message e
+        | Failure m | Invalid_argument m -> m
         | e -> Printexc.to_string e
       in
       Error (Printf.sprintf "request to %s failed: %s" (host_header uri) m)

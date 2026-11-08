@@ -23,6 +23,7 @@
 
 open Haltsql_core
 
+(** Expected outcome of a case. *)
 type expect = Allow | Deny
 
 type case = {
@@ -30,10 +31,12 @@ type case = {
   sql : string;
   context : Context.t;
   expect : expect;
-  codes : Reason.code list;
+  codes : Reason.code list;  (** [deny] cases: codes that must all appear *)
   bind : (int * Context.value) list option;
+      (** [allow] cases: exact expected [bind_params], when given *)
   tags : string list;
 }
+(** One test case. [context] is the case's own context, or [defaults.context]. *)
 
 type t = {
   suite_name : string;
@@ -41,8 +44,12 @@ type t = {
   policy_path : string;  (** absolute path *)
   cases : case list;
 }
+(** A decoded suite. *)
 
 val of_json :
   ?file:string -> ?base_dir:string -> Yojson.Safe.t -> (t, Load_error.t list) result
+(** Decodes a suite document. [base_dir] (default: the directory of [file]) resolves the
+    relative [policy] path; the policy itself is not loaded. *)
 
 val of_file : string -> (t, Load_error.t list) result
+(** Reads and decodes a suite file (YAML or JSON, by extension). *)

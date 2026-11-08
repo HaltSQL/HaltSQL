@@ -1,3 +1,5 @@
+(** OTLP/JSON encoding of spans and metrics; see otlp_json.mli. *)
+
 type value =
   | String of string
   | Int of int

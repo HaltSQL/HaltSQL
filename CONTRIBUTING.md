@@ -38,16 +38,130 @@ Common targets (see the [Makefile](Makefile)):
 | `make test` | `dune test` |
 | `make fmt` | Format all OCaml and dune files in place |
 | `make fmt-check` | Fail if anything is not formatted (CI runs this) |
+| `make doc` | Build the API reference with odoc (HTML in `_build/default/_doc/_html/`) |
 | `make coverage` | Run tests with bisect_ppx and write an HTML report to `_coverage/` |
 | `make bench` | Run benchmarks, if present |
 | `make lab-up` / `lab-run` / `lab-down` | Start, run, and stop the enterprise lab (Docker) |
 | `make docker` | Build the container image locally |
 
-## Formatting
+### Working in a nested checkout
 
-We use [ocamlformat](https://github.com/ocaml-ppx/ocamlformat) with the version
-pinned in `.ocamlformat`. Install that exact version (`make deps` does this)
-and run `make fmt` before pushing. CI fails on unformatted code.
+dune uses the outermost directory that contains a `dune-project` (or
+`dune-workspace`) as the build root. If your checkout lives inside another dune
+project, for example a git worktree under the main clone's `.claude/worktrees/`
+or `worktrees/`, dune builds the outer tree instead of yours. Pass `--root .`
+and call dune directly (the Makefile targets do not add it):
+
+```sh
+dune build --root .
+dune test --root .
+dune build --root . @fmt
+```
+
+## OCaml style and conventions
+
+Reviewers check these. Most of them are ordinary OCaml community practice (the
+[OCaml programming guidelines](https://ocaml.org/docs/guidelines), the dune and
+odoc docs, and the style used across the opam ecosystem); a few are stricter
+because HaltSQL is a security control.
+
+### Interfaces and documentation
+
+- **Every library module with logic has an `.mli`.** The interface is the
+  contract: keep helpers out of it, and make a type abstract when callers must
+  not build or inspect its values directly. Modules that only declare types,
+  and an executable's `main.ml`, may skip it. A module without one gets one the
+  next time it changes in a non-trivial way.
+- **Document every value and type in an `.mli` with an odoc comment**
+  (`(** ... *)`): what it does, what it returns on failure, and whether it can
+  raise. Put a short usage example in a library's top-level module comment, as
+  in `lib/haltsql/haltsql.mli`. `make doc` (`dune build @doc`) must build
+  without warnings.
+- Name things the usual way: `snake_case` values and types, `Capitalized`
+  modules and constructors, `t` for a module's main type, `of_x` / `to_x` for
+  conversions, `_opt` for a function that returns an option, and `_exn` for one
+  that raises.
+
+### Errors and failure
+
+- **`Haltsql.verify` never raises.** Every exception inside it becomes an
+  `E_INTERNAL` deny. New code on the verify path must keep that property, and
+  must deny (`E_UNSUPPORTED`) anything it does not fully understand.
+- **Use `result` at boundaries, not exceptions.** Anything that reads files,
+  parses untrusted input or talks to the network returns
+  `('a, error) result` with a located, human-readable error, as
+  `Policy_load.of_file : string -> (Policy.t, Load_error.t list) result` does.
+  Exceptions are for broken internal invariants, and are caught at the nearest
+  boundary.
+- **No partial functions on untrusted input.** SQL text, policy and config
+  files, HTTP bodies, wire-protocol messages, JWTs and environment variables are
+  all untrusted. Do not call `List.hd`, `List.nth`, `Option.get`,
+  `Result.get_ok`, `Hashtbl.find`, `List.assoc`, `int_of_string` or
+  `String.sub` / `s.[i]` with an unchecked index on them; use the `_opt`
+  variants or match explicitly. `failwith` and `assert false` are for code
+  paths that cannot be reached. `Result.get_ok` and friends are fine in tests.
+- A catch-all handler (`with _ ->` or `with e ->`) belongs only at a
+  fail-closed boundary, and it must deny or fail, never carry on.
+- Error messages, logs and metrics never contain secret values, tokens or key
+  material. Compare secrets in constant time (`Eqaf.equal`).
+
+### Pattern matching and types
+
+- **No wildcard match arms in analyzer rule code.** Match AST constructors
+  explicitly so that a new constructor is a compile error and forces a review.
+  Elsewhere, prefer exhaustive matches too.
+- Prefer immutable data. Keep mutable state local to a call (the analyzer's
+  per-call accumulator in `lib/analyzer/env.ml` is the model). The core
+  libraries have no global mutable state, so `verify` is safe to call from
+  several domains at once.
+- Use labelled arguments when a function takes two or more parameters of the
+  same type. An optional argument needs a positional argument after it.
+- Do not use `Obj.magic`. Do not use polymorphic comparison (`=`, `compare`,
+  `Hashtbl.hash`) on abstract types, functions or cyclic values; use the
+  module's own `equal` / `compare`, or `String.equal` and friends.
+- Prefer a local open (`Mod.(...)` or `let open Mod in`) or a module alias to a
+  top-level `open` of a large module.
+
+### Formatting and warnings
+
+- **ocamlformat 0.29.0** is pinned in `.ocamlformat` (`profile = default`,
+  `margin = 90`). Install exactly that version (`make deps` does) and run
+  `make fmt` (`dune build @fmt --auto-promote`) before pushing. CI runs
+  `dune build @fmt` and fails on any diff.
+- **Warnings are errors.** `dune build`, `make build` and CI use dune's default
+  `dev` profile, which turns the enabled warnings into errors. Fix the cause
+  instead of silencing it. If a local `[@warning "-N"]` is really needed, put it
+  on the smallest expression and say why in a comment. Do not add `-w` flags to
+  `dune` files to switch warnings off for a whole library. Release builds use
+  `--profile release`, which does not fail on warnings, so the CI build is the
+  gate.
+
+### Tests
+
+- Unit tests use [alcotest](https://github.com/mirage/alcotest), one directory
+  per library under `test/` (for example `test/analyzer/`, `test/load/`).
+- Property tests use [QCheck](https://github.com/c-cube/qcheck)
+  (`qcheck-core`, run through `qcheck-alcotest`) in `test/property/` and
+  `test/load/`.
+- Verdict JSON and `explain` output are pinned by golden files in
+  `test/golden/`; the attack corpus in `test/corpus/` runs as `kind: TestSuite`
+  documents; `test/fuzz/` holds the fuzz harness.
+- Every behaviour change has tests for both what is allowed and what is denied.
+
+### Build, test, format and coverage
+
+| Task | Command | Make target |
+|---|---|---|
+| Build | `dune build` | `make build` |
+| Run all tests | `dune test` | `make test` |
+| Run one suite | `dune test test/analyzer` | |
+| Format in place | `dune build @fmt --auto-promote` | `make fmt` |
+| Check formatting | `dune build @fmt` | `make fmt-check` |
+| API reference (odoc) | `dune build @doc` | `make doc` |
+| Coverage (bisect_ppx) | `dune runtest --instrument-with bisect_ppx --force` | `make coverage` (HTML in `_coverage/`) |
+
+In a [nested checkout](#working-in-a-nested-checkout), add `--root .` to every
+`dune` command.
 
 ## Making a change
 
@@ -150,9 +264,19 @@ MIT license. To sign off commits you already made:
 
 ## Commit and pull request style
 
-- Keep commits focused; explain *why* in the message body.
+- One logical change per commit. Keep pure reformatting and file moves in
+  their own commits so the real change is easy to review.
+- Write the subject in the imperative, prefixed with the area it touches, for
+  example `analyzer: deny TABLESAMPLE on tenant tables`, `docs(site): ...` or
+  `ci: ...`. Explain *why* in the body.
 - Reference issues with `Fixes #123` where relevant.
-- Pull requests need one maintainer approval and green CI.
+- Sign off every commit (see [DCO](#developer-certificate-of-origin-dco)).
+- Fill in the pull request template. A pull request needs one maintainer
+  approval and green CI: formatting, build and tests on Linux and macOS with
+  OCaml 5.2 and 5.4, coverage, Postgres integration, the SDK jobs and the
+  policy-CI self-test.
+- Changes to a stable contract (policy schema, verdict JSON, reason codes,
+  HTTP API, CLI flags or exit codes) need an ADR and a `CHANGELOG.md` entry.
 
 ## Code of conduct
 

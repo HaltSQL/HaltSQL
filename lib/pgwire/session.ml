@@ -1,4 +1,4 @@
-(* One client connection; see session.mli and docs/proxy.md for the protocol rules. *)
+(** One client connection; see session.mli and docs/proxy.md for the protocol rules. *)
 
 open Lwt.Syntax
 open Proxy_config
@@ -696,7 +696,19 @@ let run s =
             | e -> Lwt.fail e)
       in
       s.upstream <- Some up;
-      let* () = relay_startup s up in
+      (* Bounded like the rest of the upstream handshake; a stalled server is a
+         connection failure, not an authentication timeout. *)
+      let* () =
+        Lwt.catch
+          (fun () ->
+            Lwt_unix.with_timeout (cfg.upstream.connect_timeout *. 3.) (fun () ->
+                relay_startup s up))
+          (function
+            | Lwt_unix.Timeout ->
+                log s Plog.Error "upstream session startup timed out" [];
+                fatal "08006" "haltsql-proxy: the upstream database did not respond"
+            | e -> Lwt.fail e)
+      in
       Lwt.pick [ client_loop s; upstream_loop s up ]
 
 let handle sh ~id fd =

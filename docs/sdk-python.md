@@ -38,27 +38,63 @@ hs.healthz(); hs.readyz(); hs.is_ready()
 ```
 
 `HaltSQLClient.from_env()` reads `HALTSQL_URL` (default
-`http://127.0.0.1:8080`), `HALTSQL_TOKEN`, `HALTSQL_TIMEOUT` (seconds), and
-`HALTSQL_POLICY`. `AsyncHaltSQLClient` has the same methods as coroutines
+`http://127.0.0.1:8080`), `HALTSQL_TOKEN`, `HALTSQL_TIMEOUT` (seconds),
+`HALTSQL_POLICY`, and for TLS `HALTSQL_CA_FILE`, `HALTSQL_CLIENT_CERT` and
+`HALTSQL_CLIENT_KEY` (see below). Keyword arguments to `from_env(...)` override
+the environment. `AsyncHaltSQLClient` has the same methods as coroutines
 (`async with AsyncHaltSQLClient.from_env() as hs: ...`).
 
 Optional arguments: `policy=` (default policy name to send), `request_id=` on
-`verify`/`check` (sent as `X-Request-Id`; the response's id is in
-`verdict.request_id`), `transport=` / `http_client=` (custom `httpx` setup).
-The token is never included in `repr()` or error messages.
+`verify`/`check` (sent as `X-Request-Id`, at most 200 printable characters;
+the response's id is in `verdict.request_id`), `transport=` / `http_client=`
+(custom `httpx` setup), `verify_sql_hash=` (default `True`; leave it on).
+
+### Production settings
+
+| Argument | Default | Notes |
+|---|---|---|
+| `timeout` | `2.0` s | Per attempt (connect, read, write and pool each). An `httpx.Timeout` is accepted. The worst case for one call is about `max_attempts * timeout` plus the backoff delays. |
+| `retry` | `RetryPolicy(max_attempts=3, backoff_base=0.05, backoff_max=1.0, jitter=True)` | `max_attempts=1` disables retries. |
+| `verify` | `True` (system CAs) | A CA bundle path for a private CA, or an `ssl.SSLContext`. `False` turns certificate checks off: local testing only. |
+| `cert` | none | Client certificate for mutual TLS: one PEM file with certificate and key, or `(cert_file, key_file)`. |
+| `max_response_bytes` | 8 MiB | A larger response raises `HaltSQLUnavailable`. |
+
+```python
+hs = HaltSQLClient(
+    "https://haltsql.internal:8443",
+    token=os.environ["HALTSQL_TOKEN"],
+    verify="/etc/haltsql/ca.crt",                         # private CA
+    cert=("/etc/haltsql/client.crt", "/etc/haltsql/client.key"),  # mTLS
+)
+```
+
+- **Secrets.** The token is never included in `repr()`, in exception messages,
+  or in exception chains (`httpx` errors, which carry the request headers, are
+  not chained; only their type name is reported).
+- **Redirects** are never followed; a 3xx is an error.
+- **Proxies.** `httpx` honours `HTTPS_PROXY` / `NO_PROXY` from the environment.
+  For anything else (custom proxies, HTTP/2, pool limits), build your own
+  `httpx.Client` and pass `http_client=`; then configure TLS on it, since
+  `verify=` / `cert=` cannot be combined with `http_client=`.
+- **Sharing.** A `HaltSQLClient` holds a pool of keep-alive connections and is
+  safe to share between threads; create one at startup and `close()` it at
+  shutdown (or use it as a context manager). Use one `AsyncHaltSQLClient` per
+  event loop.
 
 ### Errors
 
 | Exception | When | Retried |
 |---|---|---|
 | `QueryDenied` | The policy denied the query (`check`, `guard.*`). `e.verdict` has the reasons. | no |
-| `HaltSQLUnavailable` | Connection error, timeout, HTTP 5xx, malformed or mismatched verdict. `status`, `code`, `request_id` when known. | connection errors, timeouts, 502/503/504 |
+| `HaltSQLUnavailable` | Connection error, TLS failure, timeout, HTTP 3xx/5xx, oversized, malformed or mismatched response. `status`, `code`, `request_id` when known. | connection errors, timeouts, 502/503/504 |
 | `HaltSQLRequestError` | HTTP 4xx: `UNAUTHORIZED`, `FORBIDDEN`, `POLICY_NOT_FOUND`, `BAD_REQUEST`, `PAYLOAD_TOO_LARGE`. | no |
 | `GuardError` | The guarded executor refused (unsupported connection, connection already in a transaction). | no |
 
-All derive from `HaltSQLError`. Retries back off exponentially with jitter and
-honour `Retry-After` up to `backoff_max`. Verification is idempotent, so a
-retried `POST /v1/verify` is safe.
+All derive from `HaltSQLError`; catching it and carrying on means treating
+the query as denied. Retries back off exponentially with jitter and honour
+`Retry-After` up to `backoff_max`. Verification is idempotent (it has no side
+effects on the server), so a retried `POST /v1/verify` is safe. `/healthz` and
+`/readyz` are never retried, so a probe reports the current state.
 
 ## Verdicts
 

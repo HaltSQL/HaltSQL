@@ -19,6 +19,8 @@ val upload :
   body:string ->
   unit ->
   (unit, Object_sink.upload_error) result Lwt.t
+(** One create-only object upload ([ifGenerationMatch=0], MD5-checked); an existing object
+    counts as delivered (idempotent retry after a crash). *)
 
 val create :
   ?env:(string -> string option) ->

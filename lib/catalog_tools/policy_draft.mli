@@ -41,6 +41,7 @@ val default_name_patterns : string list
      card; dob; birth; address; ip]. *)
 
 val default_config : tenant_column:string -> catalog_ref:string -> config
+(** A configuration with the defaults documented on each {!config} field. *)
 
 type exclusion = { column : string; reasons : string list }
 

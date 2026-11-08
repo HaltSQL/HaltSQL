@@ -1,4 +1,4 @@
-(* SCRAM-SHA-256 client (see scram.mli). *)
+(** SCRAM-SHA-256 client (see scram.mli). *)
 
 let hmac ~key msg = Digestif.SHA256.(to_raw_string (hmac_string ~key msg))
 let sha256 s = Digestif.SHA256.(to_raw_string (digest_string s))

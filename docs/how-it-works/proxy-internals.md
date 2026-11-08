@@ -32,26 +32,26 @@ database credential.
 
 ```mermaid
 flowchart LR
-  subgraph clients["Untrusted"]
-    c1["LLM agent"]
-    c2["BI tool / any driver"]
-  end
-  subgraph px["haltsql-proxy (trusted)"]
-    lst["Listener<br/>max_connections"]
-    sess["Session per connection"]
-    authn["Auth<br/>SCRAM verifier or client cert"]
-    bind["Binding<br/>policy + context"]
-    enf["Enforce<br/>Haltsql.verify, Bind rewrite"]
-    st["Stmt_state<br/>verdict per statement"]
-    aud["Audit JSON lines"]
-    lst --> sess --> authn --> bind --> enf
-    enf -->|"record and look up verdicts"| st
-    enf --> aud
-  end
-  cfg["proxy.yaml<br/>users, identities, policies"] --> authn
-  c1 -->|"TLS, proxy user"| lst
-  c2 -->|"TLS, proxy user"| lst
-  enf -->|"service credentials<br/>one upstream connection per session"| pg[("PostgreSQL")]
+    subgraph clients["Untrusted"]
+        c1["LLM agent"]
+        c2["BI tool / any driver"]
+    end
+    subgraph px["haltsql-proxy (trusted)"]
+        lst["Listener<br/>max_connections"]
+        sess["Session per connection"]
+        authn["Auth<br/>SCRAM verifier or client cert"]
+        bind["Binding<br/>policy + context"]
+        enf["Enforce<br/>Haltsql.verify, Bind rewrite"]
+        st["Stmt_state<br/>verdict per statement"]
+        aud["Audit JSON lines"]
+        lst --> sess --> authn --> bind --> enf
+        enf -->|"record and look up verdicts"| st
+        enf --> aud
+    end
+    cfg["proxy.yaml<br/>users, identities, policies"] --> authn
+    c1 -->|"TLS, proxy user"| lst
+    c2 -->|"TLS, proxy user"| lst
+    enf -->|"service credentials<br/>one upstream connection per session"| pg[("PostgreSQL")]
 ```
 
 Three properties follow from this layout:
@@ -73,21 +73,21 @@ authentication together must finish within `limits.auth_timeout_seconds`
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant P as haltsql-proxy
-  participant U as PostgreSQL
-  C->>P: SSLRequest
-  P-->>C: S, then TLS handshake (N if no tls configured)
-  C->>P: StartupMessage with user and database
-  P->>P: check TLS required, no replication, database equals upstream.database
-  P-->>C: AuthenticationSASL (SCRAM-SHA-256)
-  C->>P: SASLInitialResponse, then SASLResponse
-  P->>P: verify proof against the stored verifier
-  P-->>C: AuthenticationOk
-  P->>U: connect with service user, client_encoding UTF8, application_name
-  U-->>P: auth exchange, ParameterStatus, BackendKeyData, ReadyForQuery
-  P->>P: check client_encoding and standard_conforming_strings
-  P-->>C: ParameterStatus, proxy-issued BackendKeyData, ReadyForQuery
+    participant C as Client
+    participant P as haltsql-proxy
+    participant U as PostgreSQL
+    C->>P: SSLRequest
+    P-->>C: S, then TLS handshake (N if no tls configured)
+    C->>P: StartupMessage with user and database
+    P->>P: check TLS required, no replication, database equals upstream.database
+    P-->>C: AuthenticationSASL (SCRAM-SHA-256)
+    C->>P: SASLInitialResponse, then SASLResponse
+    P->>P: verify proof against the stored verifier
+    P-->>C: AuthenticationOk
+    P->>U: connect with service user, client_encoding UTF8, application_name
+    U-->>P: auth exchange, ParameterStatus, BackendKeyData, ReadyForQuery
+    P->>P: check client_encoding and standard_conforming_strings
+    P-->>C: ParameterStatus, proxy-issued BackendKeyData, ReadyForQuery
 ```
 
 Details that matter for security:
@@ -154,25 +154,25 @@ those positions itself.
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant P as haltsql-proxy
-  participant U as PostgreSQL
-  C->>P: Parse stmt s1 with SQL and declared param types
-  P->>P: Haltsql.verify(policy, context, SQL)
-  P->>P: allowed, bind_params says param 1 is the tenant
-  P->>P: note pending verdict for s1, reset declared type of param 1 to 0
-  P->>U: Parse s1 with the same SQL bytes
-  C->>P: Bind s1 with client value for param 1
-  P->>P: look up verdict for s1, check text format and parameter count
-  P->>U: Bind s1 with param 1 replaced by the context tenant value
-  C->>P: Execute
-  P->>U: Execute
-  C->>P: Sync
-  P->>U: Sync
-  U-->>P: ParseComplete
-  P->>P: commit verdict for s1
-  U-->>P: BindComplete, DataRow rows, CommandComplete, ReadyForQuery
-  P-->>C: relayed unchanged
+    participant C as Client
+    participant P as haltsql-proxy
+    participant U as PostgreSQL
+    C->>P: Parse stmt s1 with SQL and declared param types
+    P->>P: Haltsql.verify(policy, context, SQL)
+    P->>P: allowed, bind_params says param 1 is the tenant
+    P->>P: note pending verdict for s1, reset declared type of param 1 to 0
+    P->>U: Parse s1 with the same SQL bytes
+    C->>P: Bind s1 with client value for param 1
+    P->>P: look up verdict for s1, check text format and parameter count
+    P->>U: Bind s1 with param 1 replaced by the context tenant value
+    C->>P: Execute
+    P->>U: Execute
+    C->>P: Sync
+    P->>U: Sync
+    U-->>P: ParseComplete
+    P->>P: commit verdict for s1
+    U-->>P: BindComplete, DataRow rows, CommandComplete, ReadyForQuery
+    P-->>C: relayed unchanged
 ```
 
 **Parse.** `Enforce.parse` verifies the SQL and the verdict is audited.
@@ -238,24 +238,24 @@ Instead, the proxy lets PostgreSQL produce the error at the right position:
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant P as haltsql-proxy
-  participant U as PostgreSQL
-  C->>P: Parse s1 (allowed), Bind, Execute
-  P->>U: Parse s1, Bind, Execute
-  C->>P: Parse s2 (denied by policy)
-  P->>P: store denial under token haltsql_deny_x, enter discarding
-  P->>U: Parse haltsql_deny_x as both name and query
-  C->>P: Bind s2, Execute
-  P->>P: discarded, not forwarded
-  C->>P: Sync
-  P->>U: Sync, leave discarding
-  U-->>P: ParseComplete, BindComplete, rows, CommandComplete for s1
-  P-->>C: relayed for s1
-  U-->>P: ErrorResponse syntax error near haltsql_deny_x
-  P-->>C: ErrorResponse 42501 haltsql query denied by policy
-  U-->>P: ReadyForQuery
-  P-->>C: ReadyForQuery
+    participant C as Client
+    participant P as haltsql-proxy
+    participant U as PostgreSQL
+    C->>P: Parse s1 (allowed), Bind, Execute
+    P->>U: Parse s1, Bind, Execute
+    C->>P: Parse s2 (denied by policy)
+    P->>P: store denial under token haltsql_deny_x, enter discarding
+    P->>U: Parse haltsql_deny_x as both name and query
+    C->>P: Bind s2, Execute
+    P->>P: discarded, not forwarded
+    C->>P: Sync
+    P->>U: Sync, leave discarding
+    U-->>P: ParseComplete, BindComplete, rows, CommandComplete for s1
+    P-->>C: relayed for s1
+    U-->>P: ErrorResponse syntax error near haltsql_deny_x
+    P-->>C: ErrorResponse 42501 haltsql query denied by policy
+    U-->>P: ReadyForQuery
+    P-->>C: ReadyForQuery
 ```
 
 The client sees a normal PostgreSQL error, in the right position, and the
@@ -300,21 +300,21 @@ messages until `Sync`. `Stmt_state` models this exactly.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> AwaitStartup
-  AwaitStartup --> TLSHandshake: SSLRequest with tls
-  TLSHandshake --> AwaitStartup
-  AwaitStartup --> CancelForward: CancelRequest
-  CancelForward --> [*]
-  AwaitStartup --> Authenticating: StartupMessage accepted
-  Authenticating --> Closed: auth failed or timeout
-  Authenticating --> ConnectingUpstream: AuthenticationOk sent
-  ConnectingUpstream --> Closed: upstream failed
-  ConnectingUpstream --> Relaying: first ReadyForQuery relayed
-  Relaying --> Discarding: extended-protocol denial injected
-  Discarding --> Relaying: Sync
-  Relaying --> Closed: Terminate, FATAL, protocol violation, idle timeout
-  Discarding --> Closed: Terminate or protocol violation
-  Closed --> [*]
+    [*] --> AwaitStartup
+    AwaitStartup --> TLSHandshake: SSLRequest with tls
+    TLSHandshake --> AwaitStartup
+    AwaitStartup --> CancelForward: CancelRequest
+    CancelForward --> [*]
+    AwaitStartup --> Authenticating: StartupMessage accepted
+    Authenticating --> Closed: auth failed or timeout
+    Authenticating --> ConnectingUpstream: AuthenticationOk sent
+    ConnectingUpstream --> Closed: upstream failed
+    ConnectingUpstream --> Relaying: first ReadyForQuery relayed
+    Relaying --> Discarding: extended-protocol denial injected
+    Discarding --> Relaying: Sync
+    Relaying --> Closed: Terminate, FATAL, protocol violation, idle timeout
+    Discarding --> Closed: Terminate or protocol violation
+    Closed --> [*]
 ```
 
 ## Cancel requests

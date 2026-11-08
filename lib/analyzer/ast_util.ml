@@ -1,4 +1,4 @@
-(** Pure AST helpers: locations and Postgres-compatible output column names. *)
+(* Pure AST helpers; see ast_util.mli. *)
 
 open Haltsql_core
 
@@ -23,15 +23,6 @@ let expr_loc (e : Ast.expr) =
   | Ast.Collate { loc; _ }
   | Ast.Sql_value { loc; _ }
   | Ast.Unsupported { loc; _ } ->
-      loc
-
-let from_loc (f : Ast.from_item) =
-  match f with
-  | Ast.Relation { loc; _ }
-  | Ast.Subquery { loc; _ }
-  | Ast.Function { loc; _ }
-  | Ast.Join { loc; _ }
-  | Ast.Unsupported_from { loc; _ } ->
       loc
 
 (** Output name the way Postgres's FigureColname derives it, returning a strength like

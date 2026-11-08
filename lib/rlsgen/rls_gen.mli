@@ -36,6 +36,7 @@ type options = {
 }
 
 val default_options : options
+(** The defaults documented on each {!type-options} field. *)
 
 type cmd = Select | Insert | Update | Delete
 
@@ -89,3 +90,4 @@ val generate : options -> Policy.t -> (string * string list, string) result
 (** [plan] then [render]: [(sql, warnings)]. *)
 
 val plan_to_json : plan -> Yojson.Safe.t
+(** A machine-readable summary of the plan (for [--format json]). *)

@@ -1,10 +1,11 @@
 (** PostgreSQL connection strings.
 
     Accepts both libpq forms:
-    - URL: [postgres://user:password@host:port/dbname?sslmode=require]
-      ([postgresql://] too; percent-encoding is decoded; IPv6 hosts in brackets);
+    - URL: [postgres://user:password@host:port/dbname?sslmode=require] ([postgresql://]
+      too; percent-encoding is decoded; IPv6 hosts in brackets);
     - keyword/value: [host=db.internal port=5432 user=ro dbname=app sslmode=verify-full]
-      (values may be single-quoted, with [\\'] and [\\\\] escapes).
+      (values may be single-quoted; inside quotes a backslash escapes a quote or a
+      backslash).
 
     Missing fields fall back to the libpq environment variables [PGHOST], [PGPORT],
     [PGUSER], [PGDATABASE], [PGPASSWORD], [PGSSLMODE], [PGSSLROOTCERT], then to built-in
@@ -22,6 +23,7 @@ type sslmode =
   | Verify_full  (** as [Verify_ca], plus the host name must match the certificate *)
 
 val sslmode_to_string : sslmode -> string
+(** The libpq spelling, e.g. ["verify-full"]. *)
 
 val sslmode_of_string : string -> sslmode option
 (** ["allow"] is accepted as an alias of ["prefer"]. *)

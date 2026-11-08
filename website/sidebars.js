@@ -57,6 +57,9 @@ const sidebars = {
       label: 'Operations',
       items: [
         'deployment',
+        'deploy-aws',
+        'deploy-gcp',
+        'deploy-azure',
         'kubernetes-operator',
         'terraform',
         'authentication',

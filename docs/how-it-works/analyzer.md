@@ -47,8 +47,10 @@ statement is denied (fail closed)."
 flowchart TD
     S["Ast.stmt"] --> K{"statement kind"}
     K -->|"SELECT / INSERT /<br/>UPDATE / DELETE"| A["Rule A: kind in<br/>statements.allow?"]
-    K -->|"EXPLAIN"| X["allow_explain set<br/>and not ANALYZE?"]
-    X --> K
+    K -->|"EXPLAIN"| X{"allow_explain set<br/>and not ANALYZE?"}
+    X -->|"yes: unwrap"| K
+    X -->|"no"| SKX["E_STATEMENT_KIND<br/>(inner statement still analyzed)"]
+    SKX -->|"unwrap"| K
     K -->|"Other 'Unsupported:...'"| UN["E_UNSUPPORTED"]
     K -->|"any other statement"| SK["E_STATEMENT_KIND"]
     A --> WITH["WITH: walk each CTE<br/>(Rules L, D)"]
@@ -69,6 +71,9 @@ A few properties of the walk:
 - **`EXPLAIN` is unwrapped.** If the policy has `allow_explain`, plain
   `EXPLAIN` of an allowed statement is analyzed as that statement.
   `EXPLAIN ANALYZE` executes the statement and is always `E_STATEMENT_KIND`.
+  Without `allow_explain`, `EXPLAIN` itself is `E_STATEMENT_KIND`. In both
+  denied cases the inner statement is still analyzed, so its own problems are
+  reported too.
 - **Every subquery is walked.** CTE bodies, `FROM` subqueries, `EXISTS`,
   `IN (SELECT ...)`, scalar subqueries, `ARRAY(SELECT ...)`, and each arm of a
   set operation are all walked with the same rules.

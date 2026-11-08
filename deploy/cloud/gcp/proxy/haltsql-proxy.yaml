@@ -1,0 +1,241 @@
+# haltsql-proxy in front of Cloud SQL for PostgreSQL, on GKE.
+#
+# Clients connect to the haltsql-proxy Service (port 6432, TLS required) as if
+# it were Postgres. Every statement is verified before it is forwarded to the
+# Cloud SQL Auth Proxy on 127.0.0.1:5432, which carries it to the instance's
+# private IP over mTLS. Clients never get database credentials or a route to
+# the instance.
+#
+# Prerequisites (../iam/setup.sh proxy):
+#   - GKE Secret Manager add-on: gcloud container clusters update CLUSTER --enable-secret-manager
+#   - secrets haltsql-proxy-upstream-password, haltsql-proxy-tls-key,
+#     haltsql-proxy-tls-crt, haltsql-proxy-scram-analytics-agent
+#   - GSA haltsql-proxy@ with roles/cloudsql.client and secretAccessor on
+#     those secrets; KSA binding below.
+# Cloud Run cannot host this pattern: it accepts only HTTP(S), gRPC and
+# WebSockets, not the Postgres wire protocol.
+# Replace every REPLACE_ME value.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: haltsql
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+  annotations:
+    iam.gke.io/gcp-service-account: haltsql-proxy@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+automountServiceAccountToken: false
+---
+# Secret Manager secrets mounted as files by the GKE Secret Manager add-on.
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  provider: gke
+  parameters:
+    secrets: |
+      - resourceName: "projects/REPLACE_ME_PROJECT/secrets/haltsql-proxy-upstream-password/versions/latest"
+        path: "upstream-password"
+      - resourceName: "projects/REPLACE_ME_PROJECT/secrets/haltsql-proxy-tls-crt/versions/latest"
+        path: "tls.crt"
+      - resourceName: "projects/REPLACE_ME_PROJECT/secrets/haltsql-proxy-tls-key/versions/latest"
+        path: "tls.key"
+      - resourceName: "projects/REPLACE_ME_PROJECT/secrets/haltsql-proxy-scram-analytics-agent/versions/latest"
+        path: "analytics-agent.scram"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+data:
+  proxy.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: ProxyConfig
+    listen: 0.0.0.0:6432
+    tls:
+      cert: /etc/haltsql/secrets/tls.crt
+      key: /etc/haltsql/secrets/tls.key    # a file path, not a file placeholder
+      required: true                       # refuse plaintext clients
+    upstream:
+      # The Cloud SQL Auth Proxy sidecar. The hop to Cloud SQL is mTLS,
+      # authorized by IAM; this loopback hop never leaves the pod.
+      host: 127.0.0.1
+      port: 5432
+      database: app
+      user: haltsql_service                # read-only role, SELECT on the policy's tables
+      password: ${file:/etc/haltsql/secrets/upstream-password}
+      tls: { mode: disable }
+    policies:
+      - path: /etc/haltsql/policies/analytics-agent.yaml
+    auth:
+      method: scram
+      users:
+        - name: analytics-agent
+          scram_verifier: ${file:/etc/haltsql/secrets/analytics-agent.scram}
+          policy: analytics-agent
+          context: { tenant_id: acme }
+    limits:
+      max_connections: 200
+      idle_timeout_seconds: 300
+    audit: { type: stdout }                # one JSON line per statement, to Cloud Logging
+    logging: { level: info }
+    shutdown_grace_seconds: 20
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent, owner: data-platform }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_column: tenant_id
+      app.currencies:
+        columns: "*"
+    functions:
+      presets: [aggregates, datetime]
+    mode: enforce
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: haltsql-proxy }
+  template:
+    metadata:
+      labels: { app: haltsql-proxy }
+    spec:
+      serviceAccountName: haltsql-proxy
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: haltsql-proxy }
+      initContainers:
+        # Native sidecar: up before haltsql-proxy, stopped after it.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.26.3
+          restartPolicy: Always
+          args:
+            - --private-ip
+            - --structured-logs
+            - --port=5432
+            - --max-sigterm-delay=25s
+            - REPLACE_ME_PROJECT:REPLACE_ME_REGION:REPLACE_ME_INSTANCE
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: haltsql-proxy
+          image: ghcr.io/ardada2468/haltsql:0.1.0   # same image; pin by digest
+          command: ["/usr/local/bin/haltsql-proxy"]
+          args: ["run", "--config", "/etc/haltsql/config/proxy.yaml"]
+          ports:
+            - { name: postgres, containerPort: 6432 }
+          # haltsql-proxy has no HTTP health endpoint: probe the TCP listener.
+          readinessProbe: { tcpSocket: { port: postgres }, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: postgres }, periodSeconds: 10 }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/haltsql/config, readOnly: true }
+            - { name: policies, mountPath: /etc/haltsql/policies, readOnly: true }
+            - { name: secrets, mountPath: /etc/haltsql/secrets, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: haltsql-proxy
+            items: [{ key: proxy.yaml, path: proxy.yaml }]
+        - name: policies
+          configMap:
+            name: haltsql-proxy
+            items: [{ key: analytics-agent.yaml, path: analytics-agent.yaml }]
+        - name: secrets
+          csi:
+            driver: secrets-store-gke.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: haltsql-proxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: haltsql-proxy }
+---
+# Internal passthrough Network Load Balancer: reachable from the VPC only.
+# Use type ClusterIP if all clients run in this cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  selector: { app: haltsql-proxy }
+  ports:
+    - { name: postgres, port: 6432, targetPort: postgres }
+---
+# Only the proxy pods may reach Cloud SQL; give the instance no other
+# authorized networks and keep its public IP disabled.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haltsql-proxy
+  namespace: haltsql
+spec:
+  podSelector:
+    matchLabels: { app: haltsql-proxy }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 6432, protocol: TCP }]
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to: [{ ipBlock: { cidr: 169.254.169.252/32 } }]
+      ports: [{ port: 988, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+      ports: [{ port: 80, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]      # sqladmin.googleapis.com
+      ports: [{ port: 443, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: REPLACE_ME_CLOUD_SQL_PSA_RANGE } }]
+      ports: [{ port: 3307, protocol: TCP }]

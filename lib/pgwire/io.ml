@@ -1,4 +1,4 @@
-(* Buffered transport; see io.mli. *)
+(** Buffered transport; see io.mli. *)
 
 open Lwt.Syntax
 

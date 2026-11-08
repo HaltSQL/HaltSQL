@@ -6,6 +6,8 @@ OCAMLFORMAT_VERSION := $(shell sed -n 's/^version *= *//p' .ocamlformat 2>/dev/n
 IMAGE         ?= ghcr.io/ardada2468/haltsql
 VERSION       ?= $(shell sed -n 's/^(version \(.*\))/\1/p' dune-project)
 LAB_DIR       ?= lab
+PYTHON        ?= python3
+DIAGRAMS_VENV ?= deploy/diagrams/.venv
 
 # The lab is owned by lab/. Prefer lab/Makefile; fall back to lab/run.sh.
 ifneq ($(wildcard $(LAB_DIR)/Makefile),)
@@ -15,7 +17,7 @@ LAB = $(LAB_DIR)/run.sh
 endif
 
 .DEFAULT_GOAL := build
-.PHONY: help deps build test fmt fmt-check coverage bench lab-up lab-down lab-run docker smoke e2e e2e-up e2e-down clean
+.PHONY: help deps build test fmt fmt-check doc coverage bench diagrams lab-up lab-down lab-run docker smoke e2e e2e-up e2e-down clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,6 +38,15 @@ fmt: ## Format OCaml and dune files in place
 
 fmt-check: ## Fail if any file is not formatted
 	$(DUNE) build @fmt
+
+doc: ## Build the API reference with odoc; HTML in _build/default/_doc/_html/
+	$(DUNE) build @doc
+
+diagrams: ## Regenerate the cloud architecture PNGs in docs/assets/cloud/ (needs Graphviz)
+	@command -v dot >/dev/null || { echo "Graphviz 'dot' is required: brew install graphviz / apt-get install graphviz"; exit 1; }
+	@test -x $(DIAGRAMS_VENV)/bin/python || $(PYTHON) -m venv $(DIAGRAMS_VENV)
+	$(DIAGRAMS_VENV)/bin/pip install --quiet -r deploy/diagrams/requirements.txt
+	@for f in deploy/diagrams/[a-z]*.py; do echo "  $$f"; $(DIAGRAMS_VENV)/bin/python $$f || exit 1; done
 
 coverage: ## Run tests with bisect_ppx; HTML report in _coverage/
 	rm -rf _coverage

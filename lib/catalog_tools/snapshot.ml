@@ -1,4 +1,4 @@
-(* Catalog snapshot documents (see snapshot.mli). *)
+(** Catalog snapshot documents (see snapshot.mli). *)
 
 open Haltsql_core
 module Ident = Haltsql_load.Ident

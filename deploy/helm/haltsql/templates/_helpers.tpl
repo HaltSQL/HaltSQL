@@ -85,17 +85,24 @@ directory, so a restart can start from the last verified bundle.
 
 {{/*
 The haltsql Config document (kind: Config): the chart-rendered base, with
-extraPolicies appended to policies and extraConfig deep-merged on top
-(maps merge recursively, extraConfig wins; lists and scalars are replaced).
-extraConfig.policies is refused: a replaced list would silently drop the
-chart's policies, so use extraPolicies.
+extraPolicies appended to policies, then server.extraConfig and then
+extraConfig deep-merged on top (maps merge recursively, the later one wins;
+lists and scalars are replaced). `policies` is refused in both: a replaced
+list would silently drop the chart's policies, so use extraPolicies.
 */}}
 {{- define "haltsql.config" -}}
+{{- if not (kindIs "map" (default dict .Values.server.extraConfig)) -}}
+{{- fail "server.extraConfig must be a map" -}}
+{{- end -}}
 {{- if not (kindIs "map" (default dict .Values.extraConfig)) -}}
 {{- fail "extraConfig must be a map" -}}
 {{- end -}}
 {{- if not (kindIs "slice" (default list .Values.extraPolicies)) -}}
 {{- fail "extraPolicies must be a list" -}}
+{{- end -}}
+{{- $serverExtra := deepCopy (default dict .Values.server.extraConfig) -}}
+{{- if hasKey $serverExtra "policies" -}}
+{{- fail "server.extraConfig.policies is not allowed: add policy entries with extraPolicies (they are appended to the rendered policies)" -}}
 {{- end -}}
 {{- $extra := deepCopy (default dict .Values.extraConfig) -}}
 {{- if hasKey $extra "policies" -}}
@@ -113,7 +120,7 @@ chart's policies, so use extraPolicies.
 {{- $policies = append $policies . -}}
 {{- end -}}
 {{- $_ := set $base "policies" $policies -}}
-{{- $merged := mergeOverwrite $base $extra -}}
+{{- $merged := mergeOverwrite $base $serverExtra $extra -}}
 {{- toYaml $merged -}}
 {{- end -}}
 
@@ -176,4 +183,56 @@ telemetry:
 logging:
   level: {{ .Values.server.logLevel | quote }}
   format: {{ .Values.server.logFormat | quote }}
+{{- end -}}
+
+
+{{/* Number of replicas the workload runs with (HPA minimum when autoscaling). */}}
+{{- define "haltsql.minReplicas" -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- .Values.autoscaling.minReplicas | int -}}
+{{- else -}}
+{{- .Values.replicaCount | int -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Render a probe from values: drops the chart-only `enabled` key and, with TLS
+enabled, moves httpGet probes to the plain-HTTP health port.
+Usage: include "haltsql.probe" (dict "probe" .Values.livenessProbe "root" $)
+*/}}
+{{- define "haltsql.probe" -}}
+{{- $p := omit (deepCopy .probe) "enabled" -}}
+{{- if and .root.Values.tls.enabled (hasKey $p "httpGet") -}}
+{{- $_ := set $p.httpGet "port" "health" -}}
+{{- end -}}
+{{- toYaml $p -}}
+{{- end -}}
+
+{{/*
+Whether the NetworkPolicy opens TCP 443 egress (map form of
+networkPolicy.egress only; the list form is rendered verbatim).
+*/}}
+{{- define "haltsql.egressHTTPS" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- if kindIs "map" $eg -}}
+{{- $v := $eg.allowHTTPS -}}
+{{- if eq (toString $v) "auto" -}}
+{{- if .Values.oidc }}true{{ end -}}
+{{- else if $v -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the NetworkPolicy allows any egress besides DNS: HTTPS or extraRules
+in the map form of networkPolicy.egress, or a non-empty list form.
+*/}}
+{{- define "haltsql.egressConfigured" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- if kindIs "map" $eg -}}
+{{- if or (include "haltsql.egressHTTPS" . | eq "true") $eg.extraRules }}true{{ end -}}
+{{- else if $eg -}}
+true
+{{- end -}}
 {{- end -}}

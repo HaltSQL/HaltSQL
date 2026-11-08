@@ -116,6 +116,12 @@ class Settings:
     haltsql_token: Optional[str] = field(default=None, repr=False)
     haltsql_policy: Optional[str] = None
     haltsql_timeout: float = 2.0
+    haltsql_ca_file: Optional[str] = None
+    """CA bundle for an https sidecar with a private CA (default: system CAs)."""
+    haltsql_client_cert: Optional[str] = None
+    """Client certificate (PEM) for mutual TLS to the sidecar."""
+    haltsql_client_key: Optional[str] = field(default=None, repr=False)
+    """Private key for ``haltsql_client_cert`` when it is a separate file."""
     local_policy_file: Optional[str] = None
     haltsql_bin: Optional[str] = None
     # Execution.
@@ -148,6 +154,9 @@ class Settings:
                 s.haltsql_timeout = float(e["HALTSQL_TIMEOUT"])
             except ValueError:
                 raise ConfigError("HALTSQL_TIMEOUT must be a number") from None
+        s.haltsql_ca_file = e.get("HALTSQL_CA_FILE") or None
+        s.haltsql_client_cert = e.get("HALTSQL_CLIENT_CERT") or None
+        s.haltsql_client_key = e.get("HALTSQL_CLIENT_KEY") or None
         s.local_policy_file = e.get("HALTSQL_MCP_LOCAL_POLICY") or None
         s.haltsql_bin = e.get("HALTSQL_BIN") or None
         s.database_url = e.get("HALTSQL_MCP_DATABASE_URL") or e.get("DATABASE_URL") or None
@@ -193,7 +202,16 @@ class Settings:
             self.context = validate_context(self.context)
         except ValueError as e:
             raise ConfigError(f"context: {e}") from None
-        for f in (self.local_policy_file, self.policy_file, self.tokens_file):
+        if self.haltsql_client_key and not self.haltsql_client_cert:
+            raise ConfigError("HALTSQL_CLIENT_KEY needs HALTSQL_CLIENT_CERT")
+        for f in (
+            self.local_policy_file,
+            self.policy_file,
+            self.tokens_file,
+            self.haltsql_ca_file,
+            self.haltsql_client_cert,
+            self.haltsql_client_key,
+        ):
             if f is not None and not os.path.isfile(f):
                 raise ConfigError(f"file not found: {f}")
         if self.transport == "http":

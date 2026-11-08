@@ -1,6 +1,6 @@
-(** Drift detection between a HaltSQL policy (as planned by {!Rls_gen.plan}) and a live
-    database. Read-only: everything runs inside [BEGIN READ ONLY ... ROLLBACK] and only
-    reads the system catalogs and the [has_*_privilege] functions.
+(** Drift detection between a HaltSQL policy (as planned by {!Rls_gen.val-plan}) and a
+    live database. Read-only: everything runs inside [BEGIN READ ONLY ... ROLLBACK] and
+    only reads the system catalogs and the [has_*_privilege] functions.
 
     Privileges are checked as EFFECTIVE privileges of the role (role membership and grants
     to PUBLIC included), so a grant made to PUBLIC or to a role the agent role is a member
@@ -22,12 +22,14 @@ type finding = {
 }
 
 val severity_to_string : severity -> string
+(** ["critical"] or ["warning"]. *)
 
 val check : Pg_wire.t -> Rls_gen.plan -> finding list Lwt.t
 (** Findings sorted by (object, kind, message). Empty = no drift. Raises
     {!Pg_wire.Pg_error} / {!Pg_wire.Protocol_error} on database errors. *)
 
 val finding_to_json : finding -> Yojson.Safe.t
+(** One finding as a JSON object (for [--format json]). *)
 
 val expression_matches : Rls_gen.tenant_term list -> string -> bool
 (** Heuristic check that a deparsed policy expression ([pg_get_expr]) compares every

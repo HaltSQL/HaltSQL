@@ -1,0 +1,24 @@
+# Companion object for the shared haltsql-server installed with values-gke.yaml
+# (release name "haltsql", namespace "haltsql").
+#
+#   kubectl apply -n haltsql -f deploy/cloud/gcp/gke/shared-extras.yaml
+#
+# Google Cloud Managed Service for Prometheus scrape. With tls.enabled,
+# /metrics is served on the TLS port only (the health port serves /healthz and
+# /readyz). Replace insecureSkipVerify with your issuing CA when you can.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: haltsql
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: haltsql
+      app.kubernetes.io/instance: haltsql
+  endpoints:
+    - port: http
+      path: /metrics
+      scheme: https
+      interval: 30s
+      tls:
+        insecureSkipVerify: true

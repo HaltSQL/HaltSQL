@@ -5,12 +5,17 @@ into one file that a HaltSQL server can trust without trusting the file system
 or the delivery channel it came through. CI builds and signs the bundle once.
 Every server verifies the signature before it reads a single policy.
 
-```
-policies/*.yaml ──haltsql bundle build──▶ prod.haltsqlbundle ──haltsql bundle sign──▶ prod.haltsqlbundle.sig
-                                                   │                                     │
-                                                   └──────────── copy, OCI, S3, ... ─────┘
-                                                                        ▼
-                            haltsql-server: verify signature ▶ digest ▶ structure ▶ compile policies
+```mermaid
+flowchart LR
+    SRC["policies/*.yaml"] -- "haltsql bundle build" --> B["prod.haltsqlbundle"]
+    B -- "haltsql bundle sign" --> SIG["prod.haltsqlbundle.sig"]
+    B --> T["copy, OCI, S3, ..."]
+    SIG --> T
+    T --> V1
+    subgraph SRV["haltsql-server"]
+        direction LR
+        V1["verify signature"] --> V2["digest"] --> V3["structure"] --> V4["compile policies"]
+    end
 ```
 
 ## Quick start

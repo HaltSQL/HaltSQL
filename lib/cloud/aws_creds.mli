@@ -49,6 +49,9 @@ val create :
     [timeout] bounds each HTTP call (default 5 s). *)
 
 val get : t -> (Sigv4.credentials, string) result Lwt.t
+(** Cached credentials, fetched (once, under a lock) when absent or within the refresh
+    margin of their expiry. If a refresh fails while the cached credentials are still
+    valid, those are returned. Errors never contain secret keys or tokens. *)
 
 val invalidate : t -> unit
 (** Forgets cached credentials (e.g. after an [ExpiredToken] response). *)

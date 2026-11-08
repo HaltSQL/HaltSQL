@@ -207,7 +207,7 @@ Unity Catalog, Atlan or Collibra exports (`schema import`). See
 
 ```
 haltsql schema pull --dsn postgres://... -o catalog.json
-haltsql schema import --dbt-manifest manifest.json -o pii.json
+haltsql schema import --from dbt|datahub|unity|atlan|collibra FILE -o pii.json
 ```
 
 ## haltsql policy draft
@@ -291,7 +291,11 @@ At least one of `--config` or `--policy` is required.
 | `--audit SINK` | `stdout`, `file:PATH`, or `none` (repeatable; replaces the config's sinks). |
 | `--log-raw-sql` | Include the raw SQL in audit records. |
 | `--watch` / `--no-watch` | Reload when policy or config files change (polled every 2 seconds). |
-| `--max-request-bytes N` | Maximum request body size (HTTP 413 above). |
+| `--max-request-bytes N` | Maximum request body size (HTTP 413 above). A body whose declared `Content-Length` is over the limit is rejected before any of it is read, and before authentication. |
+| `--max-connections N` | Maximum open client connections (default `1024`). At the limit the server stops accepting and new clients wait in the listen backlog. The `--health-listen` port has its own budget of 64. |
+| `--request-timeout SECONDS` | Time allowed to receive a request's head and body once its first byte arrives (default `30`). Request heads are capped at 64 KiB. |
+| `--idle-timeout SECONDS` | How long a keep-alive connection may stay silent, and how long a response write may stall (default `60`). |
+| `--shutdown-timeout SECONDS` | How long `SIGTERM` waits for in-flight requests to finish (default `15`). |
 | `--no-metrics` | Disable `GET /metrics`. |
 | `--health-listen HOST:PORT` | Extra plain-HTTP listener serving only `/healthz` and `/readyz` (for probes when the main port requires client certificates). |
 

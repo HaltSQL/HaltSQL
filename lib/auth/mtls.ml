@@ -1,4 +1,4 @@
-(* Client-certificate identity extraction and mapping. *)
+(** Client-certificate identity extraction and mapping. *)
 
 module Config = Haltsql.Config
 

@@ -1,4 +1,4 @@
-(* Prepared-statement bookkeeping; see stmt_state.mli. *)
+(** Prepared-statement bookkeeping; see stmt_state.mli. *)
 
 type op_kind =
   | Op_parse of string * Haltsql.Verdict.t

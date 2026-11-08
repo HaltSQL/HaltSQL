@@ -11,11 +11,11 @@ The library and the HTTP sidecar ask "is this SQL allowed?" and trust the
 caller to act on the answer. The proxy enforces the answer itself: a client
 cannot skip verification, choose a looser policy, or pick its tenant.
 
-```
- agent / driver ──TLS──▶ haltsql-proxy ──TLS──▶ PostgreSQL
-                         │ auth: SCRAM or client cert -> (policy, context)
-                         │ every Query/Parse: Haltsql.verify
-                         │ every Bind: tenancy params overwritten
+```mermaid
+flowchart LR
+    C["agent / driver"] -- TLS --> P["haltsql-proxy"]
+    P -- TLS --> PG[("PostgreSQL")]
+    P -.- N["auth: SCRAM or client cert → (policy, context)<br/>every Query/Parse: Haltsql.verify<br/>every Bind: tenancy params overwritten"]
 ```
 
 ## Quick start
@@ -41,7 +41,7 @@ kind: ProxyConfig
 listen: 0.0.0.0:6432
 tls:                                   # client side TLS (optional)
   cert: /etc/haltsql/tls.crt
-  key: ${file:/run/secrets/tls.key}
+  key: ${file:/run/secrets/tls.key}    # a path or inline PEM both work
   client_ca: /etc/haltsql/clients-ca.pem
   client_auth: optional                # none | optional | require
   required: true                       # refuse plaintext clients (default true)
@@ -81,6 +81,11 @@ unknown keys are errors). Strings may use `${env:NAME}` and `${file:/path}`
 (relative paths resolve against the config's directory; one trailing newline
 is trimmed; `$${` is a literal `${`). Placeholders are not allowed inside inline
 policies.
+
+`tls.cert` and `tls.key` accept either a file path or inline PEM: a value that
+contains `-----BEGIN` is parsed as PEM, so `${file:...}` and `${env:...}`
+placeholders work. Load errors for certificates and keys never echo the
+configured value, so key material does not end up in logs.
 
 | Key | Default | Meaning |
 |---|---|---|

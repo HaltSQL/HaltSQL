@@ -1,3 +1,5 @@
+(** Amazon S3 (and S3-compatible) audit sink; see s3_sink.mli. *)
+
 open Lwt.Infix
 module Config = Haltsql_load.Config
 

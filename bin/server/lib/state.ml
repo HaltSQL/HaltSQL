@@ -1,6 +1,5 @@
-(* Server state: static settings, the hot-reloadable snapshot (policies,
-   tokens, OIDC providers, mTLS identities, TLS material), audit sinks, and
-   the reload logic. *)
+(** Server state: static settings, the hot-reloadable snapshot (policies, tokens, OIDC
+    providers, mTLS identities, TLS material), audit sinks, and the reload logic. *)
 
 open Haltsql
 module Oidc_client = Haltsql_auth.Oidc_client
@@ -37,6 +36,7 @@ type t = {
       (** current TLS configuration; [Some] iff TLS was configured at startup *)
   sinks : Audit.sink list;
   started : float;
+  mutable draining : bool;
   report : Admin_report.t;  (** shadow analytics window for GET /v1/admin/report *)
   mutable remote : (string * (string * Policy.t) list) list;
       (** policies of the last accepted bundle of each [bundle_source], by source id *)
@@ -377,6 +377,7 @@ let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.
     tls;
     sinks = open_sinks cfg;
     started = Unix.gettimeofday ();
+    draining = false;
     report = Admin_report.create cfg.admin;
     remote = [];
     bundle_sources = [];
@@ -493,9 +494,12 @@ let reload_lwt ?reason ?update_remote t =
       | _ -> Lwt.return (run ()))
 
 let changed t = List.exists (fun (f, sg) -> signature f <> sg) t.signatures
-let find_policy t name = List.assoc_opt name t.snap.policies
+let snapshot_find_policy (snap : snapshot) name = List.assoc_opt name snap.policies
 
-let default_policy t =
-  match t.snap.default_policy with
+let snapshot_default_policy (snap : snapshot) =
+  match snap.default_policy with
   | Some n -> Some n
-  | None -> ( match t.snap.policies with [ (n, _) ] -> Some n | _ -> None)
+  | None -> ( match snap.policies with [ (n, _) ] -> Some n | _ -> None)
+
+let find_policy t name = snapshot_find_policy t.snap name
+let default_policy t = snapshot_default_policy t.snap

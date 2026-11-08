@@ -1,0 +1,20 @@
+# Example policy. Replace with your own (see docs/policy-reference.md) and
+# run `haltsql validate` / `haltsql test` in CI before building the image.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: analytics-agent, owner: data-platform }
+search_path: [app]
+statements: { allow: [select] }
+require_limit: { max: 1000 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.orders:
+    columns: [id, tenant_id, status, total_cents, created_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates, datetime]
+mode: enforce

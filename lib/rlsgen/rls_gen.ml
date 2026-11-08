@@ -1,4 +1,4 @@
-(* Policy -> role / grant / row-level-security DDL. See rls_gen.mli. *)
+(** Policy -> role / grant / row-level-security DDL. See rls_gen.mli. *)
 
 open Haltsql_core
 

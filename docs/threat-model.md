@@ -6,13 +6,17 @@ guarantees below, please report it privately (see [SECURITY.md](../SECURITY.md))
 
 ## System
 
-```
- user ──► your application ──► LLM agent ──► SQL string ──┐
-              │ (authenticated session)                    ▼
-              └────────── context (tenant_id, …) ──► HaltSQL ──► verdict
-                                                           │
-                       allowed? run the exact string ◄─────┘
-                       (binding bind_params) ──► PostgreSQL
+```mermaid
+flowchart LR
+    U["user"] --> APP["your application"]
+    APP --> LLM["LLM agent"]
+    LLM --> SQL["SQL string"]
+    SQL --> H["HaltSQL"]
+    POL["policy"] --> H
+    APP -- "context (tenant_id, …)<br/>from the authenticated session" --> H
+    H --> V{"verdict:<br/>allowed?"}
+    V -- "yes: the application runs the exact string,<br/>binding bind_params" --> PG[("PostgreSQL")]
+    V -- "no: nothing runs" --> R["reasons back to the caller"]
 ```
 
 HaltSQL receives three inputs: the SQL string, the policy, and the context. It

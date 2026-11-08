@@ -1,4 +1,4 @@
-(* Public JSON Web Keys. *)
+(** Public JSON Web Keys. *)
 
 module Config = Haltsql.Config
 

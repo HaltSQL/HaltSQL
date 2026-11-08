@@ -1,10 +1,9 @@
-(* The process-wide OpenTelemetry exporter (OTLP/HTTP JSON).
+(** The process-wide OpenTelemetry exporter (OTLP/HTTP JSON).
 
-   [Metrics] mirrors every Prometheus observation into [exporter ()], and the
-   verify handler records one span per request. Without [telemetry.otlp] the
-   exporter is [Exporter.noop], so call sites never branch. The exporter is
-   replaced on reload when the [otlp] section changes. Header values are
-   secrets and never logged. *)
+    [Metrics] mirrors every Prometheus observation into [exporter ()], and the verify
+    handler records one span per request. Without [telemetry.otlp] the exporter is
+    [Exporter.noop], so call sites never branch. The exporter is replaced on reload when
+    the [otlp] section changes. Header values are secrets and never logged. *)
 
 module Exporter = Haltsql_telemetry.Exporter
 

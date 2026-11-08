@@ -1,10 +1,10 @@
-(* Tests for haltsql-server.
+(** Tests for haltsql-server.
 
-   In-process: servers are started with Haltsql_server.Server.serve on
-   ephemeral ports; Lwt promises started by one Lwt_main.run keep running in
-   later ones, so each test case drives the shared event loop.
+    In-process: servers are started with Haltsql_server.Server.serve on ephemeral ports;
+    Lwt promises started by one Lwt_main.run keep running in later ones, so each test case
+    drives the shared event loop.
 
-   Subprocess: the real binary, for signals and startup checks. *)
+    Subprocess: the real binary, for signals and startup checks. *)
 
 open Lwt.Syntax
 open Haltsql_server
@@ -702,6 +702,253 @@ let reload_disables_anonymous () =
      Lwt.wakeup_later stopper ();
      Lwt.return_unit)
 
+(* ---- connection limits, timeouts, graceful shutdown ---- *)
+
+(* A server with tight limits: its state, port, stop trigger and the promise
+   returned by [Server.serve]. *)
+let start_limited limits =
+  let sources =
+    {
+      State.config_file = None;
+      policy_files = [ shop_path ];
+      overrides =
+        (fun c ->
+          {
+            c with
+            allow_unauthenticated = true;
+            default_policy = Some "shop";
+            sinks = [];
+            audit_sinks = [];
+            reload_watch = false;
+            max_request_bytes = 4096;
+          });
+    }
+  in
+  match State.load sources with
+  | Error e -> Alcotest.failf "load failed: %s" (String.concat "; " e)
+  | Ok cfg ->
+      let st = State.create ~sources cfg in
+      let fd, port = Server.bind_listen "127.0.0.1:0" in
+      let stop, stopper = Lwt.wait () in
+      let served = Server.serve ~limits st fd ~stop in
+      (st, port, stopper, served)
+
+let tight =
+  {
+    Server.default_limits with
+    request_timeout = 0.5;
+    idle_timeout = 0.5;
+    max_header_bytes = 4096;
+  }
+
+let raw_connect port =
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  let* () = Lwt_unix.connect fd (Unix.ADDR_INET (Unix.inet_addr_loopback, port)) in
+  Lwt.return fd
+
+let send fd s =
+  let rec go off =
+    if off >= String.length s then Lwt.return_unit
+    else
+      let* n = Lwt_unix.write_string fd s off (String.length s - off) in
+      go (off + n)
+  in
+  go 0
+
+(* Reads until the peer closes ([`Eof]) or [timeout] passes ([`Open]). *)
+let read_until_close ?(timeout = 3.) fd =
+  let buf = Buffer.create 1024 and chunk = Bytes.create 4096 in
+  let rec loop () =
+    let* n =
+      Lwt.catch
+        (fun () -> Lwt_unix.read fd chunk 0 (Bytes.length chunk))
+        (function
+          | Unix.Unix_error ((Unix.ECONNRESET | Unix.EPIPE), _, _) -> Lwt.return 0
+          | e -> Lwt.reraise e)
+    in
+    if n = 0 then Lwt.return `Eof
+    else (
+      Buffer.add_subbytes buf chunk 0 n;
+      loop ())
+  in
+  let* r =
+    Lwt.pick
+      [
+        loop ();
+        (let* () = Lwt_unix.sleep timeout in
+         Lwt.return `Open);
+      ]
+  in
+  Lwt.return (r, Buffer.contents buf)
+
+let status_line s =
+  match String.index_opt s '\r' with Some i -> String.sub s 0 i | None -> s
+
+let close_fd fd = Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
+
+(* A huge declared body is refused at once, before authentication, without
+   reading (or draining) it, and the connection is closed. *)
+let oversized_declared_body () =
+  run
+    (let* fd = raw_connect port_a in
+     let* () =
+       send fd
+         "POST /v1/verify HTTP/1.1\r\n\
+          Host: x\r\n\
+          Content-Type: application/json\r\n\
+          Content-Length: 1000000000\r\n\
+          \r\n\
+          {\"sql\":"
+     in
+     let t0 = Unix.gettimeofday () in
+     let* r, data = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check string)
+       "413" "HTTP/1.1 413 Request Entity Too Large" (status_line data);
+     Alcotest.(check bool) "connection closed" true (r = `Eof);
+     Alcotest.(check bool) "promptly" true (Unix.gettimeofday () -. t0 < 2.);
+     Alcotest.(check bool) "JSON error" true (contains data "PAYLOAD_TOO_LARGE");
+     Lwt.return_unit)
+
+(* A body the handler does not read (404 here) is drained only up to the cap;
+   a larger chunked body closes the connection instead of being read to the
+   end. *)
+let unread_chunked_body () =
+  run
+    (let* fd = raw_connect port_a in
+     let chunk = String.make 3000 'a' in
+     let* () =
+       send fd
+         (Printf.sprintf
+            "POST /nope HTTP/1.1\r\n\
+             Host: x\r\n\
+             Transfer-Encoding: chunked\r\n\
+             \r\n\
+             %x\r\n\
+             %s\r\n\
+             %x\r\n\
+             %s\r\n"
+            3000 chunk 3000 chunk)
+     in
+     let* r, data = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check string) "404" "HTTP/1.1 404 Not Found" (status_line data);
+     Alcotest.(check bool) "connection closed" true (r = `Eof);
+     Lwt.return_unit)
+
+let slow_headers () =
+  let _, port, stopper, _ = start_limited tight in
+  run
+    (let* fd = raw_connect port in
+     let* () = send fd "GET /healthz HTTP/1.1\r\nHost: x\r\n" in
+     let t0 = Unix.gettimeofday () in
+     let* r, data = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check bool) "closed by the server" true (r = `Eof);
+     Alcotest.(check string) "no response" "" data;
+     Alcotest.(check bool) "after request_timeout" true (Unix.gettimeofday () -. t0 < 2.);
+     (* an idle connection *)
+     let* fd = raw_connect port in
+     let* r, _ = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check bool) "idle connection closed" true (r = `Eof);
+     (* an oversized request head *)
+     let* fd = raw_connect port in
+     let* () =
+       send fd
+         ("GET /healthz HTTP/1.1\r\nHost: x\r\nX-Big: " ^ String.make 8000 'a'
+        ^ "\r\n\r\n")
+     in
+     let* r, data = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check bool) "big head closed" true (r = `Eof);
+     Alcotest.(check bool) "no 200" false (contains data "200 OK");
+     (* the server still works *)
+     let* r = request port "/healthz" in
+     check_status "healthy after abuse" 200 r;
+     Lwt.wakeup_later stopper ();
+     Lwt.return_unit)
+
+let connection_limit () =
+  let _, port, stopper, _ =
+    start_limited { Server.default_limits with max_connections = 1; idle_timeout = 5. }
+  in
+  run
+    (let* hog = raw_connect port in
+     let* () = Lwt_unix.sleep 0.1 in
+     let pending = request port "/healthz" in
+     let* early =
+       Lwt.pick
+         [
+           (let* _ = pending in
+            Lwt.return `Served);
+           (let* () = Lwt_unix.sleep 0.3 in
+            Lwt.return `Waiting);
+         ]
+     in
+     Alcotest.(check bool) "waits while at the limit" true (early = `Waiting);
+     let* () = close_fd hog in
+     let* r = request port "/healthz" in
+     check_status "served once a slot frees" 200 r;
+     Lwt.wakeup_later stopper ();
+     Lwt.return_unit)
+
+(* The SIGTERM path: an in-flight request completes (with connection: close),
+   idle connections are closed, readiness reports draining, and [serve]
+   returns. *)
+let graceful_drain () =
+  let st, port, stopper, served =
+    start_limited { Server.default_limits with shutdown_timeout = 5. }
+  in
+  run
+    (let* idle = raw_connect port in
+     let* busy = raw_connect port in
+     let body = verify_body "DROP TABLE x" in
+     let head =
+       Printf.sprintf
+         "POST /v1/verify HTTP/1.1\r\n\
+          Host: x\r\n\
+          Content-Type: application/json\r\n\
+          Content-Length: %d\r\n\
+          \r\n"
+         (String.length body)
+     in
+     (* the handler now waits for the rest of the body *)
+     let* () = send busy (head ^ String.sub body 0 5) in
+     let* () = Lwt_unix.sleep 0.2 in
+     Lwt.wakeup_later stopper ();
+     let* () = Lwt_unix.sleep 0.2 in
+     Alcotest.(check bool) "draining" true st.draining;
+     let* resp, rbody =
+       Http.callback st
+         (Conn.plain "test", ())
+         (Cohttp.Request.make (Uri.of_string "/readyz"))
+         Cohttp_lwt.Body.empty
+     in
+     let* rbody = Cohttp_lwt.Body.to_string rbody in
+     Alcotest.(check int)
+       "readyz 503 while draining" 503
+       (Cohttp.Code.code_of_status (Cohttp.Response.status resp));
+     Alcotest.(check bool) "draining flag" true (contains rbody "\"draining\":true");
+     let* r, _ = read_until_close ~timeout:2. idle in
+     Alcotest.(check bool) "idle connection closed" true (r = `Eof);
+     Alcotest.(check bool) "still serving" true (Lwt.is_sleeping served);
+     let* () = send busy (String.sub body 5 (String.length body - 5)) in
+     let* r, data = read_until_close busy in
+     Alcotest.(check string) "in-flight completed" "HTTP/1.1 200 OK" (status_line data);
+     Alcotest.(check bool) "connection: close" true (contains data "connection: close");
+     Alcotest.(check bool) "closed after the response" true (r = `Eof);
+     let* () =
+       Lwt.pick
+         [
+           served;
+           (let* () = Lwt_unix.sleep 3. in
+            Alcotest.fail "serve did not return after draining");
+         ]
+     in
+     let* () = close_fd idle in
+     close_fd busy)
+
 (* ---- subprocess: the real binary ---- *)
 
 let server_bin =
@@ -859,6 +1106,8 @@ let () =
           tc "unauthenticated mode" unauthenticated_mode;
           tc "bad requests" bad_requests;
           tc "413" too_large;
+          tc "413 before reading a huge declared body" oversized_declared_body;
+          tc "unread chunked body is not drained" unread_chunked_body;
           tc "routing" routing;
           tc "policies" policies;
           tc "metrics" metrics;
@@ -875,6 +1124,12 @@ let () =
           tc "file watch: success and failure" hot_reload_watch;
           tc "manual (SIGHUP path)" manual_reload;
           tc "allow_unauthenticated off on reload" reload_disables_anonymous;
+        ] );
+      ( "limits",
+        [
+          tc "request/idle timeouts, header cap" slow_headers;
+          tc "max connections (backpressure)" connection_limit;
+          tc "graceful drain" graceful_drain;
         ] );
       ( "process",
         [

@@ -226,6 +226,14 @@ let error_table =
   [
     ("unknown top key", "tabels: {}", "tabels", "did you mean \"tables\"");
     ("unknown nested key", "limits: {max_byte: 1}", "limits.max_byte", "unknown key");
+    (* Regression: "did you mean" hints used a quadratic-memory edit distance, so
+       one huge unknown key could exhaust memory. Long keys now get the plain
+       list of allowed keys. *)
+    ( "huge unknown key",
+      (* explicit "? key" form: YAML implicit keys are limited to 1024 chars *)
+      "? " ^ String.make 200_000 'k' ^ "\n: 1",
+      String.make 200_000 'k',
+      "(allowed: apiVersion" );
     ( "unknown table key",
       "tables:\n  a: {columns: [x], tenant_colum: x}",
       "tables.a.tenant_colum",

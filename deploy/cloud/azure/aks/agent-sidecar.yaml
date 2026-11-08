@@ -1,0 +1,281 @@
+# AKS: an LLM agent with haltsql-server as a sidecar, Workload Identity,
+# Key Vault secrets through the Secrets Store CSI driver, and audit records
+# shipped to an immutable Azure Blob container by a Vector sidecar.
+#
+#   kubectl apply -f secretproviderclass.yaml -f agent-sidecar.yaml
+#
+# Replace every REPLACE_* value. See docs/deploy-azure.md for the az CLI
+# steps that create the identity, federated credential, vault and storage.
+#
+# Why a shipper: HaltSQL's object-store audit sinks speak S3 and GCS only.
+# There is no native Azure Blob sink yet, so haltsql writes its hash-chained
+# audit file to a shared emptyDir and Vector uploads the lines verbatim.
+# Concatenating a pod's blobs in name order reproduces the file byte for byte,
+# so the chain still verifies (docs/audit-sinks.md#verifying-a-chain).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analytics-agent
+  namespace: agents
+  annotations:
+    azure.workload.identity/client-id: "REPLACE_MI_CLIENT_ID"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analytics-agent-haltsql
+  namespace: agents
+data:
+  config.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Config
+    server:
+      listen: 127.0.0.1:8080          # the container args set 0.0.0.0:8080 (probes, metrics)
+      auth:
+        allow_unauthenticated: false
+        tokens:
+          - name: analytics-agent
+            token_sha256: ${file:/mnt/secrets/haltsql/haltsql-token-sha256}
+            policy: analytics-agent
+    policies:
+      - path: /etc/haltsql/policies/analytics-agent.yaml
+    reload: { watch: true }
+    audit:
+      sinks:
+        # Hash-chained file, shipped to immutable Blob storage by Vector.
+        - type: file
+          path: /var/log/haltsql/audit.jsonl
+          on_error: fail_closed
+        # Second, independent chain to Container Insights / Log Analytics
+        # for search and alerting.
+        - type: stdout
+      log_raw_sql: false
+    telemetry:
+      metrics: { prometheus: true }
+      otlp:
+        endpoint: http://otel-collector.observability.svc.cluster.local:4318
+        service_name: haltsql-analytics-agent
+    logging: { level: info, format: json }
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent, owner: data-platform }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_column: tenant_id
+      app.currencies:
+        columns: "*"
+    functions:
+      presets: [aggregates, datetime]
+    mode: enforce
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analytics-agent-vector
+  namespace: agents
+data:
+  vector.yaml: |
+    data_dir: /var/lib/vector
+    sources:
+      haltsql_audit:
+        type: file
+        include: [/var/log/haltsql/audit.jsonl]
+        read_from: beginning
+    sinks:
+      audit_blob:
+        type: azure_blob
+        inputs: [haltsql_audit]
+        account_name: REPLACE_STORAGE_ACCOUNT
+        container_name: haltsql-audit
+        # One prefix per pod: each haltsql process has its own chain.
+        blob_prefix: "haltsql/audit/${POD_NAMESPACE}/${POD_NAME}/%Y/%m/%d/"
+        auth:
+          # Needs Vector >= 0.55.0. Reads AZURE_CLIENT_ID, AZURE_TENANT_ID and
+          # AZURE_FEDERATED_TOKEN_FILE injected by the Workload Identity webhook.
+          azure_credential_kind: workload_identity
+        encoding: { codec: text }          # the audit line, byte for byte
+        framing: { method: newline_delimited }
+        compression: none
+        batch: { timeout_secs: 60, max_bytes: 10000000 }
+        acknowledgements: { enabled: true }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-agent
+  namespace: agents
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: analytics-agent }
+  template:
+    metadata:
+      labels:
+        app: analytics-agent
+        azure.workload.identity/use: "true"
+      annotations:
+        # haltsql needs no Azure identity at all: keep the federated token
+        # and AZURE_* variables out of its container.
+        azure.workload.identity/skip-containers: haltsql
+    spec:
+      serviceAccountName: analytics-agent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+        fsGroup: 65532
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: analytics-agent }
+      containers:
+        - name: agent
+          image: REPLACE_ACR.azurecr.io/analytics-agent:1.0.0     # your agent
+          env:
+            - name: HALTSQL_URL
+              value: http://127.0.0.1:8080
+            - name: HALTSQL_TOKEN_FILE
+              value: /mnt/secrets/agent/haltsql-agent-token
+            # The agent connects to Flexible Server with an Entra access token
+            # obtained through Workload Identity (no database password).
+            - name: PGHOST
+              value: REPLACE_PG_SERVER.postgres.database.azure.com
+            - name: PGSSLMODE
+              value: verify-full
+          volumeMounts:
+            - name: agent-secrets
+              mountPath: /mnt/secrets/agent
+              readOnly: true
+
+        - name: haltsql
+          image: ghcr.io/ardada2468/haltsql:0.1.0      # pin by digest in production
+          # All pod interfaces so kubelet probes and Managed Prometheus can reach
+          # it; the NetworkPolicy below keeps other pods out and every /v1 call
+          # needs the bearer token anyway.
+          args: ["--config", "/etc/haltsql/config/config.yaml", "--listen", "0.0.0.0:8080"]
+          ports:
+            - { name: haltsql, containerPort: 8080 }
+          livenessProbe:  { httpGet: { path: /healthz, port: haltsql }, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz, port: haltsql }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            # Directory mount (no subPath) so ConfigMap updates are hot-reloaded.
+            - name: haltsql-config
+              mountPath: /etc/haltsql/config
+              readOnly: true
+            - name: haltsql-policies
+              mountPath: /etc/haltsql/policies
+              readOnly: true
+            - name: haltsql-secrets
+              mountPath: /mnt/secrets/haltsql
+              readOnly: true
+            - name: audit
+              mountPath: /var/log/haltsql
+
+        - name: vector
+          image: timberio/vector:0.55.0-distroless-libc   # >= 0.55.0 for azure_blob workload identity
+          args: ["--config", "/etc/vector/vector.yaml"]
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - name: vector-config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: vector-data
+              mountPath: /var/lib/vector
+            - name: audit
+              mountPath: /var/log/haltsql
+              readOnly: true
+
+      volumes:
+        - name: haltsql-config
+          configMap:
+            name: analytics-agent-haltsql
+            items: [{ key: config.yaml, path: config.yaml }]
+        - name: haltsql-policies
+          configMap:
+            name: analytics-agent-haltsql
+            items: [{ key: analytics-agent.yaml, path: analytics-agent.yaml }]
+        - name: haltsql-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: haltsql-sidecar }
+        - name: agent-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: haltsql-agent }
+        - name: vector-config
+          configMap: { name: analytics-agent-vector }
+        # The audit file and Vector's checkpoints live as long as the pod.
+        # haltsql does not rotate the file: size this volume for the pod's
+        # lifetime and alert on haltsql_audit_* errors (fail_closed -> 503).
+        - name: audit
+          emptyDir: { sizeLimit: 2Gi }
+        - name: vector-data
+          emptyDir: { sizeLimit: 256Mi }
+---
+# Only Managed Prometheus (ama-metrics, kube-system) may reach port 8080 from
+# outside the pod. Needs a network policy engine (Azure NPM, Calico or
+# Cilium). Kubelet probes come from the node and are allowed by these CNIs.
+# Add the agent's own serving ports if it serves traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analytics-agent
+  namespace: agents
+spec:
+  podSelector:
+    matchLabels: { app: analytics-agent }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# Azure Managed Prometheus uses its own CRD group (azmonitoring.coreos.com).
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: analytics-agent-haltsql
+  namespace: agents
+spec:
+  selector:
+    matchLabels: { app: analytics-agent }
+  podMetricsEndpoints:
+    - port: haltsql
+      path: /metrics
+      interval: 30s

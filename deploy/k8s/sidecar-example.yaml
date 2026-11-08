@@ -63,8 +63,12 @@ spec:
       labels: { app: analytics-agent }
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Pod Security Standards "restricted"-compliant for the haltsql container.
       securityContext:
         runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: agent
@@ -75,7 +79,10 @@ spec:
             - name: HALTSQL_TOKEN
               valueFrom: { secretKeyRef: { name: analytics-agent-haltsql, key: token } }
         - name: haltsql
+          # In production pin the signed digest and verify it with cosign:
+          #   image: ghcr.io/ardada2468/haltsql@sha256:<digest>
           image: ghcr.io/ardada2468/haltsql:0.1.0
+          imagePullPolicy: IfNotPresent
           # Listens on all pod interfaces so the kubelet's httpGet probes can
           # reach it; the NetworkPolicy below blocks other pods from port 8080,
           # and every /v1 call needs a bearer token anyway.
@@ -85,17 +92,22 @@ spec:
               valueFrom: { secretKeyRef: { name: analytics-agent-haltsql, key: token_sha256 } }
           ports:
             - { name: haltsql, containerPort: 8080 }
+          # The startup probe allows up to 60s for the first policy load.
+          startupProbe:   { httpGet: { path: /healthz, port: haltsql }, periodSeconds: 2, failureThreshold: 30 }
           livenessProbe:  { httpGet: { path: /healthz, port: haltsql }, periodSeconds: 10 }
           readinessProbe: { httpGet: { path: /readyz, port: haltsql }, periodSeconds: 5 }
           resources:
             requests: { cpu: 50m, memory: 32Mi }
             limits: { memory: 128Mi }
           securityContext:
+            runAsNonRoot: true
             runAsUser: 65532
             runAsGroup: 65532
             allowPrivilegeEscalation: false
+            privileged: false
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
           volumeMounts:
             - name: haltsql-config
               mountPath: /etc/haltsql/config.yaml
@@ -106,7 +118,12 @@ spec:
             - name: haltsql-policies
               mountPath: /etc/haltsql/policies
               readOnly: true
+            # The root filesystem is read-only; give the server a small /tmp.
+            - name: haltsql-tmp
+              mountPath: /tmp
       volumes:
+        - name: haltsql-tmp
+          emptyDir: { sizeLimit: 64Mi }
         - name: haltsql-config
           configMap: { name: analytics-agent-haltsql }
         - name: haltsql-policies

@@ -1,0 +1,64 @@
+# NetworkPolicy for the shared haltsql-server release (values-eks.yaml),
+# replacing the chart's deny-all-egress policy. Enforced only when the cluster
+# runs a policy engine: the Amazon VPC CNI with network policy enabled, or
+# Calico / Cilium.
+#
+# Egress is limited to DNS, HTTPS to the VPC CIDR (the STS and Secrets
+# Manager interface endpoints) and OTLP to the collector. Traffic through an
+# S3 *gateway* endpoint still goes to S3's public address ranges, so also
+# allow the CIDRs of the com.amazonaws.<region>.s3 managed prefix list
+# (aws ec2 get-managed-prefix-list-entries). Without VPC endpoints (NAT
+# gateway), allow 0.0.0.0/0 on 443 instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haltsql
+  namespace: haltsql
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: haltsql
+      app.kubernetes.io/instance: haltsql
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Agents call the verify port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              haltsql.dev/client: "true"
+      ports:
+        - { port: 8080, protocol: TCP }
+    # Prometheus / ADOT scrape /metrics (same port).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - { port: 8080, protocol: TCP }
+    # Kubelet probes on the plain-HTTP health port (tls.enabled).
+    - ports:
+        - { port: 8081, protocol: TCP }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/16          # the VPC CIDR (interface endpoints)
+        # - ipBlock: { cidr: 52.218.0.0/17 }   # example: S3 prefix-list range
+      ports:
+        - { port: 443, protocol: TCP }
+    # OTLP to the ADOT collector, when telemetry.otlp is configured.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - { port: 4318, protocol: TCP }

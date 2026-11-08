@@ -18,6 +18,7 @@ val to_string : t -> string
 (** Always version [00]. *)
 
 val sampled : t -> bool
+(** The sampled bit of the trace flags. *)
 
 val is_hex_id : len:int -> string -> bool
 (** [len] lower-case hex characters, not all zeros. *)

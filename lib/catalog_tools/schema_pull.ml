@@ -1,4 +1,4 @@
-(* Catalog snapshot from a live database (see schema_pull.mli). *)
+(** Catalog snapshot from a live database (see schema_pull.mli). *)
 
 open Haltsql_core
 open Lwt.Syntax

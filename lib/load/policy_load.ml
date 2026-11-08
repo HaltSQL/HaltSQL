@@ -1,3 +1,6 @@
+(* Public entry point for policy documents; see policy_load.mli. The
+   implementation is Policy_impl. *)
+
 let of_json ?file ?base_dir j = Policy_impl.of_json ?file ?base_dir j
 let of_file = Policy_impl.of_file
 

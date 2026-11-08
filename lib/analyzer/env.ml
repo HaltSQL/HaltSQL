@@ -1,9 +1,4 @@
-(** Per-call analysis accumulator.
-
-    One [Env.t] is created by [Analyzer.analyze] for a single statement and is discarded
-    afterwards. It is never shared between calls or domains, so the mutable fields below
-    are local state of one pure-from-the-outside function call (there is no global mutable
-    state anywhere in the analyzer). *)
+(* Per-call analysis accumulator; see env.mli. *)
 
 open Haltsql_core
 

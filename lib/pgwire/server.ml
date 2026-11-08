@@ -1,4 +1,4 @@
-(* Listener; see server.mli. *)
+(** Listener; see server.mli. *)
 
 open Lwt.Syntax
 open Proxy_config

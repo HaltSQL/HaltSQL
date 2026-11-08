@@ -1,4 +1,17 @@
 {{- if .Values.autoscaling.enabled }}
+{{- $a := .Values.autoscaling }}
+{{- if gt (int $a.minReplicas) (int $a.maxReplicas) }}
+{{- fail "autoscaling.minReplicas must not exceed autoscaling.maxReplicas" }}
+{{- end }}
+{{- if and (not $a.targetCPUUtilizationPercentage) (not $a.targetMemoryUtilizationPercentage) }}
+{{- fail "autoscaling needs targetCPUUtilizationPercentage and/or targetMemoryUtilizationPercentage" }}
+{{- end }}
+{{- if and $a.targetCPUUtilizationPercentage (not (dig "requests" "cpu" "" (.Values.resources | default dict))) }}
+{{- fail "autoscaling on CPU needs resources.requests.cpu" }}
+{{- end }}
+{{- if and $a.targetMemoryUtilizationPercentage (not (dig "requests" "memory" "" (.Values.resources | default dict))) }}
+{{- fail "autoscaling on memory needs resources.requests.memory" }}
+{{- end }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -10,13 +23,27 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ include "haltsql.fullname" . }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  minReplicas: {{ $a.minReplicas }}
+  maxReplicas: {{ $a.maxReplicas }}
   metrics:
+    {{- with $a.targetCPUUtilizationPercentage }}
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ . }}
+    {{- end }}
+    {{- with $a.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+  {{- with $a.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}

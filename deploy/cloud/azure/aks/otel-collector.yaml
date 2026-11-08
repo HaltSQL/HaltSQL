@@ -1,0 +1,84 @@
+# A minimal OpenTelemetry Collector that receives haltsql-server's OTLP/HTTP
+# (JSON) export and forwards traces and metrics to Application Insights.
+# haltsql has no native Azure Monitor exporter; this collector is the bridge.
+#
+#   kubectl create namespace observability
+#   kubectl -n observability create secret generic appinsights \
+#     --from-literal=connection-string="$APPINSIGHTS_CONNECTION_STRING"
+#   kubectl apply -f otel-collector.yaml
+#
+# (Or sync the connection string from Key Vault with a SecretProviderClass /
+# External Secrets Operator instead of creating the Secret by hand.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+      batch: {}
+    exporters:
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+    service:
+      pipelines:
+        traces:  { receivers: [otlp], processors: [memory_limiter, batch], exporters: [azuremonitor] }
+        metrics: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [azuremonitor] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: otel-collector }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.111.0   # pin a current release
+          args: ["--config=/etc/otelcol/config.yaml"]
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom: { secretKeyRef: { name: appinsights, key: connection-string } }
+          ports:
+            - { name: otlp-http, containerPort: 4318 }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+      volumes:
+        - name: config
+          configMap: { name: otel-collector }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }

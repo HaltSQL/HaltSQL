@@ -27,5 +27,10 @@ val crc32c : string -> int32
 (** CRC-32C (Castagnoli), as used by Google Cloud integrity checks. *)
 
 val base64 : string -> string
+(** Standard padded base64. *)
+
 val base64url_nopad : string -> string
+(** URL-safe base64 without padding (JWT segments). *)
+
 val base64_decode : string -> (string, string) result
+(** Standard padded base64 (surrounding whitespace ignored). *)

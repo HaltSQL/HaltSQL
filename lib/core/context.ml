@@ -1,5 +1,4 @@
-(** Per-request values from the caller's authenticated session (tenant id, user id, ...).
-    These must never come from the prompt or the SQL. *)
+(* Per-request caller context; see context.mli. *)
 
 type value =
   | One of string  (** a single value, e.g. ["acme"] or ["42"] *)
@@ -19,7 +18,6 @@ let value_to_json = function
 let to_json (t : t) : Yojson.Safe.t =
   `Assoc (List.map (fun (k, v) -> (k, value_to_json v)) t)
 
-(** Accepts an object whose values are strings, integers or arrays of those. *)
 let of_json (j : Yojson.Safe.t) : (t, string) result =
   let scalar = function
     | `String s -> Ok s

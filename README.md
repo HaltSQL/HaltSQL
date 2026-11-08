@@ -19,7 +19,31 @@ the real PostgreSQL parser, so there is no regex guessing and no grammar drift.
 HaltSQL never rewrites SQL and never connects to your database. If the answer is
 yes, you run the exact string you checked.
 
-It ships as:
+## Where HaltSQL sits
+
+Call it in-process (library) or over HTTP (sidecar) before you run the
+model's SQL, or put the wire proxy in front of Postgres so unmodified drivers
+cannot skip the check. See [deployment modes](docs/how-it-works/deployment-modes.md).
+
+```mermaid
+flowchart LR
+    AG["LLM agent"] -- "SQL string" --> APP["your application<br/>(adds context from the session)"]
+    subgraph H["HaltSQL verify"]
+        LIB["library<br/>Haltsql.verify, in-process"]
+        SC["sidecar<br/>haltsql-server, POST /v1/verify"]
+    end
+    APP -- "OCaml call" --> LIB
+    APP -- "HTTP" --> SC
+    H -- "verdict + reasons" --> APP
+    APP -- "allowed: the exact string,<br/>binding bind_params" --> PG[("PostgreSQL")]
+    APP -. "denied: reasons the agent can act on" .-> AG
+    DRV["unmodified driver<br/>(psql, JDBC, pgx, ...)"] -- "PG wire protocol" --> PX["proxy<br/>haltsql-proxy verifies every statement"]
+    PX -- "allowed statements only" --> PG
+```
+
+## What ships
+
+HaltSQL ships as:
 
 - an **OCaml library** (`haltsql`),
 - a **CLI** (`haltsql`) for scripts, CI, and debugging, plus RLS generation,
@@ -201,6 +225,7 @@ with `SHA256SUMS`, a CycloneDX SBOM, and cosign signatures. See
 |---|---|
 | Get started | [Quickstart](docs/quickstart.md) · [CLI](docs/cli.md) · [HTTP API](docs/http-api.md) |
 | Reference | [Policy](docs/policy-reference.md) · [Config](docs/config-reference.md) · [Verdict](docs/verdict.md) · [Reason codes](docs/reason-codes.md) |
+| How it works | [Architecture](docs/how-it-works/architecture.md) · [Verification pipeline](docs/how-it-works/verification-pipeline.md) · [Deployment modes](docs/how-it-works/deployment-modes.md) · [All explainers](docs/index.md#how-it-works) |
 | Concepts | [Tenancy semantics](docs/tenancy.md) · [Threat model](docs/threat-model.md) · [Defense in depth](docs/defense-in-depth.md) |
 | Operate | [Deployment](docs/deployment.md) · [Kubernetes operator](docs/kubernetes-operator.md) · [Terraform](docs/terraform.md) · [Authentication and TLS](docs/authentication.md) · [Secrets](docs/secrets.md) · [Audit sinks](docs/audit-sinks.md) · [Audit verify](docs/audit-verify.md) · [Observability](docs/observability.md) · [Performance](docs/performance.md) · [Compatibility](docs/compatibility.md) · [Testing](docs/testing.md) |
 | Clients | [Integrations](docs/integrations.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md) · [Go](docs/sdk-go.md) · [Java](docs/sdk-java.md) · [MCP](docs/mcp.md) · [Agent frameworks](docs/agent-frameworks.md) |

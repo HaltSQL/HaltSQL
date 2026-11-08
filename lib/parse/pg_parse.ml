@@ -194,38 +194,40 @@ let a_const (f : fields) : Ast.const =
   check_keys "A_Const" f
     [ "ival"; "fval"; "sval"; "boolval"; "bsval"; "isnull"; "location" ]
     loc;
-  let inner k sub =
+  (* [present_inner k]: the {k: {k: ...}} wrapper of a key known to be present
+     (selected by the match on [present] below), checked to hold only [k]. *)
+  let present_inner k =
     match get f k with
     | Some (`Assoc o) ->
-        check_keys ("A_Const." ^ k) o [ sub ] loc;
-        Some o
+        check_keys ("A_Const." ^ k) o [ k ] loc;
+        o
     | Some _ -> unsup ~loc ("malformed A_Const." ^ k)
-    | None -> None
+    | None -> unsup ~loc ("A_Const without " ^ k)
   in
   let present = List.filter (fun (k, _) -> k <> "location") f |> List.map fst in
   match present with
   | [ "isnull" ] ->
       if bool_field f "isnull" then Null else unsup ~loc "A_Const.isnull=false"
   | [ "ival" ] -> (
-      let o = Option.get (inner "ival" "ival") in
+      let o = present_inner "ival" in
       match get o "ival" with
       | None -> Int "0"
       | Some (`Int i) -> Int (string_of_int i)
       | Some (`Intlit s) -> Int s
       | Some _ -> unsup ~loc "malformed A_Const.ival")
   | [ "fval" ] -> (
-      let o = Option.get (inner "fval" "fval") in
+      let o = present_inner "fval" in
       match string_field o "fval" with
       | Some s -> Float s
       | None -> unsup ~loc "A_Const.fval without value")
   | [ "sval" ] ->
-      let o = Option.get (inner "sval" "sval") in
+      let o = present_inner "sval" in
       String (Option.value (string_field o "sval") ~default:"")
   | [ "boolval" ] ->
-      let o = Option.get (inner "boolval" "boolval") in
+      let o = present_inner "boolval" in
       Bool (bool_field o "boolval")
   | [ "bsval" ] -> (
-      let o = Option.get (inner "bsval" "bsval") in
+      let o = present_inner "bsval" in
       match string_field o "bsval" with
       | Some s -> Bit_string s
       | None -> unsup ~loc "A_Const.bsval without value")

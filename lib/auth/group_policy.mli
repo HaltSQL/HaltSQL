@@ -50,7 +50,7 @@ val select :
   Haltsql.Config.groups_policy ->
   (string * Yojson.Safe.t) list ->
   (selection, Jwt.error) result
-(** {!groups} then first-match selection. *)
+(** {!val-groups} then first-match selection. *)
 
 val resolve :
   Haltsql.Config.groups_policy ->

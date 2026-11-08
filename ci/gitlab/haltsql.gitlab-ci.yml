@@ -30,6 +30,8 @@
 #   HALTSQL_SIGNING_KEY       PEM ed25519 private key: a masked, protected CI/CD variable
 #   HALTSQL_PUBLIC_KEYS       public keys the signed bundle must verify against
 #   HALTSQL_RELEASE_BASE_URL  https mirror of the GitHub release downloads
+#   HALTSQL_CI_IMAGE          job image (default: Alpine pinned by digest; point it
+#                             at your registry mirror, keeping a digest pin)
 
 variables:
   HALTSQL_VERSION: latest
@@ -37,9 +39,12 @@ variables:
   HALTSQL_SUITES: ""
   HALTSQL_FAIL_ON_WARNINGS: "false"
   HALTSQL_REPO: ardada2468/HaltSQL
+  # Pinned by digest so the job runs exactly the image that was reviewed. Re-pin:
+  #   docker buildx imagetools inspect alpine:3.23 | grep -m1 Digest
+  HALTSQL_CI_IMAGE: alpine:3.23@sha256:f3d55900449227ae9e237ede521e7b665d53a253b42065ba90b9db9275e198ad
 
 .haltsql-base:
-  image: alpine:3.20
+  image: $HALTSQL_CI_IMAGE
   variables:
     HALTSQL_OUT: $CI_PROJECT_DIR/haltsql-ci
   before_script:

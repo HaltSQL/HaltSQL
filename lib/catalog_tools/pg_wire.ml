@@ -1,7 +1,7 @@
-(* Minimal PostgreSQL v3 protocol client (see pg_wire.mli).
+(** Minimal PostgreSQL v3 protocol client (see pg_wire.mli).
 
-   Message framing: every backend message is [type:char][len:int32 incl. itself][body].
-   The startup and SSLRequest packets have no type byte. *)
+    Message framing: every backend message is [type:char][len:int32 incl. itself][body].
+    The startup and SSLRequest packets have no type byte. *)
 
 open Lwt.Syntax
 

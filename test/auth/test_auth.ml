@@ -1,6 +1,7 @@
 (* Tests for haltsql.auth: pure JWT/OIDC verification tables (keys generated
    in-test), the JWKS cache logic with a fake fetcher and clock, mTLS identity
-   mapping and request-context merging. No network. *)
+   mapping and request-context merging. The only network use is [http_fetch] against
+   an in-process server on 127.0.0.1. *)
 
 open Haltsql_auth
 module Config = Haltsql.Config
@@ -681,6 +682,56 @@ let context_merge () =
     = Error [ "role"; "x" ]);
   Alcotest.(check bool) "empty body" true (m [] = Ok authenticated)
 
+(* ---- http_fetch against a local server ---- *)
+
+let with_server handler f =
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+  Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+  Lwt_unix.listen fd 16;
+  let port =
+    match Unix.getsockname (Lwt_unix.unix_file_descr fd) with
+    | Unix.ADDR_INET (_, p) -> p
+    | _ -> 0
+  in
+  let stop, stopper = Lwt.wait () in
+  Lwt.async (fun () ->
+      Cohttp_lwt_unix.Server.create ~stop ~on_exn:ignore
+        ~mode:(`TCP (`Socket fd))
+        (Cohttp_lwt_unix.Server.make ~callback:(fun _ _ _ -> handler ()) ()));
+  Lwt.finalize
+    (fun () -> f (Uri.of_string (Printf.sprintf "http://127.0.0.1:%d/jwks" port)))
+    (fun () ->
+      Lwt.wakeup_later stopper ();
+      Lwt.return_unit)
+
+(* Regression: an endless chunked JWKS response must hit the size cap (and release the
+   connection) instead of being read until the timeout. *)
+let http_fetch_limits () =
+  let chunk = String.make 65536 'x' in
+  let endless () =
+    let s = Lwt_stream.from (fun () -> Lwt.map (fun () -> Some chunk) (Lwt.pause ())) in
+    Cohttp_lwt_unix.Server.respond ~status:`OK ~body:(Cohttp_lwt.Body.of_stream s) ()
+  in
+  let r =
+    Lwt_main.run
+      (with_server endless (fun uri ->
+           Oidc_client.http_fetch ~timeout:5. ~max_bytes:100_000 () uri))
+  in
+  (match r with
+  | Ok _ -> Alcotest.fail "endless body accepted"
+  | Error e -> Alcotest.(check string) "size cap" "response exceeds 100000 bytes" e);
+  let not_found () =
+    Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"nope" ()
+  in
+  let r =
+    Lwt_main.run (with_server not_found (fun uri -> Oidc_client.http_fetch () uri))
+  in
+  Alcotest.(check (result string string)) "status" (Error "HTTP 404") r;
+  let ok () = Cohttp_lwt_unix.Server.respond_string ~status:`OK ~body:"{}" () in
+  let r = Lwt_main.run (with_server ok (fun uri -> Oidc_client.http_fetch () uri)) in
+  Alcotest.(check (result string string)) "body" (Ok "{}") r
+
 let loopback_hosts () =
   let check h expected =
     Alcotest.(check bool) ("loopback " ^ h) expected (Haltsql_core.Loopback.is_host h)
@@ -743,6 +794,7 @@ let () =
           tc "stale-while-error bound" stale_while_error;
           tc "discovery" discovery;
           tc "registry" registry;
+          tc "http_fetch size cap and status" http_fetch_limits;
         ] );
       ("mtls", [ tc "identity mapping" mtls_mapping; tc "CN decoding" mtls_cn_text ]);
       ("context", [ tc "merge rules" context_merge ]);

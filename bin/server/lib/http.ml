@@ -1,4 +1,8 @@
-(* HTTP routing and handlers for haltsql-server. *)
+(** HTTP routing and handlers for haltsql-server.
+
+    Every response is JSON (except [/metrics]) and carries an [x-request-id]. Errors use
+    one shape, [{"error": {"code": ..., "message": ...}}]; internal failures never expose
+    exception text to the client (it is logged with the request id instead). *)
 
 open Lwt.Syntax
 open Haltsql
@@ -40,6 +44,7 @@ let json_headers rid =
       ("content-type", "application/json");
       ("x-request-id", rid);
       ("cache-control", "no-store");
+      ("x-content-type-options", "nosniff");
     ]
 
 let respond ?(extra = []) ~rid status (body : Yojson.Safe.t) =
@@ -52,7 +57,13 @@ let error ?extra ~rid status code message =
 
 let text ~rid ?(content_type = "text/plain; charset=utf-8") status body =
   let headers =
-    Cohttp.Header.of_list [ ("content-type", content_type); ("x-request-id", rid) ]
+    Cohttp.Header.of_list
+      [
+        ("content-type", content_type);
+        ("x-request-id", rid);
+        ("cache-control", "no-store");
+        ("x-content-type-options", "nosniff");
+      ]
   in
   S.respond_string ~headers ~status ~body ()
 
@@ -60,13 +71,17 @@ let text ~rid ?(content_type = "text/plain; charset=utf-8") status body =
 
 exception Too_large
 
+(* The declared Content-Length, if any and well-formed. *)
+let declared_length (req : Cohttp.Request.t) =
+  match Cohttp.Header.get (Cohttp.Request.headers req) "content-length" with
+  | Some s -> int_of_string_opt (String.trim s)
+  | None -> None
+
+(* Reads the whole body, refusing it as soon as it exceeds [max] bytes: a
+   declared Content-Length above the cap is refused before reading anything,
+   a chunked body as soon as the running total passes it. *)
 let read_body ~max (req : Cohttp.Request.t) body =
-  let declared =
-    match Cohttp.Header.get (Cohttp.Request.headers req) "content-length" with
-    | Some s -> int_of_string_opt (String.trim s)
-    | None -> None
-  in
-  match declared with
+  match declared_length req with
   | Some n when n > max -> Lwt.return_error `Too_large
   | _ ->
       let buf = Buffer.create 1024 in
@@ -126,8 +141,8 @@ let bearer_token header =
         let t = String.trim (String.sub h lp (String.length h - lp)) in
         if t = "" then `Invalid else `Token t
 
-let static_caller (st : State.t) header =
-  match Auth.authenticate st.snap.tokens header with
+let static_caller (snap : State.snapshot) header =
+  match Auth.authenticate snap.tokens header with
   | Auth.Token t ->
       Metrics.observe_auth ~meth:"token" ~result:"ok";
       Ok
@@ -139,7 +154,7 @@ let static_caller (st : State.t) header =
           pinned = Some t.token_policy;
           auth_context = None;
         }
-  | Auth.Missing when st.snap.allow_unauthenticated ->
+  | Auth.Missing when snap.allow_unauthenticated ->
       Metrics.observe_auth ~meth:"anonymous" ~result:"ok";
       Ok
         {
@@ -157,11 +172,11 @@ let static_caller (st : State.t) header =
       Metrics.observe_auth ~meth:"token" ~result:"rejected";
       Error (Unauthenticated "invalid bearer token")
 
-let resolve_caller (st : State.t) (conn : Conn.t) req =
+let resolve_caller (snap : State.snapshot) ~rid (conn : Conn.t) req =
   let mtls_identity =
     match conn.peer with
-    | Some peer when st.snap.mtls <> [] -> (
-        match Haltsql_auth.Mtls.find_identity st.snap.mtls peer with
+    | Some peer when snap.mtls <> [] -> (
+        match Haltsql_auth.Mtls.find_identity snap.mtls peer with
         | Some id -> Some (peer, id)
         | None -> None)
     | _ -> None
@@ -181,16 +196,19 @@ let resolve_caller (st : State.t) (conn : Conn.t) req =
         }
   | None -> (
       let header = Cohttp.Header.get (Cohttp.Request.headers req) "authorization" in
-      if Option.is_some conn.peer && st.snap.mtls <> [] && Option.is_none header then (
+      (* A client that presented a certificate matching no configured mTLS
+         identity, and no bearer token, is rejected rather than treated as
+         anonymous. *)
+      if Option.is_some conn.peer && snap.mtls <> [] && Option.is_none header then (
         Metrics.observe_auth ~meth:"mtls" ~result:"rejected";
         Lwt.return_error
           (Unauthenticated "client certificate does not match any configured identity"))
       else
         match bearer_token header with
-        | `Token tok when not (Haltsql_auth.Oidc_client.is_empty st.snap.oidc) -> (
-            let* r = Haltsql_auth.Oidc_client.authenticate st.snap.oidc tok in
+        | `Token tok when not (Haltsql_auth.Oidc_client.is_empty snap.oidc) -> (
+            let* r = Haltsql_auth.Oidc_client.authenticate snap.oidc tok in
             match r with
-            | `Not_applicable -> Lwt.return (static_caller st header)
+            | `Not_applicable -> Lwt.return (static_caller snap header)
             | `Verified (id : Haltsql_auth.Oidc.identity) ->
                 Metrics.observe_auth ~meth:"oidc" ~result:"ok";
                 Lwt.return_ok
@@ -204,7 +222,17 @@ let resolve_caller (st : State.t) (conn : Conn.t) req =
                   }
             | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
                 Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
-                Lwt.return_error (Auth_unavailable (Haltsql_auth.Jwt.error_to_string e))
+                (* The underlying fetch error names internal endpoints: log it,
+                   do not send it to the client. *)
+                Log.warn "oidc signing keys unavailable"
+                  ~fields:
+                    [
+                      ("request_id", `String rid);
+                      ("error", `String (Haltsql_auth.Jwt.error_to_string e));
+                    ];
+                Lwt.return_error
+                  (Auth_unavailable
+                     "the identity provider's signing keys are unavailable; retry later")
             | `Rejected e ->
                 Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
                 Log.info "oidc token rejected"
@@ -214,7 +242,7 @@ let resolve_caller (st : State.t) (conn : Conn.t) req =
                       ("remote", `String conn.remote);
                     ];
                 Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
-        | _ -> Lwt.return (static_caller st header))
+        | _ -> Lwt.return (static_caller snap header))
 
 let unauthorized ~rid msg =
   error ~rid
@@ -230,8 +258,9 @@ let auth_error ~rid = function
 
 (* ---- OPA (opa in the config): asked only after HaltSQL allowed ---- *)
 
-let opa_check (st : State.t) ~caller ~(policy : Policy.t) ~ctx (verdict : Verdict.t) =
-  match st.snap.opa with
+let opa_check (snap : State.snapshot) ~caller ~(policy : Policy.t) ~ctx
+    (verdict : Verdict.t) =
+  match snap.opa with
   | None -> Lwt.return verdict
   | Some cfg ->
       let t0 = Unix.gettimeofday () in
@@ -315,14 +344,16 @@ let audit_record (st : State.t) ~rid ~caller ~(verdict : Verdict.t) ~sql =
       verdict;
   failures = []
 
-let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
-  let* c = resolve_caller st conn req in
+let handle_verify_inner (st : State.t) (snap : State.snapshot) ~conn ~rid ~on_verdict req
+    body =
+  let* c = resolve_caller snap ~rid conn req in
   match c with
   | Error e -> auth_error ~rid e
   | Ok caller -> (
       let* b = read_body ~max:st.cfg.max_request_bytes req body in
       match b with
       | Error `Too_large ->
+          Conn.discard_input conn;
           error ~rid
             ~extra:[ ("connection", "close") ]
             `Request_entity_too_large "PAYLOAD_TOO_LARGE"
@@ -337,7 +368,7 @@ let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
                 | Some pinned, _ -> Ok pinned
                 | None, Some requested -> Ok requested
                 | None, None -> (
-                    match State.default_policy st with
+                    match State.snapshot_default_policy snap with
                     | Some n -> Ok n
                     | None -> Error `No_default)
               in
@@ -346,7 +377,7 @@ let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
                   error ~rid `Forbidden "FORBIDDEN"
                     (Printf.sprintf "this %s caller is pinned to a different policy"
                        caller.caller_type)
-              | Error `No_default when st.snap.policies = [] ->
+              | Error `No_default when snap.policies = [] ->
                   error ~rid `Service_unavailable "NOT_READY" "no policy is loaded"
               | Error `No_default ->
                   error ~rid `Not_found "POLICY_NOT_FOUND"
@@ -363,7 +394,7 @@ let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
                         | Ok c -> Ok c
                         | Error fields -> Error (`Not_allowed fields))
                   in
-                  match (State.find_policy st name, ctx) with
+                  match (State.snapshot_find_policy snap name, ctx) with
                   | None, _ when caller.pinned <> None ->
                       error ~rid `Service_unavailable "POLICY_UNAVAILABLE"
                         (Printf.sprintf "policy %S pinned to this token is not loaded"
@@ -384,7 +415,7 @@ let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
                       let t0 = Unix.gettimeofday () in
                       let verdict = Haltsql.verify policy ctx r.sql in
                       let seconds = Unix.gettimeofday () -. t0 in
-                      let* verdict = opa_check st ~caller ~policy ~ctx verdict in
+                      let* verdict = opa_check snap ~caller ~policy ~ctx verdict in
                       on_verdict verdict;
                       let result =
                         if not verdict.allowed then "denied"
@@ -405,7 +436,7 @@ let handle_verify_inner (st : State.t) ~conn ~rid ~on_verdict req body =
 
 (* One OTLP span per verify request (a no-op without telemetry.otlp). The span
    carries the SQL hash, never the SQL. An incoming W3C traceparent is honoured. *)
-let handle_verify (st : State.t) ~conn ~rid req body =
+let handle_verify (st : State.t) snap ~conn ~rid req body =
   let module E = Telemetry.Exporter in
   let exp = Telemetry.exporter () in
   let span =
@@ -417,7 +448,7 @@ let handle_verify (st : State.t) ~conn ~rid req body =
   Lwt.catch
     (fun () ->
       let* resp, b =
-        handle_verify_inner st ~conn ~rid
+        handle_verify_inner st snap ~conn ~rid
           ~on_verdict:(fun v -> verdict := Some v)
           req body
       in
@@ -432,15 +463,15 @@ let handle_verify (st : State.t) ~conn ~rid req body =
 
 (* ---- other endpoints ---- *)
 
-let handle_policies (st : State.t) ~conn ~rid req =
-  let* c = resolve_caller st conn req in
+let handle_policies (snap : State.snapshot) ~conn ~rid req =
+  let* c = resolve_caller snap ~rid conn req in
   match c with
   | Error e -> auth_error ~rid e
   | Ok caller ->
       let visible =
         match caller.pinned with
-        | Some p -> List.filter (fun (n, _) -> n = p) st.snap.policies
-        | None -> st.snap.policies
+        | Some p -> List.filter (fun (n, _) -> n = p) snap.policies
+        | None -> snap.policies
       in
       respond ~rid `OK
         (`Assoc
@@ -461,7 +492,7 @@ let handle_policies (st : State.t) ~conn ~rid req =
                         ])
                     visible) );
              ( "default",
-               match (caller.pinned, State.default_policy st) with
+               match (caller.pinned, State.snapshot_default_policy snap) with
                | None, Some d -> `String d
                | _ -> `Null );
            ])
@@ -495,13 +526,13 @@ let is_admin (admin : Config.admin) (c : caller) =
       | (Config.Admin_token _ | Config.Admin_oidc _ | Config.Admin_mtls _), _ -> false)
     admin.admin_callers
 
-let with_admin (st : State.t) ~conn ~rid ~endpoint req k =
-  if not st.snap.admin.admin_enabled then begin
+let with_admin (snap : State.snapshot) ~conn ~rid ~endpoint req k =
+  if not snap.admin.admin_enabled then begin
     Metrics.observe_admin ~endpoint ~result:"disabled";
     error ~rid `Not_found "NOT_FOUND" "the admin API is disabled (server.admin)"
   end
   else
-    let* c = resolve_caller st conn req in
+    let* c = resolve_caller snap ~rid conn req in
     match c with
     | Error e ->
         Metrics.observe_admin ~endpoint ~result:"unauthenticated";
@@ -509,7 +540,7 @@ let with_admin (st : State.t) ~conn ~rid ~endpoint req k =
     | Ok caller when caller.identity = Id_anonymous ->
         Metrics.observe_admin ~endpoint ~result:"unauthenticated";
         unauthorized ~rid "the admin API requires an authenticated caller"
-    | Ok caller when not (is_admin st.snap.admin caller) ->
+    | Ok caller when not (is_admin snap.admin caller) ->
         Metrics.observe_admin ~endpoint ~result:"forbidden";
         Log.info "admin request refused"
           ~fields:
@@ -524,10 +555,10 @@ let with_admin (st : State.t) ~conn ~rid ~endpoint req k =
         Metrics.observe_admin ~endpoint ~result:"ok";
         k caller
 
-let handle_admin_report (st : State.t) ~conn ~rid req =
-  with_admin st ~conn ~rid ~endpoint:"report" req (fun _caller ->
+let handle_admin_report (st : State.t) (snap : State.snapshot) ~conn ~rid req =
+  with_admin snap ~conn ~rid ~endpoint:"report" req (fun _caller ->
       let status, body =
-        Admin_report.handle st.report ~policies:st.snap.policies
+        Admin_report.handle st.report ~policies:snap.policies
           ~query:(Uri.query (Cohttp.Request.uri req))
       in
       respond ~rid (Cohttp.Code.status_of_code status) body)
@@ -537,8 +568,8 @@ let policy_origin (st : State.t) name =
   else if List.mem_assoc name st.cfg.policies then "config"
   else "bundle_or_file"
 
-let handle_admin_status (st : State.t) ~conn ~rid req =
-  with_admin st ~conn ~rid ~endpoint:"status" req (fun _caller ->
+let handle_admin_status (st : State.t) (snap : State.snapshot) ~conn ~rid req =
+  with_admin snap ~conn ~rid ~endpoint:"status" req (fun _caller ->
       let now = Unix.gettimeofday () in
       let sink_json (s : Audit.sink) =
         `Assoc
@@ -549,7 +580,7 @@ let handle_admin_status (st : State.t) ~conn ~rid req =
           ]
       in
       let opa =
-        match st.snap.opa with
+        match snap.opa with
         | None -> `Null
         | Some o ->
             `Assoc
@@ -575,7 +606,9 @@ let handle_admin_status (st : State.t) ~conn ~rid req =
              ("uptime_seconds", `Int (int_of_float (now -. st.started)));
              ("config_generation", `Int st.generation);
              ( "default_policy",
-               match State.default_policy st with Some d -> `String d | None -> `Null );
+               match State.snapshot_default_policy snap with
+               | Some d -> `String d
+               | None -> `Null );
              ( "policies",
                `List
                  (List.map
@@ -591,7 +624,7 @@ let handle_admin_status (st : State.t) ~conn ~rid req =
                               | Policy.Shadow -> "shadow") );
                           ("origin", `String (policy_origin st n));
                         ])
-                    st.snap.policies) );
+                    snap.policies) );
              ( "bundle_sources",
                `List (List.map Bundle_sources.status_json st.bundle_sources) );
              ("audit_sinks", `List (List.map sink_json st.sinks));
@@ -619,9 +652,108 @@ let routes =
 
 let health_routes = [ "/healthz"; "/readyz" ]
 
+(* Request paths are attacker-controlled: cap what is echoed or logged. *)
+let max_logged_path = 256
+
+let truncate_path p =
+  if String.length p <= max_logged_path then p else String.sub p 0 max_logged_path ^ "..."
+
+let not_found ~rid p =
+  error ~rid `Not_found "NOT_FOUND" ("no route for " ^ truncate_path p)
+
+let readiness (st : State.t) (snap : State.snapshot) ~rid =
+  let n = List.length snap.policies in
+  let unhealthy =
+    List.filter_map
+      (fun (s : Audit.sink) -> if Audit.healthy s then None else Some (`String s.name))
+      st.sinks
+  in
+  if st.draining then
+    respond ~rid `Service_unavailable
+      (`Assoc
+         [
+           ("status", `String "not_ready"); ("policies", `Int n); ("draining", `Bool true);
+         ])
+  else if unhealthy <> [] then
+    respond ~rid `Service_unavailable
+      (`Assoc
+         [
+           ("status", `String "not_ready");
+           ("policies", `Int n);
+           ("unhealthy_audit_sinks", `List unhealthy);
+         ])
+  else if n > 0 then
+    respond ~rid `OK (`Assoc [ ("status", `String "ready"); ("policies", `Int n) ])
+  else
+    respond ~rid `Service_unavailable
+      (`Assoc [ ("status", `String "not_ready"); ("policies", `Int 0) ])
+
+let route (st : State.t) snap ~health_only ~conn ~rid ~meth ~path req body =
+  match (meth, path) with
+  | _, p when health_only && not (List.mem p health_routes) -> not_found ~rid p
+  | `POST, "/v1/verify" -> handle_verify st snap ~conn ~rid req body
+  | (`GET | `HEAD), "/healthz" -> respond ~rid `OK (`Assoc [ ("status", `String "ok") ])
+  | (`GET | `HEAD), "/readyz" -> readiness st snap ~rid
+  | `GET, "/metrics" when st.cfg.metrics ->
+      text ~rid ~content_type:"text/plain; version=0.0.4; charset=utf-8" `OK
+        (Metrics.render ~version:Haltsql.version ~pg:Pg_parse.postgres_version
+           ~policies_loaded:(List.length snap.State.policies)
+        ^ Haltsql_cloud.Object_sink.metrics_text (Audit.object_sinks st.sinks)
+        ^ Haltsql_siem.Siem.metrics_text (Audit.stream_sinks st.sinks)
+        ^ Bundle_sources.metrics_text st.bundle_sources)
+  | `GET, "/v1/policies" -> handle_policies snap ~conn ~rid req
+  | `GET, "/v1/admin/report" -> handle_admin_report st snap ~conn ~rid req
+  | `GET, "/v1/admin/status" -> handle_admin_status st snap ~conn ~rid req
+  | _, p when p <> "/metrics" || st.cfg.metrics -> (
+      match List.assoc_opt p routes with
+      | Some ms ->
+          error ~rid
+            ~extra:
+              [ ("allow", String.concat ", " (List.map Cohttp.Code.string_of_method ms)) ]
+            `Method_not_allowed "METHOD_NOT_ALLOWED"
+            (Printf.sprintf "%s is not allowed on %s"
+               (Cohttp.Code.string_of_method meth)
+               p)
+      | None -> not_found ~rid p)
+  | _ -> not_found ~rid path
+
+let too_large ~rid ~max =
+  error ~rid
+    ~extra:[ ("connection", "close") ]
+    `Request_entity_too_large "PAYLOAD_TOO_LARGE"
+    (Printf.sprintf "request body exceeds %d bytes" max)
+
+(* Consumes what the handler left of the request body, so the connection can
+   be reused, but never more than [max] bytes: past that the connection stops
+   reading and is closed after the response. (cohttp would otherwise drain an
+   unbounded body after the handler returns.) *)
+let drain_rest ~max (conn : Conn.t) req body =
+  if Conn.input_discarded conn || Cohttp.Request.has_body req <> `Yes then Lwt.return_unit
+  else
+    Lwt.catch
+      (fun () ->
+        let seen = ref 0 in
+        Lwt_stream.iter
+          (fun chunk ->
+            seen := !seen + String.length chunk;
+            if !seen > max then raise Too_large)
+          (Cohttp_lwt.Body.to_stream body))
+      (fun _ ->
+        Conn.discard_input conn;
+        Lwt.return_unit)
+
+let with_connection_close (resp : Cohttp.Response.t) =
+  let headers =
+    Cohttp.Header.replace (Cohttp.Response.headers resp) "connection" "close"
+  in
+  { resp with Cohttp.Response.headers }
+
 let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
     (req : Cohttp.Request.t) body =
   let t0 = Unix.gettimeofday () in
+  (* One consistent view of the reloadable settings for the whole request,
+     even if a reload lands while it awaits (e.g. an OIDC key fetch). *)
+  let snap = st.snap in
   let rid =
     match Cohttp.Header.get (Cohttp.Request.headers req) "x-request-id" with
     | Some r when valid_request_id r -> r
@@ -629,67 +761,26 @@ let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
   in
   let path = Uri.path (Cohttp.Request.uri req) in
   let meth = Cohttp.Request.meth req in
+  let max = st.cfg.max_request_bytes in
   let* resp, rbody =
     Lwt.catch
       (fun () ->
-        match (meth, path) with
-        | _, p when health_only && not (List.mem p health_routes) ->
-            error ~rid `Not_found "NOT_FOUND" ("no route for " ^ p)
-        | `POST, "/v1/verify" -> handle_verify st ~conn ~rid req body
-        | (`GET | `HEAD), "/healthz" ->
-            respond ~rid `OK (`Assoc [ ("status", `String "ok") ])
-        | (`GET | `HEAD), "/readyz" ->
-            let n = List.length st.snap.policies in
-            let unhealthy =
-              List.filter_map
-                (fun (s : Audit.sink) ->
-                  if Audit.healthy s then None else Some (`String s.name))
-                st.sinks
-            in
-            if unhealthy <> [] then
-              respond ~rid `Service_unavailable
-                (`Assoc
-                   [
-                     ("status", `String "not_ready");
-                     ("policies", `Int n);
-                     ("unhealthy_audit_sinks", `List unhealthy);
-                   ])
-            else if n > 0 then
-              respond ~rid `OK
-                (`Assoc [ ("status", `String "ready"); ("policies", `Int n) ])
-            else
-              respond ~rid `Service_unavailable
-                (`Assoc [ ("status", `String "not_ready"); ("policies", `Int 0) ])
-        | `GET, "/metrics" when st.cfg.metrics ->
-            text ~rid ~content_type:"text/plain; version=0.0.4; charset=utf-8" `OK
-              (Metrics.render ~version:Haltsql.version ~pg:Pg_parse.postgres_version
-                 ~policies_loaded:(List.length st.snap.policies)
-              ^ Haltsql_cloud.Object_sink.metrics_text (Audit.object_sinks st.sinks)
-              ^ Haltsql_siem.Siem.metrics_text (Audit.stream_sinks st.sinks)
-              ^ Bundle_sources.metrics_text st.bundle_sources)
-        | `GET, "/v1/policies" -> handle_policies st ~conn ~rid req
-        | `GET, "/v1/admin/report" -> handle_admin_report st ~conn ~rid req
-        | `GET, "/v1/admin/status" -> handle_admin_status st ~conn ~rid req
-        | _, p when p <> "/metrics" || st.cfg.metrics -> (
-            match List.assoc_opt p routes with
-            | Some ms ->
-                error ~rid
-                  ~extra:
-                    [
-                      ( "allow",
-                        String.concat ", " (List.map Cohttp.Code.string_of_method ms) );
-                    ]
-                  `Method_not_allowed "METHOD_NOT_ALLOWED"
-                  (Printf.sprintf "%s is not allowed on %s"
-                     (Cohttp.Code.string_of_method meth)
-                     p)
-            | None -> error ~rid `Not_found "NOT_FOUND" ("no route for " ^ p))
-        | _ -> error ~rid `Not_found "NOT_FOUND" ("no route for " ^ path))
+        match declared_length req with
+        | Some n when n > max ->
+            (* Refused before authentication or routing: nothing of the body
+               is read. *)
+            Conn.discard_input conn;
+            too_large ~rid ~max
+        | _ -> route st snap ~health_only ~conn ~rid ~meth ~path req body)
       (fun e ->
         Log.error "internal error handling request"
           ~fields:
             [ ("request_id", `String rid); ("error", `String (Printexc.to_string e)) ];
         error ~rid `Internal_server_error "INTERNAL" "internal server error")
+  in
+  let* () = drain_rest ~max conn req body in
+  let resp =
+    if st.draining || Conn.input_discarded conn then with_connection_close resp else resp
   in
   let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
   let route = if List.mem_assoc path routes then path else "other" in
@@ -702,8 +793,9 @@ let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
       [
         ("request_id", `String rid);
         ("method", `String (Cohttp.Code.string_of_method meth));
-        ("path", `String path);
+        ("path", `String (truncate_path path));
         ("status", `Int status);
+        ("remote", `String conn.remote);
         ( "duration_ms",
           `Float (Float.round ((Unix.gettimeofday () -. t0) *. 1e6) /. 1000.) );
       ];

@@ -1,0 +1,23 @@
+{{- if and .Values.podMonitoring.enabled .Values.server.metrics }}
+{{- if .Values.tls.enabled }}
+{{- fail "podMonitoring: GMP PodMonitoring cannot scrape the TLS port; use serviceMonitor with tlsConfig, or disable tls" }}
+{{- end }}
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "haltsql.fullname" . }}
+  labels:
+    {{- include "haltsql.labels" . | nindent 4 }}
+    {{- with .Values.podMonitoring.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "haltsql.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.podMonitoring.interval }}
+      timeout: {{ .Values.podMonitoring.timeout }}
+{{- end }}

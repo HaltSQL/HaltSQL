@@ -1,3 +1,5 @@
+(** Helpers shared by the cloud integrations; see cloud_util.mli. *)
+
 let unescape_xml s =
   let reps =
     [ ("&lt;", "<"); ("&gt;", ">"); ("&quot;", "\""); ("&apos;", "'"); ("&amp;", "&") ]

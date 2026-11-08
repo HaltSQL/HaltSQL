@@ -1,0 +1,243 @@
+# HaltSQL on GKE: haltsql-server as a sidecar next to an LLM agent.
+#
+#   - Workload Identity: the pod's KSA impersonates the GSA haltsql-agent, which
+#     can only read two secrets, create audit objects, and connect to Cloud SQL.
+#   - Secrets: the token hash comes from Secret Manager (${gcp-sm:...}); the
+#     agent reads its raw token from Secret Manager itself.
+#   - Audit: hash-chained batches to a GCS bucket with a (locked) retention policy.
+#   - Traces: OTLP/HTTP to the collector in otel-collector.yaml. Metrics: GMP
+#     PodMonitoring scrapes /metrics.
+#   - Database: the agent reaches Cloud SQL only through the Cloud SQL Auth Proxy
+#     sidecar on 127.0.0.1:5432 (private IP). haltsql-server never connects to it.
+#
+# Replace every REPLACE_ME value (or run: sed -e "s/REPLACE_ME_PROJECT/$PROJECT_ID/g" ...)
+# and create the GCP side first with ../iam/setup.sh gke-sidecar.
+# Native sidecars (initContainers with restartPolicy: Always) need GKE 1.29+.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analytics-agent
+  namespace: agents
+  annotations:
+    iam.gke.io/gcp-service-account: haltsql-agent@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+# Workload Identity does not need the Kubernetes API token in the pod.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analytics-agent-haltsql
+  namespace: agents
+data:
+  config.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Config
+    server:
+      listen: 127.0.0.1:8080          # overridden by --listen below
+      auth:
+        tokens:
+          - name: analytics-agent
+            token_sha256: ${gcp-sm:haltsql-analytics-agent-token-sha256}
+            policy: analytics-agent
+    policies:
+      - path: /etc/haltsql/policies/analytics-agent.yaml
+    reload: { watch: true }
+    audit:
+      sinks:
+        - type: gcs
+          bucket: ${env:HALTSQL_AUDIT_BUCKET}
+          prefix: haltsql/audit/analytics-agent/
+          credentials: { source: metadata }   # GKE metadata server (Workload Identity)
+          spool_dir: /var/spool/haltsql       # survives container restarts, not pod deletion
+          batch: { max_records: 500, max_seconds: 10 }
+          on_error: fail_closed
+      log_raw_sql: false
+    telemetry:
+      metrics: { prometheus: true }           # scraped by PodMonitoring below
+      otlp:
+        endpoint: http://otel-collector.observability.svc.cluster.local:4318
+        service_name: haltsql-analytics-agent
+        traces: true
+        metrics: false                        # metrics come from the scrape; avoid duplicates
+    logging: { level: info, format: json }
+    secrets:
+      gcp:
+        project: ${env:GCP_PROJECT}
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent, owner: data-platform }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status, total_cents, created_at]
+        tenant_column: tenant_id
+      app.currencies:
+        columns: "*"
+    functions:
+      presets: [aggregates, datetime]
+    mode: enforce
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-agent
+  namespace: agents
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: analytics-agent }
+  template:
+    metadata:
+      labels: { app: analytics-agent }
+    spec:
+      serviceAccountName: analytics-agent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      # Native sidecars start (and become ready) before the agent and stop after it.
+      initContainers:
+        - name: haltsql
+          image: ghcr.io/ardada2468/haltsql:0.1.0   # pin by digest in production
+          restartPolicy: Always
+          args: ["--config", "/etc/haltsql/config/config.yaml", "--listen", "0.0.0.0:8080"]
+          env:
+            - { name: GCP_PROJECT, value: REPLACE_ME_PROJECT }
+            - { name: HALTSQL_AUDIT_BUCKET, value: REPLACE_ME_PROJECT-haltsql-audit }
+          ports:
+            - { name: haltsql, containerPort: 8080 }
+          startupProbe:   { httpGet: { path: /readyz, port: haltsql }, periodSeconds: 2, failureThreshold: 30 }
+          livenessProbe:  { httpGet: { path: /healthz, port: haltsql }, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz, port: haltsql }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: haltsql-config, mountPath: /etc/haltsql/config, readOnly: true }
+            - { name: haltsql-policies, mountPath: /etc/haltsql/policies, readOnly: true }
+            - { name: haltsql-spool, mountPath: /var/spool/haltsql }
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.26.3
+          restartPolicy: Always
+          args:
+            - --private-ip
+            - --auto-iam-authn               # the agent logs in as its IAM database user
+            - --structured-logs
+            - --port=5432
+            - REPLACE_ME_PROJECT:REPLACE_ME_REGION:REPLACE_ME_INSTANCE
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: agent
+          image: REPLACE_ME_REGION-docker.pkg.dev/REPLACE_ME_PROJECT/agents/analytics-agent:1.0.0
+          env:
+            - { name: HALTSQL_URL, value: "http://127.0.0.1:8080" }
+            # The agent reads its raw token from Secret Manager at startup
+            # (secret haltsql-analytics-agent-token) with its own credentials.
+            - { name: HALTSQL_TOKEN_SECRET, value: projects/REPLACE_ME_PROJECT/secrets/haltsql-analytics-agent-token/versions/latest }
+            - { name: PGHOST, value: 127.0.0.1 }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGUSER, value: haltsql-agent@REPLACE_ME_PROJECT.iam }   # IAM database user
+            - { name: PGDATABASE, value: app }
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        # Mounted as directories (no subPath) so ConfigMap updates reach the
+        # pod and reload.watch picks up policy changes without a restart.
+        - name: haltsql-config
+          configMap:
+            name: analytics-agent-haltsql
+            items: [{ key: config.yaml, path: config.yaml }]
+        - name: haltsql-policies
+          configMap:
+            name: analytics-agent-haltsql
+            items: [{ key: analytics-agent.yaml, path: analytics-agent.yaml }]
+        - name: haltsql-spool
+          emptyDir: { sizeLimit: 256Mi }
+---
+# Ingress: only the agent's own port from anywhere, and the haltsql port from
+# Managed Prometheus collectors. Other pods cannot reach haltsql on 8080.
+# Egress: DNS, the GKE metadata server (Workload Identity), Google APIs on 443
+# (Secret Manager, GCS, Cloud SQL Admin, the LLM API), Cloud SQL on 3307, and
+# the OTel collector. Narrow 0.0.0.0/0:443 to the restricted.googleapis.com VIP
+# (199.36.153.4/30) if you route Google APIs through Private Google Access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: analytics-agent
+  namespace: agents
+spec:
+  podSelector:
+    matchLabels: { app: analytics-agent }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 8000, protocol: TCP }]
+    - ports: [{ port: 8080, protocol: TCP }]
+      from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: gmp-system }
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    # GKE metadata server: 169.254.169.252:988 (GKE 1.21+), or
+    # 169.254.169.254:80 on GKE Dataplane V2 clusters.
+    - to: [{ ipBlock: { cidr: 169.254.169.252/32 } }]
+      ports: [{ port: 988, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+      ports: [{ port: 80, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports: [{ port: 443, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: REPLACE_ME_CLOUD_SQL_PSA_RANGE } }]   # e.g. 10.20.0.0/16
+      ports: [{ port: 3307, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+          podSelector:
+            matchLabels: { app: otel-collector }
+      ports: [{ port: 4318, protocol: TCP }]
+---
+# Google Cloud Managed Service for Prometheus (enabled by default on new GKE
+# clusters). Scrapes haltsql's /metrics, including haltsql_audit_sink_*.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: analytics-agent-haltsql
+  namespace: agents
+spec:
+  selector:
+    matchLabels: { app: analytics-agent }
+  endpoints:
+    - port: 8080           # numeric: the port is declared on a native sidecar
+      path: /metrics
+      interval: 30s

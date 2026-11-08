@@ -22,12 +22,12 @@
     + [secrets_of_json] (or [secrets_of_file]) decodes only the [secrets] section,
       resolving [${env:..}]/[${file:..}] inside it (provider placeholders are rejected
       there: they cannot configure themselves);
-    + the caller builds a resolver from those {!secrets} (e.g. logs into Vault) and passes
-      it as [?resolve] to [of_json]/[of_file], which decode the whole document and call
-      [resolve ~scheme ~reference] for every provider placeholder outside the [secrets]
-      section. [scheme] is ["vault"], ["aws-sm"] or ["gcp-sm"]; [reference] is the text
-      after the colon, e.g. ["secret/data/app#token"]. Each distinct [(scheme, reference)]
-      is resolved at most once per load.
+    + the caller builds a resolver from those {!type-secrets} (e.g. logs into Vault) and
+      passes it as [?resolve] to [of_json]/[of_file], which decode the whole document and
+      call [resolve ~scheme ~reference] for every provider placeholder outside the
+      [secrets] section. [scheme] is ["vault"], ["aws-sm"] or ["gcp-sm"]; [reference] is
+      the text after the colon, e.g. ["secret/data/app#token"]. Each distinct
+      [(scheme, reference)] is resolved at most once per load.
 
     A provider placeholder with no [?resolve] given is a located error ("secret provider
     not configured"). A resolver [Error msg] becomes a located error carrying [msg];

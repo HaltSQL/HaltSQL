@@ -1,10 +1,5 @@
-(** The statement walker: builds scopes level by level, resolves every relation and column
-    reference, applies the per-node rules and invokes the tenancy prover for each SELECT /
-    DML level.
-
-    Every [match] over an AST type lists its constructors explicitly (no wildcard arms),
-    so adding a constructor to {!Haltsql_core.Ast} breaks the build here instead of being
-    silently accepted. *)
+(* The statement walker; see walk.mli for the rules and invariants. Every
+   [match] over an AST type lists its constructors explicitly. *)
 
 open Haltsql_core
 

@@ -1,8 +1,10 @@
 # Deploying haltsql-server
 
-`haltsql-server` is a stateless HTTP service. It never connects to a database
-or makes outbound network calls. Every replica loads the same policies and
-answers `POST /v1/verify`. This directory has:
+`haltsql-server` is a stateless HTTP service. It never connects to a database.
+It makes outbound calls only for features you turn on: OIDC/JWKS discovery,
+secret providers (Vault, AWS Secrets Manager, GCP Secret Manager), S3/GCS audit
+sinks and OTLP export. Every replica loads the same policies and answers
+`POST /v1/verify`. This directory has:
 
 | Path | What it is |
 |---|---|
@@ -11,6 +13,8 @@ answers `POST /v1/verify`. This directory has:
 | `operator/` | Kubernetes operator (Go, API `haltsql.dev/v1alpha1`): `HaltSQLPolicy` and `HaltSQLServer` CRDs reconciled into policy ConfigMaps and a haltsql-server Deployment. See [docs/kubernetes-operator.md](../docs/kubernetes-operator.md). |
 | `k8s/sidecar-example.yaml` | haltsql as a sidecar next to an agent, reached over `127.0.0.1`. |
 | `systemd/haltsql-server.service` | Hardened unit for VMs and bare metal. |
+| `cloud/aws/`, `cloud/gcp/`, `cloud/azure/` | Reference manifests and IAM for each cloud. Guides: [AWS](../docs/deploy-aws.md), [Google Cloud](../docs/deploy-gcp.md), [Azure](../docs/deploy-azure.md). |
+| `diagrams/` | Cloud architecture diagrams as code ([mingrammer/diagrams](https://github.com/mingrammer/diagrams)); `make diagrams` regenerates `docs/assets/cloud/`. |
 
 ## Container image
 
@@ -42,9 +46,16 @@ docker run --rm -p 8080:8080 -v "$PWD/examples:/etc/haltsql:ro" haltsql:dev \
 | `GET /readyz` | readiness | `200` once at least one policy is loaded, otherwise `503`. A failed hot reload does **not** make a pod unready: the last good policies stay active. |
 | `GET /metrics` | Prometheus | Disable with `telemetry.metrics.prometheus: false` or `--no-metrics`. |
 
-- `SIGTERM` / `SIGINT`: the server stops accepting connections, lets in-flight
-  responses finish, and exits `0`. The chart sets
-  `terminationGracePeriodSeconds: 20`.
+- `SIGTERM` / `SIGINT`: the server stops accepting connections, `/readyz`
+  returns `503` with `"draining": true`, idle keep-alive connections are
+  closed, and in-flight requests get up to `--shutdown-timeout` (default 15 s)
+  to finish (their responses carry `Connection: close`). Then it exits `0`.
+  The chart sets `terminationGracePeriodSeconds: 20`; keep it above the
+  shutdown timeout.
+- Connection limits: `--max-connections` (default 1024),
+  `--request-timeout` (30 s), `--idle-timeout` (60 s) and a 64 KiB cap on
+  request heads protect against slow or abusive clients. The
+  `haltsql_http_open_connections` gauge shows current usage.
 - `SIGHUP`: reloads the config file's policies and the `--policy` files (and
   the token list from the config file). The swap is atomic: if **any** policy
   fails to load, nothing changes, the errors are logged and

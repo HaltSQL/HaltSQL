@@ -1,4 +1,4 @@
-(* Implementations of the haltsql subcommands. Each returns an exit code. *)
+(** Implementations of the haltsql subcommands. Each returns an exit code. *)
 
 open Haltsql
 open Common

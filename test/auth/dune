@@ -1,5 +1,6 @@
 ; haltsql-server.auth unit tests: JWT/OIDC verification tables, JWKS cache with a
-; fake fetcher and clock, mTLS identity mapping, context merging. No network.
+; fake fetcher and clock, mTLS identity mapping, context merging; http_fetch
+; against an in-process server on 127.0.0.1.
 
 (test
  (name test_auth)
@@ -11,6 +12,10 @@
   alcotest
   lwt
   lwt.unix
+  unix
+  cohttp
+  cohttp-lwt
+  cohttp-lwt-unix
   uri
   yojson
   digestif

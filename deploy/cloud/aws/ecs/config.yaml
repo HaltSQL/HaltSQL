@@ -1,0 +1,53 @@
+# haltsql-server config for the ECS Fargate shared service, baked into the
+# derived image (see Dockerfile). Secrets are injected by ECS from Secrets
+# Manager as environment variables (task-definition.json, "secrets") and read
+# here with ${env:...}; nothing secret is in this file or the image.
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  # The image sets HALTSQL_LISTEN=0.0.0.0:8080, which wins over this value;
+  # the task definition sets HALTSQL_LISTEN=0.0.0.0:8443 to match.
+  listen: 0.0.0.0:8443
+  tls:
+    # Inline PEM from Secrets Manager (a value starting with -----BEGIN is
+    # used as PEM). The ALB does not validate target certificates, so a
+    # private-CA or self-signed certificate is enough for ALB -> task TLS.
+    cert: ${env:HALTSQL_TLS_CERT}
+    key: ${env:HALTSQL_TLS_KEY}
+    min_version: "1.2"
+  auth:
+    allow_unauthenticated: false
+    tokens:
+      - name: analytics-agent
+        token_sha256: ${env:HALTSQL_TOKEN_ANALYTICS_AGENT_SHA256}
+        policy: analytics-agent
+      - name: support-bot
+        token_sha256: ${env:HALTSQL_TOKEN_SUPPORT_BOT_SHA256}
+        policy: support-bot
+policies:
+  - path: ./policies/analytics-agent.yaml
+  - path: ./policies/support-bot.yaml
+  # Or ship a signed bundle and verify it at load time:
+  # - bundle: ./bundles/prod.haltsqlbundle
+  #   public_keys: [./keys/release.pub]
+reload:
+  watch: false          # the config is immutable in the image; deploy a new task definition
+audit:
+  # stdout -> awslogs -> CloudWatch Logs. haltsql cannot use the ECS task role
+  # yet (no container-credentials provider), so the s3 sink is not used here;
+  # see docs/deploy-aws.md, "Audit on ECS".
+  sinks:
+    - type: stdout
+  log_raw_sql: false
+telemetry:
+  metrics:
+    prometheus: true
+  otlp:
+    endpoint: http://127.0.0.1:4318     # the ADOT sidecar in the same task
+    service_name: haltsql
+    export_interval_seconds: 30
+logging:
+  level: info
+  format: json
+limits:
+  max_request_bytes: 1048576

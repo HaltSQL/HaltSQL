@@ -35,30 +35,30 @@ server buffer a large body.
 
 ```mermaid
 sequenceDiagram
-  participant A as Agent
-  participant H as http.ml
-  participant Au as Caller resolution
-  participant S as State snapshot
-  participant V as Haltsql.verify
-  participant M as Metrics and span
-  participant L as Audit sinks
-  A->>H: POST /v1/verify, Authorization, traceparent
-  H->>M: start span haltsql.verify
-  H->>Au: resolve caller (mTLS, then OIDC, then static token)
-  Au-->>H: caller with pinned policy and authenticated context
-  H->>H: read body up to max_request_bytes, parse sql, context, policy
-  H->>S: choose policy (pinned, requested, or default)
-  H->>H: merge context (authenticated fields win, only allowed body fields)
-  H->>V: verify(policy, context, sql)
-  V-->>H: verdict
-  H->>M: observe result, reason codes, duration
-  H->>L: deliver one sealed record to every sink
-  alt every sink accepted
-    H-->>A: 200 verdict JSON (allowed or denied)
-  else a sink refused
-    H-->>A: 503 AUDIT_UNAVAILABLE
-  end
-  H->>M: end span with verdict, or as error for non-200
+    participant A as Agent
+    participant H as http.ml
+    participant Au as Caller resolution
+    participant S as State snapshot
+    participant V as Haltsql.verify
+    participant M as Metrics and span
+    participant L as Audit sinks
+    A->>H: POST /v1/verify, Authorization, traceparent
+    H->>M: start span haltsql.verify
+    H->>Au: resolve caller (mTLS, then OIDC, then static token)
+    Au-->>H: caller with pinned policy and authenticated context
+    H->>H: read body up to max_request_bytes, parse sql, context, policy
+    H->>S: choose policy (pinned, requested, or default)
+    H->>H: merge context (authenticated fields win, only allowed body fields)
+    H->>V: verify(policy, context, sql)
+    V-->>H: verdict
+    H->>M: observe result, reason codes, duration
+    H->>L: deliver one sealed record to every sink
+    alt every sink accepted
+        H-->>A: 200 verdict JSON (allowed or denied)
+    else a sink refused
+        H-->>A: 503 AUDIT_UNAVAILABLE
+    end
+    H->>M: end span with verdict, or as error for non-200
 ```
 
 A denial is a normal `200` response. Errors that stop the request earlier:
@@ -88,21 +88,21 @@ still allows.
 
 ```mermaid
 flowchart TD
-  start["Request on /v1/*"] --> cert{"Verified client cert<br/>and mTLS identities configured?"}
-  cert -->|"yes"| match{"SPIFFE ID or subject CN<br/>matches an identity?"}
-  match -->|"yes"| mtls["mTLS caller<br/>policy and static context from identity"]
-  match -->|"no"| bearer
-  cert -->|"no"| bearer{"Bearer token present<br/>and OIDC providers configured?"}
-  bearer -->|"yes"| oidc{"JWT whose iss equals<br/>a provider issuer?"}
-  oidc -->|"no: not applicable"| static
-  oidc -->|"yes"| verifyjwt{"Provider verifies signature,<br/>iss, aud, exp, nbf, iat, required_claims"}
-  verifyjwt -->|"ok"| oidcok["OIDC caller<br/>policy pinned or from allowed claim<br/>context from context_claims"]
-  verifyjwt -->|"keys unavailable"| unavail["503 AUTH_UNAVAILABLE"]
-  verifyjwt -->|"rejected"| reject["401 UNAUTHORIZED"]
-  bearer -->|"no"| static{"Static token check"}
-  static -->|"SHA-256 matches a token"| tok["Token caller<br/>pinned policy, context from body"]
-  static -->|"no header and allow_unauthenticated"| anon["Anonymous caller<br/>requested or default policy"]
-  static -->|"no header, or unknown token"| reject
+    start["Request on /v1/*"] --> cert{"Verified client cert<br/>and mTLS identities configured?"}
+    cert -->|"yes"| match{"SPIFFE ID or subject CN<br/>matches an identity?"}
+    match -->|"yes"| mtls["mTLS caller<br/>policy and static context from identity"]
+    match -->|"no"| bearer
+    cert -->|"no"| bearer{"Bearer token present<br/>and OIDC providers configured?"}
+    bearer -->|"yes"| oidc{"JWT whose iss equals<br/>a provider issuer?"}
+    oidc -->|"no: not applicable"| static
+    oidc -->|"yes"| verifyjwt{"Provider verifies signature,<br/>iss, aud, exp, nbf, iat, required_claims"}
+    verifyjwt -->|"ok"| oidcok["OIDC caller<br/>policy pinned or from allowed claim<br/>context from context_claims"]
+    verifyjwt -->|"keys unavailable"| unavail["503 AUTH_UNAVAILABLE"]
+    verifyjwt -->|"rejected"| reject["401 UNAUTHORIZED"]
+    bearer -->|"no"| static{"Static token check"}
+    static -->|"SHA-256 matches a token"| tok["Token caller<br/>pinned policy, context from body"]
+    static -->|"no header and allow_unauthenticated"| anon["Anonymous caller<br/>requested or default policy"]
+    static -->|"no header, or unknown token"| reject
 ```
 
 **mTLS.** The TLS layer verifies the chain against `server.tls.client_ca`
@@ -205,17 +205,17 @@ file, every policy file, each signed bundle and its `.sig`, and the TLS files.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Serving: startup load succeeded
-  Serving --> Loading: SIGHUP or watched file changed
-  Loading --> Loading: prefetch secrets, load config, bundles, policy files, check policy refs
-  Loading --> CheckTLS: everything loaded
-  Loading --> Rejected: any load error
-  CheckTLS --> Rejected: TLS added or removed, or bad cert or key
-  CheckTLS --> CheckOTLP: TLS material ok or TLS off
-  CheckOTLP --> Rejected: invalid otlp section
-  CheckOTLP --> Swapped: exporter ok
-  Swapped --> Serving: new snapshot active, reload counted as success
-  Rejected --> Serving: last good snapshot kept, errors logged, reload counted as error
+    [*] --> Serving: startup load succeeded
+    Serving --> Loading: SIGHUP or watched file changed
+    Loading --> Loading: prefetch secrets, load config, bundles, policy files, check policy refs
+    Loading --> CheckTLS: everything loaded
+    Loading --> Rejected: any load error
+    CheckTLS --> Rejected: TLS added or removed, or bad cert or key
+    CheckTLS --> CheckOTLP: TLS material ok or TLS off
+    CheckOTLP --> Rejected: invalid otlp section
+    CheckOTLP --> Swapped: exporter ok
+    Swapped --> Serving: new snapshot active, reload counted as success
+    Rejected --> Serving: last good snapshot kept, errors logged, reload counted as error
 ```
 
 What makes this safe:
@@ -277,16 +277,16 @@ verification from that point on. `Audit.verify_lines` and
 
 ```mermaid
 flowchart LR
-  g["genesis<br/>64 zeros"] --> r1
-  subgraph obj1["First object, seq 0 (one batch)"]
-    r1["record 1<br/>prev_hash = genesis<br/>hash = h1"] --> r2["record 2<br/>prev_hash = h1<br/>hash = h2"]
-    r2 --> r3["record 3<br/>prev_hash = h2<br/>hash = h3"]
-  end
-  subgraph obj2["Next object, seq 1"]
-    r4["record 4<br/>prev_hash = h3<br/>hash = h4"] --> r5["record 5<br/>prev_hash = h4<br/>hash = h5"]
-  end
-  r3 --> r4
-  spool["spool_dir/head.json<br/>chain head + next seq"] -.->|"restart continues here"| r5
+    g["genesis<br/>64 zeros"] --> r1
+    subgraph obj1["First object, seq 0 (one batch)"]
+        r1["record 1<br/>prev_hash = genesis<br/>hash = h1"] --> r2["record 2<br/>prev_hash = h1<br/>hash = h2"]
+        r2 --> r3["record 3<br/>prev_hash = h2<br/>hash = h3"]
+    end
+    subgraph obj2["Next object, seq 1"]
+        r4["record 4<br/>prev_hash = h3<br/>hash = h4"] --> r5["record 5<br/>prev_hash = h4<br/>hash = h5"]
+    end
+    r3 --> r4
+    spool["spool_dir/head.json<br/>chain head + next seq"] -.->|"restart continues here"| r5
 ```
 
 ### Sinks

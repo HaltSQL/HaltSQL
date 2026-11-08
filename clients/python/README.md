@@ -13,7 +13,7 @@ pip install 'haltsql[asyncpg]' # + guarded execution on asyncpg
 import psycopg
 from haltsql import HaltSQLClient, QueryDenied, guard
 
-hs = HaltSQLClient.from_env()  # HALTSQL_URL, HALTSQL_TOKEN, HALTSQL_TIMEOUT
+hs = HaltSQLClient.from_env()  # HALTSQL_URL, HALTSQL_TOKEN, HALTSQL_TIMEOUT, HALTSQL_CA_FILE, ...
 
 with psycopg.connect(DSN) as conn:
     try:
@@ -25,8 +25,10 @@ with psycopg.connect(DSN) as conn:
 ```
 
 - `HaltSQLClient` / `AsyncHaltSQLClient`: the sidecar HTTP API, with
-  timeouts and retries. **Fail closed:** any error raises; nothing is ever
-  treated as allowed.
+  default timeouts (2 s per attempt), bounded retries, TLS verification on by
+  default (private CA via `verify=`, mutual TLS via `cert=`), and a response
+  size cap. **Fail closed:** any error raises; nothing is ever treated as
+  allowed. The token never appears in `repr()` or error messages.
 - `Verdict`, `Reason`, `BindParam`: typed verdicts; `verdict.bind_args()`
   returns positional parameters for `$1..$n`.
 - `guard.execute` / `guard.execute_async`: verify, then run exactly the

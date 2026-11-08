@@ -1,6 +1,7 @@
-(* Unit tests for haltsql.pgwire: codecs, SCRAM, config, enforcement, statement state. *)
+(** Unit tests for haltsql.pgwire: codecs, SCRAM, config, enforcement, statement state. *)
 
 open Haltsql_pgwire
+open Lwt.Syntax
 
 let check_str = Alcotest.(check string)
 let check_bool = Alcotest.(check bool)
@@ -550,6 +551,57 @@ let test_config_errors () =
          ]
        ())
 
+(* Regression: tls.key given as a ${file:...} placeholder expands to the PEM contents.
+   It used to be treated as a path, and the "cannot open <path>" error then printed the
+   whole private key. Inline PEM is now accepted, and no TLS error ever echoes the
+   value. *)
+let test_config_tls_key_material () =
+  let tmp contents =
+    let f = Filename.temp_file "haltsql_tls" ".pem" in
+    Out_channel.with_open_bin f (fun oc -> output_string oc contents);
+    f
+  in
+  let tls_errors ~cert ~key =
+    errors_of
+      (base_config
+         ~extra:[ ("tls", `Assoc [ ("cert", `String cert); ("key", `String key) ]) ]
+         ())
+    |> List.filter (fun e -> Astring_like.contains e "tls.")
+  in
+  let secret = "SECRETKEYBYTES0123456789abcdef" in
+  let garbled =
+    "-----BEGIN PRIVATE KEY-----\n" ^ secret ^ "\n-----END PRIVATE KEY-----\n"
+  in
+  let no_secret name es =
+    List.iter
+      (fun e ->
+        if Astring_like.contains e secret || Astring_like.contains e "BEGIN PRIVATE" then
+          Alcotest.failf "%s: error leaks key material: %s" name e)
+      es
+  in
+  (* inline garbage through ${file:...} *)
+  let f = tmp garbled in
+  let es = tls_errors ~cert:"/nonexistent.pem" ~key:("${file:" ^ f ^ "}") in
+  no_secret "file placeholder" es;
+  has_error_in "file placeholder" "invalid PEM private key" es;
+  (* inline garbage directly *)
+  let es = tls_errors ~cert:"/nonexistent.pem" ~key:garbled in
+  no_secret "inline" es;
+  (* key text without a PEM header, taken as a path *)
+  let es = tls_errors ~cert:"/nonexistent.pem" ~key:secret in
+  no_secret "as path" es;
+  has_error_in "as path" "cannot read private key file" es;
+  (* a valid key through ${file:...} loads (only the bogus cert is reported) *)
+  let good = X509.Private_key.encode_pem (X509.Private_key.generate `ED25519) in
+  let g = tmp good in
+  let es = tls_errors ~cert:"/nonexistent.pem" ~key:("${file:" ^ g ^ "}") in
+  check_bool
+    (Printf.sprintf "valid inline key accepted: [%s]" (String.concat "; " es))
+    false
+    (List.exists (fun e -> Astring_like.contains e "tls.key") es);
+  Sys.remove f;
+  Sys.remove g
+
 (* --------------------------------------------------------------- Enforce *)
 
 let binding ?(ctx = Haltsql.Context.make [ ("tenant_id", Haltsql.Context.One "acme") ]) ()
@@ -773,6 +825,77 @@ let test_stmt_state () =
   | () -> Alcotest.fail "expected Overflow"
   | exception Stmt_state.Overflow -> ()
 
+(* --------------------------------------------------------- Io / Upstream *)
+
+(* Frame lengths are validated before anything is allocated. *)
+let test_io_length_bounds () =
+  let attempt bytes =
+    Lwt_main.run
+      (let a, b = Lwt_unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+       let io = Io.of_fd b in
+       Lwt.finalize
+         (fun () ->
+           let* _ = Lwt_unix.write_string a bytes 0 (String.length bytes) in
+           let* () = Lwt_unix.close a in
+           Lwt.catch
+             (fun () ->
+               let* _ = Io.read_message io ~max:1024 in
+               Lwt.return "ok")
+             (function
+               | Wire.Malformed _ -> Lwt.return "malformed"
+               | Io.Too_large _ -> Lwt.return "too_large"
+               | Io.Closed -> Lwt.return "closed"
+               | e -> Lwt.return (Printexc.to_string e)))
+         (fun () -> Io.close io))
+  in
+  check_str "negative length" "malformed" (attempt "Q\xff\xff\xff\xff");
+  check_str "length below header" "malformed" (attempt "Q\x00\x00\x00\x03");
+  check_str "oversized length" "too_large" (attempt "Q\x7f\xff\xff\xff");
+  check_str "truncated body" "closed" (attempt "Q\x00\x00\x00\x10abc");
+  check_str "valid" "ok" (attempt "Q\x00\x00\x00\x05x")
+
+(* Regression: an upstream that accepts TCP and then never answers the SSLRequest used
+   to hang [Upstream.connect] (and [send_cancel]) forever; both are now bounded by
+   [connect_timeout]. *)
+let test_stalled_upstream () =
+  let listener = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.setsockopt listener Unix.SO_REUSEADDR true;
+  Unix.bind listener (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+  Unix.listen listener 16;
+  let port = match Unix.getsockname listener with Unix.ADDR_INET (_, p) -> p | _ -> 0 in
+  let u =
+    {
+      Proxy_config.host = "127.0.0.1";
+      port;
+      database = "db";
+      user = "u";
+      password = None;
+      tls_mode = Proxy_config.Tls_require;
+      tls_ca = [];
+      connect_timeout = 0.3;
+    }
+  in
+  let t0 = Unix.gettimeofday () in
+  let r =
+    Lwt_main.run
+      (Lwt.catch
+         (fun () ->
+           let* io = Upstream.connect u ~application_name:None in
+           let* () = Io.close io in
+           Lwt.return "connected")
+         (function
+           | Upstream.Upstream_error m -> Lwt.return m
+           | e -> Lwt.return (Printexc.to_string e)))
+  in
+  let dt = Unix.gettimeofday () -. t0 in
+  check_str "connect fails with a timeout" "upstream timed out" r;
+  check_bool (Printf.sprintf "bounded (%.2fs)" dt) true (dt < 2.);
+  let t0 = Unix.gettimeofday () in
+  Lwt_main.run (Upstream.send_cancel u ~pid:1 ~key:2);
+  let dt = Unix.gettimeofday () -. t0 in
+  check_bool (Printf.sprintf "cancel bounded (%.2fs)" dt) true (dt < 2.);
+  Unix.close listener
+
 let () =
   Sec.init_rng ();
   Alcotest.run "pgwire"
@@ -786,6 +909,11 @@ let () =
           Alcotest.test_case "other messages" `Quick test_misc_messages;
         ] );
       ("sec", [ Alcotest.test_case "base64, ct_equal, md5" `Quick test_sec ]);
+      ( "io",
+        [
+          Alcotest.test_case "frame length bounds" `Quick test_io_length_bounds;
+          Alcotest.test_case "stalled upstream is bounded" `Quick test_stalled_upstream;
+        ] );
       ( "scram",
         [
           Alcotest.test_case "pbkdf2 vector" `Quick test_pbkdf2;
@@ -800,6 +928,8 @@ let () =
           Alcotest.test_case "valid" `Quick test_config_ok;
           Alcotest.test_case "YAML example" `Quick test_config_yaml_example;
           Alcotest.test_case "errors" `Quick test_config_errors;
+          Alcotest.test_case "tls key material never echoed" `Quick
+            test_config_tls_key_material;
         ] );
       ( "enforce",
         [

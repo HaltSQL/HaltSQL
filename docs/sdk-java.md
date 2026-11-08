@@ -108,7 +108,7 @@ Every failure is a `HaltSQLException` whose `kind()` is one of:
 |---|---|
 | `HTTP` (`HaltSQLHttpException`) | Non-200 status: `status()` and `code()` (`UNAUTHORIZED`, `FORBIDDEN`, `AUDIT_UNAVAILABLE`, ... or `HTTP_<status>`). Redirects are never followed. |
 | `TIMEOUT` | An attempt exceeded the timeout (after retries). |
-| `TRANSPORT` | Connection error, or the thread was interrupted. |
+| `TRANSPORT` | Connection or TLS error, or the thread was interrupted. |
 | `PROTOCOL` | Body is not JSON, has duplicate keys or trailing data, a required field is missing or mistyped, `allowed` is true while `reasons` is not empty, the body is too large, or `sql_sha256` does not equal the SHA-256 of the SQL that was sent. |
 | `USAGE` | Bad options or arguments, or SQL the JDBC path cannot run safely. |
 | `DENIED` (`HaltSQLDeniedException`) | `JdbcGuard` only: the policy denied the SQL. |
@@ -125,7 +125,9 @@ reason codes are kept as strings.
 | `timeout(d)` | 5s | Connect and per-attempt request timeout. |
 | `retries(n, base, max)` | 2, 100ms, 2s | Retries on 503, connection errors and timeouts; exponential backoff with full jitter; `max` also caps `Retry-After`. |
 | `maxResponseBytes(n)` | 8 MiB | Response size cap. |
-| `httpClient(c)` | built-in | Custom `HttpClient` (TLS, proxy); must use `Redirect.NEVER`. |
+| `sslContext(ctx)` | JVM default trust store | TLS for an `https` sidecar: a trust store with a private CA, a key manager with a client certificate for mutual TLS. |
+| `sslParameters(p)` | JVM defaults | TLS protocols and cipher suites. |
+| `httpClient(c)` | built-in | Custom `HttpClient` (proxy, executor, TLS); must use `Redirect.NEVER`. Cannot be combined with `sslContext` / `sslParameters`: configure TLS on it instead. |
 | `withoutSqlHashCheck()` | check on | Disable the `sql_sha256` check. |
 
 Per call: `verify(sql, context, VerifyOptions.policy("name").withRequestId(id))`.
@@ -134,6 +136,47 @@ Context values may be `String`, `Integer`, `Long`, `Short`, `Byte`, `BigInteger`
 
 Other endpoints: `health()`, `ready()` (a 503 returns `ready() == false` and is
 not retried), `policies()`.
+
+Every request has a timeout and carries
+`User-Agent: haltsql-client-java/<VERSION>`. The worst case for one `verify`
+is about `(retries + 1) * timeout` plus the backoff delays. Only 503,
+connection errors and timeouts are retried; `POST /v1/verify` has no side
+effects, so retrying it is safe. An interrupted thread stops at once (kind
+`TRANSPORT`, interrupt flag restored).
+
+## TLS and mutual TLS
+
+```java
+KeyStore trust = KeyStore.getInstance("PKCS12");
+trust.load(null, null);
+trust.setCertificateEntry("haltsql-ca", CertificateFactory.getInstance("X.509")
+    .generateCertificate(Files.newInputStream(Path.of("/etc/haltsql/ca.crt"))));
+TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+tmf.init(trust);
+
+KeyStore identity = KeyStore.getInstance("PKCS12");          // client cert + key, for mTLS
+identity.load(Files.newInputStream(Path.of("/etc/haltsql/client.p12")), password);
+KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+kmf.init(identity, password);
+
+SSLContext tls = SSLContext.getInstance("TLS");
+tls.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+
+HaltSQLClient haltsql = HaltSQLClient.builder("https://haltsql.internal:8443")
+    .token(System.getenv("HALTSQL_TOKEN"))
+    .sslContext(tls)
+    .build();
+```
+
+Certificate and host-name verification stay on. An untrusted certificate is a
+`TRANSPORT` error.
+
+## Sharing and secrets
+
+- `HaltSQLClient` is immutable and thread-safe. Create one per sidecar and
+  share it; the underlying `HttpClient` pools keep-alive connections.
+- The token is only placed in the `Authorization` header. It is not in any
+  exception message or in `toString()`.
 
 ## Development
 

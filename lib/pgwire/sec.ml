@@ -1,4 +1,4 @@
-(* Security helpers; see sec.mli. *)
+(** Security helpers; see sec.mli. *)
 
 let ct_equal a b =
   let la = String.length a and lb = String.length b in

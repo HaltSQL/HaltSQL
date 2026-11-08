@@ -23,6 +23,7 @@ val parse_verifier : string -> (verifier, string) result
     [SCRAM-SHA-256$<iterations>:<salt b64>$<StoredKey b64>:<ServerKey b64>]. *)
 
 val verifier_to_string : verifier -> string
+(** The stored format accepted by {!parse_verifier}. *)
 
 val make_verifier : ?iterations:int -> ?salt:string -> string -> verifier
 (** [make_verifier password]; default 4096 iterations and a random 16-byte salt. *)

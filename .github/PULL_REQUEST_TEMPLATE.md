@@ -15,6 +15,7 @@
 - [ ] Tests added or updated, with both allowed and denied cases where behavior changed
 - [ ] Attack-corpus case added in `test/corpus/` for any security fix
 - [ ] The analyzer still fails closed: new or unknown constructs are denied, no wildcard match arms in rule code
+- [ ] OCaml code follows [the style guide](https://github.com/ardada2468/HaltSQL/blob/main/CONTRIBUTING.md#ocaml-style-and-conventions): `.mli` with odoc comments for new modules, `result` at boundaries, no partial functions on untrusted input
 - [ ] Docs updated (`docs/`), including `docs/reason-codes.md` for any new reason code
 - [ ] ADR added in `docs/adr/` for contract or design changes
 - [ ] `CHANGELOG.md` updated under **Unreleased**

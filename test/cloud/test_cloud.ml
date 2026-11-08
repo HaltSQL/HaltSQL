@@ -1812,6 +1812,42 @@ let test_load_config () =
 
 (* ================= misc ================= *)
 
+(* Regression: the size cap must hold for responses without Content-Length (chunked).
+   The old client buffered the whole body before checking it, so an endless chunked
+   response was only stopped by the timeout and could exhaust memory first. *)
+let test_http_body_cap () =
+  let chunk = String.make 65536 'x' in
+  let srv =
+    Fake_http.start (fun _ _ ->
+        let s = Lwt_stream.from (fun () -> Lwt.pause () >|= fun () -> Some chunk) in
+        Cohttp_lwt_unix.Server.respond ~status:`OK ~body:(Cohttp_lwt.Body.of_stream s) ())
+  in
+  let r =
+    run
+      (C.Http.request ~timeout:5. ~max_body:100_000 `GET
+         (Uri.of_string (Fake_http.url srv "/big")))
+  in
+  srv.stop ();
+  match r with
+  | Ok _ -> Alcotest.fail "an endless chunked body was accepted"
+  | Error e ->
+      Alcotest.(check bool)
+        ("size cap error: " ^ e) true
+        (contains e "exceeds 100000 bytes")
+
+(* A declared oversized Content-Length is refused without reading the body. *)
+let test_http_declared_too_big () =
+  let srv = Fake_http.start (fun _ _ -> Fake_http.respond (String.make 2048 'y')) in
+  let r =
+    run
+      (C.Http.request ~timeout:5. ~max_body:1024 `GET
+         (Uri.of_string (Fake_http.url srv "/x")))
+  in
+  srv.stop ();
+  match r with
+  | Ok _ -> Alcotest.fail "oversized response accepted"
+  | Error e -> Alcotest.(check bool) e true (contains e "exceeds 1024 bytes")
+
 let test_util () =
   Alcotest.(check int32) "crc32c(123456789)" 0xE3069283l (C.Cloud_util.crc32c "123456789");
   Alcotest.(check (option string))
@@ -1943,6 +1979,9 @@ let () =
       ( "misc",
         [
           Alcotest.test_case "util" `Quick test_util;
+          Alcotest.test_case "http: chunked body over the cap" `Quick test_http_body_cap;
+          Alcotest.test_case "http: declared length over the cap" `Quick
+            test_http_declared_too_big;
           Alcotest.test_case "audit chain" `Quick test_audit_chain;
         ] );
     ]

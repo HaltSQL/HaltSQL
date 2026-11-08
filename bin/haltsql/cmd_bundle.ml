@@ -1,7 +1,7 @@
-(* haltsql bundle keygen | build | sign | verify | inspect.
+(** haltsql bundle keygen | build | sign | verify | inspect.
 
-   [cmd] is the [bundle] command group (register it in main.ml). Exit codes: 0 ok,
-   1 verification or validation failure, 2 usage or load error. *)
+    [cmd] is the [bundle] command group (register it in main.ml). Exit codes: 0 ok, 1
+    verification or validation failure, 2 usage or load error. *)
 
 open Cmdliner
 module B = Haltsql_bundle

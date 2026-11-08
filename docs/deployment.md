@@ -8,8 +8,44 @@ HaltSQL runs in one of three shapes:
 | **Sidecar** (`haltsql-server` next to the agent, on `127.0.0.1`) | Recommended for everything else. One instance per agent pod. |
 | **Shared service** (`haltsql-server` behind a load balancer) | Many agents, central policy management. Needs TLS in front and tokens pinned to policies. |
 
+```mermaid
+flowchart LR
+  subgraph lib["Library"]
+    A1["OCaml agent"] -->|"Haltsql.verify (in-process)"| L1["haltsql library"]
+  end
+  subgraph side["Sidecar (recommended)"]
+    A2["Agent container"] -->|"POST /v1/verify on 127.0.0.1:8080"| S2["haltsql-server"]
+  end
+  subgraph shared["Shared service"]
+    A3["Agent A"] -->|"HTTPS + token"| LB["Internal load balancer"]
+    A4["Agent B"] -->|"HTTPS + token"| LB
+    LB --> S3["haltsql-server replicas"]
+  end
+  A1 -->|"exact SQL, if allowed"| DB[("PostgreSQL")]
+  A2 -->|"exact SQL, if allowed"| DB
+  A3 --> DB
+  A4 --> DB
+```
+
+`haltsql-server` never connects to the database: the agent runs the exact
+string it verified. To verify every statement without changing the agent, put
+[`haltsql-proxy`](proxy.md) in front of PostgreSQL instead.
+
 In every shape, the database-side controls in
 [defense-in-depth.md](defense-in-depth.md) still apply.
+
+## Deploying to the cloud
+
+Reference architectures, IAM policies and ready-to-edit manifests for each
+cloud live in their own guides. Their architecture diagrams are generated from
+code with [mingrammer/diagrams](https://github.com/mingrammer/diagrams)
+(`make diagrams`, sources in [`deploy/diagrams/`](../deploy/diagrams/)).
+
+| Cloud | Guide | Patterns covered | Manifests |
+|---|---|---|---|
+| AWS | [deploy-aws.md](deploy-aws.md) | EKS sidecar with IRSA, ECS Fargate shared service, proxy in front of RDS | [`deploy/cloud/aws/`](../deploy/cloud/aws/) |
+| Google Cloud | [deploy-gcp.md](deploy-gcp.md) | GKE sidecar with Workload Identity, Cloud Run, proxy in front of Cloud SQL | [`deploy/cloud/gcp/`](../deploy/cloud/gcp/) |
+| Azure | [deploy-azure.md](deploy-azure.md) | AKS sidecar with Workload Identity, Container Apps, proxy in front of Flexible Server | [`deploy/cloud/azure/`](../deploy/cloud/azure/) |
 
 **TLS:** `haltsql-server` has built-in TLS 1.2/1.3 and optional mTLS
 (`server.tls`, see [authentication.md](authentication.md)). As a sidecar bound

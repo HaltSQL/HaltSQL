@@ -113,6 +113,12 @@ def build_tools(
             timeout=settings.haltsql_timeout,
             policy=settings.haltsql_policy,
             retry=RetryPolicy(),
+            verify=settings.haltsql_ca_file or True,
+            cert=(
+                (settings.haltsql_client_cert, settings.haltsql_client_key)
+                if settings.haltsql_client_cert and settings.haltsql_client_key
+                else settings.haltsql_client_cert
+            ),
         )
         verifier = client
         lister = client.policies

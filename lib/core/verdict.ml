@@ -1,5 +1,9 @@
 (** The result of verifying one SQL string. Its JSON form is part of the public API (see
-    docs/verdict.md). *)
+    docs/verdict.md): fields are never removed or renamed.
+
+    Invariant: in enforce mode a caller may execute the SQL {b only} when [allowed] is
+    true, and then must bind exactly [bind_params]. [bind_params] is empty whenever the
+    statement was denied (or would be, in shadow mode). *)
 
 type t = {
   allowed : bool;
@@ -19,6 +23,7 @@ type t = {
   elapsed_us : int;
 }
 
+(** The stable JSON form of a verdict. *)
 let to_json v : Yojson.Safe.t =
   let reasons rs = `List (List.map Reason.to_json rs) in
   `Assoc

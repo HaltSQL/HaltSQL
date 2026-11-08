@@ -1,14 +1,5 @@
-(* Tamper-evident audit log.
-
-   One JSON line per verify request, per sink:
-     {ts, request_id, caller, policy, policy_version, allowed, shadow, codes,
-      sql_sha256, fingerprint, elapsed_us, [sql], prev_hash, hash}
-   where
-     hash = sha256_hex (prev_hash ^ L)
-   and L is the compact JSON serialization of the same object without the
-   "hash" field (keys in exactly the order written). The first line of a new
-   chain has prev_hash = 64 zeros. Appending to an existing file continues its
-   chain from the last line's hash. Each sink keeps its own chain. *)
+(** Tamper-evident audit log: sealing, sinks and chain verification. The record format and
+    the hash chain are documented in audit.mli. *)
 
 let genesis = String.make 64 '0'
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))

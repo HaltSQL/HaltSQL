@@ -1,0 +1,84 @@
+# Companion to values-aks.yaml (shared service). Replaces the chart's
+# NetworkPolicy, which denies all egress and would block the Entra JWKS fetch.
+#
+# Ingress: agents namespace (verify, TLS port 8080) and kube-system
+# (Managed Prometheus scrape; kubelet probes hit the plain health port 8081).
+# Egress: DNS, HTTPS (Entra ID JWKS), and the OTLP collector.
+#
+# Kubernetes NetworkPolicy cannot match FQDNs. Pin HTTPS egress to
+# login.microsoftonline.com with Azure Firewall application rules (UDR egress)
+# or a Cilium FQDN policy (Azure CNI powered by Cilium + ACNS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haltsql
+  namespace: haltsql
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: haltsql
+      app.kubernetes.io/instance: haltsql
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: agents }
+      ports:
+        - { port: 8080, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { port: 8080, protocol: TCP }
+        - { port: 8081, protocol: TCP }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - { port: 443, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+          podSelector:
+            matchLabels: { app: otel-collector }
+      ports:
+        - { port: 4318, protocol: TCP }
+---
+# Azure Managed Prometheus scrape config (CRD group azmonitoring.coreos.com).
+# With tls.enabled, /metrics is served over HTTPS on port 8080. Managed
+# Prometheus reads TLS material only from the kube-system Secret
+# "ama-metrics-mtls-secret" (create it BEFORE this PodMonitor):
+#   kubectl -n kube-system create secret generic ama-metrics-mtls-secret \
+#     --from-file=haltsql-ca.crt=./internal-ca.crt
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: haltsql
+  namespace: haltsql
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: haltsql
+      app.kubernetes.io/instance: haltsql
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      scheme: https
+      interval: 30s
+      tlsConfig:
+        ca:
+          secret:
+            name: ama-metrics-mtls-secret
+            key: haltsql-ca.crt
+        serverName: haltsql.haltsql.svc
+        insecureSkipVerify: false

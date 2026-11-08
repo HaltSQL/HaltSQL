@@ -1,4 +1,4 @@
-(* PostgreSQL connection strings (see pg_dsn.mli). *)
+(** PostgreSQL connection strings (see pg_dsn.mli). *)
 
 type sslmode = Disable | Prefer | Require | Verify_ca | Verify_full
 

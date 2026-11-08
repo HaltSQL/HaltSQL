@@ -583,7 +583,14 @@ let table_j ctx path ~search_path ~(tenancy : Policy.tenancy) ~statements key j 
     raw_table option =
   let names =
     match Ident.parse_parts key with
-    | Ok [ n ] -> Some (List.hd search_path, n)
+    | Ok [ n ] -> (
+        match search_path with
+        | s :: _ -> Some (s, n)
+        | [] ->
+            (* Not reached: [decode] never passes an empty search path. *)
+            Dec.error ctx path
+              (Printf.sprintf "table %S needs a schema: the search_path is empty" key);
+            None)
     | Ok [ s; n ] -> Some (s, n)
     | Ok _ ->
         Dec.error ctx path
