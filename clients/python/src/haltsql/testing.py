@@ -18,6 +18,7 @@ Example::
 
 from __future__ import annotations
 
+import os
 import contextlib
 import hmac
 import json
@@ -40,7 +41,10 @@ __all__ = [
 ]
 
 #: The haltlab Postgres 17 (``make -C lab up``); lab-only credentials.
-LAB_ADMIN_DSN = "host=127.0.0.1 port=5417 user=postgres password=haltlab dbname=postgres"
+LAB_ADMIN_DSN = (
+    "host=127.0.0.1 port=5417 user=postgres password="
+    + os.environ.get("HALTSQL_PGPASSWORD", "haltlab") + " dbname=postgres"
+)
 
 
 def make_verdict_dict(

@@ -1,6 +1,7 @@
 """haltsql-llamaindex: fakes first; real LlamaIndex objects when installed and
 the lab Postgres is up."""
 
+import os
 import pytest
 
 from haltsql import QueryDenied
@@ -57,7 +58,7 @@ def pg():
     with temporary_database("haltsql_python_li", SETUP) as dsn:
         if dsn is None:
             pytest.skip("psycopg or the lab Postgres is not available (make -C lab up)")
-        yield f"postgresql+psycopg://postgres:haltlab@127.0.0.1:5417/{dsn.split('dbname=')[1]}"
+        yield f"postgresql+psycopg://postgres:{os.environ.get('HALTSQL_PGPASSWORD', 'haltlab')}@127.0.0.1:5417/{dsn.split('dbname=')[1]}"
 
 
 @pytest.mark.integration

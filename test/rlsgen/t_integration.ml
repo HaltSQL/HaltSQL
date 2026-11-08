@@ -17,7 +17,9 @@ let admin_dsn_string =
   match Sys.getenv_opt "HALTSQL_TEST_PG_DSN" with
   | Some s when s <> "" -> s
   | _ ->
-      "postgres://postgres:haltlab@localhost:5417/postgres?sslmode=disable&connect_timeout=3"
+      Printf.sprintf
+        "postgres://postgres:%s@localhost:5417/postgres?sslmode=disable&connect_timeout=3"
+        (Option.value ~default:"haltlab" (Sys.getenv_opt "HALTSQL_PGPASSWORD"))
 
 let admin_dsn =
   match Pg_wire.parse_dsn admin_dsn_string with

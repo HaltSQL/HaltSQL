@@ -13,7 +13,8 @@ from haltsql.testing import FakeSidecar, make_verdict_dict
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 SAAS_POLICY = os.path.join(ROOT, "test", "fixtures", "policies", "saas.yaml")
 PG_ADMIN = os.environ.get(
-    "HALTSQL_TEST_PG_ADMIN", "host=127.0.0.1 port=5417 user=postgres password=haltlab dbname=postgres"
+    "HALTSQL_TEST_PG_ADMIN", "host=127.0.0.1 port=5417 user=postgres password="
+    + os.environ.get("HALTSQL_PGPASSWORD", "haltlab") + " dbname=postgres"
 )
 
 

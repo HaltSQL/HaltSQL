@@ -13,6 +13,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Password of the per-run Postgres service containers below. It is derived
+  # from the run id so no database password is hardcoded; the tests read it from
+  # HALTSQL_PGPASSWORD (default: the local lab value).
+  HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   lint:
     name: Formatting (ocamlformat)
@@ -106,7 +112,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -136,7 +142,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -195,7 +201,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -233,7 +239,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
@@ -258,7 +264,7 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: haltlab # disposable test container (see .gitguardian.yaml)
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
         ports: ["5417:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s

@@ -198,6 +198,10 @@ type env = {
   audit : string;
 }
 
+(* Password of the lab / CI Postgres superuser (HALTSQL_PGPASSWORD, default: the
+   lab compose value). *)
+let upstream_pw = Option.value ~default:"haltlab" (Sys.getenv_opt "HALTSQL_PGPASSWORD")
+
 let start_proxy ~name ~tmp (cfg : Yojson.Safe.t) =
   let bin = Option.get proxy_bin in
   let port = free_port () in
@@ -206,7 +210,7 @@ let start_proxy ~name ~tmp (cfg : Yojson.Safe.t) =
   let log = Filename.concat tmp (name ^ ".log") in
   let out = Unix.openfile log [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600 in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-  let env = Array.append (Unix.environment ()) [| "PROXY_UPSTREAM_PW=haltlab" |] in
+  let env = Array.append (Unix.environment ()) [| "PROXY_UPSTREAM_PW=" ^ upstream_pw |] in
   let pid =
     Unix.create_process_env bin
       [| bin; "run"; "-c"; path; "--listen"; Printf.sprintf "127.0.0.1:%d" port |]
@@ -709,7 +713,7 @@ let t_no_secrets_in_logs () =
         [
           agent_pw;
           agent2_pw;
-          "haltlab";
+          upstream_pw;
           "HTSECRET";
           "BEGIN PRIVATE KEY";
           "SCRAM-SHA-256$";

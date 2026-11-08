@@ -93,7 +93,8 @@ def real_server() -> Iterator[str]:
 
 
 PG_DSN_ADMIN = os.environ.get(
-    "HALTSQL_TEST_PG_ADMIN", "host=127.0.0.1 port=5417 user=postgres password=haltlab dbname=postgres"
+    "HALTSQL_TEST_PG_ADMIN", "host=127.0.0.1 port=5417 user=postgres password="
+    + os.environ.get("HALTSQL_PGPASSWORD", "haltlab") + " dbname=postgres"
 )
 
 

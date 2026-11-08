@@ -13,6 +13,8 @@ from conftest import POLICIES_DIR
 SQL_OK = "SELECT id, status FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 100"
 SQL_BAD = "SELECT id FROM orders LIMIT 10"
 
+_PW = os.environ.get("HALTSQL_PGPASSWORD", "haltlab")
+
 
 def decide(sql, ctx, _policy):
     if "tenant_id = $1" in sql:
@@ -179,7 +181,7 @@ def test_psycopg_with_real_cli_verifier(pg_dsn, haltsql_cli):
 @pytest.mark.integration
 async def test_asyncpg_runs_verified_sql(pg_dsn):
     asyncpg = pytest.importorskip("asyncpg")
-    dsn = "postgresql://postgres:haltlab@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1]
+    dsn = f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1]
     conn = await asyncpg.connect(dsn)
     try:
         fv = FakeVerifier(decide)
@@ -211,7 +213,7 @@ async def test_psycopg_async(pg_dsn):
 @pytest.mark.integration
 def test_sqlalchemy_engine(pg_dsn):
     sqlalchemy = pytest.importorskip("sqlalchemy")
-    url = "postgresql+psycopg://postgres:haltlab@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1]
+    url = f"postgresql+psycopg://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1]
     engine = sqlalchemy.create_engine(url)
     try:
         r = guard.execute_on_engine(engine, SQL_OK, {"tenant_id": "acme"},

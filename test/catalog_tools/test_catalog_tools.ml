@@ -1028,7 +1028,9 @@ let test_fake_server_error () =
 let admin_dsn_s =
   match Sys.getenv_opt "HALTSQL_TEST_PG_DSN" with
   | Some s when s <> "" -> s
-  | _ -> "postgres://postgres:haltlab@localhost:5417/postgres?sslmode=disable"
+  | _ ->
+      Printf.sprintf "postgres://postgres:%s@localhost:5417/postgres?sslmode=disable"
+        (Option.value ~default:"haltlab" (Sys.getenv_opt "HALTSQL_PGPASSWORD"))
 
 let admin_dsn = lazy (get_ok "admin dsn" (Dsn.parse admin_dsn_s))
 let test_db = "haltsql_schema_test"

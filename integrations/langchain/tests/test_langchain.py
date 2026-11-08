@@ -1,6 +1,7 @@
 """haltsql-langchain: core tests use fakes; framework tests skip when
 langchain is not installed; execution tests skip without the lab Postgres."""
 
+import os
 import json
 
 import pytest
@@ -101,7 +102,7 @@ def pg():
 
 def _url(dsn):
     name = dsn.split("dbname=")[1]
-    return f"postgresql+psycopg://postgres:haltlab@127.0.0.1:5417/{name}"
+    return f"postgresql+psycopg://postgres:{os.environ.get('HALTSQL_PGPASSWORD', 'haltlab')}@127.0.0.1:5417/{name}"
 
 
 @pytest.mark.integration

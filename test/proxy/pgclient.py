@@ -22,7 +22,7 @@ from pathlib import Path
 import psycopg
 from psycopg import pq
 
-ADMIN = dict(host="127.0.0.1", port=5417, user="postgres", password="haltlab")
+ADMIN = dict(host="127.0.0.1", port=5417, user="postgres", password=os.environ.get("HALTSQL_PGPASSWORD", "haltlab"))
 REPO = Path(__file__).resolve().parents[2]
 
 
