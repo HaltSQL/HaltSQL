@@ -240,7 +240,8 @@ even before 1.0.
   paths are now `github.com/HaltSQL/HaltSQL/clients/go/haltsql`,
   `.../clients/go/pgxtest` and `.../deploy/operator`; container images and
   the Helm chart are published under `ghcr.io/haltsql/`; the docs site is
-  `https://haltsql.github.io/HaltSQL/`; and `cosign verify` must use the new
+  `https://haltsql.github.io/`, published from the public
+  `HaltSQL/haltsql.github.io` repository; and `cosign verify` must use the new
   repository's workflow identity. Old `ghcr.io/ardada2468/...` images are not
   republished.
 - Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,
