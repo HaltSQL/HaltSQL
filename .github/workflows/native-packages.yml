@@ -5,8 +5,8 @@ name: Native packages (wheels, npm)
 # would install them, and publishes them on release tags.
 #
 #   artifact            Linux (x86_64, aarch64)                 macOS arm64
-#   libhaltsql.so       manylinux_2_28 container (glibc 2.28)   macos-14, deployment target 11.0
-#   haltsql (CLI)       static musl, Dockerfile `dist` stage    macos-14
+#   libhaltsql.so       manylinux_2_28 container (glibc 2.28)   macos-15, deployment target 11.0
+#   haltsql (CLI)       static musl, Dockerfile `dist` stage    macos-15
 #
 # Wheels are tagged py3-none-<platform>: the library is loaded with ctypes, so one
 # wheel per platform serves every CPython >= 3.9.
@@ -118,7 +118,7 @@ jobs:
 
   macos:
     name: libhaltsql + CLI (macOS arm64)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -178,7 +178,7 @@ jobs:
             lib: lib-linux-aarch64
             cli: cli-linux-aarch64
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             lib: native-macos-arm64
             cli: native-macos-arm64
     runs-on: ${{ matrix.runner }}
@@ -288,7 +288,7 @@ jobs:
           - platform: linux-x64
             runner: ubuntu-22.04
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
