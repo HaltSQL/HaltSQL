@@ -18,21 +18,68 @@ let container = "haltsql-siem-kafka"
 let password = "kafka-test-" ^ string_of_int (Unix.getpid ()) ^ "-pw"
 let run = Lwt_main.run
 
-(* A non-loopback address of this host: the gateway of Docker's default bridge. *)
+(* A bindable non-loopback IPv4 address of this host (Docker bridge gateway on
+   Linux, or the host's outbound LAN IPv4 address on macOS Docker Desktop). *)
+let can_bind_non_loopback ip =
+  try
+    let v4 = Ipaddr.V4.of_string_exn ip in
+    let first_octet = Char.code (Ipaddr.V4.to_octets v4).[0] in
+    if first_octet = 127 || Ipaddr.V4.compare v4 Ipaddr.V4.any = 0 then false
+    else
+      let addr = Unix.inet_addr_of_string ip in
+      let fd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+      Fun.protect
+        ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+        (fun () ->
+          Unix.bind fd (Unix.ADDR_INET (addr, 0));
+          true)
+  with _ -> false
+
+let udp_outbound_ip () =
+  try
+    let fd = Unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
+    Fun.protect
+      ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+      (fun () ->
+        Unix.connect fd (Unix.ADDR_INET (Unix.inet_addr_of_string "8.8.8.8", 53));
+        match Unix.getsockname fd with
+        | Unix.ADDR_INET (a, _) -> Some (Unix.string_of_inet_addr a)
+        | _ -> None)
+  with _ -> None
+
 let gateway =
   lazy
-    (match
-       docker
-         [
-           "network";
-           "inspect";
-           "bridge";
-           "--format";
-           "{{(index .IPAM.Config 0).Gateway}}";
-         ]
-     with
-    | 0, out when String.trim out <> "" -> String.trim out
-    | _ -> failwith "cannot read the gateway of the Docker bridge network")
+    (let bridge_gw =
+       match
+         docker
+           [
+             "network";
+             "inspect";
+             "bridge";
+             "--format";
+             "{{(index .IPAM.Config 0).Gateway}}";
+           ]
+       with
+       | 0, out when String.trim out <> "" -> Some (String.trim out)
+       | _ -> None
+     in
+     let ifconfig_ips () =
+       match run_cmd [| "ifconfig" |] with
+       | 0, out ->
+           String.split_on_char '\n' out
+           |> List.filter_map (fun line ->
+               let tokens =
+                 String.split_on_char ' ' (String.trim line) |> List.filter (( <> ) "")
+               in
+               match tokens with "inet" :: ip :: _ -> Some ip | _ -> None)
+       | _ -> []
+     in
+     let candidates =
+       Option.to_list bridge_gw @ Option.to_list (udp_outbound_ip ()) @ ifconfig_ips ()
+     in
+     match List.find_opt can_bind_non_loopback candidates with
+     | Some ip -> ip
+     | None -> failwith "cannot find a bindable non-loopback IPv4 address on this host")
 
 let properties () =
   String.concat "\n"

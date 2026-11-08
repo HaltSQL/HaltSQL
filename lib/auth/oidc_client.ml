@@ -18,11 +18,20 @@ exception Body_too_large
 
 let http_fetch ?(timeout = 5.0) ?(max_bytes = 1_048_576) () : fetch =
  fun uri ->
+  let body_ref = ref None in
+  let drain () =
+    match !body_ref with
+    | None -> Lwt.return_unit
+    | Some b ->
+        body_ref := None;
+        Lwt.catch (fun () -> Cohttp_lwt.Body.drain_body b) (fun _ -> Lwt.return_unit)
+  in
   let get () =
     let* resp, body = Cohttp_lwt_unix.Client.get uri in
+    body_ref := Some body;
     let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
     if status <> 200 then
-      let* () = Cohttp_lwt.Body.drain_body body in
+      let* () = drain () in
       Lwt.return_error (Printf.sprintf "HTTP %d" status)
     else
       let buf = Buffer.create 4096 in
@@ -36,11 +45,15 @@ let http_fetch ?(timeout = 5.0) ?(max_bytes = 1_048_576) () : fetch =
                 Buffer.add_string buf chunk)
               (Cohttp_lwt.Body.to_stream body)
           in
+          body_ref := None;
           Lwt.return_ok (Buffer.contents buf))
         (function
           | Body_too_large ->
+              Lwt.async drain;
               Lwt.return_error (Printf.sprintf "response exceeds %d bytes" max_bytes)
-          | e -> Lwt.reraise e)
+          | e ->
+              Lwt.async drain;
+              Lwt.reraise e)
   in
   Lwt.catch
     (fun () ->
@@ -48,9 +61,12 @@ let http_fetch ?(timeout = 5.0) ?(max_bytes = 1_048_576) () : fetch =
         [
           get ();
           (let* () = Lwt_unix.sleep timeout in
+           Lwt.async drain;
            Lwt.return_error (Printf.sprintf "timed out after %.0fs" timeout));
         ])
-    (fun e -> Lwt.return_error ("request failed: " ^ Printexc.to_string e))
+    (fun e ->
+      Lwt.async drain;
+      Lwt.return_error ("request failed: " ^ Printexc.to_string e))
 
 (* ---- one provider ---- *)
 
@@ -85,11 +101,20 @@ let provider ?fetch ?(now = Unix.gettimeofday) ?groups (cfg : Config.oidc_provid
 let config p = p.cfg
 let groups p = p.groups
 
+let issuer_is_loopback p =
+  match Uri.host (Uri.of_string p.cfg.issuer) with
+  | Some h -> Haltsql_core.Loopback.is_host h
+  | None -> false
+
 let check_url p what s =
   let u = Uri.of_string s in
   match (Uri.scheme u, Uri.host u, Uri.userinfo u) with
   | _, _, Some _ -> Error (what ^ " must not contain credentials")
   | _, (None | Some ""), _ -> Error (what ^ " has no host")
+  | (Some "https" | Some "http"), Some h, None
+    when what <> "issuer" && Haltsql_core.Loopback.is_host h && not (issuer_is_loopback p)
+    ->
+      Error (what ^ " must not point to a loopback host when issuer is not on loopback")
   | Some "https", _, _ -> Ok u
   | Some "http", _, _ when p.cfg.allow_insecure_http -> Ok u
   | _ -> Error (what ^ " must be an https URL")

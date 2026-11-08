@@ -181,35 +181,40 @@ let resolve_caller (st : State.t) (conn : Conn.t) req =
         }
   | None -> (
       let header = Cohttp.Header.get (Cohttp.Request.headers req) "authorization" in
-      match bearer_token header with
-      | `Token tok when not (Haltsql_auth.Oidc_client.is_empty st.snap.oidc) -> (
-          let* r = Haltsql_auth.Oidc_client.authenticate st.snap.oidc tok in
-          match r with
-          | `Not_applicable -> Lwt.return (static_caller st header)
-          | `Verified (id : Haltsql_auth.Oidc.identity) ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"ok";
-              Lwt.return_ok
-                {
-                  identity = Id_oidc id.provider;
-                  caller_name = "oidc:" ^ id.provider;
-                  caller_type = "oidc";
-                  subject = id.subject;
-                  pinned = Some id.policy;
-                  auth_context = Some (id.context, id.request_context_fields);
-                }
-          | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
-              Lwt.return_error (Auth_unavailable (Haltsql_auth.Jwt.error_to_string e))
-          | `Rejected e ->
-              Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
-              Log.info "oidc token rejected"
-                ~fields:
-                  [
-                    ("reason", `String (Haltsql_auth.Jwt.error_code e));
-                    ("remote", `String conn.remote);
-                  ];
-              Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
-      | _ -> Lwt.return (static_caller st header))
+      if Option.is_some conn.peer && st.snap.mtls <> [] && Option.is_none header then (
+        Metrics.observe_auth ~meth:"mtls" ~result:"rejected";
+        Lwt.return_error
+          (Unauthenticated "client certificate does not match any configured identity"))
+      else
+        match bearer_token header with
+        | `Token tok when not (Haltsql_auth.Oidc_client.is_empty st.snap.oidc) -> (
+            let* r = Haltsql_auth.Oidc_client.authenticate st.snap.oidc tok in
+            match r with
+            | `Not_applicable -> Lwt.return (static_caller st header)
+            | `Verified (id : Haltsql_auth.Oidc.identity) ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"ok";
+                Lwt.return_ok
+                  {
+                    identity = Id_oidc id.provider;
+                    caller_name = "oidc:" ^ id.provider;
+                    caller_type = "oidc";
+                    subject = id.subject;
+                    pinned = Some id.policy;
+                    auth_context = Some (id.context, id.request_context_fields);
+                  }
+            | `Rejected (Haltsql_auth.Jwt.Keys_unavailable _ as e) ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"unavailable";
+                Lwt.return_error (Auth_unavailable (Haltsql_auth.Jwt.error_to_string e))
+            | `Rejected e ->
+                Metrics.observe_auth ~meth:"oidc" ~result:"rejected";
+                Log.info "oidc token rejected"
+                  ~fields:
+                    [
+                      ("reason", `String (Haltsql_auth.Jwt.error_code e));
+                      ("remote", `String conn.remote);
+                    ];
+                Lwt.return_error (Unauthenticated (Haltsql_auth.Jwt.error_to_string e)))
+        | _ -> Lwt.return (static_caller st header))
 
 let unauthorized ~rid msg =
   error ~rid
@@ -469,12 +474,23 @@ let handle_policies (st : State.t) ~conn ~rid req =
    OIDC provider, or the selector of the matched mTLS identity. Anonymous callers
    never match. *)
 
+let oidc_admin_matches spec ~provider ~subject ~pinned =
+  if String.equal spec provider then true
+  else
+    let n = String.length provider and m = String.length spec in
+    if m > n + 1 && String.sub spec 0 n = provider && (spec.[n] = ':' || spec.[n] = '/')
+    then
+      let qual = String.sub spec (n + 1) (m - n - 1) in
+      subject = Some qual || pinned = Some qual
+    else false
+
 let is_admin (admin : Config.admin) (c : caller) =
   List.exists
     (fun (a : Config.admin_caller) ->
       match (a, c.identity) with
       | Config.Admin_token n, Id_token t -> String.equal n t
-      | Config.Admin_oidc p, Id_oidc q -> String.equal p q
+      | Config.Admin_oidc p, Id_oidc q ->
+          oidc_admin_matches p ~provider:q ~subject:c.subject ~pinned:c.pinned
       | Config.Admin_mtls m, Id_mtls k -> m = k
       | (Config.Admin_token _ | Config.Admin_oidc _ | Config.Admin_mtls _), _ -> false)
     admin.admin_callers

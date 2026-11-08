@@ -154,9 +154,16 @@ let unsafe_exact =
     "currval";
     "lastval";
     "row_to_json";
+    "to_json";
+    "to_jsonb";
+    "json_agg";
+    "jsonb_agg";
     "version";
     "ts_stat";
     "ts_rewrite";
+    "plainto_tsquery";
+    "phraseto_tsquery";
+    "websearch_to_tsquery";
     "brin_summarize_new_values";
     "brin_summarize_range";
     "brin_desummarize_range";
@@ -165,6 +172,19 @@ let unsafe_exact =
     "getpgusername";
     "xpath";
     "xpath_exists";
+    "xmlparse";
+    "xmltable";
+    "xmlelement";
+    "xmlforest";
+    "xmlagg";
+    "generate_series";
+    "generate_subscripts";
+    "col_description";
+    "obj_description";
+    "shobj_description";
+    "format_type";
+    "aclexplode";
+    "acldefault";
     "dblink";
     "lo_import";
     "lo_export";
@@ -482,7 +502,23 @@ let compute (cfg : config) (records : Record.t list) =
                         String.sub tname (i + 1) (String.length tname - i - 1) )
                   | None -> ("", tname))
             in
-            match cfg.pii ~schema ~table ~column with
+            let pii_why =
+              match cfg.pii ~schema ~table ~column with
+              | Some _ as w -> w
+              | None when schema = "" -> (
+                  let def_schema =
+                    match pol with
+                    | Some { Policy.search_path = s :: _; _ } -> s
+                    | _ -> "public"
+                  in
+                  match cfg.pii ~schema:def_schema ~table ~column with
+                  | Some _ as w -> w
+                  | None when def_schema <> "public" ->
+                      cfg.pii ~schema:"public" ~table ~column
+                  | None -> None)
+              | None -> None
+            in
+            match pii_why with
             | Some why ->
                 item ~policy ~code ~target ~category:Pii
                   ~reason:
@@ -642,13 +678,21 @@ let compute (cfg : config) (records : Record.t list) =
                         match cfg.verify with
                         | None -> None
                         | Some verify ->
+                            let probe_cache = Hashtbl.create 16 in
                             let found =
                               List.concat_map
                                 (fun (r : Record.t) ->
                                   match r.sql with
-                                  | Some sql ->
-                                      probe_columns verify p ~schema ~name ~tenant_columns
-                                        sql
+                                  | Some sql -> (
+                                      match Hashtbl.find_opt probe_cache sql with
+                                      | Some cols -> cols
+                                      | None ->
+                                          let cols =
+                                            probe_columns verify p ~schema ~name
+                                              ~tenant_columns sql
+                                          in
+                                          Hashtbl.replace probe_cache sql cols;
+                                          cols)
                                   | None -> [])
                                 recs
                             in

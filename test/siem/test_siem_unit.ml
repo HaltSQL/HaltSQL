@@ -86,7 +86,12 @@ let test_varint () =
       W.zigzag_varint b n;
       let pos = ref 0 in
       Alcotest.(check int) "roundtrip" n (W.read_zigzag_varint (Buffer.contents b) pos))
-    [ 0; 1; -1; 127; -128; 1 lsl 20; -(1 lsl 31); max_int / 4; min_int / 4 ]
+    [ 0; 1; -1; 127; -128; 1 lsl 20; -(1 lsl 31); max_int / 4; min_int / 4 ];
+  let pos = ref 0 in
+  let too_long = String.make 10 '\x80' in
+  match W.read_zigzag_varint too_long pos with
+  | _ -> Alcotest.fail "accepted 10-byte varint"
+  | exception W.Malformed _ -> ()
 
 (* ---- RecordBatch v2 ---- *)
 
@@ -298,6 +303,7 @@ let test_scram_rejects () =
   bad "r=xyz123,s=c2FsdA==,i=4096" (* nonce not extended *);
   bad "r=abc,s=c2FsdA==,i=4096" (* nonce not longer *);
   bad "r=abcd,s=c2FsdA==,i=1" (* too few iterations *);
+  bad "r=abcd,s=c2FsdA==,i=600001";
   bad "r=abcd,s=c2FsdA==,i=99999999";
   bad "m=ext,r=abcd,s=c2FsdA==,i=4096";
   bad "r=abcd,i=4096";
@@ -512,6 +518,10 @@ let test_engine_partial_retry () =
     [ ("mapping", 1) ]
     st.records_dropped;
   Alcotest.(check int) "retries" 1 st.retries;
+  Alcotest.(check bool) "fail closed after rejected record" false (Stream_sink.healthy s);
+  Alcotest.(check bool)
+    "write refused after rejected record" true
+    (Result.is_error (Stream_sink.write s (fields 4)));
   let m = Stream_sink.metrics_text [ s ] in
   let contains sub =
     let n = String.length sub in

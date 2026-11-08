@@ -58,6 +58,21 @@ func PolicyFile(ref, ext string) string { return "policy-" + ref + ext }
 // anything that would make haltsql-server refuse to start and that can be
 // decided without the referenced Secrets' values.
 func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Rendered, error) {
+	return renderServer(srv, policies, ForServer)
+}
+
+// ServerValidationDocument renders the server's Config document with inline
+// policies and dummy secret values so `haltsql validate` can check the full
+// configuration (including free-form JSON sections) without mounted Secrets.
+func ServerValidationDocument(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) ([]byte, error) {
+	rd, err := renderServer(srv, policies, ForValidation)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(rd.Data[ConfigFile]), nil
+}
+
+func renderServer(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput, mode Mode) (*Rendered, error) {
 	var secrets []SecretRef
 	data := map[string]string{}
 	out := &Rendered{}
@@ -84,9 +99,17 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 			names[pc.Name] = p.Ref
 			file := PolicyFile(p.Ref, pc.Ext)
 			data[file] = string(pc.Body)
-			entries = append(entries, map[string]any{"path": ConfigDir + "/" + file})
+			if mode == ForValidation {
+				var inlineDoc map[string]any
+				if err := yaml.Unmarshal(pc.Body, &inlineDoc); err != nil {
+					return nil, fmt.Errorf("HaltSQLPolicy %s: %w", p.Ref, err)
+				}
+				entries = append(entries, map[string]any{"inline": inlineDoc})
+			} else {
+				entries = append(entries, map[string]any{"path": ConfigDir + "/" + file})
+			}
 		case p.Spec.BundleSource != nil:
-			entry, refs, err := BundleEntry(p.Spec.BundleSource, ForServer)
+			entry, refs, err := BundleEntry(p.Spec.BundleSource, mode)
 			if err != nil {
 				return nil, fmt.Errorf("HaltSQLPolicy %s: %w", p.Ref, err)
 			}
@@ -149,9 +172,14 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 					return nil, fmt.Errorf("spec.auth.tokens[%d].sha256SecretRef: %w", i, err)
 				}
 				secrets = append(secrets, r)
+				tokenSHA256 := r.Placeholder()
+				if mode == ForValidation {
+					sum := sha256.Sum256([]byte(fmt.Sprintf("operator-validation-token-%d", i)))
+					tokenSHA256 = hex.EncodeToString(sum[:])
+				}
 				tokens = append(tokens, map[string]any{
 					"name":         t.Name,
-					"token_sha256": r.Placeholder(),
+					"token_sha256": tokenSHA256,
 					"policy":       t.Policy,
 				})
 			}
@@ -160,7 +188,7 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 		if len(a.OIDC) > 0 {
 			list := make([]any, 0, len(a.OIDC))
 			for i := range a.OIDC {
-				v, refs, err := rawObject(&a.OIDC[i], fmt.Sprintf("spec.auth.oidc[%d]", i))
+				v, refs, err := rawObject(&a.OIDC[i], fmt.Sprintf("spec.auth.oidc[%d]", i), mode)
 				if err != nil {
 					return nil, err
 				}
@@ -172,7 +200,7 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 		if a.MTLS != nil && len(a.MTLS.Identities) > 0 {
 			list := make([]any, 0, len(a.MTLS.Identities))
 			for i := range a.MTLS.Identities {
-				v, refs, err := rawObject(&a.MTLS.Identities[i], fmt.Sprintf("spec.auth.mtls.identities[%d]", i))
+				v, refs, err := rawObject(&a.MTLS.Identities[i], fmt.Sprintf("spec.auth.mtls.identities[%d]", i), mode)
 				if err != nil {
 					return nil, err
 				}
@@ -211,7 +239,7 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 	}
 
 	if cfg.Admin != nil {
-		v, refs, err := rawObject(cfg.Admin, "spec.config.admin")
+		v, refs, err := rawObject(cfg.Admin, "spec.config.admin", mode)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +270,7 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 		if len(au.Sinks) > 0 {
 			sinks = sinks[:0]
 			for i := range au.Sinks {
-				v, refs, err := rawObject(&au.Sinks[i], fmt.Sprintf("spec.audit.sinks[%d]", i))
+				v, refs, err := rawObject(&au.Sinks[i], fmt.Sprintf("spec.audit.sinks[%d]", i), mode)
 				if err != nil {
 					return nil, err
 				}
@@ -277,7 +305,7 @@ func Server(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput) (*Render
 		if sec.raw == nil {
 			continue
 		}
-		v, refs, err := rawObject(sec.raw, "spec.config."+sec.key)
+		v, refs, err := rawObject(sec.raw, "spec.config."+sec.key, mode)
 		if err != nil {
 			return nil, err
 		}
@@ -326,8 +354,8 @@ func checksum(r *Rendered) string {
 
 // rawObject decodes a free-form section (it must be a JSON object) and
 // replaces every {secretKeyRef: {name, key}} object by a ${file:...}
-// placeholder for the mounted key.
-func rawObject(raw *apiextensionsv1.JSON, path string) (any, []SecretRef, error) {
+// placeholder for the mounted key (or a dummy string when validating).
+func rawObject(raw *apiextensionsv1.JSON, path string, mode Mode) (any, []SecretRef, error) {
 	if raw == nil || len(raw.Raw) == 0 {
 		return nil, nil, fmt.Errorf("%s: must be an object", path)
 	}
@@ -341,14 +369,14 @@ func rawObject(raw *apiextensionsv1.JSON, path string) (any, []SecretRef, error)
 		return nil, nil, fmt.Errorf("%s: must be an object", path)
 	}
 	var refs []SecretRef
-	out, err := substitute(v, path, &refs)
+	out, err := substitute(v, path, &refs, mode)
 	if err != nil {
 		return nil, nil, err
 	}
 	return out, refs, nil
 }
 
-func substitute(v any, path string, refs *[]SecretRef) (any, error) {
+func substitute(v any, path string, refs *[]SecretRef, mode Mode) (any, error) {
 	switch t := v.(type) {
 	case map[string]any:
 		if ref, ok := t["secretKeyRef"]; ok {
@@ -369,11 +397,14 @@ func substitute(v any, path string, refs *[]SecretRef) (any, error) {
 				return nil, fmt.Errorf("%s.secretKeyRef: %w", path, err)
 			}
 			*refs = append(*refs, r)
+			if mode == ForValidation {
+				return dummySecret, nil
+			}
 			return r.Placeholder(), nil
 		}
 		out := make(map[string]any, len(t))
 		for k, e := range t {
-			s, err := substitute(e, path+"."+k, refs)
+			s, err := substitute(e, path+"."+k, refs, mode)
 			if err != nil {
 				return nil, err
 			}
@@ -383,7 +414,7 @@ func substitute(v any, path string, refs *[]SecretRef) (any, error) {
 	case []any:
 		out := make([]any, len(t))
 		for i, e := range t {
-			s, err := substitute(e, fmt.Sprintf("%s[%d]", path, i), refs)
+			s, err := substitute(e, fmt.Sprintf("%s[%d]", path, i), refs, mode)
 			if err != nil {
 				return nil, err
 			}

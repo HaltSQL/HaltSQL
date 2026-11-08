@@ -30,13 +30,31 @@ let config t = t.gen.cfg
 let active t = Hashtbl.length t.conns
 let time () = Some (Ptime_clock.now ())
 
+(* When Extended Key Usage is present on a client certificate it must permit
+   clientAuth (RFC 5280 4.2.1.12); a server-only leaf from the same CA is
+   rejected during the handshake. *)
+let client_usage_ok leaf =
+  match X509.Extension.(find Ext_key_usage (X509.Certificate.extensions leaf)) with
+  | None -> true
+  | Some (_, usages) -> List.exists (fun u -> u = `Client_auth || u = `Any) usages
+
+let wrap_client_auth base ?ip ~host chain =
+  match base ?ip ~host chain with
+  | Error _ as e -> e
+  | Ok _ as ok -> (
+      match chain with
+      | leaf :: _ when not (client_usage_ok leaf) -> Error (`LeafInvalidExtensions leaf)
+      | _ -> ok)
+
 let tls_server_config (c : client_tls) =
   let authenticator =
     match c.client_auth with
     | Client_cert_none -> None
-    | Client_cert_require -> Some (X509.Authenticator.chain_of_trust ~time c.client_ca)
-    | Client_cert_optional ->
+    | Client_cert_require ->
         let a = X509.Authenticator.chain_of_trust ~time c.client_ca in
+        Some (wrap_client_auth a)
+    | Client_cert_optional ->
+        let a = wrap_client_auth (X509.Authenticator.chain_of_trust ~time c.client_ca) in
         Some (fun ?ip ~host chain -> if chain = [] then Ok None else a ?ip ~host chain)
   in
   match Tls.Config.server ~certificates:(`Single c.certificates) ?authenticator () with

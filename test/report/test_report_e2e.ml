@@ -635,6 +635,10 @@ let report_api () =
     "sampled out"
     (40 - Report_api.records_per_query)
     (Report.sampled_out hot);
+  let _, hot_body = Report.handle hot ~policies ~query:[] in
+  Alcotest.(check bool)
+    "SQL retained across >32 observations after record #1 is evicted" true
+    (contains (Yojson.Safe.to_string hot_body) "SELECT");
   (* bounds: age *)
   let aged = Report.create ~now (admin ~window:60 ()) in
   List.iter (Report.observe aged) (audit_fields audit_raw);

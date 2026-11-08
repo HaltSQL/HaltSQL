@@ -210,6 +210,7 @@ let short e = String.sub e.hash 0 16
 (* Ships [t.inflight] with up to [max_attempts] attempts; only the records still
    pending are resent. On [Error], [t.inflight] holds what is left, in order. *)
 let ship t =
+  let rejected = ref None in
   let rec attempt n =
     let batch = t.inflight in
     Lwt.catch
@@ -229,6 +230,15 @@ let ship t =
               | Delivered -> t.n_delivered <- t.n_delivered + 1
               | Rejected { reason; detail } ->
                   count_drop t reason 1;
+                  if t.on_error = Config.Stream_fail_closed then begin
+                    let msg =
+                      Printf.sprintf "record rejected by destination (%s: %s)" reason
+                        detail
+                    in
+                    rejected := Some msg;
+                    t.failed <- true;
+                    t.last_error <- Some msg
+                  end;
                   t.on_event
                     (Printf.sprintf
                        "audit sink %s: record %s rejected by the destination (%s: %s); \
@@ -242,7 +252,7 @@ let ship t =
           if t.inflight = [||] then None else Some (Option.value ~default:"retry" !why)
     in
     match last with
-    | None -> Lwt.return (Ok ())
+    | None -> Lwt.return (Ok !rejected)
     | Some m ->
         if n + 1 >= t.max_attempts then Lwt.return (Error m)
         else begin
@@ -253,16 +263,32 @@ let ship t =
   attempt 0
 
 let flush_locked t =
+  let rejected = ref None in
   let rec go () =
     if t.inflight = [||] then take_batch t;
-    if t.inflight = [||] then Lwt.return (Ok ())
+    if t.inflight = [||] then begin
+      (match !rejected with
+      | Some err ->
+          t.failed <- true;
+          t.last_error <- Some err
+      | None -> ());
+      Lwt.return (Ok ())
+    end
     else
       ship t >>= function
-      | Ok () ->
-          if t.failed then t.on_event (Printf.sprintf "audit sink %s recovered" t.name);
-          t.failed <- false;
-          t.consecutive <- 0;
-          t.last_error <- None;
+      | Ok batch_rej ->
+          (match batch_rej with
+          | Some err ->
+              rejected := Some err;
+              t.failed <- true;
+              t.last_error <- Some err
+          | None ->
+              if t.failed && !rejected = None then begin
+                t.on_event (Printf.sprintf "audit sink %s recovered" t.name);
+                t.failed <- false;
+                t.consecutive <- 0;
+                t.last_error <- None
+              end);
           go ()
       | Error m ->
           t.n_failures <- t.n_failures + 1;

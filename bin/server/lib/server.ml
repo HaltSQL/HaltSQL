@@ -39,14 +39,21 @@ let bind_listen listen =
       in
       let domain = Unix.domain_of_sockaddr (Unix.ADDR_INET (addr, port)) in
       let fd = Lwt_unix.socket domain Unix.SOCK_STREAM 0 in
-      Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
-      Lwt_unix.set_close_on_exec fd;
-      (try Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (addr, port))
-       with Unix.Unix_error (e, _, _) ->
-         raise
-           (Startup_error
-              (Printf.sprintf "cannot bind %s: %s" listen (Unix.error_message e))));
-      Lwt_unix.listen fd 1024;
+      let close_quiet () =
+        try Unix.close (Lwt_unix.unix_file_descr fd) with Unix.Unix_error _ -> ()
+      in
+      (try
+         Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+         Lwt_unix.set_close_on_exec fd;
+         (try Unix.bind (Lwt_unix.unix_file_descr fd) (Unix.ADDR_INET (addr, port))
+          with Unix.Unix_error (e, _, _) ->
+            raise
+              (Startup_error
+                 (Printf.sprintf "cannot bind %s: %s" listen (Unix.error_message e))));
+         Lwt_unix.listen fd 1024
+       with exn ->
+         close_quiet ();
+         raise exn);
       let actual =
         match Unix.getsockname (Lwt_unix.unix_file_descr fd) with
         | Unix.ADDR_INET (_, p) -> p

@@ -251,11 +251,18 @@ let match_identity ids cert =
         Option.value ~default:[] (X509.General_name.find X509.General_name.URI gn)
     | None -> []
   in
+  let spiffe_id =
+    let prefix = "spiffe://" in
+    let plen = String.length prefix in
+    match uris with
+    | [ u ] when String.length u >= plen && String.sub u 0 plen = prefix -> Some u
+    | _ -> None
+  in
   List.find_opt
     (fun id ->
       match id.id_match with
       | Subject_cn c -> cn = Some c
-      | Spiffe_id sid -> List.mem sid uris)
+      | Spiffe_id sid -> spiffe_id = Some sid)
     ids
 
 let auth_failed user =
@@ -536,14 +543,9 @@ let read_client s =
   let idle = s.sh.cfg.limits.idle_timeout in
   if idle <= 0. then p
   else
+    let msg_p = Lwt.map (fun m -> `Msg m) (Lwt.no_cancel p) in
     let rec wait () =
-      let* r =
-        Lwt.pick
-          [
-            Lwt.map (fun m -> `Msg m) (Lwt.no_cancel p);
-            Lwt.map (fun () -> `Timeout) (Lwt_unix.sleep idle);
-          ]
-      in
+      let* r = Lwt.pick [ msg_p; Lwt.map (fun () -> `Timeout) (Lwt_unix.sleep idle) ] in
       match r with
       | `Msg m -> Lwt.return m
       | `Timeout ->

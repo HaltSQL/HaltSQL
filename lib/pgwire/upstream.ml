@@ -192,7 +192,7 @@ let connect (u : upstream) ~application_name =
       let* fd = tcp_connect u in
       let* io =
         Lwt.catch
-          (fun () -> negotiate u fd)
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
           (fun e ->
             let* () =
               Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
@@ -221,7 +221,15 @@ let send_cancel (u : upstream) ~pid ~key =
   Lwt.catch
     (fun () ->
       let* fd = tcp_connect u in
-      let* io = negotiate u fd in
+      let* io =
+        Lwt.catch
+          (fun () -> Lwt_unix.with_timeout u.connect_timeout (fun () -> negotiate u fd))
+          (fun e ->
+            let* () =
+              Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit)
+            in
+            Lwt.fail e)
+      in
       let* () = Io.write io (Wire.encode_cancel ~pid ~key) in
       (* the server closes the connection after processing the request *)
       let* () =

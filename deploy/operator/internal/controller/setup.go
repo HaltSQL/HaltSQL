@@ -57,5 +57,5 @@ func Setup(mgr ctrl.Manager, v validate.Validator) error {
 	if err := (&PolicyReconciler{Client: mgr.GetClient(), Validator: v}).SetupWithManager(mgr); err != nil {
 		return err
 	}
-	return (&ServerReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr)
+	return (&ServerReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Validator: v}).SetupWithManager(mgr)
 }

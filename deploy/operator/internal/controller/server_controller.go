@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -39,6 +40,7 @@ import (
 
 	haltsqlv1alpha1 "github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1"
 	"github.com/ardada2468/HaltSQL/deploy/operator/internal/render"
+	"github.com/ardada2468/HaltSQL/deploy/operator/internal/validate"
 )
 
 // Condition reasons on HaltSQLServer.
@@ -67,7 +69,8 @@ const annotationAppliedPolicies = "haltsql.dev/applied-policies"
 // Service and optional PodDisruptionBudget and NetworkPolicy.
 type ServerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	Validator validate.Validator
 }
 
 // +kubebuilder:rbac:groups=haltsql.dev,resources=haltsqlservers,verbs=get;list;watch
@@ -109,17 +112,35 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		renderCond.Status, renderCond.Reason = metav1.ConditionFalse, ReasonInvalidConfig
 		renderCond.Message = err.Error() + "; running pods keep the last rendered configuration"
 	} else {
-		if err := r.apply(ctx, &srv, rd); err != nil {
-			if errors.Is(err, errConflict) {
-				renderCond.Status, renderCond.Reason, renderCond.Message = metav1.ConditionFalse, ReasonNameConflict, err.Error()
+		var verr error
+		if r.Validator != nil {
+			vdoc, err := render.ServerValidationDocument(&srv, policies)
+			if err != nil {
+				verr = &validate.InvalidError{Message: err.Error()}
 			} else {
-				applyErr = err
-				renderCond.Status, renderCond.Reason, renderCond.Message = metav1.ConditionFalse, ReasonNotRendered, err.Error()
+				verr = r.Validator.Validate(ctx, render.ConfigFile, vdoc)
 			}
-		} else {
-			renderCond.Status, renderCond.Reason = metav1.ConditionTrue, ReasonRendered
-			renderCond.Message = "ConfigMap and Deployment hold the configuration for the current spec"
-			status.ConfigChecksum = rd.Checksum
+		}
+		switch {
+		case validate.IsInvalid(verr):
+			renderCond.Status, renderCond.Reason = metav1.ConditionFalse, ReasonInvalidConfig
+			renderCond.Message = verr.Error() + "; running pods keep the last rendered configuration"
+		case verr != nil:
+			applyErr = fmt.Errorf("validating HaltSQLServer %s: %w", req.NamespacedName, verr)
+			renderCond.Status, renderCond.Reason, renderCond.Message = metav1.ConditionFalse, ReasonValidatorError, verr.Error()
+		default:
+			if err := r.apply(ctx, &srv, rd); err != nil {
+				if errors.Is(err, errConflict) {
+					renderCond.Status, renderCond.Reason, renderCond.Message = metav1.ConditionFalse, ReasonNameConflict, err.Error()
+				} else {
+					applyErr = err
+					renderCond.Status, renderCond.Reason, renderCond.Message = metav1.ConditionFalse, ReasonNotRendered, err.Error()
+				}
+			} else {
+				renderCond.Status, renderCond.Reason = metav1.ConditionTrue, ReasonRendered
+				renderCond.Message = "ConfigMap and Deployment hold the configuration for the current spec"
+				status.ConfigChecksum = rd.Checksum
+			}
 		}
 	}
 	meta.SetStatusCondition(&status.Conditions, renderCond)
@@ -357,10 +378,14 @@ func (r *ServerReconciler) workloadStatus(ctx context.Context, srv *haltsqlv1alp
 	if dep.Spec.Replicas != nil {
 		want = *dep.Spec.Replicas
 	}
-	complete := dep.Status.ObservedGeneration >= dep.Generation &&
+	rendered := meta.IsStatusConditionTrue(status.Conditions, haltsqlv1alpha1.ServerConditionConfigRendered)
+	depComplete := dep.Status.ObservedGeneration >= dep.Generation &&
 		dep.Status.UpdatedReplicas == want &&
 		dep.Status.Replicas == want &&
 		dep.Status.AvailableReplicas == want
+	complete := rendered &&
+		depComplete &&
+		dep.Spec.Template.Annotations[render.AnnotationConfigChecksum] == status.ConfigChecksum
 	failed := false
 	for _, c := range dep.Status.Conditions {
 		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == "ProgressDeadlineExceeded" {
@@ -374,7 +399,7 @@ func (r *ServerReconciler) workloadStatus(ctx context.Context, srv *haltsqlv1alp
 		}
 	}
 
-	if complete {
+	if depComplete {
 		var applied []haltsqlv1alpha1.AppliedPolicy
 		if a := dep.Annotations[annotationAppliedPolicies]; a != "" {
 			if err := json.Unmarshal([]byte(a), &applied); err != nil {
@@ -402,6 +427,8 @@ func (r *ServerReconciler) workloadStatus(ctx context.Context, srv *haltsqlv1alp
 	switch {
 	case complete:
 		prog.Status, prog.Reason, prog.Message = metav1.ConditionFalse, ReasonRolloutComplete, "all replicas run the current configuration"
+	case !rendered && depComplete:
+		prog.Status, prog.Reason, prog.Message = metav1.ConditionFalse, ReasonNotRendered, "waiting for a valid configuration; all replicas run the last rendered configuration"
 	case failed:
 		prog.Status, prog.Reason = metav1.ConditionFalse, ReasonRolloutFailed
 		prog.Message = "new pods did not become ready before the progress deadline; ready pods with the previous configuration keep serving (check the pod logs for the haltsql-server load error)"
@@ -469,6 +496,33 @@ func controllerOptions(maxDelay time.Duration) controller.Options {
 	}
 }
 
+func policyRelevantPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPol, ok1 := e.ObjectOld.(*haltsqlv1alpha1.HaltSQLPolicy)
+			newPol, ok2 := e.ObjectNew.(*haltsqlv1alpha1.HaltSQLPolicy)
+			if !ok1 || !ok2 {
+				return true
+			}
+			if oldPol.Generation != newPol.Generation ||
+				oldPol.Status.ObservedGeneration != newPol.Status.ObservedGeneration ||
+				oldPol.Status.ContentHash != newPol.Status.ContentHash ||
+				oldPol.Status.PolicyName != newPol.Status.PolicyName {
+				return true
+			}
+			oldValid := meta.FindStatusCondition(oldPol.Status.Conditions, haltsqlv1alpha1.PolicyConditionValid)
+			newValid := meta.FindStatusCondition(newPol.Status.Conditions, haltsqlv1alpha1.PolicyConditionValid)
+			if (oldValid == nil) != (newValid == nil) {
+				return true
+			}
+			if oldValid != nil && (oldValid.Status != newValid.Status || oldValid.Reason != newValid.Reason || oldValid.Message != newValid.Message || oldValid.ObservedGeneration != newValid.ObservedGeneration) {
+				return true
+			}
+			return false
+		},
+	}
+}
+
 // SetupWithManager registers the reconciler.
 func (r *ServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -491,7 +545,7 @@ func (r *ServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: s.Namespace, Name: s.Name}})
 				}
 				return reqs
-			})).
+			}), builder.WithPredicates(policyRelevantPredicate())).
 		Named("haltsqlserver").
 		WithOptions(controllerOptions(60 * time.Second)).
 		Complete(r)

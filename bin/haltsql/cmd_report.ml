@@ -238,10 +238,20 @@ let report ~inputs ~since ~until ~policy_filter ~format ~suggest ~policy_files ~
         let records = List.concat_map (fun i -> List.filter in_window i.records) read in
         (* Re-derive the detailed reasons of denied records that carry their SQL. *)
         let rederived = ref 0 and other_version = ref 0 in
+        let enrich_cache = Hashtbl.create 64 in
+        let cached_verify (p : Policy.t) ctx sql =
+          let k = (p.name, sql) in
+          match Hashtbl.find_opt enrich_cache k with
+          | Some v -> v
+          | None ->
+              let v = Haltsql.verify p ctx sql in
+              Hashtbl.replace enrich_cache k v;
+              v
+        in
         let records =
           List.map
             (fun (r : R.Record.t) ->
-              let r' = R.Live.enrich ~policies ~verify:Haltsql.verify r in
+              let r' = R.Live.enrich ~policies ~verify:cached_verify r in
               if r'.details <> [] && r.details = [] then begin
                 incr rederived;
                 match (r.policy_version, List.assoc_opt r.policy policies) with
@@ -345,11 +355,18 @@ let report ~inputs ~since ~until ~policy_filter ~format ~suggest ~policy_files ~
                     records
                 in
                 let resolved = ref 0 and tenancy = ref 0 and tenancy_kept = ref 0 in
+                let whatif_cache = Hashtbl.create 64 in
+                let pctx = R.Suggest.probe_context patched in
                 List.iter
                   (fun (r : R.Record.t) ->
                     let sql = Option.get r.sql in
                     let v =
-                      Haltsql.verify patched (R.Suggest.probe_context patched) sql
+                      match Hashtbl.find_opt whatif_cache sql with
+                      | Some v -> v
+                      | None ->
+                          let v = Haltsql.verify patched pctx sql in
+                          Hashtbl.replace whatif_cache sql v;
+                          v
                     in
                     let still =
                       List.filter

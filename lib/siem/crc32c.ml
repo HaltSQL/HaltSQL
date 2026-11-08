@@ -14,4 +14,7 @@ let substring ?(crc = 0) s off len =
   done;
   !c lxor 0xFFFFFFFF
 
-let string ?crc s = substring ?crc s 0 (String.length s)
+let string ?crc s =
+  match crc with
+  | None -> Int32.to_int (Haltsql_cloud.Cloud_util.crc32c s) land 0xFFFFFFFF
+  | Some crc -> substring ~crc s 0 (String.length s)

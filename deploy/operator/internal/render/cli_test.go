@@ -124,3 +124,50 @@ func TestValidationDocumentsInHaltSQL(t *testing.T) {
 		}
 	}
 }
+
+func TestServerValidationDocumentInHaltSQL(t *testing.T) {
+	v, err := validate.NewCLI(testutil.HaltSQLBinary(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bundle := PolicyInput{Ref: "prod", Spec: &haltsqlv1alpha1.HaltSQLPolicySpec{BundleSource: &haltsqlv1alpha1.BundleSource{
+		OCI:        &haltsqlv1alpha1.OCIBundleSource{Ref: "registry.example:5000/corp/policies:prod", Auth: &haltsqlv1alpha1.BundleAuth{SecretName: "reg", Type: "token"}},
+		PublicKeys: []string{testKey},
+		NamePrefix: "prod.",
+	}}}
+	policies := []PolicyInput{inline("orders", ordersPolicy), bundle}
+
+	good := server(func(s *haltsqlv1alpha1.HaltSQLServer) {
+		s.Spec.Policies = []haltsqlv1alpha1.PolicyReference{{Name: "orders"}, {Name: "prod"}}
+		s.Spec.Config = haltsqlv1alpha1.ServerConfig{
+			LogLevel:      "warn",
+			LogFormat:     "text",
+			DefaultPolicy: "orders-agent",
+			OPA:           ptrTo(raw(t, `{url: "https://opa.example:8181", decision_path: "haltsql/allow", headers: {Authorization: {secretKeyRef: {name: opa, key: token}}}}`)),
+		}
+		s.Spec.Auth = &haltsqlv1alpha1.ServerAuth{Tokens: []haltsqlv1alpha1.TokenSpec{
+			{Name: "agent", Policy: "orders-agent", SHA256SecretRef: haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "agent.sha256"}},
+			{Name: "bundle-agent", Policy: "prod.analytics", SHA256SecretRef: haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "bundle.sha256"}},
+		}}
+	})
+	doc, err := ServerValidationDocument(good, policies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Validate(ctx, ConfigFile, doc); err != nil {
+		t.Fatalf("expected valid server config, got %v\n%s", err, doc)
+	}
+
+	bad := good.DeepCopy()
+	bad.Spec.Config.OPA = ptrTo(raw(t, `{url: "https://opa.example:8181", decision_path: "haltsql/allow", unknown_field: true}`))
+	badDoc, err := ServerValidationDocument(bad, policies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Validate(ctx, ConfigFile, badDoc); !validate.IsInvalid(err) {
+		t.Fatalf("expected InvalidError for unknown_field in spec.config.opa, got %v", err)
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }

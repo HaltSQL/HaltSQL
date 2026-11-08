@@ -420,9 +420,16 @@ let table_rules () =
   let v = Haltsql.verify global Context.empty "SELECT y FROM app.b" in
   let r = R.Record.of_verdict ~ts:t0 ~caller:"c" ~sql:(Some "SELECT y FROM app.b") v in
   let t = R.Suggest.compute (cfg ~policies:[ ("g", global) ] ()) [ r ] in
-  match (List.hd t.suggestions).change with
+  (match (List.hd t.suggestions).change with
   | R.Suggest.Add_table { tenant_columns = []; columns = [ "y" ]; _ } -> ()
-  | _ -> Alcotest.fail "expected a global table with column y"
+  | _ -> Alcotest.fail "expected a global table with column y");
+  (* 33+ observations where only the 33rd retains SQL still produce an applicable suggestion *)
+  let stripped = { r with sql = None } in
+  let batch = List.init 32 (fun _ -> stripped) @ [ r ] in
+  let t33 = R.Suggest.compute (cfg ~policies:[ ("g", global) ] ()) batch in
+  Alcotest.(check (list bool))
+    "applicable after 33 observations" [ true ]
+    (List.map (fun (s : R.Suggest.suggestion) -> s.applicable) t33.suggestions)
 
 let pii_rules () =
   let manifest ~schema ~table ~column =
@@ -464,7 +471,13 @@ let pii_rules () =
   | _ -> Alcotest.fail "add_table");
   Alcotest.(check (option string))
     "heuristic" (Some "column name matches \"email\"")
-    (R.Pii.name_heuristic () ~schema:"a" ~table:"b" ~column:"contact_email")
+    (R.Pii.name_heuristic () ~schema:"a" ~table:"b" ~column:"contact_email");
+  Alcotest.(check (option string))
+    "heuristic digit split" (Some "column name matches \"email\"")
+    (R.Pii.name_heuristic () ~schema:"a" ~table:"b" ~column:"email1");
+  Alcotest.(check (option string))
+    "heuristic acronym split" (Some "column name matches \"pii\"")
+    (R.Pii.name_heuristic () ~schema:"a" ~table:"b" ~column:"PIIData")
 
 let never_weaken () =
   let t =

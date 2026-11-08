@@ -120,6 +120,15 @@ def test_example_graph_retries_after_denial(local_verifier, connections):
     assert TENANT_HINT in model.seen[0]
     assert connections.opened == 1
 
+    # Async execution (ainvoke) works as well.
+    amodel = ScriptedModel()
+    agraph = build_sql_agent_graph(amodel, tool, context_schema=AppContext)
+    aout = asyncio.run(agraph.ainvoke({"messages": [HumanMessage("List my orders")]},
+                                      context=AppContext("u1", {"tenant_id": "acme"})))
+    assert aout["messages"][-1].content == "Found 2 orders."
+    assert aout["denials"] == 1
+    assert connections.opened == 2
+
 
 @pytest.mark.integration
 def test_example_graph_stops_after_max_denials(local_verifier, connections):

@@ -174,9 +174,20 @@ func (r *PolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&haltsqlv1alpha1.HaltSQLServer{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, o client.Object) []reconcile.Request {
 				srv := o.(*haltsqlv1alpha1.HaltSQLServer)
-				reqs := make([]reconcile.Request, 0, len(srv.Spec.Policies))
+				seen := make(map[string]struct{}, len(srv.Spec.Policies)+len(srv.Status.AppliedPolicies))
+				reqs := make([]reconcile.Request, 0, len(srv.Spec.Policies)+len(srv.Status.AppliedPolicies))
+				add := func(name string) {
+					if _, ok := seen[name]; ok || name == "" {
+						return
+					}
+					seen[name] = struct{}{}
+					reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: srv.Namespace, Name: name}})
+				}
 				for _, p := range srv.Spec.Policies {
-					reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: srv.Namespace, Name: p.Name}})
+					add(p.Name)
+				}
+				for _, p := range srv.Status.AppliedPolicies {
+					add(p.Name)
 				}
 				return reqs
 			})).

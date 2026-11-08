@@ -218,7 +218,22 @@ let t_mixed_logs () =
   Alcotest.(check int) "records" 4 r.records;
   Alcotest.(check int) "skipped" 3 r.skipped;
   let r = verify (text ([ log ] @ lines)) in
-  check_errors "log line without --mixed" [ "not_audit_record" ] r
+  check_errors "log line without --mixed" [ "not_audit_record" ] r;
+  let brace_prefix =
+    List.mapi (fun i l -> if i = 1 then "2026-11-07T12:00:00Z [pod{1}] " ^ l else l) lines
+  in
+  check_ok "--mixed with brace in log prefix"
+    (verify ~opts:{ V.default_opts with mixed = true } (text brace_prefix));
+  let corrupted =
+    replace_nth lines 1 (fun l ->
+        "2026-11-07T12:00:00Z stdout F "
+        ^ String.sub l 0 (String.length l - 2)
+        ^ "BROKEN}")
+  in
+  let r_corrupt = verify ~opts:{ V.default_opts with mixed = true } (text corrupted) in
+  Alcotest.(check bool)
+    "--mixed catches corrupted audit record" true
+    (List.mem "invalid_record" (errors r_corrupt))
 
 let t_invalid_records () =
   let lines = chain 3 in

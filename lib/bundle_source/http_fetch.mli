@@ -26,5 +26,9 @@ val check_url : what:string -> Uri.t -> (unit, string) result
 (** [https], or [http] with a loopback host; no userinfo or fragment (a query is allowed).
 *)
 
+val check_target_from : what:string -> from:Uri.t -> Uri.t -> (unit, string) result
+(** Like {!check_url}, and also forbids [https] to [http] scheme downgrades and redirects
+    from a non-loopback host to a loopback host. *)
+
 val basic : username:string -> password:string -> string
 (** [Basic <base64(user:password)>] *)

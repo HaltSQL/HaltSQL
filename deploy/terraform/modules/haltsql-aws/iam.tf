@@ -12,7 +12,7 @@ locals {
   ])
   injected_ssm_arns = distinct([for v in values(var.secrets) : v if strcontains(v, ":ssm:")])
 
-  ecr_match = regex("^(?:(?P<account>[0-9]{12})\\.dkr\\.ecr\\.(?P<region>[a-z0-9-]+)\\.amazonaws\\.com/(?P<repo>[^:@]+))?", var.image)
+  ecr_match = regex("^(?:(?P<account>[0-9]{12})\\.dkr\\.ecr\\.(?P<region>[a-z0-9-]+)\\.amazonaws\\.com(?:\\.cn)?/(?P<repo>[^:@]+))?", var.image)
   ecr_repository_arn = local.ecr_match.account == null ? null : (
     "arn:${local.partition}:ecr:${local.ecr_match.region}:${local.ecr_match.account}:repository/${local.ecr_match.repo}"
   )

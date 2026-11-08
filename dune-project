@@ -37,8 +37,6 @@
  (depends
   (ocaml
    (>= 5.1))
-  (dune
-   (>= 3.0))
   (yojson
    (>= 2.0))
   (yaml

@@ -16,13 +16,19 @@ let xor a b =
 
 let hi h ~password ~salt ~iterations =
   let u1 = hmac h ~key:password (salt ^ "\000\000\000\001") in
-  let rec go acc prev i =
-    if i > iterations then acc
-    else
-      let u = hmac h ~key:password prev in
-      go (xor acc u) u (i + 1)
-  in
-  go u1 u1 2
+  let len = String.length u1 in
+  let acc = Bytes.of_string u1 in
+  let prev = ref u1 in
+  for _ = 2 to iterations do
+    let u = hmac h ~key:password !prev in
+    for j = 0 to len - 1 do
+      Bytes.unsafe_set acc j
+        (Char.chr
+           (Char.code (Bytes.unsafe_get acc j) lxor Char.code (String.unsafe_get u j)))
+    done;
+    prev := u
+  done;
+  Bytes.unsafe_to_string acc
 
 let escape_user u =
   let b = Buffer.create (String.length u) in
@@ -74,8 +80,8 @@ let client_final h ~password cf ~server_first =
           match (Base64.decode s, int_of_string_opt i) with
           | Error _, _ -> Error "SCRAM: invalid salt"
           | _, None -> Error "SCRAM: invalid iteration count"
-          | Ok _, Some n when n < 4096 || n > 10_000_000 ->
-              Error (Printf.sprintf "SCRAM: iteration count %d outside 4096..10000000" n)
+          | Ok _, Some n when n < 4096 || n > 600_000 ->
+              Error (Printf.sprintf "SCRAM: iteration count %d outside 4096..600000" n)
           | Ok salt, Some iterations ->
               let salted = hi h ~password ~salt ~iterations in
               let client_key = hmac h ~key:salted "Client Key" in

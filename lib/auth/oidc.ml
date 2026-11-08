@@ -36,17 +36,19 @@ let context_value (j : Yojson.Safe.t) : Context.value option =
       if List.length vs = List.length items then Some (Context.Many vs) else None
   | j -> Option.map (fun s -> Context.One s) (scalar_string j)
 
-let one_matches (claim : Yojson.Safe.t) v =
+let one_matches ~name (claim : Yojson.Safe.t) v =
   match claim with
   | `String s ->
-      s = v || List.mem v (List.filter (( <> ) "") (String.split_on_char ' ' s))
+      String.equal s v
+      || (name = "scope" || name = "scp")
+         && List.mem v (List.filter (( <> ) "") (String.split_on_char ' ' s))
   | `List items -> List.exists (fun i -> scalar_string i = Some v) items
   | `Bool b -> string_of_bool b = v
   | j -> scalar_string j = Some v
 
-let claim_matches claim = function
-  | Config.Claim_one v -> one_matches claim v
-  | Config.Claim_all vs -> List.for_all (one_matches claim) vs
+let claim_matches ?(name = "") claim = function
+  | Config.Claim_one v -> one_matches ~name claim v
+  | Config.Claim_all vs -> List.for_all (one_matches ~name claim) vs
 
 let check_time (p : Config.oidc_provider) ~now claims =
   let leeway = float_of_int p.leeway_seconds in
@@ -101,7 +103,7 @@ let verify ?groups (p : Config.oidc_provider) ~keys ~now tok =
             match lookup_claim t.claims name with
             | None -> Error (Jwt.Missing_claim name)
             | Some c ->
-                if claim_matches c m then Ok () else Error (Jwt.Claim_mismatch name))
+                if claim_matches ~name c m then Ok () else Error (Jwt.Claim_mismatch name))
           p.required_claims
       in
       let* policy, matched_group =

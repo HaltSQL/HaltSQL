@@ -11,7 +11,7 @@ Every failure raises; nothing is ever treated as allowed. See
 ``docs/sdk-python.md``.
 """
 
-from . import guard
+from . import agent_core, guard
 from ._version import __version__
 from .client import AsyncHaltSQLClient, HaltSQLClient, RetryPolicy
 from .errors import (
@@ -39,6 +39,7 @@ __all__ = [
     "PolicyInfo",
     "sql_sha256",
     "validate_context",
+    "agent_core",
     "guard",
     "Guard",
     "GuardedResult",

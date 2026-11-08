@@ -19,14 +19,31 @@ let default_terms =
     "phone";
     "ssn";
     "secret";
+    "password";
+    "passwd";
+    "passcode";
+    "token";
+    "apikey";
+    "credential";
+    "cvv";
+    "cvc";
+    "iban";
+    "passport";
+    "dob";
+    "birthdate";
+    "tin";
+    "taxid";
+    "salary";
   ]
 
 let is_lower c = c >= 'a' && c <= 'z'
 let is_upper c = c >= 'A' && c <= 'Z'
+let is_alpha c = is_lower c || is_upper c
 let is_digit c = c >= '0' && c <= '9'
-let is_alnum c = is_lower c || is_upper c || is_digit c
+let is_alnum c = is_alpha c || is_digit c
 
 let tokens s =
+  let n = String.length s in
   let out = ref [] and cur = Buffer.create 16 in
   let flush () =
     if Buffer.length cur > 0 then begin
@@ -34,14 +51,22 @@ let tokens s =
       Buffer.clear cur
     end
   in
-  String.iteri
-    (fun i c ->
-      if not (is_alnum c) then flush ()
-      else begin
-        if is_upper c && i > 0 && (is_lower s.[i - 1] || is_digit s.[i - 1]) then flush ();
-        Buffer.add_char cur c
-      end)
-    s;
+  for i = 0 to n - 1 do
+    let c = s.[i] in
+    if not (is_alnum c) then flush ()
+    else begin
+      (if i > 0 && Buffer.length cur > 0 then
+         let p = s.[i - 1] in
+         if
+           (is_alpha p && is_digit c && Buffer.length cur >= 2)
+           || (is_digit p && is_alpha c)
+         then flush ()
+         else if is_upper c then
+           if is_lower p then flush ()
+           else if is_upper p && i + 1 < n && is_lower s.[i + 1] then flush ());
+      Buffer.add_char cur c
+    end
+  done;
   flush ();
   List.rev !out
 

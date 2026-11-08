@@ -110,7 +110,7 @@ let r_array c f =
 
 let read_uvarint s pos =
   let rec go shift acc =
-    if shift > 63 then malformed "varint too long";
+    if shift >= 63 then malformed "varint too long";
     if !pos >= String.length s then malformed "truncated varint";
     let byte = Char.code s.[!pos] in
     incr pos;
@@ -261,9 +261,11 @@ let decode_record_batch s =
         let key = if kl < 0 then None else Some (take kl) in
         let value = take (read_zigzag_varint s pos) in
         let nh = read_zigzag_varint s pos in
+        if nh < 0 then malformed "record header count";
         for _ = 1 to nh do
           ignore (take (read_zigzag_varint s pos));
-          ignore (take (read_zigzag_varint s pos))
+          let vlen = read_zigzag_varint s pos in
+          if vlen >= 0 then ignore (take vlen)
         done;
         if !pos <> stop then malformed "record length mismatch";
         { key; value })

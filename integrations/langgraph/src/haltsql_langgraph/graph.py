@@ -24,9 +24,11 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -71,6 +73,17 @@ def build_sql_agent_graph(
             raise TypeError("the model must return an AIMessage")
         return {"messages": [msg]}
 
+    async def aagent(state: SQLAgentState) -> Dict[str, Any]:
+        if hasattr(model, "ainvoke"):
+            msg = await model.ainvoke(state["messages"])
+        elif asyncio.iscoroutinefunction(model):
+            msg = await model(state["messages"])
+        else:
+            msg = await asyncio.to_thread(invoke, state["messages"])
+        if not isinstance(msg, AIMessage):
+            raise TypeError("the model must return an AIMessage")
+        return {"messages": [msg]}
+
     def route_agent(state: SQLAgentState) -> str:
         last = state["messages"][-1]
         return "tools" if getattr(last, "tool_calls", None) else END
@@ -94,7 +107,7 @@ def build_sql_agent_graph(
         return END if state.get("denials", 0) >= max_denials else "agent"
 
     g: Any = StateGraph(SQLAgentState, context_schema=context_schema) if context_schema else StateGraph(SQLAgentState)
-    g.add_node("agent", agent)
+    g.add_node("agent", RunnableLambda(agent, afunc=aagent))
     g.add_node("tools", ToolNode([tool, *(extra_tools or [])]))
     g.add_node("check", check)
     g.add_edge(START, "agent")

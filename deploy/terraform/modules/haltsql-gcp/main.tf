@@ -52,6 +52,12 @@ resource "google_secret_manager_secret" "config" {
           for_each = var.config_secret_replica_locations
           content {
             location = replicas.value
+            dynamic "customer_managed_encryption" {
+              for_each = var.config_secret_kms_key == null ? [] : [var.config_secret_kms_key]
+              content {
+                kms_key_name = customer_managed_encryption.value
+              }
+            }
           }
         }
       }

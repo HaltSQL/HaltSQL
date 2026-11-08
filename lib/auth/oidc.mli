@@ -40,7 +40,7 @@ val lookup_claim : (string * Yojson.Safe.t) list -> string -> Yojson.Safe.t opti
 (** Looks a path up as one top-level claim name first, then as a dot path through nested
     objects. *)
 
-val claim_matches : Yojson.Safe.t -> Haltsql.Config.claim_match -> bool
+val claim_matches : ?name:string -> Yojson.Safe.t -> Haltsql.Config.claim_match -> bool
 (** See {!Haltsql.Config.claim_match}. *)
 
 val context_value : Yojson.Safe.t -> Haltsql.Context.value option

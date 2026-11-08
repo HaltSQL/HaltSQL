@@ -2660,7 +2660,24 @@ let admin_caller_j ctx p v =
         else Some (f r)
       in
       if starts_with ~prefix:"token:" s then nonempty "token:" (fun n -> Admin_token n)
-      else if starts_with ~prefix:"oidc:" s then nonempty "oidc:" (fun n -> Admin_oidc n)
+      else if starts_with ~prefix:"oidc:" s then
+        nonempty "oidc:" (fun n ->
+            let sep =
+              match (String.index_opt n ':', String.index_opt n '/') with
+              | Some i, Some j -> Some (Int.min i j)
+              | Some i, None -> Some i
+              | None, Some j -> Some j
+              | None, None -> None
+            in
+            match sep with
+            | Some i when i = 0 || i = String.length n - 1 ->
+                Dec.error ctx p
+                  (Printf.sprintf
+                     "invalid OIDC admin caller %S (expected oidc:<provider> or \
+                      oidc:<provider>:<subject-or-policy>)"
+                     s);
+                Admin_oidc n
+            | _ -> Admin_oidc n)
       else if starts_with ~prefix:"mtls:" s then
         nonempty "mtls:" (fun n ->
             if starts_with ~prefix:"spiffe://" n then Admin_mtls (Spiffe_id n)
@@ -3115,8 +3132,15 @@ let decode ctx ~base_dir ~env (j : Yojson.Safe.t) : t option =
                   (Printf.sprintf "unknown token %S (server.auth.tokens has no such name)"
                      n)
           | Admin_oidc n ->
-              if not (List.exists (fun o -> o.oidc_name = n) cfg.oidc) then
-                Dec.error ctx p (Printf.sprintf "unknown OIDC provider %S" n)
+              let provider =
+                match (String.index_opt n ':', String.index_opt n '/') with
+                | Some i, Some j -> String.sub n 0 (Int.min i j)
+                | Some i, None -> String.sub n 0 i
+                | None, Some j -> String.sub n 0 j
+                | None, None -> n
+              in
+              if not (List.exists (fun o -> o.oidc_name = provider) cfg.oidc) then
+                Dec.error ctx p (Printf.sprintf "unknown OIDC provider %S" provider)
           | Admin_mtls m ->
               if not (List.exists (fun id -> id.mtls_match = m) cfg.mtls) then
                 Dec.error ctx p

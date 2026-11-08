@@ -12,8 +12,8 @@ homepage: "https://github.com/ardada2468/HaltSQL"
 doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"
 bug-reports: "https://github.com/ardada2468/HaltSQL/issues"
 depends: [
+  "dune" {>= "3.0"}
   "ocaml" {>= "5.1"}
-  "dune" {>= "3.0" & >= "3.0"}
   "yojson" {>= "2.0"}
   "yaml" {>= "3.0"}
   "digestif" {>= "1.0"}

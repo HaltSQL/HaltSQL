@@ -41,22 +41,9 @@ let ca_ctx = function
       | Ok c -> Ok c
       | Error m -> Error ("elasticsearch tls.ca_file: " ^ m))
   | Some (Config.Pem_inline pem) -> (
-      (* Http only loads CA bundles from files: stage the inline PEM in a private
-         temporary file for the duration of the load. *)
-      match Filename.open_temp_file ~perms:0o600 "haltsql-es-ca" ".pem" with
-      | exception Sys_error m -> Lwt.return (Error ("elasticsearch tls.ca_file: " ^ m))
-      | path, oc ->
-          output_string oc pem;
-          close_out oc;
-          Lwt.finalize
-            (fun () ->
-              Http.ctx_of_ca_file path >|= function
-              | Ok c -> Ok c
-              | Error _ ->
-                  Error "elasticsearch tls.ca_file (inline PEM): invalid CA bundle")
-            (fun () ->
-              (try Sys.remove path with Sys_error _ -> ());
-              Lwt.return_unit))
+      Http.ctx_of_ca_pem pem >|= function
+      | Ok c -> Ok c
+      | Error _ -> Error "elasticsearch tls.ca_file (inline PEM): invalid CA bundle")
 
 let create ?(max_response = 64 * 1024 * 1024) (cfg : Config.es_sink) =
   let urls =
@@ -226,7 +213,7 @@ let deliver t entries =
           Error
             (Printf.sprintf
                "%s: _bulk request too large (HTTP 413); lower batch.max_bytes" where)
-      | s when s >= 500 ->
+      | s when s = 429 || s >= 500 ->
           rotate ();
           Error (Printf.sprintf "%s: _bulk failed (HTTP %d%s)" where s et)
       | s -> Error (Printf.sprintf "%s: _bulk failed (HTTP %d%s)" where s et))

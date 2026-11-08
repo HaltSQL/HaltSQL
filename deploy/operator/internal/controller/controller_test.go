@@ -451,7 +451,41 @@ func TestServerInvalidConfig(t *testing.T) {
 		t.Fatalf("message: %q", c.Message)
 	}
 	updateServer(t, ns, "hs", func(s *haltsqlv1alpha1.HaltSQLServer) { s.Spec.Auth.Tokens[0].Policy = "orders-agent" })
+	s = waitServer(t, ns, "hs", haltsqlv1alpha1.ServerConditionConfigRendered, metav1.ConditionTrue, ReasonRendered)
+	goodSum := s.Status.ConfigChecksum
+
+	// An invalid free-form JSON section (checked by haltsql validate) is
+	// rejected before applying, keeping the running ConfigMap and Deployment intact.
+	updateServer(t, ns, "hs", func(s *haltsqlv1alpha1.HaltSQLServer) {
+		s.Spec.Config.OPA = &apiextensionsv1.JSON{Raw: []byte(`{"url":"https://opa.example:8181","decision_path":"haltsql/allow","unknown_field":true}`)}
+	})
+	s = waitServer(t, ns, "hs", haltsqlv1alpha1.ServerConditionConfigRendered, metav1.ConditionFalse, ReasonInvalidConfig)
+	if c := meta.FindStatusCondition(s.Status.Conditions, haltsqlv1alpha1.ServerConditionConfigRendered); !strings.Contains(c.Message, "unknown_field") {
+		t.Fatalf("expected haltsql validate error on unknown_field, got: %q", c.Message)
+	}
+	if gotSum := deployment(t, ns, "hs").Spec.Template.Annotations[render.AnnotationConfigChecksum]; gotSum != goodSum {
+		t.Fatalf("Deployment checksum changed on invalid config: got %q, want %q", gotSum, goodSum)
+	}
+	if strings.Contains(configMap(t, ns, "hs").Data["config.yaml"], "unknown_field") {
+		t.Fatal("invalid config was written to ConfigMap")
+	}
+}
+
+func TestPolicyUnreferencedWhenRemovedFromServer(t *testing.T) {
+	ns := newNamespace(t)
+	secondPolicy := strings.Replace(ordersPolicy, "name: orders-agent", "name: second-agent", 1)
+	create(t, newPolicy(ns, "first", ordersPolicy))
+	create(t, newPolicy(ns, "second", secondPolicy))
+	create(t, newServer(ns, "hs", "first", "second"))
 	waitServer(t, ns, "hs", haltsqlv1alpha1.ServerConditionConfigRendered, metav1.ConditionTrue, ReasonRendered)
+	markRolledOut(t, ns, "hs")
+	waitPolicy(t, ns, "first", haltsqlv1alpha1.PolicyConditionSynced, metav1.ConditionTrue, ReasonSynced)
+	waitPolicy(t, ns, "second", haltsqlv1alpha1.PolicyConditionSynced, metav1.ConditionTrue, ReasonSynced)
+
+	updateServer(t, ns, "hs", func(s *haltsqlv1alpha1.HaltSQLServer) {
+		s.Spec.Policies = []haltsqlv1alpha1.PolicyReference{{Name: "first"}}
+	})
+	waitPolicy(t, ns, "second", haltsqlv1alpha1.PolicyConditionSynced, metav1.ConditionFalse, ReasonNotReferenced)
 }
 
 func TestServerNeverAdoptsForeignObjects(t *testing.T) {

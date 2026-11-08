@@ -173,6 +173,14 @@ module Make (B : BACKEND) = struct
                 e
           in
           t.order <- Lru.add key fp t.order;
+          let horizon = now -. Float.of_int t.admin.report_window_seconds in
+          while (not (Queue.is_empty e.recs)) && fst (Queue.peek e.recs) < horizon do
+            ignore (Queue.pop e.recs)
+          done;
+          while Queue.length e.recs >= records_per_query do
+            ignore (Queue.pop e.recs);
+            t.sampled_out <- t.sampled_out + 1
+          done;
           (* one SQL text per query is enough to name what it reads *)
           let r =
             if
@@ -181,11 +189,7 @@ module Make (B : BACKEND) = struct
             then B.strip_sql r
             else r
           in
-          Queue.push (now, r) e.recs;
-          while Queue.length e.recs > records_per_query do
-            ignore (Queue.pop e.recs);
-            t.sampled_out <- t.sampled_out + 1
-          done
+          Queue.push (now, r) e.recs
         end)
 
   let enabled t = t.admin.admin_enabled

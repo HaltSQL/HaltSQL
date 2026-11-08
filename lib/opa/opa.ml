@@ -226,42 +226,40 @@ let apply ~code ~(mode : Policy.mode) cfg (v : Verdict.t) outcome =
 
 let max_response_bytes = 1024 * 1024
 
-(* Http only builds a trust context from a file: inline PEM goes through a private
-   temporary file that is removed right away. *)
-let ctx_of_pem pem =
-  match Filename.temp_file "haltsql-opa-ca" ".pem" with
-  | exception Sys_error m -> Lwt.return (Error ("cannot stage opa.tls.ca_file: " ^ m))
-  | path ->
-      Lwt.finalize
-        (fun () ->
-          match
-            Out_channel.with_open_bin path (fun oc -> Out_channel.output_string oc pem)
-          with
-          | exception Sys_error m ->
-              Lwt.return (Error ("cannot stage opa.tls.ca_file: " ^ m))
-          | () -> Http.ctx_of_ca_file path)
-        (fun () ->
-          (try Sys.remove path with Sys_error _ -> ());
-          Lwt.return_unit)
+(* TLS contexts are cached by CA content or (path, file stat) so on-disk CA
+   rotation invalidates the cached context. *)
+type ca_cache_key =
+  | Key_inline of string
+  | Key_path of string * (float * int * int) option
 
-(* TLS contexts are built once per CA. *)
-let ctx_cache : (Config.pem, Http.ctx) Hashtbl.t = Hashtbl.create 4
+let stat_fingerprint p =
+  try
+    let st = Unix.stat p in
+    Some (st.Unix.st_mtime, st.Unix.st_size, st.Unix.st_ino)
+  with Unix.Unix_error _ -> None
+
+let cache_key = function
+  | Config.Pem_inline s -> Key_inline s
+  | Config.Pem_path p -> Key_path (p, stat_fingerprint p)
+
+let ctx_cache : (ca_cache_key, Http.ctx) Hashtbl.t = Hashtbl.create 4
 
 let ctx_for (cfg : Config.opa) : (Http.ctx, string) result Lwt.t =
   match cfg.opa_ca with
   | None -> Lwt.return (Ok Http.default_ctx)
   | Some pem -> (
-      match Hashtbl.find_opt ctx_cache pem with
+      let key = cache_key pem in
+      match Hashtbl.find_opt ctx_cache key with
       | Some c -> Lwt.return (Ok c)
       | None -> (
           let build : (Http.ctx, string) result Lwt.t =
             match pem with
             | Config.Pem_path p -> Http.ctx_of_ca_file p
-            | Config.Pem_inline s -> ctx_of_pem s
+            | Config.Pem_inline s -> Http.ctx_of_ca_pem s
           in
           build >|= function
           | Ok c ->
-              Hashtbl.replace ctx_cache pem c;
+              Hashtbl.replace ctx_cache key c;
               Ok c
           | Error e -> Error e))
 

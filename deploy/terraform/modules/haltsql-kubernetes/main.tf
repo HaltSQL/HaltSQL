@@ -5,9 +5,9 @@
 # extension values (extraConfig, extraPolicies, extraEnv, networkPolicy.egress,
 # proxy) are only sent when used, and the plan fails with a precondition error
 # when a local chart lacks them, so a setting is never silently dropped. The
-# chart in this repository has extraConfig and extraPolicies (bundle_source
-# entries without cache_dir cache on its `cache` volume); extraEnv,
-# networkPolicy.egress and proxy are not implemented yet.
+# chart in this repository has extraConfig, extraPolicies (bundle_source
+# entries without cache_dir cache on its `cache` volume), extraEnv and
+# networkPolicy.egress; proxy is not implemented yet.
 
 locals {
   chart_local_path = coalesce(var.chart_path, "${path.module}/../../../helm/haltsql")
@@ -97,7 +97,7 @@ locals {
     serviceAccount = {
       create                       = true
       annotations                  = merge(var.service_account_annotations, local.wi_sa_annotations)
-      automountServiceAccountToken = false
+      automountServiceAccountToken = can(local.extra_config.secrets.vault.auth.kubernetes) || try(local.extra_config.secrets.vault.auth.method == "kubernetes", false)
     }
     podAnnotations = var.pod_annotations
     podLabels      = merge(var.pod_labels, local.wi_pod_labels)

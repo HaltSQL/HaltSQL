@@ -296,7 +296,10 @@ let test_connection_refused () =
 let src_dir rel =
   (* dune copies source_tree deps next to the test; docker needs absolute paths *)
   let p = Filename.concat (Sys.getcwd ()) rel in
-  if Sys.file_exists p then Unix.realpath p else Alcotest.failf "missing %s" p
+  if Sys.file_exists p then Unix.realpath p
+  else
+    let p2 = Filename.concat (Filename.dirname Sys.executable_name) rel in
+    if Sys.file_exists p2 then Unix.realpath p2 else Alcotest.failf "missing %s" p
 
 let wait_http ?(headers = []) ?ctx ~what url =
   let deadline = Unix.gettimeofday () +. 60. in
@@ -390,35 +393,46 @@ let setup () =
           let fixtures = src_dir "fixtures/policies" in
           let authz = src_dir "fixtures/authz" in
           let gate_token = random_hex 32 in
+          let is_darwin =
+            try
+              let ic = Unix.open_process_in "uname -s" in
+              let s = try input_line ic with End_of_file -> "" in
+              ignore (Unix.close_process_in ic);
+              String.trim s = "Darwin"
+            with _ -> false
+          in
+          let opa_net_args, opa_listen_addr =
+            if is_darwin then
+              (* On macOS Docker Desktop, --network host runs inside the Linux VM
+                 and does not expose ports on the macOS host's loopback, while
+                 Docker Desktop's default bridge provides host.docker.internal
+                 reaching the macOS host's 127.0.0.1:18183 listener. *)
+              ( [ "-p"; Printf.sprintf "127.0.0.1:%d:%d" opa_port opa_port ],
+                Printf.sprintf "0.0.0.0:%d" opa_port )
+            else
+              (* On Linux, --network host shares the host network namespace so
+                 OPA reaches 127.0.0.1:18183 via host.docker.internal -> 127.0.0.1. *)
+              ( [ "--network"; "host"; "--add-host"; "host.docker.internal:127.0.0.1" ],
+                Printf.sprintf "127.0.0.1:%d" opa_port )
+          in
           ok_or_fail
             (Docker_util.start ~name:"haltsql-identity-opa"
-               [
-                 (* Host network: verify_gate.rego calls the haltsql-server
-                    the test runs on the host's loopback (127.0.0.1:18183).
-                    From the default bridge, host-gateway reaches only the
-                    bridge address, where a loopback listener is not
-                    reachable, so the gate would always fail closed. OPA
-                    listens on loopback only, and fixtures/policies/data.json
-                    names the server host.docker.internal, mapped here to
-                    127.0.0.1. *)
-                 "--network";
-                 "host";
-                 "--add-host";
-                 "host.docker.internal:127.0.0.1";
-                 "-e";
-                 "HALTSQL_TOKEN=" ^ gate_token;
-                 "-v";
-                 examples ^ ":/policies/examples:ro";
-                 "-v";
-                 fixtures ^ ":/policies/fixtures:ro";
-                 image;
-                 "run";
-                 "--server";
-                 "--addr";
-                 Printf.sprintf "127.0.0.1:%d" opa_port;
-                 "/policies/examples";
-                 "/policies/fixtures";
-               ]);
+               (opa_net_args
+               @ [
+                   "-e";
+                   "HALTSQL_TOKEN=" ^ gate_token;
+                   "-v";
+                   examples ^ ":/policies/examples:ro";
+                   "-v";
+                   fixtures ^ ":/policies/fixtures:ro";
+                   image;
+                   "run";
+                   "--server";
+                   "--addr";
+                   opa_listen_addr;
+                   "/policies/examples";
+                   "/policies/fixtures";
+                 ]));
           ok_or_fail
             (Docker_util.start ~name:"haltsql-identity-opa-authz"
                [
@@ -436,7 +450,7 @@ let setup () =
                  "/policies";
                ]);
           (* TLS: a fresh CA and a server certificate for localhost / 127.0.0.1 *)
-          let certs = Filename.concat (Sys.getcwd ()) "certs" in
+          let certs = Filename.concat (Filename.dirname Sys.executable_name) "certs" in
           (try Sys.mkdir certs 0o755 with Sys_error _ -> ());
           let ca_key, ca_cert = make_ca "haltsql identity test CA" in
           let skey, scert = make_server ~ca_key ~ca_cert in
@@ -667,6 +681,16 @@ let test_real_tls e =
     (check_cfg (cfg ~url ~ca:(Config.Pem_inline e.ca_pem) "haltsql_authz/allow") i);
   Alcotest.check outcome_t "CA file" Opa.Allowed
     (check_cfg (cfg ~url ~ca:(Config.Pem_path e.ca_path) "haltsql_authz/allow") i);
+  (* Rotating the CA file on disk invalidates the cached TLS context *)
+  let rot_path = Filename.concat (Filename.dirname e.ca_path) "rotated-ca.pem" in
+  write rot_path e.ca_pem;
+  Unix.utimes rot_path 1_700_000_000. 1_700_000_000.;
+  Alcotest.check outcome_t "CA file before rotation" Opa.Allowed
+    (check_cfg (cfg ~url ~ca:(Config.Pem_path rot_path) "haltsql_authz/allow") i);
+  write rot_path e.rogue_ca_pem;
+  Unix.utimes rot_path 1_700_000_100. 1_700_000_100.;
+  check_failed_closed ~sub:"failed"
+    (check_cfg (cfg ~url ~ca:(Config.Pem_path rot_path) "haltsql_authz/allow") i);
   check_failed_closed ~sub:"failed"
     (check_cfg (cfg ~url ~ca:(Config.Pem_inline e.rogue_ca_pem) "haltsql_authz/allow") i);
   check_failed_closed ~sub:"failed" (check_cfg (cfg ~url "haltsql_authz/allow") i);
@@ -690,12 +714,16 @@ let server_bin () =
       (Sys.getenv_opt "HALTSQL_SERVER_BIN")
       ~default:"../../bin/server/main.exe"
   in
-  if Filename.is_relative b then Filename.concat (Sys.getcwd ()) b else b
+  if not (Filename.is_relative b) then b
+  else
+    let p1 = Filename.concat (Sys.getcwd ()) b in
+    if Sys.file_exists p1 then p1
+    else Filename.concat (Filename.dirname Sys.executable_name) b
 
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
 
 let with_server e f =
-  let dir = Filename.concat (Sys.getcwd ()) "gate" in
+  let dir = Filename.concat (Filename.dirname Sys.executable_name) "gate" in
   (try Sys.mkdir dir 0o755 with Sys_error _ -> ());
   let config = Filename.concat dir "haltsql.json" in
   let doc =

@@ -23,6 +23,19 @@ let check_url ~what u =
         | _ -> Ok ())
   | _ -> Error (what ^ ": unsupported URL scheme")
 
+let check_target_from ~what ~from target =
+  match check_url ~what target with
+  | Error e -> Error e
+  | Ok () -> (
+      match (Uri.scheme from, Uri.scheme target) with
+      | Some "https", Some "http" ->
+          Error (what ^ ": refusing https to http scheme downgrade")
+      | _ -> (
+          match (Uri.host from, Uri.host target) with
+          | Some oh, Some th when (not (loopback_host oh)) && loopback_host th ->
+              Error (what ^ ": refusing transition from non-loopback to loopback host")
+          | _ -> Ok ()))
+
 let basic ~username ~password =
   "Basic " ^ Haltsql_cloud.Cloud_util.base64 (username ^ ":" ^ password)
 
@@ -69,7 +82,7 @@ let request ?ctx ?timeout ?max_body ?(headers = []) ?authorization ?body ?(follo
                       (Printf.sprintf "HTTP %d without a Location" r.status)))
           | Some loc -> (
               let target = Uri.resolve "" uri (Uri.of_string loc) in
-              match check_url ~what:"redirect target" target with
+              match check_target_from ~what:"redirect target" ~from:uri target with
               | Error e -> Lwt.return (Error (Fetch_error.Protocol e))
               | Ok () -> go target (left - 1)))
     | Ok r -> Lwt.return (Ok r)

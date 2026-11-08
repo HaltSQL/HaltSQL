@@ -81,6 +81,15 @@ mtlsIdentities: []
 # token named HALTSQL_TOKEN_<INDEX>_SHA256 (0-based, in the order of `tokens`).
 existingTokenSecret: ""
 
+# Extra environment variables appended to the container (e.g. secretKeyRef
+# values referenced via ${env:...} placeholders in extraPolicies or extraConfig).
+extraEnv: []
+#  - name: HALTSQL_BUNDLE_PASSWORD
+#    valueFrom:
+#      secretKeyRef:
+#        name: haltsql-bundle-creds
+#        key: password
+
 # Policies, keyed by file name. Each value is a full Policy document (YAML).
 policies: {}
 #  analytics-agent.yaml: |
@@ -194,6 +203,8 @@ networkPolicy:
   # Allow Prometheus to scrape /metrics from this namespace selector.
   metricsFrom: []
   #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+  # Outbound rules (empty = deny all egress).
+  egress: []
 
 serviceMonitor:
   enabled: false

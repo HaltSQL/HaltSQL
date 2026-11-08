@@ -33,6 +33,17 @@ resource "aws_vpc_security_group_ingress_rule" "tasks_sg" {
   referenced_security_group_id = each.value
 }
 
+resource "aws_vpc_security_group_ingress_rule" "tasks_health_cidr" {
+  for_each = var.health_port == null ? toset([]) : toset(var.ingress_cidr_blocks)
+
+  security_group_id = aws_security_group.tasks.id
+  description       = "haltsql-server health port from ${each.value}"
+  ip_protocol       = "tcp"
+  from_port         = var.health_port
+  to_port           = var.health_port
+  cidr_ipv4         = each.value
+}
+
 resource "aws_vpc_security_group_ingress_rule" "tasks_health_sg" {
   for_each = var.health_port == null ? toset([]) : toset(var.ingress_security_group_ids)
 

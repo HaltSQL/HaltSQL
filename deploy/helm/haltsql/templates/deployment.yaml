@@ -61,6 +61,9 @@ spec:
                   name: {{ include "haltsql.tokenSecretName" $ }}
                   key: HALTSQL_TOKEN_{{ $i }}_SHA256
             {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}

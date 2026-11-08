@@ -9,7 +9,7 @@ description = "HaltSQL verified read-only SQL tool (ToolNode) and retry-on-deny 
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["haltsql[psycopg]>=0.1.0", "langgraph>=1.2,<1.3", "langgraph-prebuilt>=1.1,<1.2", "langchain-core>=1.6,<2"]
+dependencies = ["haltsql[psycopg]>=0.1.0", "langgraph>=1.2,<2", "langgraph-prebuilt>=1.1,<2", "langchain-core>=1.6,<2"]
 
 [project.optional-dependencies]
 test = ["pytest>=7", "psycopg[binary]>=3.2", "httpx>=0.27"]

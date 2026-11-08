@@ -321,7 +321,18 @@ let required_claims () =
     (check_ok "dot path"
        (verify ~p
           (rs
-             (claims [ ("realm_access", `Assoc [ ("roles", `List [ `String "sql" ]) ]) ]))))
+             (claims [ ("realm_access", `Assoc [ ("roles", `List [ `String "sql" ]) ]) ]))));
+  (* scp splits on spaces like scope, but arbitrary string claims do not *)
+  let p_scp = provider ~required:[ ("scp", Config.Claim_one "sql.verify") ] () in
+  ignore
+    (check_ok "scp space-separated"
+       (verify ~p:p_scp (rs (claims [ ("scp", `String "openid sql.verify") ]))));
+  let p_role = provider ~required:[ ("role", Config.Claim_one "admin") ] () in
+  check_err "non-scope string claim does not space-split" (Jwt.Claim_mismatch "role")
+    (verify ~p:p_role (rs (claims [ ("role", `String "user admin") ])));
+  ignore
+    (check_ok "non-scope string claim exact match"
+       (verify ~p:p_role (rs (claims [ ("role", `String "admin") ]))))
 
 let policy_selection () =
   let p =
@@ -512,9 +523,30 @@ let discovery () =
     Oidc_client.provider ~fetch:(fetch_of f3)
       { cfg with jwks_uri = Some "http://idp.example.com/jwks" }
   in
-  match run (Oidc_client.refresh p3) with
+  (match run (Oidc_client.refresh p3) with
   | Error _ -> Alcotest.(check int) "no plain-http fetch" 0 (List.length f3.calls)
-  | Ok _ -> Alcotest.fail "http jwks_uri accepted"
+  | Ok _ -> Alcotest.fail "http jwks_uri accepted");
+  (* loopback jwks_uri rejected when issuer is not on loopback *)
+  let f4 = fake () in
+  let p4 =
+    Oidc_client.provider ~fetch:(fetch_of f4)
+      { cfg with jwks_uri = Some "https://127.0.0.1/jwks" }
+  in
+  (match run (Oidc_client.refresh p4) with
+  | Error _ -> Alcotest.(check int) "no loopback jwks fetch" 0 (List.length f4.calls)
+  | Ok _ -> Alcotest.fail "loopback jwks_uri for non-loopback issuer accepted");
+  (* discovered loopback jwks_uri also rejected when issuer is not on loopback *)
+  let f5 = fake () in
+  f5.routes <-
+    [
+      ( disc,
+        Ok (Printf.sprintf {|{"issuer":%S,"jwks_uri":"https://localhost/jwks"}|} issuer)
+      );
+    ];
+  let p5 = Oidc_client.provider ~fetch:(fetch_of f5) cfg in
+  match run (Oidc_client.refresh p5) with
+  | Error _ -> Alcotest.(check int) "only discovery fetched" 1 (List.length f5.calls)
+  | Ok _ -> Alcotest.fail "discovered loopback jwks_uri accepted"
 
 let registry () =
   let f = fake () in
@@ -649,11 +681,48 @@ let context_merge () =
     = Error [ "role"; "x" ]);
   Alcotest.(check bool) "empty body" true (m [] = Ok authenticated)
 
+let loopback_hosts () =
+  let check h expected =
+    Alcotest.(check bool) ("loopback " ^ h) expected (Haltsql_core.Loopback.is_host h)
+  in
+  List.iter
+    (fun h -> check h true)
+    [
+      "localhost";
+      "LOCALHOST.";
+      "localhost.";
+      "127.0.0.1";
+      "127.0.0.1.";
+      "127.255.255.254";
+      "::1";
+      "[::1]";
+      "0:0:0:0:0:0:0:1";
+      "[0:0:0:0:0:0:0:1]";
+      "0000:0000:0000:0000:0000:0000:0000:0001";
+      "::ffff:127.0.0.1";
+      "[::ffff:127.0.0.1]";
+      "::FFFF:127.1.2.3";
+      "0:0:0:0:0:ffff:127.0.0.1";
+    ];
+  List.iter
+    (fun h -> check h false)
+    [
+      "";
+      "localhost..";
+      "127.0.0.01";
+      "127.01.0.1";
+      "127.0.00.1";
+      "::ffff:127.0.0.01";
+      "::ffff:10.0.0.1";
+      "0:0:0:0:0:0:0:2";
+    ]
+
 let () =
   let tc n f = Alcotest.test_case n `Quick f in
   Alcotest.run ~and_exit:true "haltsql.auth"
     [
       ("b64url", [ tc "strict codec" b64url ]);
+      ("loopback", [ tc "host detection" loopback_hosts ]);
       ("jwk", [ tc "parsing" jwk_parsing; tc "compatibility" jwk_compat ]);
       ( "jwt",
         [

@@ -306,7 +306,14 @@ let write_n sink ?(extra = fun _ -> []) ~from n =
 let python3 =
   lazy (match run_cmd [| "python3"; "--version" |] with 0, _ -> true | _ -> false)
 
-let run_python script args = run_cmd (Array.of_list ("python3" :: "-I" :: script :: args))
+let run_python script args =
+  let script =
+    if Sys.file_exists script then script
+    else
+      let alt = Filename.concat "test/siem" script in
+      if Sys.file_exists alt then alt else script
+  in
+  run_cmd (Array.of_list ("python3" :: "-I" :: script :: args))
 
 (* The verifier's last line is "OK: <n> records in <k> chain(s)". *)
 let python_ok out =

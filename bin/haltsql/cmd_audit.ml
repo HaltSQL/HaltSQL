@@ -105,23 +105,54 @@ module Verify = struct
     | Record of { prev : string; hash : string; self : (unit, string) result }
     | Bad of { kind : string; msg : string; claimed : string option }
 
-  (* With [mixed], a log line may carry a prefix (timestamps, container names). *)
-  let braces s =
-    match (String.index_opt s '{', String.rindex_opt s '}') with
-    | Some i, Some j when j > i -> Some (String.sub s i (j - i + 1))
-    | _ -> None
+  let has_sub s sub =
+    let n = String.length s and m = String.length sub in
+    let rec go i = i + m <= n && (String.sub s i m = sub || go (i + 1)) in
+    go 0
+
+  (* With [mixed], a log line may carry a prefix (timestamps, container names).
+     Try each '{' up to the last '}' so an earlier '{' in a log prefix does not
+     hide the JSON record at the end of the line. *)
+  let find_mixed_json s =
+    match String.rindex_opt s '}' with
+    | None -> None
+    | Some j ->
+        let rec scan from =
+          match String.index_from_opt s from '{' with
+          | Some i when i < j -> (
+              let sub = String.sub s i (j - i + 1) in
+              match Yojson.Safe.from_string sub with
+              | jv -> Some (sub, jv)
+              | exception Yojson.Json_error _ -> scan (i + 1))
+          | _ -> None
+        in
+        scan 0
 
   (* Messages never quote the line: records may carry raw SQL. *)
   let classify ~mixed text =
     if String.trim text = "" then Blank
     else
-      match if mixed then braces text else Some text with
-      | None -> Other
-      | Some jt -> (
-          match Yojson.Safe.from_string jt with
-          | exception Yojson.Json_error _ ->
-              if mixed then Other
-              else Bad { kind = "invalid_record"; msg = "not valid JSON"; claimed = None }
+      let parsed =
+        if mixed then find_mixed_json text
+        else
+          match Yojson.Safe.from_string text with
+          | jv -> Some (text, jv)
+          | exception Yojson.Json_error _ -> None
+      in
+      match parsed with
+      | None ->
+          if mixed then
+            if has_sub text "\"prev_hash\"" && has_sub text "\"hash\"" then
+              Bad
+                {
+                  kind = "invalid_record";
+                  msg = "corrupted audit record (not valid JSON)";
+                  claimed = None;
+                }
+            else Other
+          else Bad { kind = "invalid_record"; msg = "not valid JSON"; claimed = None }
+      | Some (jt, jv) -> (
+          match jv with
           | `Assoc kv -> (
               let str k =
                 match List.assoc_opt k kv with Some (`String s) -> Some s | _ -> None
@@ -370,7 +401,7 @@ module Verify = struct
     run : string;
     seq : int;
     sha : string;
-    body : string;
+    read_body : unit -> string;
   }
 
   let valid_run r =
@@ -481,13 +512,13 @@ module Verify = struct
     fold_string body (fun line text ~terminated ->
         feed_line c { src; line } text ~terminated)
 
-  (* [items]: (object key, body). [spool]: the sink's local spool directory. *)
-  let verify_objects ?(opts = default_opts) ?host ?spool ~source ~kind items =
+  (* [items]: (object key, unit -> body). [spool]: the sink's local spool directory. *)
+  let verify_object_readers ?(opts = default_opts) ?host ?spool ~source ~kind items =
     let r = new_report ~source ~kind in
     let by_sha = Hashtbl.create 64 and by_id = Hashtbl.create 64 in
     let objs =
       List.filter_map
-        (fun (key, body) ->
+        (fun (key, read_body) ->
           if not (Filename.check_suffix key ".jsonl") then None
           else
             match parse_name key with
@@ -498,6 +529,7 @@ module Verify = struct
                 None
             | Some (h, run, seq, sha) -> (
                 r.objects <- r.objects + 1;
+                let body = read_body () in
                 let actual = sha256_hex body in
                 if actual <> sha then
                   err r "body_mismatch"
@@ -521,14 +553,15 @@ module Verify = struct
                         None
                     | None ->
                         Hashtbl.add by_id (h, run, seq) key;
-                        Some { key; host = h; run; seq; sha; body })))
+                        Some { key; host = h; run; seq; sha; read_body })))
         (List.sort (fun (a, _) (b, _) -> compare a b) items)
     in
     let objs =
       match host with Some h -> List.filter (fun o -> o.host = h) objs | None -> objs
     in
     let hosts = List.sort_uniq compare (List.map (fun o -> o.host) objs) in
-    let summaries = ref [] in
+    let summaries_rev = ref [] in
+    let heads_rev = ref [] in
     List.iter
       (fun h ->
         let mine = List.filter (fun o -> o.host = h) objs in
@@ -556,16 +589,17 @@ module Verify = struct
                   | _ -> ());
                   prev_seq := Some o.seq;
                   let n0 = c.count in
-                  if o.body = "" then
+                  let body = o.read_body () in
+                  if body = "" then
                     err r "empty_object"
                       (Some { src = o.key; line = 0 })
                       "the object is empty"
                   else begin
-                    if o.body.[String.length o.body - 1] <> '\n' then
+                    if body.[String.length body - 1] <> '\n' then
                       err r "truncated"
                         (Some { src = o.key; line = 0 })
                         "the object body does not end with a newline (truncated)";
-                    feed_body c ~src:o.key o.body;
+                    feed_body c ~src:o.key body;
                     if c.count = n0 then
                       err r "empty_object"
                         (Some { src = o.key; line = 0 })
@@ -665,17 +699,19 @@ module Verify = struct
           (fun (s, _) ->
             Option.iter
               (fun hd ->
-                r.heads <-
-                  r.heads @ [ (Printf.sprintf "%s/%s seq %d" h s.r_run s.r_last_seq, hd) ])
+                heads_rev :=
+                  (Printf.sprintf "%s/%s seq %d" h s.r_run s.r_last_seq, hd) :: !heads_rev)
               s.r_head)
           tails;
-        summaries := !summaries @ tails)
+        summaries_rev := List.rev_append tails !summaries_rev)
       hosts;
+    let summaries = List.rev !summaries_rev in
+    r.heads <- List.rev !heads_rev;
     (* --expect-head: the newest tail *)
     (match opts.expect_head with
     | None -> ()
     | Some x ->
-        if not (List.exists (fun (s, _) -> s.r_head = Some x) !summaries) then
+        if not (List.exists (fun (s, _) -> s.r_head = Some x) summaries) then
           err r "head_mismatch" None
             (Printf.sprintf
                "no chain ends at --expect-head %s: objects are missing at the end or \
@@ -691,7 +727,7 @@ module Verify = struct
         let sp = read_spool r dir in
         let tail =
           match
-            List.rev (List.sort (fun (a, _) (b, _) -> compare a.r_run b.r_run) !summaries)
+            List.rev (List.sort (fun (a, _) (b, _) -> compare a.r_run b.r_run) summaries)
           with
           | (s, _) :: _ -> Some s
           | [] -> None
@@ -754,8 +790,12 @@ module Verify = struct
                  (hseq - 1))));
     r
 
+  let verify_objects ?(opts = default_opts) ?host ?spool ~source ~kind items =
+    verify_object_readers ~opts ?host ?spool ~source ~kind
+      (List.map (fun (k, b) -> (k, fun () -> b)) items)
+
   (* Local directory of downloaded objects (recursive, symlinks not followed). *)
-  let read_dir dir =
+  let read_dir_readers dir =
     let rec walk acc rel =
       let abs = if rel = "" then dir else Filename.concat dir rel in
       Array.fold_left
@@ -765,7 +805,7 @@ module Verify = struct
           match (Unix.lstat p).Unix.st_kind with
           | Unix.S_DIR -> walk acc rel'
           | Unix.S_REG when Filename.check_suffix f ".jsonl" ->
-              (rel', In_channel.with_open_bin p In_channel.input_all) :: acc
+              (rel', fun () -> In_channel.with_open_bin p In_channel.input_all) :: acc
           | _ -> acc)
         acc
         (let a = Sys.readdir abs in
@@ -773,6 +813,8 @@ module Verify = struct
          a)
     in
     List.rev (walk [] "")
+
+  let read_dir dir = List.map (fun (k, f) -> (k, f ())) (read_dir_readers dir)
 
   (* ---------------------------------------------------------------- *)
   (* Output                                                             *)
@@ -1045,10 +1087,13 @@ let run_verify inputs concat json any_start initial_prev strict mixed expect_hea
       if i = "-" then ("stdin", fun f -> f stdin)
       else (i, fun f -> In_channel.with_open_bin i f)
     in
-    let objects ~source ~kind items =
+    let object_readers ~source ~kind items =
       if not (List.exists (fun (k, _) -> Filename.check_suffix k ".jsonl") items) then
         usage "%s: no .jsonl audit objects found" source;
-      Verify.verify_objects ~opts ?host ?spool ~source ~kind items
+      Verify.verify_object_readers ~opts ?host ?spool ~source ~kind items
+    in
+    let objects ~source ~kind items =
+      object_readers ~source ~kind (List.map (fun (k, b) -> (k, fun () -> b)) items)
     in
     let fetch_s3 i =
       match S3_read.parse_url i with
@@ -1085,7 +1130,8 @@ let run_verify inputs concat json any_start initial_prev strict mixed expect_hea
         List.map
           (fun i ->
             if is_s3 i then fetch_s3 i
-            else if is_dir i then objects ~source:i ~kind:"objects" (Verify.read_dir i)
+            else if is_dir i then
+              object_readers ~source:i ~kind:"objects" (Verify.read_dir_readers i)
             else
               let src, f = stream_of i in
               Verify.verify_streams ~source:src

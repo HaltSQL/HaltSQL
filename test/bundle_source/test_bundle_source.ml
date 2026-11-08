@@ -1133,14 +1133,20 @@ let minio_creds () =
 
 let s3_put ?(creds = minio_creds ()) path body =
   let uri = Uri.of_string (Printf.sprintf "http://127.0.0.1:%d/%s" D.port_minio path) in
-  let headers =
-    Haltsql_cloud.Sigv4.sign ~s3:true creds ~service:"s3" ~region:"us-east-1"
-      ~time:(Unix.gettimeofday ()) ~meth:"PUT" ~uri ~headers:[] ~payload:body
+  let rec attempt n =
+    let headers =
+      Haltsql_cloud.Sigv4.sign ~s3:true creds ~service:"s3" ~region:"us-east-1"
+        ~time:(Unix.gettimeofday ()) ~meth:"PUT" ~uri ~headers:[] ~payload:body
+    in
+    match Lwt_main.run (Haltsql_cloud.Http.request ~headers ~body `PUT uri) with
+    | Ok r when r.status = 200 -> ()
+    | Ok r when r.status = 503 && n > 0 ->
+        Unix.sleepf 0.1;
+        attempt (n - 1)
+    | Ok r -> Alcotest.failf "S3 PUT %s: HTTP %d" path r.status
+    | Error e -> Alcotest.failf "S3 PUT %s: %s" path e
   in
-  match Lwt_main.run (Haltsql_cloud.Http.request ~headers ~body `PUT uri) with
-  | Ok r when r.status = 200 -> ()
-  | Ok r -> Alcotest.failf "S3 PUT %s: HTTP %d" path r.status
-  | Error e -> Alcotest.failf "S3 PUT %s: %s" path e
+  attempt 20
 
 let s3_location
     ?(credentials =

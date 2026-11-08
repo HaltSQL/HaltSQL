@@ -69,14 +69,51 @@ let authorization t ~scope =
               Some (Http_fetch.basic ~username ~password)
           | _ -> None))
 
+(* Checks whether [realm_uri] may receive Basic credentials configured for
+   [base_uri]: same host, both loopback, or same registrable parent domain. *)
+let registrable_domain host =
+  let h = String.lowercase_ascii host in
+  let h =
+    if String.length h > 0 && h.[String.length h - 1] = '.' then
+      String.sub h 0 (String.length h - 1)
+    else h
+  in
+  if h = "" || h.[0] = '[' then None
+  else
+    let parts = String.split_on_char '.' h in
+    let is_digits s = s <> "" && String.for_all (fun c -> c >= '0' && c <= '9') s in
+    if List.for_all is_digits parts then None
+    else
+      match List.rev parts with
+      | tld :: sld :: trd :: _
+        when String.length tld = 2
+             && List.mem sld [ "co"; "com"; "org"; "net"; "gov"; "edu"; "ac" ] ->
+          Some (trd ^ "." ^ sld ^ "." ^ tld)
+      | tld :: sld :: _ when tld <> "" && sld <> "" -> Some (sld ^ "." ^ tld)
+      | _ -> None
+
+let allow_basic_for_realm ~base_uri ~realm_uri =
+  match (Uri.host base_uri, Uri.host realm_uri) with
+  | Some bh, Some rh -> (
+      let bhl = String.lowercase_ascii bh and rhl = String.lowercase_ascii rh in
+      if bhl = rhl then true
+      else if Haltsql_core.Loopback.is_host bh && Haltsql_core.Loopback.is_host rh then
+        true
+      else
+        match (registrable_domain bh, registrable_domain rh) with
+        | Some d1, Some d2 -> String.equal d1 d2
+        | _ -> false)
+  | _ -> false
+
 (* Exchanges a Bearer challenge for a token. *)
 let fetch_token t ~scope (c : Www_auth.challenge) =
   match Www_auth.param c "realm" with
   | None | Some "" ->
       Lwt.return (Error (Fetch_error.Protocol "Bearer challenge without a realm"))
   | Some realm -> (
+      let base_uri = Uri.of_string t.base in
       let realm_uri = Uri.of_string realm in
-      match Http_fetch.check_url ~what:"token realm" realm_uri with
+      match Http_fetch.check_target_from ~what:"token realm" ~from:base_uri realm_uri with
       | Error e -> Lwt.return (Error (Fetch_error.Protocol e))
       | Ok () -> (
           let q =
@@ -88,8 +125,10 @@ let fetch_token t ~scope (c : Www_auth.challenge) =
           let uri = Uri.add_query_params' realm_uri q in
           let authorization =
             match t.credentials with
-            | Basic { username; password } -> Some (Http_fetch.basic ~username ~password)
-            | Anonymous | Bearer _ -> None
+            | Basic { username; password } when allow_basic_for_realm ~base_uri ~realm_uri
+              ->
+                Some (Http_fetch.basic ~username ~password)
+            | Basic _ | Anonymous | Bearer _ -> None
           in
           Http_fetch.request ?ctx:t.ctx ~timeout:t.timeout ~max_body:(1024 * 1024)
             ?authorization ~follow:0 `GET uri
@@ -303,7 +342,9 @@ let push_blob t content =
       | Some loc -> (
           let base = url t "/blobs/uploads/" in
           let target = Uri.resolve "" base (Uri.of_string loc) in
-          match Http_fetch.check_url ~what:"blob upload location" target with
+          match
+            Http_fetch.check_target_from ~what:"blob upload location" ~from:base target
+          with
           | Error e -> Lwt.return (Error (Fetch_error.Protocol e))
           | Ok () ->
               let target = Uri.add_query_param' target ("digest", digest) in

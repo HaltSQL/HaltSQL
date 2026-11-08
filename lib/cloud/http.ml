@@ -5,6 +5,22 @@ type ctx = Cohttp_lwt_unix.Net.ctx option
 
 let default_ctx = None
 
+let ctx_of_certs certs =
+  let tls_authenticator =
+    X509.Authenticator.chain_of_trust ~time:(fun () -> Some (Ptime_clock.now ())) certs
+  in
+  Lwt.catch
+    (fun () ->
+      Conduit_lwt_unix.init ~tls_authenticator () >|= fun ctx ->
+      Ok (Some (Cohttp_lwt_unix.Net.init ~ctx ())))
+    (fun e -> Lwt.return (Error ("TLS setup failed: " ^ Printexc.to_string e)))
+
+let ctx_of_ca_pem pem =
+  match X509.Certificate.decode_pem_multiple pem with
+  | Error (`Msg m) -> Lwt.return (Error ("invalid CA PEM: " ^ m))
+  | Ok [] -> Lwt.return (Error "CA PEM contains no certificate")
+  | Ok certs -> ctx_of_certs certs
+
 let ctx_of_ca_file path =
   match In_channel.with_open_bin path In_channel.input_all with
   | exception Sys_error m -> Lwt.return (Error ("cannot read CA file: " ^ m))
@@ -12,17 +28,7 @@ let ctx_of_ca_file path =
       match X509.Certificate.decode_pem_multiple pem with
       | Error (`Msg m) -> Lwt.return (Error ("invalid CA file " ^ path ^ ": " ^ m))
       | Ok [] -> Lwt.return (Error ("CA file " ^ path ^ " contains no certificate"))
-      | Ok certs ->
-          let tls_authenticator =
-            X509.Authenticator.chain_of_trust
-              ~time:(fun () -> Some (Ptime_clock.now ()))
-              certs
-          in
-          Lwt.catch
-            (fun () ->
-              Conduit_lwt_unix.init ~tls_authenticator () >|= fun ctx ->
-              Ok (Some (Cohttp_lwt_unix.Net.init ~ctx ())))
-            (fun e -> Lwt.return (Error ("TLS setup failed: " ^ Printexc.to_string e))))
+      | Ok certs -> ctx_of_certs certs)
 
 let header r name =
   let name = String.lowercase_ascii name in
@@ -85,12 +91,23 @@ let check_endpoint ~what s =
   | Some "http", _ -> Error (what ^ ": http is only allowed for loopback hosts; use https")
   | _ -> Error (Printf.sprintf "%s: unsupported URL scheme in %S" what s)
 
+exception Body_too_large
+
 let request ?(ctx = default_ctx) ?(timeout = 10.) ?(max_body = 8 * 1024 * 1024)
     ?(headers = []) ?body meth uri =
   let headers = Cohttp.Header.of_list headers in
   let body = Option.map Cohttp_lwt.Body.of_string body in
+  let body_ref = ref None in
+  let drain () =
+    match !body_ref with
+    | None -> Lwt.return_unit
+    | Some b ->
+        body_ref := None;
+        Lwt.catch (fun () -> Cohttp_lwt.Body.drain_body b) (fun _ -> Lwt.return_unit)
+  in
   let call () =
     Cohttp_lwt_unix.Client.call ?ctx ~headers ?body meth uri >>= fun (resp, rbody) ->
+    body_ref := Some rbody;
     let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
     let rh = Cohttp.Header.to_list (Cohttp.Response.headers resp) in
     let too_big =
@@ -104,15 +121,42 @@ let request ?(ctx = default_ctx) ?(timeout = 10.) ?(max_body = 8 * 1024 * 1024)
           | None -> false)
       | None -> false
     in
-    if too_big then Cohttp_lwt.Body.drain_body rbody >|= fun () -> `Too_big
+    if too_big then (
+      Lwt.async drain;
+      Lwt.return `Too_big)
     else
-      Cohttp_lwt.Body.to_string rbody >|= fun b ->
-      if String.length b > max_body then `Too_big
-      else `Ok { status; headers = rh; body = b }
+      let buf = Buffer.create 4096 in
+      Lwt.catch
+        (fun () ->
+          Lwt_stream.iter
+            (fun chunk ->
+              if Buffer.length buf + String.length chunk > max_body then
+                raise Body_too_large;
+              Buffer.add_string buf chunk)
+            (Cohttp_lwt.Body.to_stream rbody)
+          >|= fun () ->
+          body_ref := None;
+          `Ok { status; headers = rh; body = Buffer.contents buf })
+        (function
+          | Body_too_large ->
+              Lwt.async drain;
+              Lwt.return `Too_big
+          | e ->
+              Lwt.async drain;
+              Lwt.fail e)
   in
   Lwt.catch
-    (fun () -> Lwt.pick [ call (); (Lwt_unix.sleep timeout >|= fun () -> `Timeout) ])
-    (fun e -> Lwt.return (`Exn e))
+    (fun () ->
+      Lwt.pick
+        [
+          call ();
+          ( Lwt_unix.sleep timeout >|= fun () ->
+            Lwt.async drain;
+            `Timeout );
+        ])
+    (fun e ->
+      Lwt.async drain;
+      Lwt.return (`Exn e))
   >|= function
   | `Ok r -> Ok r
   | `Too_big ->
