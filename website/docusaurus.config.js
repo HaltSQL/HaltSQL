@@ -113,7 +113,7 @@ const config = {
             ],
           },
         ],
-        copyright: `HaltSQL is licensed under Apache-2.0. Built with Docusaurus.`,
+        copyright: `HaltSQL is licensed under MIT. Built with Docusaurus.`,
       },
       prism: {
         theme: prismThemes.github,

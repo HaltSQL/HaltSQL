@@ -2,7 +2,7 @@
   "name": "@haltsql/client",
   "version": "0.1.0",
   "description": "Fail-closed client for the HaltSQL sidecar: verify LLM-generated PostgreSQL before running it.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ardada2468/HaltSQL.git",

@@ -7,7 +7,7 @@ name = "haltsql-vanna"
 version = "0.1.0"
 description = "HaltSQL guard for Vanna (2.x SqlRunner and legacy run_sql)"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = ["haltsql[psycopg]>=0.1.0"]
 

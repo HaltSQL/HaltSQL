@@ -74,7 +74,8 @@ Explainers with diagrams, from the big picture down to the code:
   - [0002: Typed AST, fail closed](adr/0002-typed-ast-fail-closed.md)
   - [0003: Tenancy semantics](adr/0003-tenancy-semantics.md)
   - [0004: Verdict schema and reason codes](adr/0004-verdict-schema-and-reason-codes.md)
-  - [0005: Apache-2.0 license](adr/0005-license-apache-2.md)
+  - [0005: Apache-2.0 license](adr/0005-license-apache-2.md) (superseded by 0006)
+  - [0006: MIT license](adr/0006-license-mit.md)
 - [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md) ·
   [Governance](../GOVERNANCE.md) · [Changelog](../CHANGELOG.md)
 

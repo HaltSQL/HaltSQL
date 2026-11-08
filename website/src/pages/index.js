@@ -85,7 +85,7 @@ function Hero() {
       <div className="container">
         <div className={styles.heroGrid}>
           <div>
-            <span className={styles.kicker}>Open source · Apache-2.0</span>
+            <span className={styles.kicker}>Open source · MIT</span>
             <Heading as="h1" className={styles.title}>
               Let the model write SQL.
               <br />
