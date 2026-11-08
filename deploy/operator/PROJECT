@@ -4,7 +4,7 @@ domain: haltsql.dev
 layout:
 - go.kubebuilder.io/v4
 projectName: haltsql-operator
-repo: github.com/ardada2468/HaltSQL/deploy/operator
+repo: github.com/HaltSQL/HaltSQL/deploy/operator
 resources:
 - api:
     crdVersion: v1
@@ -12,7 +12,7 @@ resources:
   controller: true
   domain: haltsql.dev
   kind: HaltSQLPolicy
-  path: github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1
+  path: github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -20,6 +20,6 @@ resources:
   controller: true
   domain: haltsql.dev
   kind: HaltSQLServer
-  path: github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1
+  path: github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1
   version: v1alpha1
 version: "3"

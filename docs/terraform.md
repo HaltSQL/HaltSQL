@@ -58,10 +58,10 @@ variables. The tests ran on Terraform 1.14.3.
 
 ```hcl
 module "haltsql" {
-  source = "github.com/ardada2468/HaltSQL//deploy/terraform/modules/haltsql-kubernetes"
+  source = "github.com/HaltSQL/HaltSQL//deploy/terraform/modules/haltsql-kubernetes"
 
   namespace = "haltsql"
-  image     = { repository = "ghcr.io/ardada2468/haltsql", digest = "sha256:..." }
+  image     = { repository = "ghcr.io/haltsql/haltsql", digest = "sha256:..." }
   replicas  = 3
 
   tokens = [{
@@ -182,12 +182,12 @@ you configure any of these with the NetworkPolicy on.
 
 ```hcl
 module "haltsql" {
-  source      = "github.com/ardada2468/HaltSQL//deploy/terraform/modules/haltsql-aws"
+  source      = "github.com/HaltSQL/HaltSQL//deploy/terraform/modules/haltsql-aws"
   name        = "haltsql"
   cluster_arn = aws_ecs_cluster.this.arn
   vpc_id      = var.vpc_id
   subnet_ids  = var.private_subnet_ids
-  image       = "ghcr.io/ardada2468/haltsql@sha256:..."
+  image       = "ghcr.io/haltsql/haltsql@sha256:..."
 
   config_yaml = file("haltsql.yaml")
   secrets     = { HALTSQL_AGENT_TOKEN_SHA256 = aws_secretsmanager_secret.token_hash.arn }
@@ -243,7 +243,7 @@ module "haltsql" {
 
 ```hcl
 module "haltsql" {
-  source              = "github.com/ardada2468/HaltSQL//deploy/terraform/modules/haltsql-azure"
+  source              = "github.com/HaltSQL/HaltSQL//deploy/terraform/modules/haltsql-azure"
   name                = "haltsql"
   resource_group_name = azurerm_resource_group.this.name
   location            = "westeurope"
@@ -284,7 +284,7 @@ module "haltsql" {
 
 ```hcl
 module "haltsql" {
-  source      = "github.com/ardada2468/HaltSQL//deploy/terraform/modules/haltsql-gcp"
+  source      = "github.com/HaltSQL/HaltSQL//deploy/terraform/modules/haltsql-gcp"
   project_id  = "corp-prod"
   region      = "europe-west1"
   image       = "europe-docker.pkg.dev/corp-prod/haltsql/haltsql@sha256:..."

@@ -371,7 +371,7 @@ produces `mapping` drops. Watch that metric.
 ### Verifying from Elasticsearch or OpenSearch
 
 Export the documents and run the verifier. It is the script
-[`test/siem/verify_chain.py`](https://github.com/ardada2468/HaltSQL/blob/main/test/siem/verify_chain.py)
+[`test/siem/verify_chain.py`](https://github.com/HaltSQL/HaltSQL/blob/main/test/siem/verify_chain.py)
 in the repository; the test suite runs it against real clusters.
 
 ```sh

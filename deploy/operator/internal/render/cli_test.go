@@ -18,9 +18,9 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
-	haltsqlv1alpha1 "github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1"
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/testutil"
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/validate"
+	haltsqlv1alpha1 "github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/testutil"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/validate"
 )
 
 // TestRenderedConfigLoadsInHaltSQL writes the rendered ConfigMap and the

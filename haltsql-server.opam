@@ -7,9 +7,9 @@ description:
 maintainer: ["Arnav Dadarya"]
 authors: ["Arnav Dadarya"]
 license: "MIT"
-homepage: "https://github.com/ardada2468/HaltSQL"
-doc: "https://github.com/ardada2468/HaltSQL/tree/main/docs"
-bug-reports: "https://github.com/ardada2468/HaltSQL/issues"
+homepage: "https://github.com/HaltSQL/HaltSQL"
+doc: "https://github.com/HaltSQL/HaltSQL/tree/main/docs"
+bug-reports: "https://github.com/HaltSQL/HaltSQL/issues"
 depends: [
   "dune" {>= "3.0"}
   "ocaml" {>= "5.1"}
@@ -51,4 +51,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/ardada2468/HaltSQL.git"
+dev-repo: "git+https://github.com/HaltSQL/HaltSQL.git"

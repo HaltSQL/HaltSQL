@@ -43,11 +43,11 @@ are signed keylessly with cosign from the release workflow. Pin by digest in
 production:
 
 ```sh
-cosign verify ghcr.io/ardada2468/haltsql@sha256:<digest> \
-  --certificate-identity-regexp 'https://github.com/ardada2468/HaltSQL/' \
+cosign verify ghcr.io/haltsql/haltsql@sha256:<digest> \
+  --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify oci://ghcr.io/ardada2468/haltsql@sha256:<digest> \
-  --repo ardada2468/HaltSQL
+gh attestation verify oci://ghcr.io/haltsql/haltsql@sha256:<digest> \
+  --repo HaltSQL/HaltSQL
 ```
 
 ```yaml
@@ -63,7 +63,7 @@ image:
 |---|---|---|
 | `replicaCount` | `2` | Replicas when autoscaling is off. |
 | `revisionHistoryLimit` | `5` | Old ReplicaSets kept for rollback. |
-| `image.repository` | `ghcr.io/ardada2468/haltsql` | Image repository. |
+| `image.repository` | `ghcr.io/haltsql/haltsql` | Image repository. |
 | `image.tag` | `""` | Tag; defaults to the chart `appVersion`. |
 | `image.digest` | `""` | `sha256:...` digest; when set, wins over `tag`. |
 | `image.pullPolicy` | `IfNotPresent` | |

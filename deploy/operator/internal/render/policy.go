@@ -22,7 +22,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	haltsqlv1alpha1 "github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1"
+	haltsqlv1alpha1 "github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1"
 )
 
 // Paths inside haltsql-server pods.

@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ardada2468/HaltSQL.git",
+    "url": "git+https://github.com/HaltSQL/HaltSQL.git",
     "directory": "clients/typescript"
   },
   "keywords": ["haltsql", "postgres", "sql", "llm", "policy", "firewall", "security"],

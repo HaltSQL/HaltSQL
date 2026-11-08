@@ -270,7 +270,7 @@ run "rejects_config_yaml_setting_policies" {
 run "rejects_repository_without_version" {
   command = plan
   variables {
-    chart_repository = "oci://ghcr.io/ardada2468/charts"
+    chart_repository = "oci://ghcr.io/haltsql/charts"
   }
   expect_failures = [var.chart_version]
 }

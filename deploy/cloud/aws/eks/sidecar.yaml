@@ -128,7 +128,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: analytics-agent-haltsql, key: token }
         - name: haltsql
-          image: ghcr.io/ardada2468/haltsql:0.1.0     # pin by digest in production
+          image: ghcr.io/haltsql/haltsql:0.1.0     # pin by digest in production
           args: ["--config", "/etc/haltsql/config/config.yaml"]
           env:
             - name: AWS_REGION

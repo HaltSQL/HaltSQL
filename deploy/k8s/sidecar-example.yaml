@@ -80,8 +80,8 @@ spec:
               valueFrom: { secretKeyRef: { name: analytics-agent-haltsql, key: token } }
         - name: haltsql
           # In production pin the signed digest and verify it with cosign:
-          #   image: ghcr.io/ardada2468/haltsql@sha256:<digest>
-          image: ghcr.io/ardada2468/haltsql:0.1.0
+          #   image: ghcr.io/haltsql/haltsql@sha256:<digest>
+          image: ghcr.io/haltsql/haltsql:0.1.0
           imagePullPolicy: IfNotPresent
           # Listens on all pod interfaces so the kubelet's httpGet probes can
           # reach it; the NetworkPolicy below blocks other pods from port 8080,

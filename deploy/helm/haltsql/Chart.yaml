@@ -9,9 +9,9 @@ appVersion: "0.1.0"
 # matchLabelKeys in the default topology spread needs 1.27+; the optional
 # preStop sleep (preStopSleepSeconds) needs 1.30+.
 kubeVersion: ">=1.27.0-0"
-home: https://github.com/ardada2468/HaltSQL
+home: https://github.com/HaltSQL/HaltSQL
 sources:
-  - https://github.com/ardada2468/HaltSQL
+  - https://github.com/HaltSQL/HaltSQL
 keywords: [sql, postgres, security, llm, policy, firewall]
 maintainers:
   - name: Arnav Dadarya
@@ -20,4 +20,4 @@ annotations:
   artifacthub.io/containsSecurityUpdates: "false"
   artifacthub.io/images: |
     - name: haltsql
-      image: ghcr.io/ardada2468/haltsql:0.1.0
+      image: ghcr.io/haltsql/haltsql:0.1.0

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ardada2468/HaltSQL/clients/go/haltsql"
+	"github.com/HaltSQL/HaltSQL/clients/go/haltsql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

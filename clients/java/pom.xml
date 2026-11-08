@@ -11,7 +11,7 @@
 
   <name>HaltSQL Java client</name>
   <description>Fail-closed client for the HaltSQL sidecar: verify LLM-generated PostgreSQL before running it.</description>
-  <url>https://github.com/ardada2468/HaltSQL</url>
+  <url>https://github.com/HaltSQL/HaltSQL</url>
   <licenses>
     <license>
       <name>MIT</name>

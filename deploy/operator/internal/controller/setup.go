@@ -19,9 +19,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	haltsqlv1alpha1 "github.com/ardada2468/HaltSQL/deploy/operator/api/v1alpha1"
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/render"
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/validate"
+	haltsqlv1alpha1 "github.com/HaltSQL/HaltSQL/deploy/operator/api/v1alpha1"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/render"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/validate"
 )
 
 // policyRefIndex indexes HaltSQLServers by the HaltSQLPolicy names they reference.

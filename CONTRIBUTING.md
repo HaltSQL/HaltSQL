@@ -20,7 +20,7 @@ You need:
 - Docker with Compose v2, only for the enterprise lab (`make lab-up`)
 
 ```sh
-git clone https://github.com/ardada2468/HaltSQL.git
+git clone https://github.com/HaltSQL/HaltSQL.git
 cd HaltSQL
 opam switch create . 5.2.0 --no-install   # local switch in ./_opam
 eval $(opam env)

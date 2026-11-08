@@ -54,7 +54,7 @@ spec:
           resources:
             limits: { cpu: "1", memory: 1Gi }
         - name: haltsql
-          image: REPLACE_ME_REGION-docker.pkg.dev/REPLACE_ME_PROJECT/ghcr/ardada2468/haltsql:0.1.0
+          image: REPLACE_ME_REGION-docker.pkg.dev/REPLACE_ME_PROJECT/ghcr/haltsql/haltsql:0.1.0
           args: ["--config", "/etc/haltsql/config/config.yaml", "--listen", "0.0.0.0:8081"]
           env:
             - { name: HALTSQL_AUDIT_BUCKET, value: REPLACE_ME_PROJECT-haltsql-audit }

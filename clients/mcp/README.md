@@ -1,7 +1,7 @@
 # haltsql-mcp
 
 An MCP server that lets an agent query PostgreSQL only through
-[HaltSQL](https://github.com/ardada2468/HaltSQL): every SQL string is verified
+[HaltSQL](https://github.com/HaltSQL/HaltSQL): every SQL string is verified
 against your policy, then exactly that string runs with server-bound
 parameters in a read-only transaction (row cap, `statement_timeout`).
 

@@ -13,7 +13,7 @@
 
 [Unit]
 Description=HaltSQL policy firewall (HTTP sidecar)
-Documentation=https://github.com/ardada2468/HaltSQL/tree/main/docs
+Documentation=https://github.com/HaltSQL/HaltSQL/tree/main/docs
 After=network-online.target
 Wants=network-online.target
 # Restart loops are rate limited rather than spinning forever.

@@ -1,11 +1,11 @@
-module github.com/ardada2468/HaltSQL/clients/go/pgxtest
+module github.com/HaltSQL/HaltSQL/clients/go/pgxtest
 
 go 1.21
 
-replace github.com/ardada2468/HaltSQL/clients/go/haltsql => ../haltsql
+replace github.com/HaltSQL/HaltSQL/clients/go/haltsql => ../haltsql
 
 require (
-	github.com/ardada2468/HaltSQL/clients/go/haltsql v0.0.0
+	github.com/HaltSQL/HaltSQL/clients/go/haltsql v0.0.0
 	github.com/jackc/pgx/v5 v5.7.1
 )
 

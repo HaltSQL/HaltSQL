@@ -6,7 +6,7 @@
 import { themes as prismThemes } from 'prism-react-renderer';
 import repoLinks from './src/remark/repo-links.js';
 
-const repo = 'https://github.com/ardada2468/HaltSQL';
+const repo = 'https://github.com/HaltSQL/HaltSQL';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -14,9 +14,9 @@ const config = {
   tagline: 'A policy firewall for LLM-generated PostgreSQL',
   favicon: 'img/favicon.svg',
 
-  url: 'https://ardada2468.github.io',
+  url: 'https://haltsql.github.io',
   baseUrl: '/HaltSQL/',
-  organizationName: 'ardada2468',
+  organizationName: 'HaltSQL',
   projectName: 'HaltSQL',
   trailingSlash: false,
 

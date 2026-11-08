@@ -8,7 +8,7 @@ body:
       value: |
         **Is this a policy bypass?** If HaltSQL *allowed* a query that the policy should deny,
         or failed open in any way, do not file it here. Report it privately as described in
-        [SECURITY.md](https://github.com/ardada2468/HaltSQL/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/HaltSQL/HaltSQL/blob/main/SECURITY.md).
 
         Bugs where HaltSQL *denies* a query it should allow (false positives), crashes on a
         policy file, or prints wrong output are welcome here.

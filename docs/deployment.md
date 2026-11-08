@@ -57,8 +57,8 @@ that terminates TLS.
 Images are published for `linux/amd64` and `linux/arm64`:
 
 ```
-ghcr.io/ardada2468/haltsql:<version>     # e.g. 0.1.0
-ghcr.io/ardada2468/haltsql:<major.minor> # e.g. 0.1
+ghcr.io/haltsql/haltsql:<version>     # e.g. 0.1.0
+ghcr.io/haltsql/haltsql:<major.minor> # e.g. 0.1
 ```
 
 The image runs `haltsql-server` by default; the `haltsql` CLI is included.
@@ -68,7 +68,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$PWD/policies:/etc/haltsql/policies:ro" \
   -v "$PWD/config.yaml:/etc/haltsql/config.yaml:ro" \
   -e HALTSQL_ANALYTICS_TOKEN_HASH \
-  ghcr.io/ardada2468/haltsql:0.1.0 \
+  ghcr.io/haltsql/haltsql:0.1.0 \
   --config /etc/haltsql/config.yaml --listen 0.0.0.0:8080
 ```
 
@@ -80,10 +80,10 @@ Run the CLI from the same image:
 
 ```sh
 docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql \
-  ghcr.io/ardada2468/haltsql:0.1.0 validate policy.yaml
+  ghcr.io/haltsql/haltsql:0.1.0 validate policy.yaml
 ```
 
-Pin images by digest in production (`ghcr.io/ardada2468/haltsql@sha256:...`)
+Pin images by digest in production (`ghcr.io/haltsql/haltsql@sha256:...`)
 and verify the signature (see below).
 
 ### What is in the image
@@ -110,7 +110,7 @@ Run the proxy from the same image:
 docker run --rm -p 127.0.0.1:6432:6432 \
   -v "$PWD/proxy:/etc/haltsql:ro" -e UPSTREAM_PASSWORD \
   --entrypoint /usr/local/bin/haltsql-proxy \
-  ghcr.io/ardada2468/haltsql:0.1.0 run --config /etc/haltsql/proxy.yaml
+  ghcr.io/haltsql/haltsql:0.1.0 run --config /etc/haltsql/proxy.yaml
 ```
 
 Mounted files must be readable by uid 65532.
@@ -294,7 +294,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: analytics-agent-token, key: token }
         - name: haltsql
-          image: ghcr.io/ardada2468/haltsql:0.1.0
+          image: ghcr.io/haltsql/haltsql:0.1.0
           args: ["--config", "/etc/haltsql/config.yaml"]
           ports:
             - { name: http, containerPort: 8080 }
@@ -440,16 +440,16 @@ sha256sum -c SHA256SUMS --ignore-missing
 # Signature (keyless, issued to this repository's release workflow)
 cosign verify-blob \
   --bundle haltsql-v0.1.0-linux-amd64.tar.gz.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/ardada2468/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   haltsql-v0.1.0-linux-amd64.tar.gz
 
 # Provenance (GitHub CLI)
-gh attestation verify haltsql-v0.1.0-linux-amd64.tar.gz --repo ardada2468/HaltSQL
+gh attestation verify haltsql-v0.1.0-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
 
 # Container image signature
-cosign verify ghcr.io/ardada2468/haltsql:0.1.0 \
-  --certificate-identity-regexp '^https://github.com/ardada2468/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
+cosign verify ghcr.io/haltsql/haltsql:0.1.0 \
+  --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

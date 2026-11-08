@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ardada2468/HaltSQL/deploy/operator/internal/testutil"
+	"github.com/HaltSQL/HaltSQL/deploy/operator/internal/testutil"
 )
 
 const policy = `apiVersion: haltsql.dev/v1

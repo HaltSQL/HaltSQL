@@ -110,7 +110,7 @@ cmd_image() {
     --repository-format docker --location "$REGION" \
     --mode remote-repository --remote-docker-repo https://ghcr.io \
     --description "ghcr.io mirror"
-  echo "Image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/ardada2468/haltsql:<version>"
+  echo "Image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/haltsql/haltsql:<version>"
 }
 
 # GKE sidecar: agent + haltsql-server + cloud-sql-proxy share one pod, so they

@@ -6,7 +6,7 @@
 #   (put your policies in deploy/cloud/aws/ecs/policies/ first)
 #
 # Pin the base by digest after verifying its signature (docs/deployment.md).
-ARG HALTSQL_IMAGE=ghcr.io/ardada2468/haltsql:0.1.0
+ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.1.0
 FROM ${HALTSQL_IMAGE}
 COPY config.yaml /etc/haltsql/config.yaml
 COPY policies/ /etc/haltsql/policies/

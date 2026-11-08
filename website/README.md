@@ -1,7 +1,7 @@
 # HaltSQL docs site
 
 The [Docusaurus](https://docusaurus.io/) site published to GitHub Pages at
-<https://ardada2468.github.io/HaltSQL/>.
+<https://haltsql.github.io/HaltSQL/>.
 
 The pages themselves are the Markdown files in [`../docs`](../docs): this folder
 holds only the site shell (config, sidebar, landing page, styles). Edit a doc in

@@ -1,6 +1,6 @@
 # HaltSQL Go SDK
 
-- [`haltsql/`](haltsql): the SDK, module `github.com/ardada2468/HaltSQL/clients/go/haltsql`
+- [`haltsql/`](haltsql): the SDK, module `github.com/HaltSQL/HaltSQL/clients/go/haltsql`
   (standard library only).
 - [`pgxtest/`](pgxtest): integration tests with `github.com/jackc/pgx/v5/stdlib` against
   Postgres, in a separate module so the SDK has no dependencies.

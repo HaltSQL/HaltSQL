@@ -1,6 +1,6 @@
 # HaltSQL
 
-[![CI](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/ardada2468/HaltSQL/actions/workflows/ci.yml)
+[![CI](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Status: pre-1.0](https://img.shields.io/badge/status-0.1.0%20preview-orange.svg)
 
@@ -201,21 +201,21 @@ HaltSQL is **0.1.0, a pre-1.0 preview**. Limits to know about:
 **From source with opam** (OCaml 5.1 or newer):
 
 ```sh
-opam pin add haltsql https://github.com/ardada2468/HaltSQL.git
-opam pin add haltsql-server https://github.com/ardada2468/HaltSQL.git   # optional sidecar
-opam pin add haltsql-proxy https://github.com/ardada2468/HaltSQL.git    # optional wire proxy
+opam pin add haltsql https://github.com/HaltSQL/HaltSQL.git
+opam pin add haltsql-server https://github.com/HaltSQL/HaltSQL.git   # optional sidecar
+opam pin add haltsql-proxy https://github.com/HaltSQL/HaltSQL.git    # optional wire proxy
 ```
 
 **Docker:**
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD:/etc/haltsql:ro" \
-  ghcr.io/ardada2468/haltsql:0.1.0 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
+  ghcr.io/haltsql/haltsql:0.1.0 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
   --allow-unauthenticated   # local development only; use a config with tokens otherwise
 ```
 
 **Release binaries:** static Linux (amd64, arm64) and macOS (arm64) binaries
-are attached to each [GitHub release](https://github.com/ardada2468/HaltSQL/releases),
+are attached to each [GitHub release](https://github.com/HaltSQL/HaltSQL/releases),
 with `SHA256SUMS`, a CycloneDX SBOM, and cosign signatures. See
 [deployment.md](docs/deployment.md#verifying-release-artifacts).
 

@@ -12,7 +12,7 @@ info:
     name: MIT
     identifier: MIT
   contact:
-    url: https://github.com/ardada2468/HaltSQL
+    url: https://github.com/HaltSQL/HaltSQL
 servers:
   - url: http://127.0.0.1:8080
     description: Local sidecar (default listen address)
