@@ -333,7 +333,9 @@ let test_bundle_group_refs_reload () =
             "policy_from_groups.map[1].policy) references policy \"prod-billing\", which \
              is not loaded");
       Alcotest.(check int) "generation unchanged" gen st.generation;
-      Alcotest.(check string) "last good prod-billing kept" v1 (version_of st "prod-billing");
+      Alcotest.(check string)
+        "last good prod-billing kept" v1
+        (version_of st "prod-billing");
       Alcotest.(check (list string))
         "policies unchanged"
         [ "prod-shop"; "prod-billing"; "prod-reports" ]

@@ -597,8 +597,7 @@ let push_policies ~dir ~key ~version ~extra_columns names =
        (("bundle" :: "build" :: files)
        @ [ "--name"; "groups"; "--bundle-version"; version; "-o"; bundle ]));
   ignore (cli_ok [ "bundle"; "sign"; bundle; "--key"; key ]);
-  ignore
-    (cli_ok [ "bundle"; "push"; "--oci"; groups_reference; "--plain-http"; bundle ])
+  ignore (cli_ok [ "bundle"; "push"; "--oci"; groups_reference; "--plain-http"; bundle ])
 
 (* The OIDC issuer is never contacted: keys are fetched on the first token, and
    this test sends none. *)
@@ -683,7 +682,9 @@ let bundle_group_refs () =
         | j -> Alcotest.failf "policies: %s" (Yojson.Safe.to_string j)
       in
       Alcotest.(check (list string))
-        "last good policies kept" [ "remote-shop"; "remote-billing" ] names;
+        "last good policies kept"
+        [ "remote-shop"; "remote-billing" ]
+        names;
       let _, v = verify p "SELECT status FROM orders" in
       Alcotest.(check bool)
         "rejected bundle not applied" false
@@ -910,7 +911,9 @@ audit:
   with_server ~dir ~port:os_server_port config (fun s ->
       let p = s.port in
       let sqls =
-        [ "SELECT id FROM orders"; "SELECT secret FROM orders"; "SELECT id FROM invoices" ]
+        [
+          "SELECT id FROM orders"; "SELECT secret FROM orders"; "SELECT id FROM invoices";
+        ]
       in
       List.iter
         (fun sql ->
@@ -920,13 +923,9 @@ audit:
       let hits = ref [] in
       wait_until ~timeout:60. "3 audit documents in OpenSearch" (fun () ->
           ignore (os_get (Printf.sprintf "/%s/_refresh" index));
-          match
-            os_get (Printf.sprintf "/%s/_search?size=10" index)
-          with
+          match os_get (Printf.sprintf "/%s/_search?size=10" index) with
           | Some { status = 200; body; _ } -> (
-              match
-                member "hits" (member "hits" (Yojson.Safe.from_string body))
-              with
+              match member "hits" (member "hits" (Yojson.Safe.from_string body)) with
               | `List l when List.length l = 3 ->
                   hits := List.map (member "_source") l;
                   true
@@ -959,8 +958,7 @@ let () =
           slow "OCI bundle source (real registry)" (docker_test "bundle" bundle_source);
           slow "policy_from_groups refs re-checked after bundle_source (real registry)"
             (docker_test "bundle" bundle_group_refs);
-        ]
-      );
+        ] );
       ("kafka", [ slow "Kafka audit sink (real Kafka)" (docker_test "kafka" kafka_sink) ]);
       ( "elasticsearch",
         [

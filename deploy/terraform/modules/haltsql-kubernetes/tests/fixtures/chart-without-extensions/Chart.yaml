@@ -1,0 +1,7 @@
+# Test fixture: a chart version without the extension values (extraPolicies,
+# extraConfig, extraEnv, networkPolicy.egress, proxy), so the module's
+# fail-closed preconditions can be exercised. Never installed.
+apiVersion: v2
+name: haltsql
+version: 0.0.0-fixture
+appVersion: "0.0.0"

@@ -44,8 +44,8 @@ type t = {
       (** running pollers (started by [Bundle_sources.start]) *)
   mutable generation : int;  (** incremented by every successful reload *)
   mutable audit_restart_pending : bool;
-      (** the last successful reload carried different audit sinks than the running
-          ones; they only take effect after a restart (the running sinks stay) *)
+      (** the last successful reload carried different audit sinks than the running ones;
+          they only take effect after a restart (the running sinks stay) *)
 }
 
 (* ---- integration hooks (set by the integrator before [Server.main]) ---- *)
@@ -181,7 +181,9 @@ let check_policy_refs (cfg : Config.t) =
              named even when the policy only went missing in a later bundle. *)
           let base =
             match
-              List.find_index (fun (o : Config.oidc_provider) -> o.oidc_name = provider) cfg.oidc
+              List.find_index
+                (fun (o : Config.oidc_provider) -> o.oidc_name = provider)
+                cfg.oidc
             with
             | Some i -> Printf.sprintf "server.auth.oidc[%d].policy_from_groups" i
             | None -> "policy_from_groups"
@@ -191,8 +193,7 @@ let check_policy_refs (cfg : Config.t) =
             (fun j (r : Config.group_rule) ->
               (who (Printf.sprintf "map[%d].policy" j), r.group_policy))
             g.group_rules
-          @
-          match g.group_default with Some d -> [ (who "default", d) ] | None -> [])
+          @ match g.group_default with Some d -> [ (who "default", d) ] | None -> [])
         cfg.oidc_group_policies
   in
   match List.filter (fun (_, n) -> not (have n)) refs with

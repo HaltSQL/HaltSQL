@@ -237,12 +237,15 @@ run "rejects_repository_without_version" {
   expect_failures = [var.chart_version]
 }
 
-# Fail-closed preconditions: features the local chart cannot render yet must
-# stop the plan instead of being dropped silently.
+# Fail-closed preconditions: features a local chart cannot render must stop
+# the plan instead of being dropped silently. The repository chart has
+# extraPolicies and extraConfig, so those runs use a fixture chart without
+# them.
 
 run "refuses_bundle_sources_without_chart_support" {
   command = plan
   variables {
+    chart_path     = "./tests/fixtures/chart-without-extensions"
     bundle_sources = [{ oci = "ghcr.io/corp/policies:prod", public_keys = ["k"] }]
     network_policy = { enabled = false }
   }
@@ -260,7 +263,8 @@ run "refuses_proxy_without_chart_support" {
 run "refuses_extra_config_without_chart_support" {
   command = plan
   variables {
-    config = { telemetry = { metrics = { prometheus = false } } }
+    chart_path = "./tests/fixtures/chart-without-extensions"
+    config     = { telemetry = { metrics = { prometheus = false } } }
   }
   expect_failures = [helm_release.haltsql]
 }

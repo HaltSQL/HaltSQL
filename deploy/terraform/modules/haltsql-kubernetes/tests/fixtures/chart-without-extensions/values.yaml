@@ -1,0 +1,5 @@
+# Only top-level keys matter to the module's feature detection; none of the
+# extension values are present.
+replicaCount: 1
+networkPolicy:
+  enabled: true
