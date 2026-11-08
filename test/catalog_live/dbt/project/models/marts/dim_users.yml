@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: dim_users
+    description: One row per user (table, custom schema + alias).
+    columns:
+      - name: id
+      - name: tenant_id
+      - name: full_name
+        config:
+          meta: {owner: identity-team}
+      - name: role
+        tags: [rbac]
+      - name: email
+        config:
+          meta: {pii: true}
+      - name: org_name
+        meta: {pii: null}                              # null: not PII
+      - name: created_at

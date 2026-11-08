@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "source": "dbt",
+    "file": "manifest.json",
+    "generated_by": "haltsql schema import"
+  },
+  "tables": {
+    "analytics.stg_customers": {
+      "columns": {
+        "ContactEmail": { "classifications": [ "pii" ], "source": "dbt" },
+        "email": { "classifications": [ "comment:email" ], "source": "dbt" },
+        "phone": {
+          "classifications": [ "governance.sensitivity=restricted" ],
+          "source": "dbt"
+        }
+      }
+    },
+    "analytics_marts.users_dim": {
+      "columns": {
+        "email": { "classifications": [ "pii" ], "source": "dbt" }
+      }
+    },
+    "app.audit_events": {
+      "columns": {
+        "ip": { "classifications": [ "comment:gdpr" ], "source": "dbt" }
+      }
+    },
+    "app.customers": {
+      "columns": {
+        "email": { "classifications": [ "pii" ], "source": "dbt" },
+        "phone": {
+          "classifications": [ "governance.sensitivity=restricted" ],
+          "source": "dbt"
+        },
+        "ssn": { "classifications": [ "pii" ], "source": "dbt" }
+      }
+    },
+    "app.payments": {
+      "columns": {
+        "card_token": {
+          "classifications": [
+            "projects/acme/locations/us/taxonomies/42/policyTags/pci_token"
+          ],
+          "source": "dbt"
+        }
+      }
+    },
+    "app.users": {
+      "columns": {
+        "email": { "classifications": [ "contains_pii" ], "source": "dbt" },
+        "password_hash": { "classifications": [ "secret" ], "source": "dbt" }
+      }
+    }
+  }
+}

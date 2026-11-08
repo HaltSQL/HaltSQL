@@ -1,0 +1,12 @@
+haltsql_dbt_lab:
+  target: lab
+  outputs:
+    lab:
+      type: postgres
+      host: "{{ env_var('DBT_PG_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('DBT_PG_PORT', '5417') | int }}"
+      user: "{{ env_var('DBT_PG_USER', 'postgres') }}"
+      password: "{{ env_var('DBT_PG_PASSWORD', 'haltlab') }}"
+      dbname: "{{ env_var('DBT_PG_DBNAME', 'haltsql_dbt_lab') }}"
+      schema: analytics
+      threads: 2

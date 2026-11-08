@@ -8,8 +8,12 @@
     Supported inputs:
     - [Dbt]: [manifest.json] (column [tags], [meta], [config.tags], [config.meta],
       [policy_tags]; nested meta keys such as [{"governance": {"pii": true}}]; values that
-      are [false]/[null]/["no"] do not count) and [catalog.json] (column comments, matched
-      word by word). Tables are [schema] + [alias]/[identifier]/[name].
+      are [false]/[null]/["no"] do not count; column [description], matched word by word
+      and recorded as ["comment:<term>"]) and [catalog.json] (column comments, matched
+      word by word). Tables are [schema] + [alias]/[identifier]/[name], so models with an
+      alias or a custom schema and sources with an identifier name the relation dbt built
+      or reads. Validated against dbt-core 1.12 / dbt-postgres 1.11 output
+      (test/catalog_live/dbt).
     - [Datahub]: file-sink exports (MCE snapshots and MCPs, including MCPs whose
       [aspect.value] is a JSON string) and GraphQL dataset responses. Tags
       ([urn:li:tag:*]) and glossary terms ([urn:li:glossaryTerm:*], plus their

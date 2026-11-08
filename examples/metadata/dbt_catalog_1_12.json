@@ -1,0 +1,409 @@
+{
+ "metadata": {
+  "dbt_schema_version": "https://schemas.getdbt.com/dbt/catalog/v1.json",
+  "dbt_version": "1.12.6",
+  "generated_at": "2026-11-08T20:03:21.185411Z"
+ },
+ "nodes": {
+  "model.haltsql_dbt_lab.dim_users": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "analytics_marts",
+    "name": "users_dim",
+    "database": "haltsql_dbt_lab",
+    "comment": "One row per user (table, custom schema + alias).",
+    "owner": "postgres"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "full_name": {
+     "type": "text",
+     "index": 3,
+     "name": "full_name",
+     "comment": null
+    },
+    "role": {
+     "type": "text",
+     "index": 4,
+     "name": "role",
+     "comment": null
+    },
+    "email": {
+     "type": "text",
+     "index": 5,
+     "name": "email",
+     "comment": null
+    },
+    "org_name": {
+     "type": "text",
+     "index": 6,
+     "name": "org_name",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 7,
+     "name": "created_at",
+     "comment": null
+    }
+   },
+   "unique_id": "model.haltsql_dbt_lab.dim_users"
+  },
+  "model.haltsql_dbt_lab.stg_customers": {
+   "metadata": {
+    "type": "VIEW",
+    "schema": "analytics",
+    "name": "stg_customers",
+    "database": "haltsql_dbt_lab",
+    "comment": "Staged customers (a view; descriptions persisted as comments).",
+    "owner": "postgres"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": "Surrogate key."
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": "Owning tenant."
+    },
+    "name": {
+     "type": "text",
+     "index": 3,
+     "name": "name",
+     "comment": "Display name."
+    },
+    "email": {
+     "type": "text",
+     "index": 4,
+     "name": "email",
+     "comment": "Contact email address."
+    },
+    "phone": {
+     "type": "text",
+     "index": 5,
+     "name": "phone",
+     "comment": null
+    },
+    "country": {
+     "type": "character(2)",
+     "index": 6,
+     "name": "country",
+     "comment": null
+    },
+    "ContactEmail": {
+     "type": "text",
+     "index": 7,
+     "name": "ContactEmail",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 8,
+     "name": "created_at",
+     "comment": null
+    }
+   },
+   "unique_id": "model.haltsql_dbt_lab.stg_customers"
+  }
+ },
+ "sources": {
+  "source.haltsql_dbt_lab.app.audit_events": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "app",
+    "name": "audit_events",
+    "database": "haltsql_dbt_lab",
+    "comment": null,
+    "owner": "haltlab_owner"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "actor_user_id": {
+     "type": "bigint",
+     "index": 3,
+     "name": "actor_user_id",
+     "comment": null
+    },
+    "action": {
+     "type": "text",
+     "index": 4,
+     "name": "action",
+     "comment": null
+    },
+    "detail": {
+     "type": "jsonb",
+     "index": 5,
+     "name": "detail",
+     "comment": null
+    },
+    "ip": {
+     "type": "inet",
+     "index": 6,
+     "name": "ip",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 7,
+     "name": "created_at",
+     "comment": null
+    }
+   },
+   "unique_id": "source.haltsql_dbt_lab.app.audit_events"
+  },
+  "source.haltsql_dbt_lab.app.customers": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "app",
+    "name": "customers",
+    "database": "haltsql_dbt_lab",
+    "comment": null,
+    "owner": "haltlab_owner"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "name": {
+     "type": "text",
+     "index": 3,
+     "name": "name",
+     "comment": null
+    },
+    "email": {
+     "type": "text",
+     "index": 4,
+     "name": "email",
+     "comment": null
+    },
+    "phone": {
+     "type": "text",
+     "index": 5,
+     "name": "phone",
+     "comment": null
+    },
+    "ssn": {
+     "type": "text",
+     "index": 6,
+     "name": "ssn",
+     "comment": null
+    },
+    "country": {
+     "type": "character(2)",
+     "index": 7,
+     "name": "country",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 8,
+     "name": "created_at",
+     "comment": null
+    }
+   },
+   "unique_id": "source.haltsql_dbt_lab.app.customers"
+  },
+  "source.haltsql_dbt_lab.app.orgs": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "app",
+    "name": "orgs",
+    "database": "haltsql_dbt_lab",
+    "comment": null,
+    "owner": "haltlab_owner"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "name": {
+     "type": "text",
+     "index": 3,
+     "name": "name",
+     "comment": null
+    },
+    "plan": {
+     "type": "text",
+     "index": 4,
+     "name": "plan",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 5,
+     "name": "created_at",
+     "comment": null
+    }
+   },
+   "unique_id": "source.haltsql_dbt_lab.app.orgs"
+  },
+  "source.haltsql_dbt_lab.app.payments": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "app",
+    "name": "payments",
+    "database": "haltsql_dbt_lab",
+    "comment": null,
+    "owner": "haltlab_owner"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "invoice_id": {
+     "type": "bigint",
+     "index": 3,
+     "name": "invoice_id",
+     "comment": null
+    },
+    "method": {
+     "type": "text",
+     "index": 4,
+     "name": "method",
+     "comment": null
+    },
+    "amount_cents": {
+     "type": "bigint",
+     "index": 5,
+     "name": "amount_cents",
+     "comment": null
+    },
+    "card_last4": {
+     "type": "text",
+     "index": 6,
+     "name": "card_last4",
+     "comment": null
+    },
+    "card_token": {
+     "type": "text",
+     "index": 7,
+     "name": "card_token",
+     "comment": null
+    },
+    "paid_at": {
+     "type": "timestamp with time zone",
+     "index": 8,
+     "name": "paid_at",
+     "comment": null
+    }
+   },
+   "unique_id": "source.haltsql_dbt_lab.app.payments"
+  },
+  "source.haltsql_dbt_lab.app.users": {
+   "metadata": {
+    "type": "BASE TABLE",
+    "schema": "app",
+    "name": "users",
+    "database": "haltsql_dbt_lab",
+    "comment": null,
+    "owner": "haltlab_owner"
+   },
+   "columns": {
+    "id": {
+     "type": "bigint",
+     "index": 1,
+     "name": "id",
+     "comment": null
+    },
+    "tenant_id": {
+     "type": "text",
+     "index": 2,
+     "name": "tenant_id",
+     "comment": null
+    },
+    "email": {
+     "type": "text",
+     "index": 3,
+     "name": "email",
+     "comment": null
+    },
+    "full_name": {
+     "type": "text",
+     "index": 4,
+     "name": "full_name",
+     "comment": null
+    },
+    "role": {
+     "type": "text",
+     "index": 5,
+     "name": "role",
+     "comment": null
+    },
+    "password_hash": {
+     "type": "text",
+     "index": 6,
+     "name": "password_hash",
+     "comment": null
+    },
+    "created_at": {
+     "type": "timestamp with time zone",
+     "index": 7,
+     "name": "created_at",
+     "comment": null
+    },
+    "last_login_at": {
+     "type": "timestamp with time zone",
+     "index": 8,
+     "name": "last_login_at",
+     "comment": null
+    }
+   },
+   "unique_id": "source.haltsql_dbt_lab.app.users"
+  }
+ },
+ "errors": null
+}
