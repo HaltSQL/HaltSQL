@@ -35,7 +35,10 @@ let run ?(stdin = "") args =
   let fd_err = Unix.openfile e [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
   let pid = Unix.create_process bin (Array.of_list (bin :: args)) fd_in fd_out fd_err in
   List.iter Unix.close [ fd_in; fd_out; fd_err ];
-  let _, st = Unix.waitpid [] pid in
+  let rec wait () =
+    try snd (Unix.waitpid [] pid) with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+  in
+  let st = wait () in
   let code =
     match st with
     | Unix.WEXITED c -> c

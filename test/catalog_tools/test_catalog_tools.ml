@@ -701,7 +701,10 @@ let run_proc prog args =
   in
   let out = read_all out_r in
   let err = read_all err_r in
-  let _, st = Unix.waitpid [] pid in
+  let rec wait () =
+    try snd (Unix.waitpid [] pid) with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+  in
+  let st = wait () in
   let code = match st with Unix.WEXITED c -> c | _ -> 255 in
   (code, out, err)
 

@@ -322,7 +322,9 @@ jobs:
         uses: ./
         with:
           haltsql-path: _build/default/bin/haltsql/main.exe
-          policies: examples/policies
+          # saas.json is the JSON twin of saas.yaml (same policy name), so bundle
+          # one format only; test/load covers the JSON copy.
+          policies: examples/policies/*.yaml
           suites: examples/suites
           bundle: "true"
           upload-bundle: "false"
