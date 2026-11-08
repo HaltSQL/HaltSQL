@@ -44,6 +44,8 @@ jobs:
             dirs: test/bundle_source test/bundle
           - name: audit verify, proxy audit and reload, shadow reports
             dirs: test/audit test/proxy test/report
+            # test/proxy drives the proxy with the lab's psycopg client.
+            lab_venv: true
     services:
       postgres:
         image: postgres:17
@@ -69,6 +71,16 @@ jobs:
       # published on Docker Hub, so use the pgsty build of the MinIO server.
       - name: Pull the MinIO server image
         run: docker pull pgsty/minio:latest
+
+      - if: matrix.suite.lab_venv
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lab virtualenv
+        if: matrix.suite.lab_venv
+        working-directory: lab
+        run: make venv
 
       - name: Run (Docker tests must not skip)
         env:
