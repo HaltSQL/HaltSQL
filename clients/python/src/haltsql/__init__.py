@@ -7,6 +7,9 @@ Quick start::
     hs = HaltSQLClient.from_env()          # HALTSQL_URL, HALTSQL_TOKEN
     result = guard.execute(conn, sql, {"tenant_id": session.tenant_id}, verifier=hs)
 
+With a platform wheel, ``NativeVerifier("policy.yaml")`` verifies in-process
+with the bundled engine (no sidecar).
+
 Every failure raises; nothing is ever treated as allowed. See
 ``docs/sdk-python.md``.
 """
@@ -23,6 +26,7 @@ from .errors import (
 )
 from .guard import Guard, GuardedResult
 from .local import AsyncLocalVerifier, LocalVerifier
+from .native import AsyncNativeVerifier, NativeVerifier
 from .models import BindParam, PolicyInfo, PolicyRef, Reason, Verdict, sql_sha256, validate_context
 
 __all__ = [
@@ -32,6 +36,8 @@ __all__ = [
     "RetryPolicy",
     "LocalVerifier",
     "AsyncLocalVerifier",
+    "NativeVerifier",
+    "AsyncNativeVerifier",
     "Verdict",
     "Reason",
     "BindParam",

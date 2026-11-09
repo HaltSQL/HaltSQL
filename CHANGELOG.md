@@ -11,6 +11,15 @@ even before 1.0.
 ## [Unreleased]
 
 ### Added
+- **Bundled engine in the Python wheel and npm package.** `pip install haltsql`
+  now ships platform wheels (`manylinux_2_28` x86_64/aarch64, `macosx_11_0_arm64`)
+  that contain `libhaltsql`, the verification engine as a self-contained C shared
+  library, plus the `haltsql` CLI. `haltsql.NativeVerifier` verifies in-process
+  (~50us per query) with no sidecar and no setup. `@haltsql/client` gains
+  `LocalVerifier`, which drives the CLI from the `@haltsql/native-<platform>`
+  packages as one long-lived process. The C ABI is in `native/include/haltsql.h`.
+- `haltsql verify --batch` flushes after every result when `--jobs` is 1, so a
+  long-lived process can be driven one request at a time over a pipe.
 - `haltsql-server` flags `--max-connections`, `--request-timeout`,
   `--idle-timeout` and `--shutdown-timeout`; `/readyz` reports
   `"draining": true` during shutdown; new gauge

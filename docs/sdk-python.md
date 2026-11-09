@@ -9,6 +9,10 @@ them.
 pip install 'haltsql[psycopg]'   # or [asyncpg], or plain haltsql
 ```
 
+On Linux (manylinux_2_28, x86_64 and aarch64) and macOS arm64, `pip install haltsql`
+also installs the compiled verification engine, so you can verify in-process
+with no sidecar: see [In-process verification](#in-process-verification-bundled-engine).
+
 ## The rules it enforces for you
 
 1. **Fail closed.** A verdict is returned only when the sidecar answered `200`
@@ -165,9 +169,73 @@ lv.verify_many([(sql1, ctx), (sql2, ctx)])  # one process for many
 
 Each call runs `haltsql verify --policy FILE --batch` and exchanges JSONL over
 stdin/stdout (the SQL never appears on a command line). The binary defaults to
-`$HALTSQL_BIN` or `haltsql` on `PATH`. A missing binary, timeout, non-zero exit,
+`$HALTSQL_BIN`, then the CLI bundled in a platform wheel, then `haltsql` on
+`PATH`. A missing binary, timeout, non-zero exit,
 or malformed line raises `HaltSQLUnavailable`. Local verifiers work anywhere a
 verifier is accepted (`guard.*`, integrations, `haltsql-mcp`).
+
+## In-process verification (bundled engine)
+
+Platform wheels ship the engine itself: `haltsql/_native/libhaltsql.so` (the OCaml
+analyzer and the PostgreSQL parser in one self-contained shared library) and the
+`haltsql` CLI, which pip also puts on `PATH`. Wheels exist for
+**manylinux_2_28 x86_64 / aarch64** and **macOS arm64**; anywhere else pip falls
+back to the pure-Python wheel (HTTP client and `LocalVerifier` only).
+
+```python
+from haltsql import NativeVerifier, AsyncNativeVerifier
+
+hs = NativeVerifier("policy.yaml")          # or NativeVerifier(policy=doc, policy_format="json")
+hs.backend                                  # "library" (in-process) or "process"
+verdict = hs.verify(sql, {"tenant_id": tenant})
+verdict = hs.check(sql, {"tenant_id": tenant})   # raises QueryDenied
+hs.verify_many([(sql1, ctx), (sql2, ctx)])
+hs.policy_info()   # {"name": ..., "version": "sha256:...", "mode": "enforce" | "shadow"}
+hs.close()         # or: with NativeVerifier(...) as hs: ...
+
+guard.execute(conn, sql, ctx, verifier=hs)  # works anywhere a verifier is accepted
+```
+
+`AsyncNativeVerifier` takes the same arguments and has the same methods as
+coroutines (calls run in a worker thread; `async with` closes it).
+
+| Backend | How | Cost per call |
+|---|---|---|
+| `"library"` | `libhaltsql` loaded with ctypes, in-process. ctypes releases the GIL; the library serializes calls, so one verifier can be shared by all threads. | ~0.05-0.15 ms |
+| `"process"` | One long-lived `haltsql verify --batch` child, one request at a time over pipes. | ~0.15 ms |
+| `LocalVerifier` (for comparison) | A new CLI process per call. | ~20 ms |
+
+`backend="auto"` (default) uses the library if it loads, else the process
+backend, else raises `HaltSQLUnavailable` saying what to install;
+`hs.fallback_reason` says why the library was not used. Other arguments:
+`base_dir=` (resolves a relative `catalog:` in an in-memory policy; default the
+current directory), `binary=`, `timeout=` (per request, process backend; default
+30 s), `verify_sql_hash=` (leave it on).
+
+| Variable | Effect |
+|---|---|
+| `HALTSQL_LIB` | Use this `libhaltsql` instead of the bundled one (no silent fallback to the bundled copy if it fails to load). |
+| `HALTSQL_BIN` | Use this CLI for the process backend and `LocalVerifier`. |
+| `HALTSQL_NATIVE` | With `backend="auto"` only: `0` forces the process backend, `library` forces the library. |
+
+**Fail closed.** A NULL result, unparseable output, a malformed verdict or one
+whose `sql_sha256` does not match, an ABI mismatch, or a crashed, hung (past
+`timeout`) or garbled child raises `HaltSQLUnavailable`; a request the engine
+rejects raises `HaltSQLRequestError` (`BAD_REQUEST`); a policy that cannot be
+loaded raises `ValueError` with the engine's message. After `close()`, every
+method raises `HaltSQLUnavailable`. SQL is passed with its length, so a NUL byte
+is denied (`E_PARSE`) rather than truncating the string. The process backend
+kills a misbehaving child; the next call starts a new one (a child found dead
+between calls is replaced transparently).
+
+**fork().** The OCaml runtime inside the library does not survive `fork()`.
+Create verifiers *after* forking (gunicorn: in `post_fork`; multiprocessing:
+in the worker, or use the `spawn` start method). If a process uses the library
+and then forks, the child gets `HaltSQLUnavailable` (never a crash) when it
+calls it, and `backend="auto"` in the child picks the process backend.
+
+Build a platform wheel yourself with `clients/python/scripts/build_wheel.sh`
+(see `--help`).
 
 ## Testing your code
 
@@ -194,4 +262,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[psycopg,asyncpg,test]'
 Integration tests (marked `integration`) use the binaries in
 `_build/default/bin` (or `HALTSQL_BIN` / `HALTSQL_SERVER_BIN`), the shared
 [test vectors](../clients/testvectors), and the lab Postgres on port 5417. They
-skip when those are unavailable.
+skip when those are unavailable. The `native` tests use
+`_build/default/native/libhaltsql.so` (or `HALTSQL_LIB`); `HALTSQL_REQUIRE_NATIVE=1`
+makes a missing engine fail instead of skip, and `HALTSQL_WHEEL=dist/haltsql-*.whl`
+installs that wheel into a fresh venv and checks it.

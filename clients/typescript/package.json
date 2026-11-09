@@ -35,8 +35,14 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
     "typecheck": "tsc -p tsconfig.esm.json --noEmit",
-    "test": "npm run build && node --test test/client.test.mjs test/cjs.test.cjs test/integration.test.mjs",
+    "test": "npm run build && node --test test/client.test.mjs test/cjs.test.cjs test/integration.test.mjs test/local.test.mjs",
+    "smoke:native": "npm run build && node scripts/pack-native-smoke.mjs",
     "vectors": "node scripts/gen-testvectors.mjs"
+  },
+  "optionalDependencies": {
+    "@haltsql/native-darwin-arm64": "0.1.0",
+    "@haltsql/native-linux-arm64": "0.1.0",
+    "@haltsql/native-linux-x64": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

@@ -215,9 +215,15 @@ jobs:
       - name: Build haltsql and haltsql-server
         run: |
           opam install . --deps-only --yes
-          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe
-          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
-          echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe" >> "$GITHUB_ENV"
+          opam exec -- dune build lib/pgquery/libpg_query.a
+          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe native/libhaltsql.so
+          {
+            echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe"
+            echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
+            echo "HALTSQL_LIB=$PWD/_build/default/native/libhaltsql.so"
+            # NativeVerifier tests (tests/test_native.py) must run, not skip.
+            echo "HALTSQL_REQUIRE_NATIVE=1"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -282,11 +288,16 @@ jobs:
           ocaml-compiler: "5.4"
           dune-cache: true
 
-      - name: Build haltsql-server (for the real-sidecar test)
+      - name: Build haltsql-server and the haltsql CLI (real-sidecar and LocalVerifier tests)
         run: |
           opam install . --deps-only --yes
-          opam exec -- dune build ./bin/server/main.exe
-          echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe" >> "$GITHUB_ENV"
+          opam exec -- dune build ./bin/server/main.exe ./bin/haltsql/main.exe
+          {
+            echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
+            echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe"
+            # LocalVerifier tests (test/local.test.mjs) must run, not skip.
+            echo "HALTSQL_REQUIRE_NATIVE=1"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
