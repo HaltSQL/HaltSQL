@@ -1,0 +1,25 @@
+; OpenMetadata fetch provider tests: real GET /api/v1/tables responses captured from a
+; live OpenMetadata 2.0.7 server (fixtures/, see test/catalog_live/openmetadata) replayed
+; through an in-process fake HTTP server: pagination, scoping, auth, errors.
+
+(copy_files#
+ (files ../cloud/fake_http.ml))
+
+(test
+ (name test_openmetadata_fetch)
+ (modules test_openmetadata_fetch fake_http)
+ (package haltsql)
+ (libraries
+  haltsql.catalog_fetch
+  haltsql.catalog_tools
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  unix)
+ (deps
+  (source_tree fixtures)))

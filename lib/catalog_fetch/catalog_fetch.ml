@@ -6,7 +6,8 @@ open Haltsql_catalog_tools
 open Lwt.Infix
 
 (* Each provider PR adds one line here. *)
-let providers : (module Provider.S) list = [ (module Datahub_fetch) ]
+let providers : (module Provider.S) list =
+  [ (module Openmetadata_fetch); (module Datahub_fetch) ]
 
 let find n =
   List.find_opt (fun (module P : Provider.S) -> String.equal P.name n) providers

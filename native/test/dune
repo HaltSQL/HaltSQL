@@ -1,0 +1,39 @@
+; ABI tests for libhaltsql: a C program dlopen()s the shared library the same way the
+; Python and Node bindings do and exercises every entry point, error paths and
+; concurrent use from foreign (non-OCaml) threads.
+
+(rule
+ (targets test_capi.exe)
+ (deps test_capi.c %{project_root}/native/include/haltsql.h)
+ (action
+  (run
+   %{cc}
+   -std=c11
+   -D_POSIX_C_SOURCE=200809L
+   -Wall
+   -Werror
+   -I
+   %{project_root}/native/include
+   -o
+   test_capi.exe
+   test_capi.c
+   -lpthread
+   -ldl)))
+
+(rule
+ (alias runtest)
+ (deps
+  test_capi.exe
+  %{project_root}/native/libhaltsql.so
+  (source_tree %{project_root}/test/fixtures))
+ (action
+  (progn
+   (run
+    ./test_capi.exe
+    %{project_root}/native/libhaltsql.so
+    %{project_root}/test/fixtures/policies/saas_literal.yaml)
+   (run
+    ./test_capi.exe
+    %{project_root}/native/libhaltsql.so
+    %{project_root}/test/fixtures/policies/saas_literal.yaml
+    --thread-first))))

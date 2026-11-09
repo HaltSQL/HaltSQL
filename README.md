@@ -6,6 +6,15 @@
 
 **A policy firewall for LLM-generated PostgreSQL.**
 
+> **Connecting Claude Desktop, Cursor or an agent to Postgres with
+> `@modelcontextprotocol/server-postgres`?** Use
+> [`haltsql-mcp`](docs/mcp.md), the safe drop-in replacement. It has the same
+> `query(sql)` tool and takes the same connection string, and it adds
+> column allowlists, tenant isolation, function allowlists, row caps and
+> statement timeouts. It runs from one Docker image with no central server
+needed, or calls `haltsql-server` when you want one.
+[Switch in five minutes →](docs/mcp.md)
+
 HaltSQL answers one question per statement:
 
 > Is this exact SQL string allowed for this caller, under this policy?
@@ -64,7 +73,8 @@ HaltSQL ships as:
   S3 or HTTPS and hot-reload ([policy-bundles.md](docs/policy-bundles.md)),
 - **client SDKs** for [Python](docs/sdk-python.md),
   [TypeScript](docs/sdk-typescript.md), [Go](docs/sdk-go.md) and
-  [Java](docs/sdk-java.md), an [MCP server](docs/mcp.md), LangChain,
+  [Java](docs/sdk-java.md), an [MCP server](docs/mcp.md) that replaces
+  `@modelcontextprotocol/server-postgres`, LangChain,
   LlamaIndex and Vanna integrations, and tools for the OpenAI Agents SDK,
   LangGraph, Semantic Kernel, CrewAI and Google ADK
   ([agent frameworks](docs/agent-frameworks.md)),

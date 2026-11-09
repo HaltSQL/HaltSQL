@@ -349,6 +349,75 @@ let test_collibra () =
          ("app", "invoices", "number", [ "Customer Personal Reference" ]);
        ])
 
+(* examples/metadata/openmetadata_*.json are real GET /api/v1/tables responses captured
+   from OpenMetadata 2.0.7, labelled by test/catalog_live/openmetadata/seed.py. *)
+let om_expected =
+  [
+    ("app", "audit_events", "ip", [ "PersonalData.Personal" ]);
+    ("app", "customers", "email", [ "PII.Sensitive" ]);
+    ("app", "customers", "phone", [ "PersonalData.Personal" ]);
+    ("app", "customers", "ssn", [ "PII.Sensitive"; "PersonalData.SpecialCategory" ]);
+    ("app", "payments", "card_last4", [ "PII.NonSensitive" ]);
+    ("app", "payments", "card_token", [ "PII.Sensitive" ]);
+    ("app", "users", "email", [ "PII.Sensitive" ]);
+    ("app", "users", "full_name", [ "Business.PersonalInformation" ]);
+    ("app", "users", "password_hash", [ "PII.Sensitive" ]);
+  ]
+
+let test_openmetadata () =
+  let r =
+    check_import Imp.Openmetadata "openmetadata_tables.json" ~scanned:63 om_expected
+  in
+  let flagged ~table ~column = Pii.find r.manifest ~schema:"app" ~table ~column <> None in
+  (* Tier.Tier1 (column and table level), a non-PII classification, a description
+     mentioning "personal email", and untagged columns are not PII. *)
+  Alcotest.(check bool) "Tier.Tier1 column" false (flagged ~table:"orders" ~column:"note");
+  Alcotest.(check bool)
+    "DataDomain.Finance" false
+    (flagged ~table:"invoices" ~column:"amount_cents");
+  Alcotest.(check bool) "description" false (flagged ~table:"orgs" ~column:"name");
+  Alcotest.(check bool)
+    "table-level Tier1" false
+    (flagged ~table:"customers" ~column:"country");
+  (* The same document as a bare list and as a single table. *)
+  let j = Yojson.Safe.from_file (ex "openmetadata_tables.json") in
+  let data = match j with `Assoc kvs -> List.assoc "data" kvs | _ -> assert false in
+  let r2 = get_ok "list" (Imp.import Imp.Openmetadata data) in
+  Alcotest.check exp_t "list" (norm om_expected) (norm (entries r2.manifest));
+  let users =
+    match data with
+    | `List l ->
+        List.find (fun t -> Yojson.Safe.Util.(member "name" t |> to_string) = "users") l
+    | _ -> assert false
+  in
+  let r3 = get_ok "single" (Imp.import Imp.Openmetadata users) in
+  Alcotest.(check int) "single scanned" 8 r3.scanned_columns;
+  Alcotest.(check int) "single entries" 3 (List.length r3.manifest);
+  (* Glossary terms are matched with the glossary-term config, not the tag config. *)
+  let r4 =
+    get_ok "terms only"
+      (Imp.import
+         ~config:{ Pii.Matcher.tags = []; terms = [ "personal" ] }
+         Imp.Openmetadata j)
+  in
+  Alcotest.check exp_t "glossary via terms"
+    (norm [ ("app", "users", "full_name", [ "Business.PersonalInformation" ]) ])
+    (norm (entries r4.manifest));
+  (* A tag on a STRUCT child flags the top-level column. *)
+  ignore
+    (check_import Imp.Openmetadata "openmetadata_struct_table.json" ~scanned:3
+       [ ("events", "page_views", "context", [ "PII.Sensitive" ]) ]);
+  (* FQN fallback with a quoted part, when the databaseSchema reference is missing. *)
+  let r5 =
+    get_ok "fqn"
+      (Imp.import Imp.Openmetadata
+         (Yojson.Safe.from_string
+            {|{"fullyQualifiedName":"svc.db.\"my.schema\".t","columns":[{"name":"c","tags":[{"tagFQN":"PII.Sensitive","source":"Classification"}]}]}|}))
+  in
+  Alcotest.check exp_t "quoted fqn"
+    (norm [ ("my.schema", "t", "c", [ "PII.Sensitive" ]) ])
+    (norm (entries r5.manifest))
+
 let test_import_wrong_format () =
   let e = get_error "atlan as dbt" (Imp.import_file Imp.Dbt (ex "atlan_assets.json")) in
   check_contains "wrong format" e "no column metadata found; is this a dbt export";
@@ -920,6 +989,12 @@ let test_cli_import () =
   in
   Alcotest.(check int) "wrong format exit" 1 code;
   check_contains "wrong format msg" err "no column metadata found";
+  let code, stdout, _ =
+    cli [ "schema"; "import"; "--from"; "openmetadata"; ex "openmetadata_tables.json" ]
+  in
+  Alcotest.(check int) "openmetadata exit" 0 code;
+  let m = get_ok "om manifest" (Pii.of_json (Yojson.Safe.from_string stdout)) in
+  Alcotest.check exp_t "openmetadata cli" (norm om_expected) (norm (entries m));
   let code, _, err = cli [ "schema"; "import"; "--from"; "dbt"; "/nonexistent/x.json" ] in
   Alcotest.(check int) "missing exit" 2 code;
   check_contains "missing msg" err "file not found";
@@ -1697,6 +1772,7 @@ let () =
               tc "unity" test_unity;
               tc "atlan" test_atlan;
               tc "collibra" test_collibra;
+              tc "openmetadata" test_openmetadata;
               tc "wrong format" test_import_wrong_format;
               tc "manifest json" test_pii_json;
             ] );

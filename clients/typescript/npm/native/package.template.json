@@ -1,0 +1,17 @@
+{
+  "name": "@haltsql/native-{{platform}}",
+  "version": "{{version}}",
+  "description": "Prebuilt HaltSQL engine (haltsql CLI and libhaltsql) for {{platform}}. Installed automatically by @haltsql/client.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HaltSQL/HaltSQL.git",
+    "directory": "clients/typescript/npm/native"
+  },
+  "homepage": "https://github.com/HaltSQL/HaltSQL/blob/main/docs/sdk-typescript.md#local-verification-no-sidecar",
+  "keywords": ["haltsql", "postgres", "sql", "policy", "native"],
+  "os": ["{{os}}"],
+  "cpu": ["{{cpu}}"],
+  "preferUnplugged": true,
+  "files": ["bin/haltsql", "lib/{{lib}}", "include/haltsql.h", "LICENSE", "NOTICE", "LICENSE.libpg_query", "README.md"]
+}

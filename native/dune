@@ -1,0 +1,27 @@
+; libhaltsql: the verification engine as one self-contained C shared library
+; (OCaml runtime + analyzer + vendored libpg_query), for in-process use from the
+; Python wheel and the npm package. ABI: include/haltsql.h.
+;
+;   dune build native/libhaltsql.so      (the file is a Mach-O dylib on macOS)
+;
+; Only the core `haltsql` library is linked: no network, TLS or Postgres client code.
+
+(executable
+ (name haltsql_capi)
+ (modes
+  (native shared_object))
+ (modules haltsql_capi)
+ (libraries haltsql threads.posix yojson)
+ (foreign_stubs
+  (language c)
+  (names haltsql_capi_stubs)
+  (include_dirs include)
+  (extra_deps include/haltsql.h)
+  (flags
+   (:standard -O2 -fPIC -fvisibility=hidden))))
+
+(rule
+ (targets libhaltsql.so)
+ (deps haltsql_capi.so)
+ (action
+  (copy haltsql_capi.so libhaltsql.so)))

@@ -24,8 +24,19 @@ __all__ = ["LocalVerifier", "AsyncLocalVerifier"]
 _MAX_STDERR = 500
 
 
+#: Where platform wheels put the compiled engine (``libhaltsql.so``) and CLI.
+NATIVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_native")
+
+
+def bundled_binary() -> Optional[str]:
+    """Path of the ``haltsql`` CLI shipped inside a platform wheel, or ``None``."""
+    path = os.path.join(NATIVE_DIR, "haltsql.exe" if os.name == "nt" else "haltsql")
+    return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+
+
 def _resolve_binary(binary: Optional[str]) -> str:
-    candidate = binary or os.environ.get("HALTSQL_BIN") or "haltsql"
+    """Explicit ``binary`` -> ``$HALTSQL_BIN`` -> the wheel's bundled CLI -> ``haltsql`` on PATH."""
+    candidate = binary or os.environ.get("HALTSQL_BIN") or bundled_binary() or "haltsql"
     if os.sep in candidate:
         if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
             raise HaltSQLUnavailable(f"haltsql binary not found or not executable: {candidate}")
@@ -36,6 +47,42 @@ def _resolve_binary(binary: Optional[str]) -> str:
             f"haltsql binary {candidate!r} not found on PATH (set HALTSQL_BIN)"
         )
     return found
+
+
+def _check_sql(sql: Any) -> None:
+    if not isinstance(sql, str):
+        raise TypeError("sql must be a str")
+
+
+def _request_line(rid: Any, sql: str, context: Dict[str, Any]) -> str:
+    """One JSONL request for ``haltsql verify --batch`` (context already validated)."""
+    return json.dumps(
+        {"id": rid, "sql": sql, "context": context}, ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def _to_verdict(data: Any, sql: str, *, verify_sql_hash: bool, source: str) -> Verdict:
+    """Turn one engine result object into a :class:`Verdict`, failing closed.
+
+    ``{"error": ...}`` raises :class:`HaltSQLRequestError`; a malformed verdict, or
+    one computed for a different SQL string, raises :class:`HaltSQLUnavailable`.
+    ``source`` names the engine in messages (``"haltsql CLI"``, ``"libhaltsql"``).
+    """
+    if not isinstance(data, dict):
+        raise HaltSQLUnavailable(f"{source} returned a non-object result")
+    if "error" in data:
+        msg = data["error"] if isinstance(data["error"], str) else "invalid request"
+        raise HaltSQLRequestError(
+            f"haltsql rejected the request: {msg}", status=400, code="BAD_REQUEST"
+        )
+    body: Dict[str, Any] = {k: v for k, v in data.items() if k != "id"}
+    try:
+        verdict = Verdict.from_dict(body)
+    except ValueError as e:
+        raise HaltSQLUnavailable(f"{source} returned a malformed verdict: {e}") from None
+    if verify_sql_hash and not verdict.matches_sql(sql):
+        raise HaltSQLUnavailable(f"{source} verdict is for a different SQL string")
+    return verdict
 
 
 class _LocalBase:
@@ -67,15 +114,8 @@ class _LocalBase:
     def _input(items: Sequence[Tuple[str, Optional[Context]]]) -> bytes:
         lines = []
         for i, (sql, ctx) in enumerate(items):
-            if not isinstance(sql, str):
-                raise TypeError("sql must be a str")
-            lines.append(
-                json.dumps(
-                    {"id": i, "sql": sql, "context": validate_context(ctx)},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            )
+            _check_sql(sql)
+            lines.append(_request_line(i, sql, validate_context(ctx)))
         return ("\n".join(lines) + "\n").encode("utf-8")
 
     def _parse(
@@ -103,19 +143,9 @@ class _LocalBase:
                 raise HaltSQLUnavailable("haltsql CLI returned a non-JSON line") from None
             if not isinstance(data, dict) or data.get("id") != i:
                 raise HaltSQLUnavailable("haltsql CLI returned results out of order")
-            if "error" in data:
-                msg = data["error"] if isinstance(data["error"], str) else "invalid request"
-                raise HaltSQLRequestError(
-                    f"haltsql rejected the request: {msg}", status=400, code="BAD_REQUEST"
-                )
-            body: Dict[str, Any] = {k: v for k, v in data.items() if k != "id"}
-            try:
-                verdict = Verdict.from_dict(body)
-            except ValueError as e:
-                raise HaltSQLUnavailable(f"haltsql CLI returned a malformed verdict: {e}") from None
-            if self.verify_sql_hash and not verdict.matches_sql(sql):
-                raise HaltSQLUnavailable("haltsql CLI verdict is for a different SQL string")
-            verdicts.append(verdict)
+            verdicts.append(
+                _to_verdict(data, sql, verify_sql_hash=self.verify_sql_hash, source="haltsql CLI")
+            )
         return verdicts
 
 
@@ -125,7 +155,8 @@ class LocalVerifier(_LocalBase):
     Args:
         policy_file: Policy document (YAML or JSON).
         binary: Path or name of the ``haltsql`` executable; defaults to
-            ``$HALTSQL_BIN`` or ``haltsql`` on ``PATH``.
+            ``$HALTSQL_BIN``, then the CLI bundled in a platform wheel, then
+            ``haltsql`` on ``PATH``.
         timeout: Seconds before the CLI is killed and
             :class:`HaltSQLUnavailable` is raised.
     """

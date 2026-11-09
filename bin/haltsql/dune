@@ -25,7 +25,8 @@
 (rule
  (targets link_flags.sexp)
  (deps
-  (env_var HALTSQL_STATIC))
+  (env_var HALTSQL_STATIC)
+  (env_var HALTSQL_STATIC_GMP))
  (action
   (with-stdout-to
    link_flags.sexp
