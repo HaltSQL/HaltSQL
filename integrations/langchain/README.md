@@ -42,6 +42,34 @@ The copy is still an `SQLDatabase`, so toolkits accept it. The engine must use
 psycopg 3 (`postgresql+psycopg://`). Caller-supplied `parameters=` and
 `fetch="cursor"` are refused.
 
+The copy never reads table rows outside HaltSQL. `SQLDatabase.get_table_info`
+normally adds sample rows read straight from the engine
+(`sample_rows_in_table_info`, default 3), which would show other tenants' rows
+to the model; on the guarded copy it is forced to 0, so table descriptions show
+the schema only. The internal `_execute` refuses. Schema reflection (table and
+column names) still uses the engine, and the original `db` is unchanged: do not
+hand it to the agent.
+
+## Context
+
+The context is a mapping or a zero-argument callable evaluated on every query.
+A callable that returns `None` refuses the query: nothing is verified or run,
+and the model sees "No trusted HaltSQL context is configured for this request".
+A callable that raises is reported as "SQL verification is unavailable", with
+no exception details. An explicit `{}` is verified as an empty context (tenant
+tables are then denied by the policy).
+
+## Read-only and writes
+
+With `read_only=True` (the default) only statements whose verdict
+`statement_kind` is `select` run, in a `READ ONLY` transaction; anything else
+is refused before a connection is taken, even when the policy allows it.
+
+With `read_only=False` the policy alone decides: a statement runs only when
+HaltSQL allows it, whatever its kind, writes in a read-write transaction and
+`SELECT` still `READ ONLY`. A verdict without a `statement_kind` never runs.
+Allow writes in the policy only for the tables and columns you mean to.
+
 ## Tests
 
 ```sh

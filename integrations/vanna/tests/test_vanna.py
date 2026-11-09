@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from haltsql import QueryDenied
+from haltsql.integration import ContextUnavailable
 from haltsql.testing import FakeVerifier, make_verdict_dict, temporary_database
 from haltsql_vanna import HaltSQLSqlRunner, context_from_user_metadata, install_legacy_run_sql
 
@@ -66,6 +67,27 @@ def test_legacy_denied_never_connects():
     assert vn.run_sql_is_set is True
     with pytest.raises(QueryDenied):
         vn.run_sql(BAD)
+
+
+def test_legacy_context_returning_none_refuses_without_verifying():
+    vn = SimpleNamespace()
+
+    def connect():
+        raise AssertionError("must not connect")
+
+    fv = FakeVerifier(decide)
+    install_legacy_run_sql(vn, fv, lambda: None, connect=connect)
+    with pytest.raises(ContextUnavailable):
+        vn.run_sql(OK)
+    assert fv.calls == []
+
+
+async def test_context_from_user_returning_none_refuses():
+    fv = FakeVerifier(decide)
+    r = HaltSQLSqlRunner(fv, connect=never_connect, context_from_user=lambda u: None)
+    with pytest.raises(ContextUnavailable):
+        await r.run_sql(SimpleNamespace(sql=OK), SimpleNamespace(user=user({"tenant_id": "a"})))
+    assert fv.calls == []
 
 
 def test_constructor_validation():

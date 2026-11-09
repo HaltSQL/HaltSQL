@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
 
 from haltsql import GuardedResult, guard
-from haltsql.integration import ContextSource, resolve_context
+from haltsql.integration import ContextSource, ContextUnavailable, resolve_context
 
 __all__ = [
     "HaltSQLSqlRunner",
@@ -108,7 +108,10 @@ class HaltSQLSqlRunner(_SqlRunnerBase):  # type: ignore[misc, valid-type]
         sql = getattr(args, "sql", None)
         if not isinstance(sql, str):
             raise ValueError("RunSqlToolArgs.sql must be a string")
-        ctx = resolve_context(self.context_from_user(getattr(context, "user", None)))
+        user_ctx = self.context_from_user(getattr(context, "user", None))
+        if user_ctx is None:
+            raise ContextUnavailable("context_from_user returned None")
+        ctx = resolve_context(user_ctx)
         verdict = await guard.authorize_async(sql, ctx, verifier=self.verifier)
         conn = await self._open()
         try:
@@ -135,6 +138,8 @@ def install_legacy_run_sql(
 
     ``vn.run_sql(sql)`` then verifies with HaltSQL, runs the exact SQL on a
     psycopg 3 connection (``dsn`` or ``connect()``), and returns a DataFrame.
+    A ``context`` callable that returns ``None`` raises
+    :class:`haltsql.integration.ContextUnavailable` and nothing is verified.
     """
     if (dsn is None) == (connect is None):
         raise ValueError("pass exactly one of dsn= or connect=")

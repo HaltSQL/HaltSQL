@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from haltsql import GuardError, QueryDenied
+from haltsql import GuardError, HaltSQLUnavailable, QueryDenied
+from haltsql.integration import ContextUnavailable
 from haltsql.testing import FakeVerifier, make_verdict_dict, temporary_database
 from haltsql_langchain import HaltSQLQueryRunner, HaltSQLQueryTool, guard_sql_database
 
@@ -90,6 +91,110 @@ def test_guarded_database_keeps_type_and_delegates():
     # the original object is untouched
     with pytest.raises(AssertionError, match="unguarded"):
         db.run(OK)
+
+
+WRITE = "DELETE FROM orders WHERE tenant_id = $1 AND id = 1"
+
+
+def decide_kinds(sql, ctx, _p):
+    kind = sql.split()[0].lower()
+    return make_verdict_dict(sql, allowed=True, bind=[ctx["tenant_id"]], statement_kind=kind)
+
+
+class Reached(Exception):
+    pass
+
+
+class ReachEngine:
+    """Records that guarded execution got as far as taking a connection."""
+
+    def raw_connection(self):
+        raise Reached()
+
+
+def test_context_callable_returning_none_refuses_without_verifying():
+    fv = FakeVerifier(decide)
+    r = HaltSQLQueryRunner(fv, lambda: None, engine=NoEngine())
+    with pytest.raises(ContextUnavailable):
+        r.execute(OK)
+    assert r.run(OK).startswith("No trusted HaltSQL context")
+    assert fv.calls == []
+
+
+def test_context_callable_exception_is_verification_unavailable():
+    def broken():
+        raise RuntimeError("session store down: secret detail")
+
+    fv = FakeVerifier(decide)
+    r = HaltSQLQueryRunner(fv, broken, engine=NoEngine())
+    with pytest.raises(HaltSQLUnavailable):
+        r.execute(OK)
+    out = r.run(OK)
+    assert out == "SQL verification is unavailable; the query was not executed."
+    assert "secret" not in out
+    assert fv.calls == []
+
+
+def test_read_only_refuses_non_select_before_connecting():
+    r = HaltSQLQueryRunner(FakeVerifier(decide_kinds), {"tenant_id": "acme"}, engine=NoEngine())
+    with pytest.raises(GuardError, match="only SELECT"):
+        r.execute(WRITE)
+    assert r.run(WRITE).startswith("The query was not executed: only SELECT")
+
+
+def test_read_write_runs_what_the_policy_allowed():
+    r = HaltSQLQueryRunner(FakeVerifier(decide_kinds), {"tenant_id": "acme"}, engine=ReachEngine(),
+                           read_only=False)
+    assert r.guard_kwargs["read_only"] is None  # SELECTs still run READ ONLY
+    with pytest.raises(Reached):
+        r.execute(WRITE)
+    # a verdict without a statement kind never runs, even read-write
+    r2 = HaltSQLQueryRunner(
+        FakeVerifier(lambda s, c, p: make_verdict_dict(s, allowed=True, statement_kind=None)),
+        {"tenant_id": "acme"}, engine=NoEngine(), read_only=False)
+    with pytest.raises(GuardError, match="statement kind"):
+        r2.execute("SELECT 1")
+
+
+def test_guarded_database_never_reads_sample_rows_or_executes_unverified():
+    db = FakeSQLDatabase()
+    db._sample_rows_in_table_info = 3
+    g = guard_sql_database(db, FakeVerifier(decide), {"tenant_id": "acme"})
+    assert g._sample_rows_in_table_info == 0
+    assert db._sample_rows_in_table_info == 3  # the original is untouched
+    assert g._get_sample_rows(object()) == ""
+    with pytest.raises(GuardError, match="unverified"):
+        g._execute("SELECT * FROM orders")
+
+
+def test_real_sqldatabase_table_info_runs_no_unguarded_select():
+    """get_table_info on the guarded copy must not SELECT rows from the engine."""
+    pytest.importorskip("langchain_community")
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from langchain_community.utilities import SQLDatabase
+
+    engine = sqlalchemy.create_engine("sqlite://")
+    with engine.begin() as c:
+        c.exec_driver_sql("CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id TEXT, status TEXT)")
+        c.exec_driver_sql("INSERT INTO orders VALUES (1, 'acme', 'open'), (2, 'globex', 'secret')")
+    executed = []
+    sqlalchemy.event.listen(engine, "before_cursor_execute",
+                            lambda conn, cur, stmt, *a: executed.append(stmt))
+    try:
+        db = SQLDatabase(engine)  # sample_rows_in_table_info defaults to 3
+        assert "globex" in db.get_table_info()  # the unguarded original leaks rows
+        executed.clear()
+        g = guard_sql_database(db, FakeVerifier(decide), {"tenant_id": "acme"})
+        for info in (g.get_table_info(), g.get_table_info_no_throw(["orders"]), g.table_info,
+                     g.get_context()["table_info"]):
+            assert "CREATE TABLE orders" in info
+            assert "globex" not in info and "rows from orders" not in info
+        assert not [x for x in executed if x.lstrip().upper().startswith("SELECT")], executed
+        with pytest.raises(GuardError):
+            g._execute("SELECT * FROM orders")
+        assert not [x for x in executed if "orders" in x and "PRAGMA" not in x.upper()], executed
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="module")

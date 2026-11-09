@@ -9,9 +9,12 @@ Two entry points:
   (``langchain-community``) so that ``run`` / ``run_no_throw`` (used by
   ``QuerySQLDatabaseTool``, ``create_sql_agent``, ...) are guarded. The wrapper
   is still an ``SQLDatabase`` instance, so it drops into existing toolkits.
+  It never reads table rows outside HaltSQL: ``get_table_info`` shows no
+  sample rows, and the internal ``_execute`` refuses.
 
 The tenant context is a mapping or a zero-argument callable you control
-(read from the authenticated request), never a tool argument.
+(read from the authenticated request), never a tool argument. A callable that
+returns ``None`` refuses the query.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import json
 from typing import Any, Callable, Dict, Mapping, Optional, Type
 
 from haltsql import GuardError, GuardedResult, guard
-from haltsql.integration import ContextSource, feedback_for_model, resolve_context
+from haltsql.integration import ContextSource, authorize_guarded, feedback_for_model, guard_read_only
 
 __all__ = ["HaltSQLQueryRunner", "HaltSQLQueryTool", "guard_sql_database", "__version__"]
 __version__ = "0.1.0"
@@ -43,8 +46,12 @@ class HaltSQLQueryRunner:
         engine: A SQLAlchemy engine using psycopg 3 (``postgresql+psycopg://``), or
         connect: A zero-argument callable returning a ``psycopg.Connection``
             (closed after each query).
-        max_rows / statement_timeout_ms / settings / read_only: see
-            :func:`haltsql.guard.execute`. ``read_only`` defaults to ``True``.
+        max_rows / statement_timeout_ms / settings: see :func:`haltsql.guard.execute`.
+        read_only: ``True`` (default) runs only statements whose verdict
+            ``statement_kind`` is ``select``, in a ``READ ONLY`` transaction.
+            ``False`` runs whatever statement kind the policy allowed (writes
+            read-write, ``SELECT`` still ``READ ONLY``); the policy is then the
+            only thing that decides whether writes are allowed.
     """
 
     def __init__(
@@ -65,18 +72,19 @@ class HaltSQLQueryRunner:
         self.context = context
         self.engine = engine
         self.connect = connect
+        self.read_only = bool(read_only)
         self.guard_kwargs: Dict[str, Any] = {
             "max_rows": max_rows,
             "statement_timeout_ms": statement_timeout_ms,
             "settings": dict(settings) if settings else None,
-            "read_only": read_only,
+            "read_only": guard_read_only(self.read_only),
         }
 
     def execute(self, sql: str) -> GuardedResult:
         """Verify and run; raises on denial or failure (nothing runs then)."""
-        ctx = resolve_context(self.context)
-        # Verify before taking a database connection.
-        verdict = guard.authorize(sql, ctx, verifier=self.verifier)
+        # Verify (and check the statement kind) before taking a database connection.
+        ctx, verdict = authorize_guarded(sql, self.context, verifier=self.verifier,
+                                         read_only=self.read_only)
         if self.engine is not None:
             return guard.execute_on_engine(self.engine, sql, ctx, verdict=verdict, **self.guard_kwargs)
         assert self.connect is not None
@@ -101,9 +109,22 @@ class HaltSQLQueryRunner:
 
 def _guarded_db_class(base: Type[Any]) -> Type[Any]:
     class GuardedSQLDatabase(base):  # type: ignore[misc, valid-type]
-        """An ``SQLDatabase`` whose ``run`` goes through HaltSQL."""
+        """An ``SQLDatabase`` whose ``run`` goes through HaltSQL.
+
+        Every path of ``SQLDatabase`` that reads rows or runs SQL on the engine
+        is guarded or refused: ``run`` / ``run_no_throw`` verify, sample rows
+        are never read for ``get_table_info``, and ``_execute`` refuses.
+        Schema reflection (table and column names) still uses the engine.
+        """
 
         _haltsql_runner: HaltSQLQueryRunner
+
+        def _get_sample_rows(self, table: Any) -> str:
+            # SQLDatabase reads sample rows straight from the engine; never here.
+            return ""
+
+        def _execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise GuardError("unverified SQL is not run; use run(), which verifies with HaltSQL")
 
         def run(self, command: Any, fetch: str = "all", include_columns: bool = False,
                 *, parameters: Optional[Dict[str, Any]] = None,
@@ -146,7 +167,9 @@ def guard_sql_database(
     ``run_no_throw`` verify every statement with HaltSQL first.
 
     The copy shares ``db``'s engine; it must use psycopg 3. ``runner_kwargs``
-    are those of :class:`HaltSQLQueryRunner` (``max_rows``, ...).
+    are those of :class:`HaltSQLQueryRunner` (``max_rows``, ``read_only``, ...).
+    The copy never reads sample rows (``sample_rows_in_table_info`` is 0), so
+    ``get_table_info`` shows the schema only.
     """
     engine = getattr(db, "_engine", None) or getattr(db, "engine", None)
     if engine is None:
@@ -154,6 +177,8 @@ def guard_sql_database(
     guarded = copy.copy(db)
     guarded.__class__ = _guarded_db_class(type(db))
     guarded._haltsql_runner = HaltSQLQueryRunner(verifier, context, engine=engine, **runner_kwargs)
+    # Sample rows would be read from the engine, unverified and across tenants.
+    guarded._sample_rows_in_table_info = 0
     return guarded
 
 
