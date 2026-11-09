@@ -1,7 +1,9 @@
 name: Catalog integrations (live)
 
 # Validates each data-catalog integration against a real, running instance of the
-# catalog (one job per provider). Manual and weekly only: each job pulls large images.
+# catalog (one job per provider; each job owns its own services and
+# test/catalog_live/<provider>/run.sh). Manual and weekly only: each job pulls
+# large images.
 
 on:
   workflow_dispatch:
@@ -66,6 +68,65 @@ jobs:
         if: always()
         working-directory: lab
         run: make down
+
+  dbt:
+    name: dbt Core (dbt-core + dbt-postgres, real manifest/catalog)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    env:
+      DBT_PG_HOST: 127.0.0.1
+      DBT_PG_PORT: "5417"
+      DBT_PG_USER: postgres
+      DBT_PG_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DBT_PG_DBNAME: haltsql_dbt_lab
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: opam install . --deps-only --with-test --yes
+
+      - name: Build haltsql
+        run: opam exec -- dune build --root . bin/haltsql/main.exe
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: dbt build + docs generate, import, assert, draft, verify
+        run: |
+          mkdir -p "$RUNNER_TEMP/dbt"
+          DBT_WORK_DIR="$RUNNER_TEMP/dbt" PYTHON=python3 \
+            HALTSQL_BIN="$PWD/_build/default/bin/haltsql/main.exe" \
+            test/catalog_live/dbt/run.sh
+
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalog-live-dbt
+          path: |
+            ${{ runner.temp }}/dbt/target/manifest.json
+            ${{ runner.temp }}/dbt/target/catalog.json
+            ${{ runner.temp }}/dbt/pii-*.json
+            ${{ runner.temp }}/dbt/policy*.yaml
+            ${{ runner.temp }}/dbt/logs/
+          if-no-files-found: ignore
 
   datahub:
     name: DataHub v1.8.0

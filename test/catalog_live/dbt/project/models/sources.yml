@@ -1,0 +1,90 @@
+version: 2
+
+# The fixture tables, declared as dbt sources. PII is declared the different
+# ways real projects do it; the comment on each column says which. Columns
+# with only non-PII tags/meta must NOT be imported (expected_manifest.json).
+sources:
+  - name: app
+    schema: app
+    tables:
+      - name: customers
+        description: Customer master (one row per customer, per tenant).
+        meta: {owner: crm, contains_pii: true}   # table-level meta: not a column label
+        columns:
+          - name: id
+            description: Surrogate key.
+          - name: tenant_id
+            description: Owning tenant.
+            tags: [tenancy]
+          - name: name
+            description: Company or person display name.
+            meta: {pii: false}                          # explicit false: not PII
+          - name: email
+            description: Primary contact address.
+            meta: {pii: true}                           # legacy column meta
+          - name: phone
+            description: Contact number.
+            meta: {governance: {sensitivity: restricted}}   # nested meta
+          - name: ssn
+            description: Legacy national id.
+            tags: [pii]                                 # column tag
+          - name: country
+            description: ISO 3166-1 alpha-2 code.
+            meta: {pii: "no", domain: geo}              # "no": not PII
+            tags: [geo]
+          - name: created_at
+
+      - name: users
+        columns:
+          - name: id
+          - name: tenant_id
+          - name: email
+            config:
+              meta: {contains_pii: true}                # dbt >= 1.10 config.meta
+          - name: full_name
+            config:
+              tags: [display]
+              meta: {owner: identity-team, sla: 24h}
+          - name: role
+            config:
+              meta: {classification: internal}          # non-PII classification
+          - name: password_hash
+            config:
+              tags: [secret]                            # dbt >= 1.10 config.tags
+          - name: created_at
+          - name: last_login_at
+
+      - name: payments
+        columns:
+          - name: id
+          - name: tenant_id
+          - name: card_last4
+            description: Last four digits, safe to display.
+            tags: [finance]
+            meta: {masking: none}
+          - name: card_token
+            # BigQuery-style policy tags; dbt keeps them on the column for every adapter
+            policy_tags: ["projects/acme/locations/us/taxonomies/42/policyTags/pci_token"]
+          - name: amount_cents
+            meta: {unit: cents, certified: true}
+
+      - name: audit_events
+        columns:
+          - name: id
+          - name: action
+            description: Verb, e.g. login or export.
+          - name: ip
+            description: Client address; personal data under GDPR.   # description only
+          - name: detail
+            description: Event payload (JSON).
+
+      - name: orgs
+        meta: {owner: platform}
+        columns:
+          - name: plan
+            tags: [core, billing]
+            meta: {tier: gold, certified: true}
+      - name: orders
+      - name: order_items
+      - name: invoices
+      - name: currencies

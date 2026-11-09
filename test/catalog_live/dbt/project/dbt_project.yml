@@ -1,0 +1,20 @@
+# Real dbt Core project used to validate `haltsql schema import --from dbt`
+# (test/catalog_live/dbt/run.sh). It runs over the haltlab saas_shared fixture
+# (lab/schemas/saas_shared.sql) loaded into its own database.
+name: haltsql_dbt_lab
+version: "1.0.0"
+config-version: 2
+profile: haltsql_dbt_lab
+
+model-paths: ["models"]
+
+models:
+  haltsql_dbt_lab:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+      +schema: marts

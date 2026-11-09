@@ -31,6 +31,15 @@ even before 1.0.
 - `haltsql policy draft` accepts a non-authoritative snapshot: the draft then
   has no `catalog:` reference and a header comment explaining that `SELECT *`
   stays denied.
+- dbt Core integration validated end to end against a real dbt run
+  (dbt-core 1.12.6 / dbt-postgres 1.11.0): `test/catalog_live/dbt/` holds a
+  dbt project over the `saas_shared` fixture and `run.sh` (dbt build + docs
+  generate, `schema import --from dbt` on `manifest.json` and `catalog.json`
+  diffed against expected manifests, `schema pull`, `policy draft
+  --no-name-heuristics`, `verify`, then the haltlab tier-3 check with its
+  empty-manifest negative control); new weekly/manual `dbt` job in
+  `.github/workflows/catalog-live.yml`. Trimmed real artifacts are in
+  `examples/metadata/dbt_manifest_1_12.json` and `dbt_catalog_1_12.json`.
 - **OpenMetadata integration**, validated against a live OpenMetadata 2.0.7
   server: `haltsql schema import --from openmetadata` reads table JSON from
   `/api/v1/tables` (classification tags as tags, glossary terms as terms, STRUCT
@@ -274,6 +283,11 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- `schema import --from dbt` also matches column `description`s in
+  `manifest.json` (word by word, recorded as `comment:<term>`, like
+  `catalog.json` comments). A real dbt run showed that PII documented only in
+  a source column's description was missed: dbt never writes source
+  descriptions to `catalog.json`.
 - CI on pull requests runs only the jobs whose files changed: a `changes`
   job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
   `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test

@@ -151,13 +151,27 @@ probably the wrong `--from`).
 
 | Tool | Accepted input | Labels used |
 |---|---|---|
-| dbt | `target/manifest.json` (models, seeds, snapshots, sources; tests are ignored) | column `tags`, `meta`, `config.tags`, `config.meta`, `policy_tags`; nested meta such as `{governance: {sensitivity: restricted}}`. The table is `schema` plus `alias`, `identifier` or `name`. |
+| dbt | `target/manifest.json` (models, seeds, snapshots, sources; tests are ignored) | column `tags`, `meta`, `config.tags`, `config.meta` (dbt ≥ 1.10 style), `policy_tags`; nested meta such as `{governance: {sensitivity: restricted}}`; column `description`, matched word by word and recorded as `comment:<term>` (source descriptions only exist here: `persist_docs` writes comments for models only). The table is `schema` plus `alias`, `identifier` or `name`, i.e. the relation dbt built (custom schema and alias applied) or the source table. |
 | dbt | `target/catalog.json` | column `comment`, matched word by word, recorded as `comment:<term>`. |
 | DataHub | file-sink exports (MCE snapshots, MCPs with `aspect.json` or a JSON-string `aspect.value`) and GraphQL `dataset` responses | `urn:li:tag:*` tags and `urn:li:glossaryTerm:*` terms (plus their `name`/`properties.name`) on `schemaMetadata` and `editableSchemaMetadata` fields. The table is the last two dot-separated parts of the dataset URN name; v2 field paths are reduced to the last name. |
 | Unity Catalog | `information_schema.column_tags` rows (JSON array, `{"column_tags": [...]}`, or a SQL Statement Execution API result), or REST table JSON (one table, a list, or `{"tables": [...]}`) | `tag_name` and `tag_name=tag_value`; REST column `tags` as a map or a list of `{key, value}`. The catalog name is ignored. |
 | Atlan | asset search results (`{"entities": [...]}`, a list, or `{"entity": ...}`) of `Column` assets | `classifications`/`atlanTags` (`typeName`, `displayName`, `tagName`), `classificationNames`, glossary `meanings` (`displayText`) and `meaningNames`. The table is `tableName`/`viewName`/`materialisedViewName` with `schemaName`, else the end of `qualifiedName`. |
 | Collibra | asset exports (a list, `{"results": [...]}` or `{"assets": [...]}`) of `Column` assets | attributes whose type name mentions classification, sensitivity, privacy, confidentiality, personal/PII, security (as a list of `{type: {name}, value}` or a map); `tags`; `classificationMatches`/`dataClassifications` that are not `REJECTED`; relations to Business Terms. The column is identified by `fullName` (`db>schema>table>column`, or dotted). |
 | OpenMetadata | table entities from `GET /api/v1/tables?fields=columns,tags` (one table, a list, or the paged `{"data": [...]}` response) | `columns[].tags[].tagFQN`: `source: "Glossary"` labels are glossary terms, others (classifications) tags. The full FQN is matched, so `PII.Sensitive`, `PII.NonSensitive`, `PersonalData.Personal` count and `Tier.Tier1` does not. Tags on nested `children` (STRUCT fields) flag the top-level column. Column descriptions and table-level tags are ignored. The table is `databaseSchema.name` plus `name`. |
+
+### Validation status
+
+Each row names the real tool versions the importer was last validated against
+end to end: real output of the tool, imported, diffed against an expected
+manifest, drafted with `--no-name-heuristics` and checked with `haltsql verify`
+(`.github/workflows/catalog-live.yml`, weekly). Rows not listed are tested
+against the sample exports only.
+
+| Integration | Validated against | How |
+|---|---|---|
+| dbt Core (`manifest.json`, `catalog.json`) | dbt-core 1.12.6 / dbt-postgres 1.11.0, PostgreSQL 17 | [`test/catalog_live/dbt/run.sh`](../test/catalog_live/dbt/run.sh): a real dbt project over `saas_shared` (sources, a view and an aliased table in a custom schema) declaring PII with column `meta`, nested `meta`, `tags`, `config.meta`/`config.tags`, `policy_tags` and descriptions, plus non-PII tags/meta that must not match. All 11 PII columns are denied, `SELECT *` is denied, the drafted `app.*` column lists equal `lab/policies/saas_shared.yaml`, and a draft without the manifest allows them (negative control). The haltlab tier-3 check ([`lab/catalogs`](../lab/catalogs/README.md)) then runs 900 benign, adversarial and targeted queries against real Postgres: 0 column leaks with the dbt manifest, and all 7 tagged `app.*` columns seen leaking with an empty manifest. |
+
+dbt Cloud (Discovery API) is not covered by these file-based importers.
 
 Atlan classification `typeName`s are often opaque hashes; export with display
 names (`displayName`) so they can be matched.

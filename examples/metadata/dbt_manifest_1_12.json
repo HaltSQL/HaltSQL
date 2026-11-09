@@ -1,0 +1,1008 @@
+{
+ "metadata": {
+  "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+  "dbt_version": "1.12.6",
+  "generated_at": "2026-11-08T20:03:20.456260Z",
+  "adapter_type": "postgres",
+  "project_name": "haltsql_dbt_lab"
+ },
+ "nodes": {
+  "model.haltsql_dbt_lab.dim_users": {
+   "database": "haltsql_dbt_lab",
+   "schema": "analytics_marts",
+   "name": "dim_users",
+   "resource_type": "model",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "model.haltsql_dbt_lab.dim_users",
+   "alias": "users_dim",
+   "relation_name": "\"haltsql_dbt_lab\".\"analytics_marts\".\"users_dim\"",
+   "description": "One row per user (table, custom schema + alias).",
+   "tags": [],
+   "meta": {},
+   "config": {
+    "enabled": true,
+    "alias": "users_dim",
+    "schema": "marts",
+    "materialized": "table",
+    "tags": [],
+    "meta": {},
+    "persist_docs": {
+     "relation": true,
+     "columns": true
+    }
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "tenant_id": {
+     "name": "tenant_id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "full_name": {
+     "name": "full_name",
+     "description": "",
+     "meta": {
+      "owner": "identity-team"
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "owner": "identity-team"
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "role": {
+     "name": "role",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": [
+       "rbac"
+      ]
+     },
+     "tags": [
+      "rbac"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "email": {
+     "name": "email",
+     "description": "",
+     "meta": {
+      "pii": true
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": true
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "org_name": {
+     "name": "org_name",
+     "description": "",
+     "meta": {
+      "pii": null
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": null
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "created_at": {
+     "name": "created_at",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  },
+  "model.haltsql_dbt_lab.stg_customers": {
+   "database": "haltsql_dbt_lab",
+   "schema": "analytics",
+   "name": "stg_customers",
+   "resource_type": "model",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "model.haltsql_dbt_lab.stg_customers",
+   "alias": "stg_customers",
+   "relation_name": "\"haltsql_dbt_lab\".\"analytics\".\"stg_customers\"",
+   "description": "Staged customers (a view; descriptions persisted as comments).",
+   "tags": [
+    "staging"
+   ],
+   "meta": {
+    "owner": "analytics"
+   },
+   "config": {
+    "enabled": true,
+    "alias": null,
+    "schema": null,
+    "materialized": "view",
+    "tags": [
+     "staging"
+    ],
+    "meta": {
+     "owner": "analytics"
+    },
+    "persist_docs": {
+     "relation": true,
+     "columns": true
+    }
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "Surrogate key.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "tenant_id": {
+     "name": "tenant_id",
+     "description": "Owning tenant.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "name": {
+     "name": "name",
+     "description": "Display name.",
+     "meta": {
+      "pii": false
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": false
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "email": {
+     "name": "email",
+     "description": "Contact email address.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "phone": {
+     "name": "phone",
+     "description": "",
+     "meta": {
+      "governance": {
+       "sensitivity": "restricted"
+      }
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "governance": {
+        "sensitivity": "restricted"
+       }
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "country": {
+     "name": "country",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": [
+       "geo"
+      ]
+     },
+     "tags": [
+      "geo"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "ContactEmail": {
+     "name": "ContactEmail",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": true,
+     "config": {
+      "meta": {},
+      "tags": [
+       "pii"
+      ]
+     },
+     "tags": [
+      "pii"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "created_at": {
+     "name": "created_at",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  }
+ },
+ "sources": {
+  "source.haltsql_dbt_lab.app.audit_events": {
+   "database": "haltsql_dbt_lab",
+   "schema": "app",
+   "name": "audit_events",
+   "resource_type": "source",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "source.haltsql_dbt_lab.app.audit_events",
+   "source_name": "app",
+   "identifier": "audit_events",
+   "relation_name": "\"haltsql_dbt_lab\".\"app\".\"audit_events\"",
+   "description": "",
+   "tags": [],
+   "meta": {},
+   "config": {
+    "enabled": true,
+    "tags": [],
+    "meta": {}
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "action": {
+     "name": "action",
+     "description": "Verb, e.g. login or export.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "ip": {
+     "name": "ip",
+     "description": "Client address; personal data under GDPR.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "detail": {
+     "name": "detail",
+     "description": "Event payload (JSON).",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  },
+  "source.haltsql_dbt_lab.app.customers": {
+   "database": "haltsql_dbt_lab",
+   "schema": "app",
+   "name": "customers",
+   "resource_type": "source",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "source.haltsql_dbt_lab.app.customers",
+   "source_name": "app",
+   "identifier": "customers",
+   "relation_name": "\"haltsql_dbt_lab\".\"app\".\"customers\"",
+   "description": "Customer master (one row per customer, per tenant).",
+   "tags": [],
+   "meta": {
+    "owner": "crm",
+    "contains_pii": true
+   },
+   "config": {
+    "enabled": true,
+    "tags": [],
+    "meta": {
+     "owner": "crm",
+     "contains_pii": true
+    }
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "Surrogate key.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "tenant_id": {
+     "name": "tenant_id",
+     "description": "Owning tenant.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": [
+       "tenancy"
+      ]
+     },
+     "tags": [
+      "tenancy"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "name": {
+     "name": "name",
+     "description": "Company or person display name.",
+     "meta": {
+      "pii": false
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": false
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "email": {
+     "name": "email",
+     "description": "Primary contact address.",
+     "meta": {
+      "pii": true
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": true
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "phone": {
+     "name": "phone",
+     "description": "Contact number.",
+     "meta": {
+      "governance": {
+       "sensitivity": "restricted"
+      }
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "governance": {
+        "sensitivity": "restricted"
+       }
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "ssn": {
+     "name": "ssn",
+     "description": "Legacy national id.",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": [
+       "pii"
+      ]
+     },
+     "tags": [
+      "pii"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "country": {
+     "name": "country",
+     "description": "ISO 3166-1 alpha-2 code.",
+     "meta": {
+      "pii": "no",
+      "domain": "geo"
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "pii": "no",
+       "domain": "geo"
+      },
+      "tags": [
+       "geo"
+      ]
+     },
+     "tags": [
+      "geo"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "created_at": {
+     "name": "created_at",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  },
+  "source.haltsql_dbt_lab.app.orgs": {
+   "database": "haltsql_dbt_lab",
+   "schema": "app",
+   "name": "orgs",
+   "resource_type": "source",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "source.haltsql_dbt_lab.app.orgs",
+   "source_name": "app",
+   "identifier": "orgs",
+   "relation_name": "\"haltsql_dbt_lab\".\"app\".\"orgs\"",
+   "description": "",
+   "tags": [],
+   "meta": {
+    "owner": "platform"
+   },
+   "config": {
+    "enabled": true,
+    "tags": [],
+    "meta": {
+     "owner": "platform"
+    }
+   },
+   "columns": {
+    "plan": {
+     "name": "plan",
+     "description": "",
+     "meta": {
+      "tier": "gold",
+      "certified": true
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "tier": "gold",
+       "certified": true
+      },
+      "tags": [
+       "billing",
+       "core"
+      ]
+     },
+     "tags": [
+      "billing",
+      "core"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  },
+  "source.haltsql_dbt_lab.app.payments": {
+   "database": "haltsql_dbt_lab",
+   "schema": "app",
+   "name": "payments",
+   "resource_type": "source",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "source.haltsql_dbt_lab.app.payments",
+   "source_name": "app",
+   "identifier": "payments",
+   "relation_name": "\"haltsql_dbt_lab\".\"app\".\"payments\"",
+   "description": "",
+   "tags": [],
+   "meta": {},
+   "config": {
+    "enabled": true,
+    "tags": [],
+    "meta": {}
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "tenant_id": {
+     "name": "tenant_id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "card_last4": {
+     "name": "card_last4",
+     "description": "Last four digits, safe to display.",
+     "meta": {
+      "masking": "none"
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "masking": "none"
+      },
+      "tags": [
+       "finance"
+      ]
+     },
+     "tags": [
+      "finance"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "card_token": {
+     "name": "card_token",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": [],
+     "policy_tags": [
+      "projects/acme/locations/us/taxonomies/42/policyTags/pci_token"
+     ]
+    },
+    "amount_cents": {
+     "name": "amount_cents",
+     "description": "",
+     "meta": {
+      "unit": "cents",
+      "certified": true
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "unit": "cents",
+       "certified": true
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  },
+  "source.haltsql_dbt_lab.app.users": {
+   "database": "haltsql_dbt_lab",
+   "schema": "app",
+   "name": "users",
+   "resource_type": "source",
+   "package_name": "haltsql_dbt_lab",
+   "unique_id": "source.haltsql_dbt_lab.app.users",
+   "source_name": "app",
+   "identifier": "users",
+   "relation_name": "\"haltsql_dbt_lab\".\"app\".\"users\"",
+   "description": "",
+   "tags": [],
+   "meta": {},
+   "config": {
+    "enabled": true,
+    "tags": [],
+    "meta": {}
+   },
+   "columns": {
+    "id": {
+     "name": "id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "tenant_id": {
+     "name": "tenant_id",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "email": {
+     "name": "email",
+     "description": "",
+     "meta": {
+      "contains_pii": true
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "contains_pii": true
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "full_name": {
+     "name": "full_name",
+     "description": "",
+     "meta": {
+      "owner": "identity-team",
+      "sla": "24h"
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "owner": "identity-team",
+       "sla": "24h"
+      },
+      "tags": [
+       "display"
+      ]
+     },
+     "tags": [
+      "display"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "role": {
+     "name": "role",
+     "description": "",
+     "meta": {
+      "classification": "internal"
+     },
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {
+       "classification": "internal"
+      },
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "password_hash": {
+     "name": "password_hash",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": [
+       "secret"
+      ]
+     },
+     "tags": [
+      "secret"
+     ],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "created_at": {
+     "name": "created_at",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    },
+    "last_login_at": {
+     "name": "last_login_at",
+     "description": "",
+     "meta": {},
+     "data_type": null,
+     "constraints": [],
+     "quote": null,
+     "config": {
+      "meta": {},
+      "tags": []
+     },
+     "tags": [],
+     "granularity": null,
+     "dimension": null,
+     "entity": null,
+     "doc_blocks": []
+    }
+   }
+  }
+ }
+}

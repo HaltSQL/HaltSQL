@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "source": "dbt",
+    "file": "catalog.json",
+    "generated_by": "haltsql schema import"
+  },
+  "tables": {
+    "analytics.stg_customers": {
+      "columns": {
+        "email": { "classifications": [ "comment:email" ], "source": "dbt" }
+      }
+    }
+  }
+}
