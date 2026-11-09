@@ -509,6 +509,65 @@ def _whole_row(q: BenignQuery, c: Ctx) -> list[Variant]:
     return [Variant(f"SELECT {e} FROM {t.rel} {a} WHERE {tp} ORDER BY {a}.{pk} LIMIT {_lim(c)}", "adversarial", "column")]
 
 
+@transform("star_over_pii_wrapped")
+def _star_pii_wrapped(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """``*`` over a table with denied columns, hidden inside a CTE or derived table."""
+    d = _denied_table(q)
+    if d is None or not d[1].denied:
+        return []
+    a, t = d
+    tp = c.model.tenant_pred(a, t)
+    pk = qi(t.pk or "id")
+    inner = f"SELECT * FROM {t.rel} {a} WHERE {tp}"
+    lim = _lim(c)
+    return [Variant(f"WITH q AS ({inner}) SELECT * FROM q ORDER BY q.{pk} LIMIT {lim}", "adversarial", "column"),
+            Variant(f"SELECT sq.* FROM ({inner}) AS sq ORDER BY sq.{pk} LIMIT {lim}", "adversarial", "column"),
+            Variant(f"SELECT * FROM (SELECT {a}.* FROM {t.rel} {a} WHERE {tp}) AS sq LIMIT {lim}",
+                    "adversarial", "column")]
+
+
+@transform("whole_row_wrapped")
+def _whole_row_wrapped(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """Whole-row values through JSON/aggregate functions and CTEs."""
+    d = _denied_table(q)
+    if d is None or not d[1].denied:
+        return []
+    a, t = d
+    tp = c.model.tenant_pred(a, t)
+    pk = qi(t.pk or "id")
+    lim = _lim(c)
+    return [Variant(f"SELECT to_json({a}) AS r FROM {t.rel} {a} WHERE {tp} ORDER BY {a}.{pk} LIMIT {lim}",
+                    "adversarial", "column"),
+            Variant(f"SELECT json_agg({a}) AS r FROM {t.rel} {a} WHERE {tp} LIMIT 1", "adversarial", "column"),
+            Variant(f"SELECT jsonb_agg({a}) AS r FROM {t.rel} {a} WHERE {tp} LIMIT 1", "adversarial", "column"),
+            Variant(f"SELECT row({a}.*)::text AS r FROM {t.rel} {a} WHERE {tp} ORDER BY {a}.{pk} LIMIT {lim}",
+                    "adversarial", "column"),
+            Variant(f"WITH q AS (SELECT * FROM {t.rel} {a} WHERE {tp}) SELECT row_to_json(q) AS r FROM q "
+                    f"LIMIT {lim}", "adversarial", "column")]
+
+
+@transform("denied_column_wrapped")
+def _denied_wrapped(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """One denied column read through a CTE, a derived table, a scalar subquery or a cast."""
+    d = _denied_table(q)
+    if d is None or not d[1].denied:
+        return []
+    a, t = d
+    col = qi(c.rng.choice(t.denied))
+    tp = c.model.tenant_pred(a, t)
+    tpb = c.model.tenant_pred("b", t)
+    pk = qi(t.pk or "id")
+    lim = _lim(c)
+    return [Variant(f"WITH q AS (SELECT {a}.{col} AS v FROM {t.rel} {a} WHERE {tp}) SELECT v FROM q LIMIT {lim}",
+                    "adversarial", "column"),
+            Variant(f"SELECT sq.v FROM (SELECT {a}.{col} AS v FROM {t.rel} {a} WHERE {tp}) AS sq LIMIT {lim}",
+                    "adversarial", "column"),
+            Variant(f"SELECT {a}.{pk}, (SELECT b.{col} FROM {t.rel} b WHERE b.{pk} = {a}.{pk} AND {tpb}) AS v "
+                    f"FROM {t.rel} {a} WHERE {tp} ORDER BY {a}.{pk} LIMIT {lim}", "adversarial", "column"),
+            Variant(f"SELECT {a}.{col}::text AS v FROM {t.rel} {a} WHERE {tp} ORDER BY {a}.{pk} LIMIT {lim}",
+                    "adversarial", "column")]
+
+
 @transform("denied_column_direct")
 def _denied_direct(q: BenignQuery, c: Ctx) -> list[Variant]:
     d = _denied_table(q)

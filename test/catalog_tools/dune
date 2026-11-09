@@ -1,6 +1,7 @@
 ; haltsql.catalog_tools tests: DSN parsing, SCRAM, PII importers (on the sample exports
 ; in examples/metadata), snapshot building, the policy drafter, the CLI commands (via a
-; small driver that links bin/haltsql/cmd_schema.ml and cmd_policy_draft.ml), and an
+; small driver that links bin/haltsql/cmd_schema.ml, cmd_schema_fetch.ml and
+; cmd_policy_draft.ml, with a fake live-catalog provider), and an
 ; integration test against the lab Postgres (skipped when it is not reachable).
 
 (copy_files#
@@ -12,10 +13,23 @@
 (copy_files#
  (files ../../bin/haltsql/cmd_policy_draft.ml))
 
+(copy_files#
+ (files ../../bin/haltsql/cmd_schema_fetch.ml))
+
 (executable
  (name schema_cli)
- (modules schema_cli common cmd_schema cmd_policy_draft)
- (libraries haltsql haltsql.catalog_tools cmdliner yojson unix))
+ (modules schema_cli common cmd_schema cmd_policy_draft cmd_schema_fetch)
+ (libraries
+  haltsql
+  haltsql.cloud
+  haltsql.catalog_tools
+  haltsql.catalog_fetch
+  cmdliner
+  yojson
+  uri
+  lwt
+  lwt.unix
+  unix))
 
 (test
  (name test_catalog_tools)

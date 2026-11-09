@@ -41,6 +41,13 @@ type t = {
   database : string option;
   server_version : string option;
   schemas : string list;  (** schemas that were requested ([[]] = all user schemas) *)
+  authoritative : bool;
+      (** [true] for a snapshot of the database itself ([haltsql schema pull]): complete,
+          typed column lists the analyzer can trust. [false] for a data catalog's view of
+          the tables ([haltsql schema fetch --snapshot-out]), which can lag behind the
+          database: written with [metadata.authoritative: false] (and
+          [metadata.source: "haltsql schema fetch"]), refused as a policy [catalog:], and
+          used by the policy drafter only to choose column lists. *)
 }
 
 val render_ident : string -> string
@@ -58,12 +65,16 @@ val relkind : t -> schema:string -> name:string -> relkind option
 (** The kind of a relation in the snapshot, if present. *)
 
 val to_json : t -> Yojson.Safe.t
-(** The snapshot document (accepted back by {!of_json}). *)
+(** The snapshot document (accepted back by {!of_json}). [metadata.authoritative: false]
+    is written only for non-authoritative snapshots, so pulled snapshots are unchanged. *)
 
-val of_json : ?file:string -> Yojson.Safe.t -> (t, string) result
+val of_json :
+  ?allow_non_authoritative:bool -> ?file:string -> Yojson.Safe.t -> (t, string) result
 (** Loads the tables with {!Haltsql_load.Catalog_load.of_json} (so every rule of the
     catalog loader applies) and reads the optional metadata. Unknown relation kinds are an
-    error. *)
+    error. A non-authoritative snapshot is refused unless [allow_non_authoritative]
+    (default [false]); pass [true] only where the structure is a hint (the policy
+    drafter). *)
 
-val of_file : string -> (t, string) result
+val of_file : ?allow_non_authoritative:bool -> string -> (t, string) result
 (** {!of_json} on a file's contents. *)

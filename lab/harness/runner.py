@@ -47,13 +47,25 @@ def build_items(scn: Scenario, model: SchemaModel, universe: Any, fixture_name: 
 
 
 def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db: bool = False,
-                 jobs: int | None = None) -> bool:
+                 jobs: int | None = None, policy_path: Path | None = None,
+                 oracle_policy_path: Path | None = None, run_id: str | None = None) -> bool:
+    """Run ``scn``. ``policy_path`` overrides the policy given to the verifier and
+    ``oracle_policy_path`` the ground truth the oracles judge against (honeytoken
+    columns, ``haltlab_cols`` grants, column-attack targets); by default both are
+    the scenario's ``policy``/``oracle_policy`` or the fixture's policy.
+    ``run_id`` is added to database names so concurrent runs do not collide."""
     get_engine(scn.engine).check_dsn(scn.dsn)
     fixture = get_fixture(scn.fixture)
     if fixture.generated:
         fixture = materialize_generated(fixture, out_dir / "fixture", scn.erp_tables, int(scn.data.get("seed", 42)))
-    policy_path = scn.policy_override or fixture.policy
-    policy = load_policy(policy_path)
+    policy_path = Path(policy_path or scn.policy_override or fixture.policy)
+    oracle_path = Path(oracle_policy_path or scn.oracle_policy or policy_path)
+    # The lab only reads tenancy keys, tables and columns from a policy; the
+    # oracles' view (``policy``) is the ground truth, the verifier gets policy_path.
+    policy = load_policy(oracle_path)
+    regrant = oracle_path.resolve() != Path(fixture.policy).resolve()
+    if oracle_path.resolve() != policy_path.resolve():
+        log(f"verifier policy {policy_path}; oracles judge against {oracle_path}")
     seed = int(scn.data.get("seed", 42))
     runs: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -62,13 +74,16 @@ def run_scenario(scn: Scenario, out_dir: Path, verifier_cmd: list[str], keep_db:
 
     for version in scn.postgres:
         admin = labdb.admin_dsn(version, scn.dsn)
-        name = labdb.db_name(scn.name, version)
+        name = labdb.db_name(scn.name, version, run_id)
         log(f"Postgres {version}: creating database {name}")
         dsn = labdb.create_database(admin, name)
         try:
             lab = labdb.install(dsn, fixture, policy, scn.data, scn.engine)
             log(f"loaded {lab.dataset.row_count()} rows into {len(lab.catalog)} tables "
                 f"(server {lab.server_version})")
+            if regrant:
+                n = labdb.apply_column_grants(dsn, policy, lab.catalog)
+                log(f"granted {labdb.COLS_ROLE} the allowed columns of {n} relation(s) from {oracle_path.name}")
             for note in lab.engine_notes:
                 log(f"engine {scn.engine}: {note}")
             model = SchemaModel.build(policy, fixture.model, lab.catalog)

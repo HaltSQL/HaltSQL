@@ -18,6 +18,9 @@ haltsql policy draft --catalog policies/catalog.json \
 haltsql lint-policy policies/agent.yaml
 ```
 
+`haltsql schema fetch` reads the labels of step 2 from a live data catalog API
+instead of an export file; see [below](#haltsql-schema-fetch-live).
+
 All three exit `0` on success, `1` when the result fails validation, and `2` on
 usage errors, unreadable input or connection failures. `--json` prints a
 machine-readable summary when `-o` is given. Every command has `--help` with
@@ -161,6 +164,102 @@ names (`displayName`) so they can be matched.
 Sample exports for every tool, based on the `lab/schemas/saas_shared.sql`
 schema, are in [`examples/metadata/`](../examples/metadata/).
 
+## `haltsql schema fetch` (live)
+
+Reads the same PII labels as `schema import` straight from a data catalog's
+API over HTTPS, so the manifest does not depend on someone exporting a file:
+
+```sh
+export OPENMETADATA_TOKEN=...            # never on the command line
+haltsql schema pull --dsn "$DATABASE_URL" --schema app -o policies/catalog.json
+haltsql schema fetch --from openmetadata --url https://om.example.com/api \
+    --service prod_pg --database app --schema app -o policies/pii.om.json
+haltsql policy draft --catalog policies/catalog.json --pii policies/pii.om.json \
+    --tenant-column tenant_id --schema app -o policies/agent.yaml
+```
+
+The manifest is the same format as `schema import`'s, with
+`metadata: {source: PROVIDER, url: URL, generated_by: "haltsql schema fetch"}`
+(the URL never carries credentials). Exit codes are those of `schema import`:
+`0` on success, `1` when the catalog returns no column metadata, `2` on usage
+errors and network or HTTP failures.
+
+### Security model: labels are trusted, structure never is
+
+A data catalog is a good source of **labels** (tags, classifications, glossary
+terms). A stale or missing label can only make HaltSQL exclude too little,
+which the column-name heuristics and review mitigate, and matching errs
+towards flagging.
+
+A data catalog is **never** trusted for **structure**. HaltSQL's analyzer
+treats a typed catalog snapshot as the complete column list of every table
+(to expand `SELECT *`) and as the complete list of relations in each schema
+(to rule out `search_path` shadowing). A catalog crawler that has not yet seen
+`ALTER TABLE customers ADD COLUMN ssn text` would turn that trust into a leak.
+So there are two ways to use `schema fetch`:
+
+- **Authoritative mode (recommended).** Structure from `haltsql schema pull`
+  against Postgres, labels from `haltsql schema fetch`, as in the example
+  above. The draft references the pulled snapshot with `catalog:`, and
+  `SELECT *` is expanded against the real columns (and denied when it would
+  read an excluded one).
+- **Catalog-only mode** (no database access). `--snapshot-out FILE` also
+  writes the tables and columns the catalog knows as a **non-authoritative**
+  snapshot: every column untyped, `metadata.authoritative: false`,
+  `metadata.source: "haltsql schema fetch"`. `haltsql policy draft --catalog`
+  accepts it to choose the column lists, but the draft has **no `catalog:`**
+  key and a header comment saying why. `SELECT *`, `t.*` and whole-row
+  references therefore stay denied (`E_COLUMN_DENIED`), and queries must name
+  the allowed columns. The policy loader (`catalog:` as a file or inline,
+  `haltsql validate`, the server, bundles) **refuses** a non-authoritative
+  snapshot, with an error telling you to use `haltsql schema pull`.
+  Switch to authoritative mode later by pulling a snapshot and redrafting.
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `--from PROVIDER` | The data catalog (see the status table below). |
+| `--url URL` | Base URL of the catalog API. `https` only (`http` is accepted for loopback hosts); a path prefix such as `https://datahub.example.com/gms` is kept; no credentials, query or fragment. |
+| `--token-env VAR` | Environment variable that holds the API token. Default: the provider's (for example `OPENMETADATA_TOKEN`). If the default variable is unset and there is no `--token-file`, requests are unauthenticated (with a warning). A `--token-env` you name explicitly must be set. |
+| `--token-file FILE` | Read the token from FILE (surrounding whitespace removed). Warns if the file is readable by other users. |
+| `--ca-file PEM` | Trust only the CA certificates in this PEM file (private CA). Default: the system trust store. |
+| `--service NAME` | Provider-specific scope: OpenMetadata database service, DataHub platform instance, Unity Catalog catalog. |
+| `--database NAME` | Database name as the catalog records it. |
+| `--schema S` | Only this schema; repeatable. Default: all. |
+| `-o FILE` | Write the manifest to FILE (atomically). Default: stdout. |
+| `--snapshot-out FILE` | Also write the non-authoritative snapshot (catalog-only mode). |
+| `--pii-tag TERM`, `--pii-term TERM` | As for `schema import`. |
+| `--timeout SECONDS` | Timeout of each HTTP request (default 30). |
+| `--max-pages N` | Fail after N pages of one listing (default 1000), so a misbehaving server cannot page forever. A repeated page cursor is also an error. |
+| `--json` | Machine-readable summary (with `-o`): output, source, url, scanned and PII column counts, tables, requests, snapshot, warnings. |
+
+**Token handling.** There is deliberately no option that takes the token
+itself: it would be visible in shell history and in the process list. The
+token is sent only as an `Authorization: Bearer` header, only to the `--url`
+origin (redirects are not followed), and is never printed, written to the
+manifest, or included in an error message. Error messages name the method,
+path and HTTP status (`GET /api/v1/tables: HTTP 401`) but never include
+response bodies. Responses are capped at 32 MiB.
+
+### Providers
+
+| Provider | `--from` | Default token variable | Status |
+|---|---|---|---|
+| _providers are added by their own PRs_ | | | |
+
+Coming soon (not yet validated against a live instance): Atlan, Collibra,
+dbt Cloud, Unity Catalog. The offline `schema import --from atlan|collibra`
+file importers (and `--from dbt` for `manifest.json`) remain available.
+
+Unity Catalog live sync is on hold because the open-source Unity Catalog
+server (v0.7.0, the newest image) has no column-tag API. Its `ColumnInfo` has
+no tags field, column tags are silently dropped on create, `PATCH /tables`
+returns 405, and the tag endpoints return 404. A live provider therefore cannot
+be validated against a runnable instance. Databricks-hosted Unity Catalog
+column tags are still supported offline through `schema import --from unity`,
+using `information_schema.column_tags` rows or table JSON with column tags.
+
 ## `haltsql policy draft`
 
 Generates a starter policy from a snapshot and any number of PII manifests
@@ -168,7 +267,7 @@ Generates a starter policy from a snapshot and any number of PII manifests
 
 | Option | Meaning |
 |---|---|
-| `--catalog FILE` | Snapshot from `schema pull` (required). |
+| `--catalog FILE` | Snapshot from `schema pull` (required), or a non-authoritative snapshot from `schema fetch --snapshot-out` (the draft then has no `catalog:`; see [catalog-only mode](#security-model-labels-are-trusted-structure-never-is)). |
 | `--pii FILE` | PII manifest; repeatable. |
 | `--tenant-column COL` | Tenant column (required). Every table that has it is tenant-scoped. |
 | `--tenancy-key KEY` | Tenancy key name (default `tenant`). |
@@ -197,7 +296,9 @@ The draft:
 - uses `statements: {allow: [select]}`, bound tenancy, `require_limit: {max: 1000}`,
   the `aggregates`, `math`, `string` and `datetime` presets, `mode: enforce` and a
   `catalog:` reference to the snapshot, so `SELECT *` is expanded against the
-  real columns and denied when it would read an excluded one.
+  real columns and denied when it would read an excluded one. From a
+  non-authoritative snapshot (`schema fetch --snapshot-out`) there is no
+  `catalog:` reference, and `SELECT *` is always denied.
 
 The draft is loaded with the policy loader (including the check that every
 table and column exists in the referenced catalog) before it is written; if it
@@ -220,3 +321,7 @@ The commands are thin wrappers over the `haltsql.catalog_tools` library:
 `Pg_dsn` (connection strings), `Pg_wire` (protocol client), `Scram`,
 `Schema_pull`, `Snapshot`, `Pii` (manifest and matcher), `Pii_import` and
 `Policy_draft`.
+`schema fetch` uses the separate `haltsql.catalog_fetch` library (it adds the
+HTTPS client): `Fetch_client` (endpoint checks, bearer auth, bounded
+pagination), `Provider` (the signature each data catalog implements) and
+`Catalog_fetch` (provider registry, import, non-authoritative snapshots).

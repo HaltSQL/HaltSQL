@@ -34,6 +34,7 @@ type t = {
   database : string option;
   server_version : string option;
   schemas : string list;
+  authoritative : bool;
 }
 
 let render_ident = Ident.render
@@ -60,7 +61,12 @@ let to_json t : Yojson.Safe.t =
     |> List.concat
   in
   let metadata =
-    [ ("source", `String "haltsql schema pull") ]
+    [
+      ( "source",
+        `String
+          (if t.authoritative then "haltsql schema pull" else "haltsql schema fetch") );
+    ]
+    @ (if t.authoritative then [] else [ ("authoritative", `Bool false) ])
     @ opt "database" t.database
     @ opt "server_version" t.server_version
     @ [ ("schemas", `List (List.map (fun s -> `String s) t.schemas)) ]
@@ -96,9 +102,9 @@ let to_json t : Yojson.Safe.t =
 let ( let* ) = Result.bind
 let errors_to_string errs = String.concat "\n" (List.map Load_error.to_string errs)
 
-let of_json ?file (j : Yojson.Safe.t) =
+let of_json ?allow_non_authoritative ?file (j : Yojson.Safe.t) =
   let* catalog =
-    match Haltsql_load.Catalog_load.of_json ?file j with
+    match Haltsql_load.Catalog_load.of_json ?allow_non_authoritative ?file j with
     | Ok c -> Ok c
     | Error errs -> Error (errors_to_string errs)
   in
@@ -142,9 +148,11 @@ let of_json ?file (j : Yojson.Safe.t) =
       database = str "database";
       server_version = str "server_version";
       schemas;
+      (* The catalog loader has checked that it is a boolean when present. *)
+      authoritative = List.assoc_opt "authoritative" meta <> Some (`Bool false);
     }
 
-let of_file file =
+let of_file ?allow_non_authoritative file =
   match Haltsql_load.Docload.of_file file with
   | Error errs -> Error (errors_to_string errs)
-  | Ok j -> of_json ~file j
+  | Ok j -> of_json ?allow_non_authoritative ~file j

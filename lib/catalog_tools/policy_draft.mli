@@ -13,7 +13,12 @@
       comment, and skips tables whose every column is excluded;
     - uses bound tenancy ([tenant: ${ctx.tenant_id}] by default), [require_limit: 1000],
       the [aggregates]/[math]/[string]/[datetime] presets, read-only statements, enforce
-      mode, and a [catalog:] reference to the snapshot.
+      mode, and a [catalog:] reference to the snapshot;
+    - when the snapshot is non-authoritative ({!Snapshot.t.authoritative} [= false], from
+      [haltsql schema fetch]), emits {b no} [catalog:] reference (the loader would refuse
+      it, and a data catalog's column lists cannot be trusted as complete) and says so in
+      a header comment: [SELECT *] and whole-row references stay denied, and [catalog_ref]
+      is ignored.
 
     The output is loaded with {!Haltsql_load.Policy_load} before it is returned; a draft
     that does not load is an error, never written. Names coming from the catalog or the

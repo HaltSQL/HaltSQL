@@ -17,7 +17,7 @@ from common.policy import read_document
 from compat.engines import ENGINES
 
 TOP_LEVEL_KEYS = {"apiVersion", "kind", "metadata", "environment", "fixture", "schema", "policy",
-                  "policies", "data", "workloads", "expect", "oracles", "verifier"}
+                  "oracle_policy", "policies", "data", "workloads", "expect", "oracles", "verifier"}
 
 KNOWN_FAULTS = {"policy-reload-during-load", "upstream-db-restart", "audit-sink-down",
                 "network-partition", "pod-kill", "cert-expiry", "clock-skew"}
@@ -62,6 +62,9 @@ class Scenario:
     erp_tables: int = 420
     faults: list[str] = field(default_factory=list)
     engine: str | None = None  # Postgres flavour with install hooks (lab/compat/engines.py)
+    # Ground truth for the oracles (honeytokens, haltlab_cols grants, column-attack
+    # targets) when it differs from the policy given to the verifier. None = same.
+    oracle_policy: Path | None = None
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -96,6 +99,8 @@ def parse_scenario(doc: dict[str, Any], path: Path) -> Scenario:
 
     policy = doc.get("policy")
     policy_override = (path.parent / policy).resolve() if isinstance(policy, str) else None
+    oracle_policy = doc.get("oracle_policy")
+    oracle_override = (path.parent / oracle_policy).resolve() if isinstance(oracle_policy, str) else None
 
     workloads: list[Workload] = []
     for i, w in enumerate(doc.get("workloads") or []):
@@ -151,6 +156,7 @@ def parse_scenario(doc: dict[str, Any], path: Path) -> Scenario:
         erp_tables=int((doc.get("data") or {}).get("tables", 420)),
         faults=faults,
         engine=engine,
+        oracle_policy=oracle_override,
         raw=doc,
     )
 

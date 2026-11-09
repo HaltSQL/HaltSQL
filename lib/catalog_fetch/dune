@@ -1,0 +1,18 @@
+; haltsql.catalog_fetch: live fetchers that pull column metadata (tags, glossary terms,
+; column lists) from data catalogs over HTTPS and turn it into PII manifests via
+; Haltsql_catalog_tools.Pii_import. Separate from haltsql.catalog_tools so that library
+; keeps no cohttp dependency.
+
+(library
+ (name haltsql_catalog_fetch)
+ (public_name haltsql.catalog_fetch)
+ (libraries
+  haltsql.core
+  haltsql.load
+  haltsql.catalog_tools
+  haltsql.cloud
+  cohttp
+  uri
+  yojson
+  lwt
+  lwt.unix))

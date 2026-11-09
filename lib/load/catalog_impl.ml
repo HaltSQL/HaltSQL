@@ -104,14 +104,35 @@ let decode_table ctx path key (j : Yojson.Safe.t) : Catalog.table option =
       | Some (schema, name), Some columns -> Some { Catalog.schema; name; columns }
       | _ -> None)
 
-let decode ctx path (j : Yojson.Safe.t) : Catalog.t option =
+let non_authoritative_message =
+  "this catalog snapshot is not authoritative: it describes a data catalog's view of the \
+   tables (from `haltsql schema fetch`), which can lag behind the database, so it cannot \
+   be trusted for SELECT * expansion or search_path checks. Snapshot the database with \
+   `haltsql schema pull` and reference that file instead"
+
+(* SECURITY: the analyzer trusts a catalog as the complete column list of every table and
+   the complete relation list of every schema. [metadata.authoritative: false] marks a
+   snapshot built from a data catalog (which can lag behind ALTER TABLE): refused unless
+   the caller only wants the structure as a hint (the policy drafter). *)
+let check_authoritative ctx path ~allow_non_authoritative kvs =
+  match Dec.field kvs "metadata" with
+  | None -> ()
+  | Some (`Assoc m) -> (
+      let p = Lpath.key (Lpath.key path "metadata") "authoritative" in
+      match List.assoc_opt "authoritative" m with
+      | None | Some (`Bool true) -> ()
+      | Some (`Bool false) ->
+          if not allow_non_authoritative then Dec.error ctx p non_authoritative_message
+      | Some j -> Dec.type_error ctx p "a boolean" j)
+  | Some j -> Dec.type_error ctx (Lpath.key path "metadata") "a mapping" j
+
+let decode ?(allow_non_authoritative = false) ctx path (j : Yojson.Safe.t) :
+    Catalog.t option =
   match Dec.obj ctx path ~keys j with
   | None -> None
   | Some kvs -> (
       Dec.header ctx ~required:false kvs path ~kind:"Catalog";
-      (match Dec.field kvs "metadata" with
-      | None | Some (`Assoc _) -> ()
-      | Some j -> Dec.type_error ctx (Lpath.key path "metadata") "a mapping" j);
+      check_authoritative ctx path ~allow_non_authoritative kvs;
       let tables =
         Dec.req ctx kvs path "tables" (fun p v ->
             match Dec.map ctx p v with
@@ -142,13 +163,13 @@ let decode ctx path (j : Yojson.Safe.t) : Catalog.t option =
           in
           Some { Catalog.tables })
 
-let of_json ?file ?positions ?(path = Lpath.root) j =
+let of_json ?allow_non_authoritative ?file ?positions ?(path = Lpath.root) j =
   let ctx = Dec.create ?file ?positions () in
-  match decode ctx path j with
+  match decode ?allow_non_authoritative ctx path j with
   | Some c when not (Dec.has_errors ctx) -> Ok c
   | _ -> Error (Dec.errors ctx)
 
-let of_file file =
+let of_file ?allow_non_authoritative file =
   match Docpos.parse_file file with
   | Error e -> Error e
-  | Ok (j, positions) -> of_json ~file ~positions j
+  | Ok (j, positions) -> of_json ?allow_non_authoritative ~file ~positions j

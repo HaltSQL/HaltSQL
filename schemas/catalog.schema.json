@@ -14,7 +14,7 @@
       "const": "Catalog"
     },
     "metadata": {
-      "description": "Free-form information about the snapshot (source, time, tool version).",
+      "description": "Free-form information about the snapshot (source, time, tool version). `authoritative: false` marks a data catalog's view written by `haltsql schema fetch`; it is refused as a policy catalog.",
       "type": "object"
     },
     "tables": {

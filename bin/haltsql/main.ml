@@ -193,8 +193,9 @@ let schema_cmd =
       `S Manpage.s_description;
       `P
         "$(b,pull) snapshots a live database catalog, $(b,import) converts PII metadata \
-         from other tools into manifests, and $(b,export) writes the JSON Schemas of \
-         every HaltSQL document kind (for editor validation).";
+         from other tools' export files into manifests, $(b,fetch) reads the same \
+         metadata from a live data catalog API, and $(b,export) writes the JSON Schemas \
+         of every HaltSQL document kind (for editor validation).";
     ]
     @ man_examples
         [
@@ -205,7 +206,7 @@ let schema_cmd =
   Cmd.group
     (Cmd.info "schema" ~man ~exits
        ~doc:"Catalog snapshots, PII metadata import and JSON Schema tooling.")
-    ([ export ] @ Cmd_schema.cmds)
+    ([ export ] @ Cmd_schema.cmds @ [ Cmd_schema_fetch.cmd ])
 
 (* ---- test ---- *)
 

@@ -10,6 +10,7 @@ from typing import Any
 import psycopg
 
 from common.fixtures import Fixture
+from common.ident import qi, qname
 from compat.engines import get_engine
 from common.policy import LabPolicy
 from common.tenancy import Universe, build_universe
@@ -32,8 +33,11 @@ def with_dbname(dsn: str, dbname: str) -> str:
     return psycopg.conninfo.make_conninfo(**info)
 
 
-def db_name(scenario: str, version: int) -> str:
-    return re.sub(r"[^a-z0-9_]", "_", f"haltlab_{scenario.lower()}_pg{version}")[:63]
+def db_name(scenario: str, version: int, run_id: str | None = None) -> str:
+    """``run_id`` makes the name unique when several runs share one server."""
+    base = f"haltlab_{scenario.lower()}" + (f"_{run_id.lower()}" if run_id else "")
+    suffix = f"_pg{version}"
+    return re.sub(r"[^a-z0-9_]", "_", base[:63 - len(suffix)] + suffix)
 
 
 @dataclass
@@ -83,3 +87,43 @@ def install(dsn: str, fixture: Fixture, policy: LabPolicy, data: dict[str, Any],
             notes += eng.after_load(conn, policy.schemas)
             conn.execute("ANALYZE")
     return LabDatabase(dsn, catalog, universe, dataset, server_version, notes)
+
+
+COLS_ROLE = "haltlab_cols"
+
+
+def column_grant_statements(policy: LabPolicy, catalog: list[TableInfo]) -> list[str]:
+    """SQL that gives ``haltlab_cols`` SELECT on exactly ``policy``'s allowed columns.
+
+    Fixture SQL grants the fixture's own policy statically. A run judged
+    against another policy (``--oracle-policy``/``--policy``, e.g. one drafted
+    from a data catalog) re-applies the grants from that policy, so the
+    column-privilege oracle uses the same ground truth as the honeytokens.
+    Relations the policy omits get no grant at all; policy columns that do not
+    exist in the database are skipped.
+    """
+    stmts: list[str] = []
+    for schema in policy.schemas:
+        stmts.append(f"REVOKE ALL ON ALL TABLES IN SCHEMA {qi(schema)} FROM {COLS_ROLE}")
+        stmts.append(f"GRANT USAGE ON SCHEMA {qi(schema)} TO {COLS_ROLE}")
+    for t in catalog:
+        pt = policy.table(t.schema, t.name)
+        if pt is None:
+            continue
+        rel = qname(t.schema, t.name)
+        if pt.columns is None:
+            stmts.append(f"GRANT SELECT ON {rel} TO {COLS_ROLE}")
+            continue
+        cols = [c.name for c in t.columns if c.name in pt.columns]
+        if cols:
+            stmts.append(f"GRANT SELECT ({', '.join(qi(c) for c in cols)}) ON {rel} TO {COLS_ROLE}")
+    return stmts
+
+
+def apply_column_grants(dsn: str, policy: LabPolicy, catalog: list[TableInfo]) -> int:
+    """Apply :func:`column_grant_statements`; returns the number of relations granted."""
+    stmts = column_grant_statements(policy, catalog)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for s in stmts:
+            conn.execute(s)  # type: ignore[arg-type]
+    return sum(1 for s in stmts if s.startswith("GRANT SELECT"))

@@ -190,6 +190,12 @@ strings. Generate a snapshot from a live database (`information_schema`) so it
 includes types; the analyzer only trusts entries that carry column types,
 because an entry must be the **complete** column list of the real table.
 
+A snapshot whose `metadata.authoritative` is `false` is refused, whether it
+is referenced as a file or written inline. `haltsql schema fetch
+--snapshot-out` writes such snapshots from a data catalog's view of the tables,
+which can lag behind the database; use `haltsql schema pull` for the policy's
+catalog (see [schema-and-pii.md](schema-and-pii.md#haltsql-schema-fetch-live)).
+
 Without a catalog, the catalog is empty. HaltSQL never builds one from the
 column lists in `tables`, since the real table may have columns the policy
 leaves out. Consequences without a snapshot:

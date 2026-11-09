@@ -8,6 +8,7 @@
   haltsql.bundle
   haltsql.rlsgen
   haltsql.catalog_tools
+  haltsql.catalog_fetch
   haltsql.report
   haltsql.bundle_source
   cmdliner
