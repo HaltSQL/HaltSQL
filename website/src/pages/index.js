@@ -1,5 +1,4 @@
 import React from 'react';
-import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
@@ -7,6 +6,7 @@ import CodeBlock from '@theme/CodeBlock';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import FlowAnimation from '@site/src/components/FlowAnimation';
+import IntegrationWall from '@site/src/components/IntegrationWall';
 import styles from './index.module.css';
 
 const policyYaml = `apiVersion: haltsql.dev/v1
@@ -63,71 +63,50 @@ app=> SELECT email FROM customers LIMIT 5;
 ERROR:  haltsql: query denied by policy "analytics-agent": column email of app.customers is not readable under this policy
 DETAIL: HaltSQL reasons: E_COLUMN_DENIED, E_TENANT_MISSING`;
 
-const checks = [
-  ['Statement kinds', 'Only the kinds you allow. DDL, COPY, SET, DO and multi-statement strings are denied.'],
-  ['Tables and columns', 'Allowlists per table, including what * would expand to. System catalogs are never reachable.'],
-  ['Functions, operators, casts', 'Presets plus explicit allowlists. pg_sleep, dblink and regclass casts are denied.'],
-  ['Tenant isolation', 'A provable tenant predicate on every occurrence of every tenant table, in its own scope.'],
-  ['Result shape', 'Required LIMIT with a maximum, join budget, no locking clauses, no SELECT INTO.'],
-  ['Parameters', 'Every $n must be a tenant value HaltSQL supplies, so the model never chooses a bound value.'],
+const modes = [
+  ['Library', 'Haltsql.verify / haltsql CLI', 'Call verify in-process, or shell out to the static CLI from scripts and CI.', '/docs/how-it-works/deployment-modes'],
+  ['Sidecar', 'POST /v1/verify', 'haltsql-server next to your agent, with TLS, OIDC, audit and metrics, for any language.', '/docs/http-api'],
+  ['Proxy', 'Postgres wire protocol', 'haltsql-proxy in front of the database, so unmodified drivers cannot skip the check.', '/docs/proxy'],
 ];
 
-const paths = [
-  ['Library', 'Embed', 'Call verify() in-process from OCaml, or shell out to the static CLI.', '/docs/how-it-works/deployment-modes'],
-  ['Sidecar', 'HTTP', 'haltsql-server next to your agent: TLS, OIDC, mTLS, audit, metrics.', '/docs/http-api'],
-  ['Proxy', 'Wire protocol', 'haltsql-proxy speaks Postgres. No code changes; tenant values bound server side.', '/docs/proxy'],
-  ['SDKs', 'Clients', 'Python, TypeScript, Go and Java clients with guarded execution, plus MCP.', '/docs/integrations'],
+const controls = [
+  ['Tenant isolation', 'A provable tenant predicate on every tenant table, in its own scope. The model never picks the bound value.', '/docs/tenancy'],
+  ['Column and function allowlists', 'Including what * expands to. pg_sleep, dblink and regclass casts are denied.', '/docs/policy-reference'],
+  ['Hash-chained audit', 'To files, S3, GCS, Kafka or OpenSearch, and checked with haltsql audit verify.', '/docs/audit-sinks'],
+  ['OIDC, TLS and mTLS', 'Policies chosen from IdP groups, secret providers, and an optional deny-only OPA check.', '/docs/authentication'],
+  ['Signed policy bundles', 'Pulled from OCI, S3 or HTTPS, signature-checked and hot-reloaded.', '/docs/policy-bundles'],
+  ['Shadow reports', 'See what a new policy would deny before you enforce it.', '/docs/shadow-reports'],
 ];
 
 function Hero() {
   return (
     <header className={styles.hero}>
       <div className="container">
-        <div className={styles.heroGrid}>
+        <Heading as="h1" className={styles.title}>
+          Stop bad SQL before it runs.
+        </Heading>
+        <div className={styles.heroRow}>
           <div>
-            <span className={styles.kicker}>Open source · MIT</span>
-            <Heading as="h1" className={styles.title}>
-              Let the model write SQL.
-              <br />
-              <span className={styles.titleAccent}>Decide what runs.</span>
-            </Heading>
-            <p className={styles.subtitle}>
-              HaltSQL is a policy firewall for LLM-generated PostgreSQL. It parses each query with
-              the real Postgres parser, proves it stays inside your policy and inside the caller's
-              tenant, and returns a verdict with reasons the model can act on. It never rewrites
-              SQL and never connects to your database.
+            <p className={styles.lede}>
+              HaltSQL is a policy firewall for LLM-generated PostgreSQL. It parses every statement
+              your agents write with the real Postgres parser, checks tenants, columns and functions
+              against your policy, and returns reasons the model can act on. It never rewrites SQL
+              and never connects to your database.
             </p>
-            <div className={styles.buttons}>
-              <Link className="button button--primary button--lg" to="/docs/quickstart">
-                Quickstart: first deny in 5 minutes
-              </Link>
-              <Link className="button button--secondary button--lg" to="/docs/how-it-works/architecture">
-                How it works
-              </Link>
-            </div>
             <p className={styles.mcpCallout}>
               Using <code>@modelcontextprotocol/server-postgres</code> with Claude Desktop or Cursor?{' '}
               <Link to="/docs/mcp">
-                Swap in <code>haltsql-mcp</code>, the safe drop-in replacement →
+                Swap in <code>haltsql-mcp</code>, the safe drop-in replacement.
               </Link>
             </p>
           </div>
-          <div className={styles.verdictCard}>
-            <div className={styles.verdictSql}>
-              <code>SELECT c.name, c.email FROM customers c LIMIT 10</code>
-            </div>
-            <div className={styles.verdictDeny}>DENIED</div>
-            <ul className={styles.verdictReasons}>
-              <li>
-                <code>E_COLUMN_DENIED</code> column email of app.customers is not readable
-              </li>
-              <li>
-                <code>E_TENANT_MISSING</code> app.customers (as c) has no provable tenant predicate
-              </li>
-            </ul>
-            <div className={styles.verdictHint}>
-              hint: add <code>WHERE c.tenant_id = $1</code>; remove <code>c.email</code>
-            </div>
+          <div className={styles.ctas}>
+            <Link className={styles.btnRed} to="/docs/quickstart">
+              Read the quickstart
+            </Link>
+            <Link className={styles.btnLine} to="#integrations">
+              Browse integrations
+            </Link>
           </div>
         </div>
       </div>
@@ -135,15 +114,12 @@ function Hero() {
   );
 }
 
-function Section({ title, kicker, children, alt }) {
+function SectionHead({ title, children }) {
   return (
-    <section className={clsx(styles.section, alt && styles.sectionAlt)}>
-      <div className="container">
-        {kicker && <span className={styles.kicker}>{kicker}</span>}
-        <Heading as="h2">{title}</Heading>
-        {children}
-      </div>
-    </section>
+    <div className={styles.sHead}>
+      <Heading as="h2">{title}</Heading>
+      <p>{children}</p>
+    </div>
   );
 }
 
@@ -151,33 +127,50 @@ export default function Home() {
   return (
     <Layout
       title="Policy firewall for LLM-generated PostgreSQL"
-      description="HaltSQL checks LLM-generated PostgreSQL against a declarative policy and tenant isolation rules before it runs.">
+      description="HaltSQL checks LLM-generated PostgreSQL against a declarative policy and tenant isolation rules before it runs. Integrates with MCP, LangChain, LangGraph, OpenAI Agents, Google ADK, OpenMetadata, dbt and more.">
       <Hero />
       <main>
-        <Section kicker="The big picture" title="Where HaltSQL sits">
-          <p className={styles.lead}>
-            The agent writes SQL. HaltSQL decides whether that exact string may run for this caller.
-            Only an allowed query reaches Postgres, bound with tenant values the model never saw.
-            A denied query goes back to the agent with codes and hints so it can try again.
-          </p>
-          <FlowAnimation />
-        </Section>
+        <IntegrationWall />
 
-        <Section alt kicker="Quick start" title="Try it">
-          <div className={styles.twoCol}>
-            <div>
-              <p>
-                <strong>1. Write a policy.</strong> YAML or JSON. It lists what the agent may read
-                and how rows are scoped to a tenant.
-              </p>
+        <section className={styles.section}>
+          <div className="container">
+            <SectionHead title="Where HaltSQL sits.">
+              The agent writes SQL. HaltSQL decides whether that exact string may run for this
+              caller. Only an allowed query reaches Postgres, bound with tenant values the model
+              never saw. A denied query goes back to the agent with codes and hints.
+            </SectionHead>
+            <FlowAnimation />
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <div className="container">
+            <SectionHead title="Three ways in.">
+              Embed the verifier, run it as a sidecar, or put it on the wire. The policy and the
+              verdicts are the same in each.
+            </SectionHead>
+            <div className={styles.modes}>
+              {modes.map(([title, how, body, to]) => (
+                <Link key={title} to={to} className={styles.mode}>
+                  <h3>{title}</h3>
+                  <p className={styles.how}>{how}</p>
+                  <p>{body}</p>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <div className="container">
+            <SectionHead title="Write a policy, check a query.">
+              A policy lists what the agent may read and how rows are scoped to a tenant. Check
+              queries against it from the CLI, an SDK, the HTTP sidecar or the proxy.
+            </SectionHead>
+            <div className={styles.twoCol}>
               <CodeBlock language="yaml" title="policy.yaml">
                 {policyYaml}
               </CodeBlock>
-            </div>
-            <div>
-              <p>
-                <strong>2. Check queries</strong> however your stack prefers.
-              </p>
               <Tabs groupId="surface">
                 <TabItem value="cli" label="CLI" default>
                   <CodeBlock language="bash">{cliExample}</CodeBlock>
@@ -194,56 +187,45 @@ export default function Home() {
               </Tabs>
             </div>
           </div>
-        </Section>
+        </section>
 
-        <Section kicker="What it checks" title="Every query, every rule, fail closed">
-          <div className="hs-card-grid">
-            {checks.map(([title, body]) => (
-              <div key={title} className="hs-card">
-                <h3>{title}</h3>
-                <p>{body}</p>
-              </div>
-            ))}
+        <section className={styles.section}>
+          <div className="container">
+            <SectionHead title="Passes the security review.">
+              The controls platform and security teams ask about before an agent reaches production
+              data, all in the MIT-licensed release.
+            </SectionHead>
+            <div className={styles.checklist}>
+              {controls.map(([title, body, to]) => (
+                <Link key={title} to={to} className={styles.check}>
+                  <i aria-hidden="true" />
+                  <h3>{title}</h3>
+                  <p>{body}</p>
+                </Link>
+              ))}
+            </div>
+            <p className={styles.note}>
+              Anything the analyzer does not fully understand is denied with{' '}
+              <code>E_UNSUPPORTED</code>, never guessed at. Read the{' '}
+              <Link to="/docs/threat-model">threat model</Link> and{' '}
+              <Link to="/docs/how-it-works/assurance">how HaltSQL is tested</Link>.
+            </p>
           </div>
-          <p className={styles.note}>
-            Anything the analyzer does not fully understand is denied with{' '}
-            <code>E_UNSUPPORTED</code>, never guessed at. See{' '}
-            <Link to="/docs/how-it-works/analyzer">how the analyzer works</Link>.
-          </p>
-        </Section>
+        </section>
 
-        <Section alt kicker="Choose your path" title="Four ways to deploy">
-          <div className="hs-card-grid">
-            {paths.map(([title, kicker, body, to]) => (
-              <Link key={title} className="hs-card" to={to}>
-                <span className="hs-card-kicker">{kicker}</span>
-                <h3>{title}</h3>
-                <p>{body}</p>
+        <section className={styles.final}>
+          <div className="container">
+            <Heading as="h2">Put a policy in front of your agents today.</Heading>
+            <div className={styles.ctas}>
+              <Link className={styles.btnRed} to="/docs/quickstart">
+                Get started
               </Link>
-            ))}
+              <Link className={styles.btnInv} to="https://github.com/HaltSQL/HaltSQL">
+                View on GitHub
+              </Link>
+            </div>
           </div>
-        </Section>
-
-        <Section kicker="Explore next" title="Learn how it works">
-          <div className="hs-card-grid">
-            <Link className="hs-card" to="/docs/how-it-works/verification-pipeline">
-              <h3>The verification pipeline</h3>
-              <p>From SQL string to verdict: parse, typed AST, scopes, rules, bind values.</p>
-            </Link>
-            <Link className="hs-card" to="/docs/how-it-works/tenancy-proof">
-              <h3>The tenancy proof</h3>
-              <p>What HaltSQL must prove before it lets a query touch a tenant table.</p>
-            </Link>
-            <Link className="hs-card" to="/docs/how-it-works/proxy-internals">
-              <h3>Inside the proxy</h3>
-              <p>How the wire-protocol firewall verifies Parse and rewrites Bind.</p>
-            </Link>
-            <Link className="hs-card" to="/docs/how-it-works/assurance">
-              <h3>How we test it</h3>
-              <p>3,300+ tests, an attack corpus, fuzzing and a lab that runs every allowed query.</p>
-            </Link>
-          </div>
-        </Section>
+        </section>
       </main>
     </Layout>
   );
