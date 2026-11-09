@@ -319,5 +319,6 @@ Quick local start:
 haltsql-server --policy policy.yaml --listen 127.0.0.1:8080 --allow-unauthenticated
 ```
 
-TLS is not built into `haltsql-server` in 0.1.0; terminate TLS in a proxy or
-service mesh, or keep the listener on localhost.
+For anything beyond localhost, turn on built-in TLS with `server.tls` (see
+[Authentication and TLS](authentication.md#built-in-tls)), or terminate TLS
+in a proxy or service mesh in front of the server.

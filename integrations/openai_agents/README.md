@@ -32,7 +32,7 @@ The tenant comes from the run context, by default its `haltsql_context`
 attribute or key. Pass `context_from=` to read it from your own context
 object. It is never a tool argument.
 
-`haltsql_tool_input_guardrail(verifier, sql_arg="sql")` guards SQL tools you
+`haltsql_tool_input_guardrail(verifier, sql_arg="query")` guards SQL tools you
 already have (`@function_tool(tool_input_guardrails=[...])`). Before the tool
 runs, the guardrail verifies its SQL argument. If HaltSQL does not allow it,
 the call is rejected and the model gets the refusal.

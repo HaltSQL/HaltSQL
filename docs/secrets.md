@@ -101,7 +101,8 @@ agent.
 returned.
 
 **Credentials.** These come from the standard chain: environment variables,
-then web identity (IRSA), then the EC2 instance profile (IMDSv2). See
+then web identity (IRSA), then container credentials (the ECS task role or
+EKS Pod Identity), then the EC2 instance profile (IMDSv2). See
 [audit-sinks.md](audit-sinks.md#s3) for details. On an expired-credential
 error the credentials are refreshed and the call is retried once.
 

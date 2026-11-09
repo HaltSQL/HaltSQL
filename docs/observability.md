@@ -28,7 +28,7 @@ telemetry:
 
 The exporter (library `haltsql-server.telemetry`, module `Exporter`) speaks
 **OTLP/HTTP with the JSON encoding**. Any OpenTelemetry Collector with the
-`otlphttp` receiver accepts it, and so do most vendor endpoints that take
+`otlp` receiver and its `http` protocol enabled accepts it, and so do most vendor endpoints that take
 OTLP/HTTP. Data is posted to:
 
 - `<endpoint>/v1/traces`: an `ExportTraceServiceRequest`
@@ -125,7 +125,7 @@ Telemetry must never slow down or break verification, so:
 
 | Condition | Meaning |
 |---|---|
-| `rate(haltsql_otlp_spans_dropped_total[5m]) > 0` | The collector is unreachable or too slow. Verification is unaffected. |
+| `rate(haltsql_otlp_spans_dropped_total[5m]) > 0` | The collector is unreachable or too slow. Verification is unaffected. This counter is exported over OTLP, not on `/metrics`, so alert on it in the backend that receives the OTLP metrics. |
 | `rate(haltsql_audit_errors_total[5m]) > 0` | An audit sink is failing. With `fail_closed`, requests are being refused. |
 | `haltsql_audit_sink_healthy == 0` | A cloud audit sink is refusing writes. |
 | `histogram_quantile(0.99, rate(haltsql_verify_duration_seconds_bucket[5m])) > 0.05` | Verification is slower than expected. |

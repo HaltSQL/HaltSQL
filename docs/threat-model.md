@@ -120,9 +120,10 @@ These are design goals backed by tests (see [testing.md](testing.md)). HaltSQL
 
 - **Library:** runs in your process; trust is the same as your application.
 - **Sidecar:** treat the network between the agent and `haltsql-server` as
-  untrusted. Keep the listener on localhost in the same pod, or terminate TLS
-  in a proxy or service mesh in front of it (the 0.1.0 server has no built-in
-  TLS). Use bearer
+  untrusted. Keep the listener on localhost in the same pod, or turn on the
+  server's built-in TLS or mutual TLS (`server.tls`, see
+  [authentication.md](authentication.md#built-in-tls)), or terminate TLS in a
+  proxy or service mesh in front of it. Use bearer
   tokens pinned to policies, and do not enable `allow_unauthenticated`
   outside development.
 - **Audit logs** may contain sensitive data if `log_raw_sql` is enabled. It is
