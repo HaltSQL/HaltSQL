@@ -1,0 +1,90 @@
+# Lean OpenMetadata stack for HaltSQL's live catalog validation.
+#
+# Derived from the official release compose
+# https://github.com/open-metadata/OpenMetadata/releases/download/2.0.7-release/docker-compose-postgres.yml
+# with: every image pinned to 2.0.7, the Airflow ingestion container removed (ingestion
+# runs from the openmetadata-ingestion pip package, see seed.sh), the pipeline service
+# client disabled, smaller search heap, and no host ports except the API on 127.0.0.1.
+#
+#   OM_PORT=8595 docker compose -p haltsql-om up -d --wait
+#   docker compose -p haltsql-om down -v
+#
+# Credentials are the upstream lab defaults and never leave this machine.
+name: haltsql-om
+
+x-om-env: &om-env
+  OPENMETADATA_CLUSTER_NAME: openmetadata
+  SERVER_PORT: "8585"
+  SERVER_ADMIN_PORT: "8586"
+  LOG_LEVEL: WARN
+  AUTHENTICATION_PROVIDER: basic
+  AUTHENTICATION_PUBLIC_KEYS: "[http://localhost:8585/api/v1/system/config/jwks]"
+  AUTHORIZER_ADMIN_PRINCIPALS: "[admin]"
+  AUTHORIZER_PRINCIPAL_DOMAIN: open-metadata.org
+  PIPELINE_SERVICE_CLIENT_ENABLED: "false"
+  SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+  DB_DRIVER_CLASS: org.postgresql.Driver
+  DB_SCHEME: postgresql
+  DB_PARAMS: allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+  DB_USER: openmetadata_user
+  DB_USER_PASSWORD: openmetadata_password
+  DB_HOST: postgresql
+  DB_PORT: "5432"
+  OM_DATABASE: openmetadata_db
+  ELASTICSEARCH_HOST: elasticsearch
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_SCHEME: http
+  SEARCH_TYPE: elasticsearch
+  FERNET_KEY: jJ/9sz0g0OHxsfxOoSfdFdmk3ysNmPRnH3TUAbz3IHA=
+  SECRET_MANAGER: db
+  OPENMETADATA_HEAP_OPTS: -Xmx1G -Xms1G
+
+services:
+  postgresql:
+    image: docker.getcollate.io/openmetadata/postgresql:2.0.7
+    command: "--work_mem=10MB"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      test: psql -U postgres -tAc 'select 1' -d openmetadata_db
+      interval: 5s
+      timeout: 10s
+      retries: 40
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.0
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+    healthcheck:
+      test: "curl -s http://localhost:9200/_cluster/health?pretty | grep status | grep -qE 'green|yellow' || exit 1"
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  execute-migrate-all:
+    image: docker.getcollate.io/openmetadata/server:2.0.7
+    command: "./bootstrap/openmetadata-ops.sh migrate"
+    environment:
+      <<: *om-env
+      MIGRATION_LIMIT_PARAM: "1200"
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      postgresql: { condition: service_healthy }
+
+  openmetadata-server:
+    image: docker.getcollate.io/openmetadata/server:2.0.7
+    environment: *om-env
+    ports:
+      - "127.0.0.1:${OM_PORT:-8595}:8585"
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      postgresql: { condition: service_healthy }
+      execute-migrate-all: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 60

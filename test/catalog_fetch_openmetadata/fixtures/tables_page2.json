@@ -1,0 +1,642 @@
+{
+  "data": [
+    {
+      "id": "60c41460-c6b9-4cba-910d-9d1b0c550749",
+      "name": "order_items",
+      "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items",
+      "version": 0.2,
+      "updatedAt": 1794168598347,
+      "updatedBy": "ingestion-bot",
+      "href": "http://localhost:8585/api/v1/tables/60c41460-c6b9-4cba-910d-9d1b0c550749",
+      "tableType": "Regular",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.id",
+          "tags": [],
+          "constraint": "PRIMARY_KEY",
+          "ordinalPosition": 1,
+          "children": []
+        },
+        {
+          "name": "tenant_id",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.tenant_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 2,
+          "children": []
+        },
+        {
+          "name": "order_id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.order_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 3,
+          "children": []
+        },
+        {
+          "name": "sku",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.sku",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 4,
+          "children": []
+        },
+        {
+          "name": "description",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.description",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 5,
+          "children": []
+        },
+        {
+          "name": "quantity",
+          "dataType": "INT",
+          "dataLength": 1,
+          "dataTypeDisplay": "integer",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.quantity",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 6,
+          "children": []
+        },
+        {
+          "name": "unit_price_cents",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.order_items.unit_price_cents",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 7,
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2d45e2e5-0e3d-47e9-8571-07c59e875f5c",
+        "type": "databaseSchema",
+        "name": "app",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app",
+        "displayName": "app",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2d45e2e5-0e3d-47e9-8571-07c59e875f5c"
+      },
+      "database": {
+        "id": "815ffc92-e535-4b8c-989c-57f9dac6a387",
+        "type": "database",
+        "name": "om_src_7341",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341",
+        "displayName": "om_src_7341",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/815ffc92-e535-4b8c-989c-57f9dac6a387"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "changeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "tableConstraints",
+            "newValue": "[{\"constraintType\":\"FOREIGN_KEY\",\"columns\":[\"order_id\"],\"referredColumns\":[\"haltsql_lab_pg.om_src_7341.app.orders.id\"],\"relationshipType\":\"MANY_TO_ONE\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {}
+      },
+      "incrementalChangeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "tableConstraints",
+            "newValue": "[{\"constraintType\":\"FOREIGN_KEY\",\"columns\":[\"order_id\"],\"referredColumns\":[\"haltsql_lab_pg.om_src_7341.app.orders.id\"],\"relationshipType\":\"MANY_TO_ONE\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {}
+      },
+      "deleted": false,
+      "sourceHash": "a9a44dfc21706a0e62b019d988b138ea",
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    },
+    {
+      "id": "ab379c49-68ec-4cd6-8f5a-9cbd42de0f35",
+      "name": "orders",
+      "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders",
+      "version": 0.3,
+      "updatedAt": 1794168607357,
+      "updatedBy": "admin",
+      "href": "http://localhost:8585/api/v1/tables/ab379c49-68ec-4cd6-8f5a-9cbd42de0f35",
+      "tableType": "Regular",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.id",
+          "tags": [],
+          "constraint": "PRIMARY_KEY",
+          "ordinalPosition": 1,
+          "children": []
+        },
+        {
+          "name": "tenant_id",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.tenant_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 2,
+          "children": []
+        },
+        {
+          "name": "customer_id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.customer_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 3,
+          "children": []
+        },
+        {
+          "name": "status",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.status",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 4,
+          "children": []
+        },
+        {
+          "name": "total_cents",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.total_cents",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 5,
+          "children": []
+        },
+        {
+          "name": "currency",
+          "dataType": "CHAR",
+          "dataLength": 3,
+          "dataTypeDisplay": "character(3)",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.currency",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 6,
+          "children": []
+        },
+        {
+          "name": "note",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.note",
+          "tags": [
+            {
+              "tagFQN": "Tier.Tier1",
+              "name": "Tier1",
+              "description": "**Critical Source of Truth business data assets of an organization**\n\n- Used in critical metrics and dashboards to drive business and product decisions\n\n- Used in critical compliance reporting to regulators, govt entities, and third party\n\n- Used in brand or revenue impacting online user-facing experiences (search results, advertisement, promotions, and experimentation)\n\n- Other high impact use, such as ML models and fraud detection\n\n- Source used to derive other critical Tier-1 datasets",
+              "source": "Classification",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:07.000367Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NULL",
+          "ordinalPosition": 7,
+          "children": []
+        },
+        {
+          "name": "created_at",
+          "dataType": "TIMESTAMP",
+          "dataLength": 1,
+          "dataTypeDisplay": "timestamp with time zone",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orders.created_at",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 8,
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2d45e2e5-0e3d-47e9-8571-07c59e875f5c",
+        "type": "databaseSchema",
+        "name": "app",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app",
+        "displayName": "app",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2d45e2e5-0e3d-47e9-8571-07c59e875f5c"
+      },
+      "database": {
+        "id": "815ffc92-e535-4b8c-989c-57f9dac6a387",
+        "type": "database",
+        "name": "om_src_7341",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341",
+        "displayName": "om_src_7341",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/815ffc92-e535-4b8c-989c-57f9dac6a387"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "changeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.note.tags",
+            "newValue": "[{\"tagFQN\":\"Tier.Tier1\",\"name\":\"Tier1\",\"description\":\"**Critical Source of Truth business data assets of an organization**\\n\\n- Used in critical metrics and dashboards to drive business and product decisions\\n\\n- Used in critical compliance reporting to regulators, govt entities, and third party\\n\\n- Used in brand or revenue impacting online user-facing experiences (search results, advertisement, promotions, and experimentation)\\n\\n- Other high impact use, such as ML models and fraud detection\\n\\n- Source used to derive other critical Tier-1 datasets\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.2,
+        "changeSummary": {}
+      },
+      "incrementalChangeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.note.tags",
+            "newValue": "[{\"tagFQN\":\"Tier.Tier1\",\"name\":\"Tier1\",\"description\":\"**Critical Source of Truth business data assets of an organization**\\n\\n- Used in critical metrics and dashboards to drive business and product decisions\\n\\n- Used in critical compliance reporting to regulators, govt entities, and third party\\n\\n- Used in brand or revenue impacting online user-facing experiences (search results, advertisement, promotions, and experimentation)\\n\\n- Other high impact use, such as ML models and fraud detection\\n\\n- Source used to derive other critical Tier-1 datasets\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.2,
+        "changeSummary": {}
+      },
+      "deleted": false,
+      "sourceHash": "6b3549eea04490d2628586090b6db247",
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    },
+    {
+      "id": "5e1b1d82-e509-431d-92d7-ddd9b88a1cd7",
+      "name": "orgs",
+      "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs",
+      "version": 0.2,
+      "updatedAt": 1794168608646,
+      "updatedBy": "admin",
+      "href": "http://localhost:8585/api/v1/tables/5e1b1d82-e509-431d-92d7-ddd9b88a1cd7",
+      "tableType": "Regular",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs.id",
+          "tags": [],
+          "constraint": "PRIMARY_KEY",
+          "children": []
+        },
+        {
+          "name": "tenant_id",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs.tenant_id",
+          "tags": [],
+          "constraint": "NULL",
+          "children": []
+        },
+        {
+          "name": "name",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "description": "Legal name; may contain the owner's personal email address.",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs.name",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "plan",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs.plan",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "children": []
+        },
+        {
+          "name": "created_at",
+          "dataType": "TIMESTAMP",
+          "dataLength": 1,
+          "dataTypeDisplay": "timestamp with time zone",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.orgs.created_at",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2d45e2e5-0e3d-47e9-8571-07c59e875f5c",
+        "type": "databaseSchema",
+        "name": "app",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app",
+        "displayName": "app",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2d45e2e5-0e3d-47e9-8571-07c59e875f5c"
+      },
+      "database": {
+        "id": "815ffc92-e535-4b8c-989c-57f9dac6a387",
+        "type": "database",
+        "name": "om_src_7341",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341",
+        "displayName": "om_src_7341",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/815ffc92-e535-4b8c-989c-57f9dac6a387"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "changeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.name.description",
+            "newValue": "Legal name; may contain the owner's personal email address."
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {
+          "columns.name.description": {
+            "changeSource": "Manual",
+            "changedBy": "admin",
+            "changedAt": 1794168608646
+          }
+        }
+      },
+      "incrementalChangeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.name.description",
+            "newValue": "Legal name; may contain the owner's personal email address."
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.1,
+        "changeSummary": {
+          "columns.name.description": {
+            "changeSource": "Manual",
+            "changedBy": "admin",
+            "changedAt": 1794168608646
+          }
+        }
+      },
+      "deleted": false,
+      "sourceHash": "64ab6ca18028637798f2efc066b5b898",
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    },
+    {
+      "id": "bcda3acc-1b28-4cda-8741-101dea1fe9e3",
+      "name": "payments",
+      "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments",
+      "version": 0.3,
+      "updatedAt": 1794168609682,
+      "updatedBy": "admin",
+      "href": "http://localhost:8585/api/v1/tables/bcda3acc-1b28-4cda-8741-101dea1fe9e3",
+      "tableType": "Regular",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.id",
+          "tags": [],
+          "constraint": "PRIMARY_KEY",
+          "ordinalPosition": 1,
+          "children": []
+        },
+        {
+          "name": "tenant_id",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.tenant_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 2,
+          "children": []
+        },
+        {
+          "name": "invoice_id",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.invoice_id",
+          "tags": [],
+          "constraint": "NULL",
+          "ordinalPosition": 3,
+          "children": []
+        },
+        {
+          "name": "method",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.method",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 4,
+          "children": []
+        },
+        {
+          "name": "amount_cents",
+          "dataType": "BIGINT",
+          "dataLength": 1,
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.amount_cents",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 5,
+          "children": []
+        },
+        {
+          "name": "card_last4",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.card_last4",
+          "tags": [
+            {
+              "tagFQN": "PII.NonSensitive",
+              "name": "NonSensitive",
+              "description": "PII which is easily accessible from public sources and can include zip code, race, gender, and date of birth.",
+              "source": "Classification",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:09.000719Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NULL",
+          "ordinalPosition": 6,
+          "children": []
+        },
+        {
+          "name": "card_token",
+          "dataType": "TEXT",
+          "dataLength": 1,
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.card_token",
+          "tags": [
+            {
+              "tagFQN": "PII.Sensitive",
+              "name": "Sensitive",
+              "description": "PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.",
+              "source": "Classification",
+              "labelType": "Manual",
+              "state": "Confirmed",
+              "appliedAt": "2026-11-08T20:10:09.000719Z",
+              "appliedBy": "admin"
+            }
+          ],
+          "constraint": "NULL",
+          "ordinalPosition": 7,
+          "children": []
+        },
+        {
+          "name": "paid_at",
+          "dataType": "TIMESTAMP",
+          "dataLength": 1,
+          "dataTypeDisplay": "timestamp with time zone",
+          "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app.payments.paid_at",
+          "tags": [],
+          "constraint": "NOT_NULL",
+          "ordinalPosition": 8,
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2d45e2e5-0e3d-47e9-8571-07c59e875f5c",
+        "type": "databaseSchema",
+        "name": "app",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341.app",
+        "displayName": "app",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2d45e2e5-0e3d-47e9-8571-07c59e875f5c"
+      },
+      "database": {
+        "id": "815ffc92-e535-4b8c-989c-57f9dac6a387",
+        "type": "database",
+        "name": "om_src_7341",
+        "fullyQualifiedName": "haltsql_lab_pg.om_src_7341",
+        "displayName": "om_src_7341",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/815ffc92-e535-4b8c-989c-57f9dac6a387"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "changeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.card_last4.tags",
+            "newValue": "[{\"tagFQN\":\"PII.NonSensitive\",\"name\":\"NonSensitive\",\"description\":\"PII which is easily accessible from public sources and can include zip code, race, gender, and date of birth.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.card_token.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.2,
+        "changeSummary": {}
+      },
+      "incrementalChangeDescription": {
+        "fieldsAdded": [
+          {
+            "name": "columns.card_last4.tags",
+            "newValue": "[{\"tagFQN\":\"PII.NonSensitive\",\"name\":\"NonSensitive\",\"description\":\"PII which is easily accessible from public sources and can include zip code, race, gender, and date of birth.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          },
+          {
+            "name": "columns.card_token.tags",
+            "newValue": "[{\"tagFQN\":\"PII.Sensitive\",\"name\":\"Sensitive\",\"description\":\"PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.\",\"source\":\"Classification\",\"labelType\":\"Manual\",\"state\":\"Confirmed\",\"appliedBy\":\"admin\"}]"
+          }
+        ],
+        "fieldsUpdated": [],
+        "fieldsDeleted": [],
+        "previousVersion": 0.2,
+        "changeSummary": {}
+      },
+      "deleted": false,
+      "sourceHash": "a9c382a430daf8e9c9423a6be06b0e34",
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    }
+  ],
+  "paging": {
+    "before": "eyJuYW1lIjoib3JkZXJfaXRlbXMiLCJpZCI6IjYwYzQxNDYwLWM2YjktNGNiYS05MTBkLTlkMWIwYzU1MDc0OSJ9",
+    "after": "eyJuYW1lIjoicGF5bWVudHMiLCJpZCI6ImJjZGEzYWNjLTFiMjgtNGNkYS04NzQxLTEwMWRlYTFmZTllMyJ9",
+    "total": 9
+  }
+}

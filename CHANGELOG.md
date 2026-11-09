@@ -22,6 +22,15 @@ even before 1.0.
 - `haltsql policy draft` accepts a non-authoritative snapshot: the draft then
   has no `catalog:` reference and a header comment explaining that `SELECT *`
   stays denied.
+- **OpenMetadata integration**, validated against a live OpenMetadata 2.0.7
+  server: `haltsql schema import --from openmetadata` reads table JSON from
+  `/api/v1/tables` (classification tags as tags, glossary terms as terms, STRUCT
+  child tags flag the parent column), and `haltsql schema fetch --from
+  openmetadata` fetches it live with a bot JWT (`OPENMETADATA_TOKEN`), scoped by
+  `--service`, `--database` and `--schema`, following `paging.after` cursors.
+  Opt-in end-to-end check in `test/catalog_live/openmetadata/` (real Postgres
+  connector ingestion, REST-applied tags, fetch, lab tier-3), run weekly by the
+  `catalog-live` workflow.
 - **Bundled engine in the Python wheel and npm package.** `pip install haltsql`
   now ships platform wheels (`manylinux_2_28` x86_64/aarch64, `macosx_11_0_arm64`)
   that contain `libhaltsql`, the verification engine as a self-contained C shared

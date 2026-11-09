@@ -1,6 +1,6 @@
 (** Data-catalog importers (see pii_import.mli). *)
 
-type source = Dbt | Datahub | Unity | Atlan | Collibra
+type source = Dbt | Datahub | Unity | Atlan | Collibra | Openmetadata
 
 let source_to_string = function
   | Dbt -> "dbt"
@@ -8,8 +8,9 @@ let source_to_string = function
   | Unity -> "unity"
   | Atlan -> "atlan"
   | Collibra -> "collibra"
+  | Openmetadata -> "openmetadata"
 
-let all_sources = [ Dbt; Datahub; Unity; Atlan; Collibra ]
+let all_sources = [ Dbt; Datahub; Unity; Atlan; Collibra; Openmetadata ]
 let source_of_string s = List.find_opt (fun x -> source_to_string x = s) all_sources
 
 type result = { manifest : Pii.t; scanned_columns : int; warnings : string list }
@@ -639,6 +640,96 @@ let collibra cfg (j : Yojson.Safe.t) =
     assets;
   finish cfg Collibra ~what:"asset export with Column assets" (List.rev !cands) !warnings
 
+(* ------------------------------------------------------------ OpenMetadata *)
+
+(* Splits an OpenMetadata fully qualified name on dots, honouring the double quotes
+   OpenMetadata puts around name parts that contain a dot ("svc.db."my.schema".t"). *)
+let split_fqn s =
+  let parts = ref [] and buf = Buffer.create 16 and quoted = ref false in
+  String.iter
+    (fun c ->
+      match c with
+      | '"' -> quoted := not !quoted
+      | '.' when not !quoted ->
+          parts := Buffer.contents buf :: !parts;
+          Buffer.clear buf
+      | c -> Buffer.add_char buf c)
+    s;
+  List.rev (Buffer.contents buf :: !parts)
+
+(* Tag labels on an OpenMetadata column: [source] "Glossary" is a glossary term, anything
+   else (normally "Classification") a tag. The full tagFQN is matched, so the
+   classification name counts ("PII.Sensitive", "PersonalData.Personal") and so does a
+   glossary parent term. *)
+let openmetadata_labels (col : Yojson.Safe.t) =
+  List.filter_map
+    (fun t ->
+      match first_some [ str "tagFQN" t; str "name" t ] with
+      | None -> None
+      | Some fqn -> (
+          match str "source" t with
+          | Some "Glossary" -> Some (Term fqn)
+          | _ -> Some (Tag fqn)))
+    (list "tags" col)
+
+(* A STRUCT/MAP/ARRAY column's nested [children] are not separately addressable in SQL:
+   their labels apply to the top-level column, which exposes them. *)
+let rec openmetadata_all_labels (col : Yojson.Safe.t) =
+  openmetadata_labels col @ List.concat_map openmetadata_all_labels (list "children" col)
+
+let openmetadata_table_name (t : Yojson.Safe.t) =
+  let fqn_parts =
+    match str "fullyQualifiedName" t with Some f -> List.rev (split_fqn f) | None -> []
+  in
+  let table =
+    first_some [ str "name" t; (match fqn_parts with x :: _ -> Some x | [] -> None) ]
+  in
+  let schema =
+    first_some
+      [
+        Option.bind (field "databaseSchema" t) (str "name");
+        (match fqn_parts with _ :: s :: _ -> Some s | _ -> None);
+      ]
+  in
+  (schema, table)
+
+let openmetadata cfg (j : Yojson.Safe.t) =
+  let cands = ref [] and warnings = ref [] in
+  let tables =
+    match j with
+    | `List l -> l
+    | `Assoc _ when field "columns" j <> None -> [ j ]
+    | `Assoc _ -> list "data" j
+    | _ -> []
+  in
+  List.iter
+    (fun t ->
+      match openmetadata_table_name t with
+      | Some s, Some tb ->
+          List.iter
+            (fun col ->
+              match str "name" col with
+              | Some c ->
+                  cands :=
+                    {
+                      c_schema = s;
+                      c_table = tb;
+                      c_column = c;
+                      labels = openmetadata_all_labels col;
+                    }
+                    :: !cands
+              | None -> ())
+            (list "columns" t)
+      | _ ->
+          if field "columns" t <> None then
+            warnings :=
+              Printf.sprintf "table %s has no schema/name; skipped"
+                (Option.value (str "id" t) ~default:"?")
+              :: !warnings)
+    tables;
+  finish cfg Openmetadata ~what:"table JSON with columns, a list, or {\"data\": [...]}"
+    (List.rev !cands) !warnings
+
 (* ------------------------------------------------------------ entry points *)
 
 let import ?(config = Pii.Matcher.default) source j =
@@ -648,6 +739,7 @@ let import ?(config = Pii.Matcher.default) source j =
   | Unity -> unity config j
   | Atlan -> atlan config j
   | Collibra -> collibra config j
+  | Openmetadata -> openmetadata config j
 
 let import_file ?config source file =
   match In_channel.with_open_bin file In_channel.input_all with

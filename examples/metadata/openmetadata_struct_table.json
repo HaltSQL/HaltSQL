@@ -1,0 +1,103 @@
+{
+  "data": [
+    {
+      "id": "db87896b-f7cb-4b03-b997-a7327f162fb4",
+      "name": "page_views",
+      "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views",
+      "version": 0.1,
+      "updatedAt": 1794168611390,
+      "updatedBy": "admin",
+      "href": "http://localhost:8585/api/v1/tables/db87896b-f7cb-4b03-b997-a7327f162fb4",
+      "columns": [
+        {
+          "name": "id",
+          "dataType": "BIGINT",
+          "dataTypeDisplay": "bigint",
+          "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views.id",
+          "tags": [],
+          "children": []
+        },
+        {
+          "name": "context",
+          "dataType": "STRUCT",
+          "dataTypeDisplay": "struct<user_email:varchar,user_agent:varchar>",
+          "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views.context",
+          "tags": [],
+          "children": [
+            {
+              "name": "user_email",
+              "dataType": "VARCHAR",
+              "dataLength": 256,
+              "dataTypeDisplay": "varchar",
+              "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views.context.user_email",
+              "tags": [
+                {
+                  "tagFQN": "PII.Sensitive",
+                  "name": "Sensitive",
+                  "description": "PII which if lost, compromised, or disclosed without authorization, could result in substantial harm, embarrassment, inconvenience, or unfairness to an individual.",
+                  "source": "Classification",
+                  "labelType": "Manual",
+                  "state": "Confirmed",
+                  "appliedAt": "2026-11-08T20:10:11.000410Z"
+                }
+              ],
+              "children": []
+            },
+            {
+              "name": "user_agent",
+              "dataType": "VARCHAR",
+              "dataLength": 256,
+              "dataTypeDisplay": "varchar",
+              "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views.context.user_agent",
+              "tags": [],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "url",
+          "dataType": "TEXT",
+          "dataTypeDisplay": "text",
+          "fullyQualifiedName": "haltsql_lab_pg.lake.events.page_views.url",
+          "tags": [],
+          "children": []
+        }
+      ],
+      "databaseSchema": {
+        "id": "2e212b49-1796-4dc2-8993-5fa3cbd857f8",
+        "type": "databaseSchema",
+        "name": "events",
+        "fullyQualifiedName": "haltsql_lab_pg.lake.events",
+        "displayName": "events",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databaseSchemas/2e212b49-1796-4dc2-8993-5fa3cbd857f8"
+      },
+      "database": {
+        "id": "e3e24cfc-0632-450e-bc8e-854704861223",
+        "type": "database",
+        "name": "lake",
+        "fullyQualifiedName": "haltsql_lab_pg.lake",
+        "displayName": "lake",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/databases/e3e24cfc-0632-450e-bc8e-854704861223"
+      },
+      "service": {
+        "id": "4ef99cc4-ea82-43df-90a8-6648058e93c5",
+        "type": "databaseService",
+        "name": "haltsql_lab_pg",
+        "fullyQualifiedName": "haltsql_lab_pg",
+        "displayName": "haltsql_lab_pg",
+        "deleted": false,
+        "href": "http://localhost:8585/api/v1/services/databaseServices/4ef99cc4-ea82-43df-90a8-6648058e93c5"
+      },
+      "serviceType": "Postgres",
+      "tags": [],
+      "deleted": false,
+      "processedLineage": false,
+      "entityStatus": "Unprocessed"
+    }
+  ],
+  "paging": {
+    "total": 1
+  }
+}
