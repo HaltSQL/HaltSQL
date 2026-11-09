@@ -172,12 +172,20 @@ let dbt cfg (j : Yojson.Safe.t) =
                       meta_labels "" (Option.value (field "meta" col) ~default:`Null)
                       @ meta_labels "" (Option.value (field "meta" config) ~default:`Null)
                     in
+                    (* The column description is free text, like a catalog.json
+                       comment; descriptions of sources never reach catalog.json
+                       (persist_docs only writes comments on models). *)
+                    let description =
+                      match str "description" col with
+                      | Some d -> [ Comment d ]
+                      | None -> []
+                    in
                     cands :=
                       {
                         c_schema = schema;
                         c_table = table;
                         c_column = column;
-                        labels = List.map (fun t -> Tag t) (tags @ metas);
+                        labels = List.map (fun t -> Tag t) (tags @ metas) @ description;
                       }
                       :: !cands)
                   (assoc "columns" node)

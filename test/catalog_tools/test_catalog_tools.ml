@@ -229,9 +229,15 @@ let test_dbt_manifest () =
     (check_import Imp.Dbt "dbt_manifest.json" ~scanned:18
        [
          ("app", "audit_events", "ip", [ "personal_data" ]);
-         ("app", "customers", "email", [ "pii" ]);
-         ("app", "customers", "phone", [ "governance.sensitivity=restricted" ]);
-         ("app", "customers", "ssn", [ "classification=confidential"; "gdpr" ]);
+         ("app", "customers", "email", [ "comment:email"; "pii" ]);
+         ( "app",
+           "customers",
+           "phone",
+           [ "comment:phone"; "governance.sensitivity=restricted" ] );
+         ( "app",
+           "customers",
+           "ssn",
+           [ "classification=confidential"; "comment:ssn"; "gdpr" ] );
          ("app", "payments", "card_token", [ "pci" ]);
          ("app", "users", "email", [ "contains_pii" ]);
          ("app", "users", "full_name", [ "pii_name" ]);
@@ -253,6 +259,53 @@ let test_dbt_catalog () =
          ("app", "customers", "email", [ "comment:email" ]);
          ("app", "customers", "phone", [ "comment:pii" ]);
        ])
+
+(* Trimmed real artifacts from dbt-core 1.12.6 / dbt-postgres 1.11.0 (the project in
+   test/catalog_live/dbt, regenerated with trim_fixture.py). dbt >= 1.10 mirrors column
+   meta/tags into config.meta/config.tags; sources carry identifier (no alias); models
+   with a custom schema and alias name the relation dbt built (analytics_marts.users_dim,
+   not dim_users); source descriptions only exist in the manifest. *)
+let test_dbt_manifest_real () =
+  ignore
+    (check_import Imp.Dbt "dbt_manifest_1_12.json" ~scanned:41
+       [
+         ("analytics", "stg_customers", "ContactEmail", [ "pii" ]);
+         ("analytics", "stg_customers", "email", [ "comment:email" ]);
+         ("analytics", "stg_customers", "phone", [ "governance.sensitivity=restricted" ]);
+         ("analytics_marts", "users_dim", "email", [ "pii" ]);
+         ("app", "audit_events", "ip", [ "comment:gdpr" ]);
+         ("app", "customers", "email", [ "pii" ]);
+         ("app", "customers", "phone", [ "governance.sensitivity=restricted" ]);
+         ("app", "customers", "ssn", [ "pii" ]);
+         ( "app",
+           "payments",
+           "card_token",
+           [ "projects/acme/locations/us/taxonomies/42/policyTags/pci_token" ] );
+         ("app", "users", "email", [ "contains_pii" ]);
+         ("app", "users", "password_hash", [ "secret" ]);
+       ])
+
+let test_dbt_catalog_real () =
+  (* Only model descriptions are persisted as comments (persist_docs); tags and meta
+     never reach catalog.json. *)
+  ignore
+    (check_import Imp.Dbt "dbt_catalog_1_12.json" ~scanned:51
+       [ ("analytics", "stg_customers", "email", [ "comment:email" ]) ])
+
+let test_dbt_description_only () =
+  (* A description alone marks a column; one without a configured term does not. *)
+  let j =
+    Yojson.Safe.from_string
+      {|{"sources":{"source.p.app.events":{"resource_type":"source","schema":"app",
+         "name":"events","identifier":"raw_events","columns":{
+         "ip":{"name":"ip","description":"Client address; personal data","meta":{},"tags":[]},
+         "action":{"name":"action","description":"Verb, e.g. login","meta":{},"tags":[]}}}}}|}
+  in
+  let r = get_ok "description" (Imp.import Imp.Dbt j) in
+  Alcotest.(check int) "scanned" 2 r.scanned_columns;
+  Alcotest.check exp_t "manifest"
+    (norm [ ("app", "raw_events", "ip", [ "comment:personal" ]) ])
+    (norm (entries r.manifest))
 
 let test_datahub_mce () =
   ignore
@@ -1722,6 +1775,9 @@ let () =
               tc "dbt manifest" test_dbt_manifest;
               tc "dbt custom tags" test_dbt_custom_tags;
               tc "dbt catalog" test_dbt_catalog;
+              tc "dbt 1.12 manifest (real)" test_dbt_manifest_real;
+              tc "dbt 1.12 catalog (real)" test_dbt_catalog_real;
+              tc "dbt description only" test_dbt_description_only;
               tc "datahub mce/mcp" test_datahub_mce;
               tc "datahub graphql" test_datahub_graphql;
               tc "unity" test_unity;

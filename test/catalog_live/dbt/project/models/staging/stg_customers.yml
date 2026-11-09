@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Staged customers (a view; descriptions persisted as comments).
+    config:
+      tags: [staging]
+      meta: {owner: analytics}
+    columns:
+      - name: id
+        description: Surrogate key.
+      - name: tenant_id
+        description: Owning tenant.
+      - name: name
+        description: Display name.
+        config:
+          meta: {pii: false}
+      - name: email
+        description: Contact email address.             # description only (+ catalog comment)
+      - name: phone
+        config:
+          meta: {governance: {sensitivity: restricted}}
+      - name: country
+        config:
+          tags: [geo]
+      - name: ContactEmail
+        quote: true                                    # case-sensitive identifier
+        config:
+          tags: [pii]
+      - name: created_at
