@@ -46,6 +46,12 @@
   margin-top: 1.75rem;
 }
 
+.mcpCallout {
+  margin-top: 1.25rem;
+  font-size: 0.95rem;
+  color: var(--hs-muted);
+}
+
 .verdictCard {
   border: 1px solid var(--hs-border);
   border-radius: 14px;

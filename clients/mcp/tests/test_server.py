@@ -120,6 +120,19 @@ def test_settings_validation(tmp_path):
     assert "'t'" not in repr(s)  # token not in repr
 
 
+def test_settings_positional_dsn():
+    """`haltsql-mcp postgresql://...` works like @modelcontextprotocol/server-postgres."""
+    dsn = "postgresql://agent_ro@localhost/app"
+    s = settings_from_args([dsn], env={})
+    assert s.database_url == dsn
+    s = settings_from_args(["--row-cap", "10", dsn], env={"DATABASE_URL": "postgresql://other/db"})
+    assert s.database_url == dsn and s.row_cap == 10
+    assert settings_from_args(["--database-url", dsn, dsn], env={}).database_url == dsn
+    with pytest.raises(ConfigError, match="once"):
+        settings_from_args(["--database-url", "postgresql://other/db", dsn], env={})
+    assert dsn not in repr(settings_from_args([dsn], env={}))
+
+
 def test_settings_tls_to_sidecar(tmp_path):
     ca = tmp_path / "ca.pem"
     ca.write_text("x")
@@ -318,3 +331,70 @@ async def test_stdio_end_to_end(pg_dsn, fake_sidecar):
         assert out["rows"] == [[7], [8], [9], [10]]
         lt = payload(await c.call_tool("list_tables", {}))
         assert any(x["table"] == "app.orders" for x in lt["tables"])
+
+
+def test_config_file(tmp_path):
+    """One config file covers everything; relative paths resolve next to it; env and flags override it."""
+    import shutil
+
+    shutil.copy(SAAS_POLICY, tmp_path / "policy.yaml")
+    cfg = tmp_path / "haltsql-mcp.yaml"
+    cfg.write_text(
+        "database_url: postgresql://agent_ro@localhost/app\n"
+        "policy: policy.yaml\n"
+        "context: {tenant_id: acme}\n"
+        "row_cap: 50\n"
+        "set_config: {app.tenant_id: tenant_id}\n"
+    )
+    s = settings_from_args(["--config", str(cfg)], env={})
+    assert s.local_policy_file == str(tmp_path / "policy.yaml")
+    assert s.describe_file == str(tmp_path / "policy.yaml")
+    assert s.database_url == "postgresql://agent_ro@localhost/app"
+    assert s.context == {"tenant_id": "acme"} and s.row_cap == 50
+    assert s.set_config == {"app.tenant_id": "tenant_id"}
+    # HALTSQL_MCP_CONFIG works too; env overrides the file, flags override env.
+    s = settings_from_args(["--row-cap", "7"], env={
+        "HALTSQL_MCP_CONFIG": str(cfg), "HALTSQL_MCP_ROW_CAP": "9",
+        "HALTSQL_MCP_CONTEXT": '{"tenant_id": "globex"}'})
+    assert s.row_cap == 7 and s.context == {"tenant_id": "globex"}
+    assert s.local_policy_file == str(tmp_path / "policy.yaml")
+
+
+def test_config_file_central_server(tmp_path):
+    (tmp_path / "token").write_text("s3cret\n")
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({
+        "server": {"url": "https://haltsql.internal:8443", "token_file": "token",
+                   "policy": "saas-analytics", "timeout": 3},
+        "database_url": "postgresql://agent_ro@db/app",
+        "policy_file": SAAS_POLICY,
+    }))
+    s = settings_from_args(["--config", str(cfg)], env={})
+    assert s.haltsql_url == "https://haltsql.internal:8443" and s.haltsql_token == "s3cret"
+    assert s.haltsql_policy == "saas-analytics" and s.haltsql_timeout == 3.0
+    assert s.local_policy_file is None and "s3cret" not in repr(s)
+    assert settings_from_args(["--config", str(cfg)], env={"HALTSQL_TOKEN": "env"}).haltsql_token == "env"
+
+
+def test_config_file_errors(tmp_path):
+    cfg = tmp_path / "c.yaml"
+    cases = [
+        ("row_cpa: 5\n", "unknown key"),
+        ("server: {token: abc}\n", "token_file"),
+        ("server: {urll: x}\n", "unknown key server.urll"),
+        (f"policy: {SAAS_POLICY}\nserver: {{url: http://x}}\n", "not both"),
+        ("row_cap: '5'\n", "integer"),
+        ("context: [1]\n", "mapping"),
+        ("- a\n", "must be a mapping"),
+        ("policy: missing.yaml\n", "file not found"),
+        ("server: {token_file: nope}\n", "cannot read"),
+    ]
+    for text, msg in cases:
+        cfg.write_text(text)
+        with pytest.raises(ConfigError, match=msg):
+            settings_from_args(["--config", str(cfg)], env={})
+    with pytest.raises(ConfigError, match="cannot read config file"):
+        settings_from_args(["--config", str(tmp_path / "absent.yaml")], env={})
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("")
+    assert settings_from_args(["--config", str(empty)], env={}).row_cap == 200

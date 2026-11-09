@@ -10,7 +10,12 @@
    The static link needs the archives of every C library the binaries use: libgmp.a
    (zarith; Alpine package gmp-static) and the vendored libpg_query.a (built by
    lib/pgquery/dune). mirage-crypto, digestif and the OCaml runtime stubs are compiled
-   from source. *)
+   from source.
+
+   HALTSQL_STATIC_GMP=DIR links only libgmp statically: DIR must contain libgmp.a and no
+   libgmp dylib/so. It is searched before zarith's own -L directory, so the linker picks
+   the archive. Used for the macOS binaries shipped in the Python wheel and npm package,
+   which must not depend on a Homebrew libgmp.dylib. *)
 
 let is_musl () =
   List.exists
@@ -24,6 +29,15 @@ let is_musl () =
 
 let static = "(-ccopt -static)"
 
+let static_gmp () =
+  match Sys.getenv_opt "HALTSQL_STATIC_GMP" with
+  | None | Some "" -> ""
+  | Some dir ->
+      if not (Sys.file_exists (Filename.concat dir "libgmp.a")) then (
+        prerr_endline ("HALTSQL_STATIC_GMP: no libgmp.a in " ^ dir);
+        exit 1);
+      Printf.sprintf "-ccopt -L%s" (Filename.quote dir)
+
 let () =
   match Sys.getenv_opt "HALTSQL_STATIC" with
   | Some ("1" | "true" | "yes") ->
@@ -35,4 +49,4 @@ let () =
            HALTSQL_STATIC=force to try anyway.";
         exit 1)
   | Some "force" -> print_string static
-  | _ -> print_string "()"
+  | _ -> print_string ("(" ^ static_gmp () ^ ")")

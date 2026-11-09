@@ -242,7 +242,9 @@ points at HaltSQL rather than at the harness.
 | Proxy | `test_proxy.py` | `haltsql-proxy` (TLS verify-full against a CA made for the test, SCRAM) in front of Postgres. psycopg gets the session tenant's rows even when it binds another tenant; a denied column, a cross-tenant literal and a `DELETE` get SQLSTATE 42501 with their reason codes, and the connection stays usable. The upstream role logs every statement, and the Postgres log shows the allowed statements (with `$1 = 'acme'`) and never the denied ones, which reach Postgres only as the proxy's unparsable placeholder; the rows are all still there. After SIGHUP with a new policy, new sessions may read `total_cents` and a session from before keeps the old policy. `haltsql audit verify` passes on the proxy's audit file, whose records match every statement, catches an edited record, and passes with `--strict` after a restart continues the chain. |
 | Agent frameworks | `test_agents.py` | The HaltSQL tool of the OpenAI Agents SDK, LangGraph and Google ADK, each called through the framework's own tool-call machinery (no LLM) in its own virtualenv (`agents/drive_tool.py`), against a real server with a token and the stack's Postgres. Allowed queries return the rows of the tenant in the application state; cross-tenant queries are denied (`E_TENANT_MISMATCH`; `E_TENANT_MISSING` + `E_PARAM_UNBOUND`) and never executed; a call without a trusted context is refused. The Postgres log shows the two allowed executions with the bound tenants and none of the others; the server's audit file matches the verdicts and verifies. |
 
-The `E2E` job of the Integration workflow runs `make e2e` on every pull request.
+The `E2E` job of the Integration workflow runs `make e2e` on every pull request
+that touches the OCaml tree (`.github/scripts/changes.sh` decides), and on every
+push to `main`.
 
 ## When each tier runs
 

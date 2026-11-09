@@ -105,6 +105,12 @@ function Hero() {
                 How it works
               </Link>
             </div>
+            <p className={styles.mcpCallout}>
+              Using <code>@modelcontextprotocol/server-postgres</code> with Claude Desktop or Cursor?{' '}
+              <Link to="/docs/mcp">
+                Swap in <code>haltsql-mcp</code>, the safe drop-in replacement →
+              </Link>
+            </p>
           </div>
           <div className={styles.verdictCard}>
             <div className={styles.verdictSql}>
