@@ -46,24 +46,40 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Upload the site
+      # HaltSQL/HaltSQL is private, and GitHub Pages cannot publish from a
+      # private repository on the Free plan. The built HTML is published from
+      # the public HaltSQL/haltsql.github.io repository instead: its gh-pages
+      # branch is replaced by one commit holding website/build. See
+      # website/README.md ("Publishing") for the deploy key setup.
+      - name: Publish to HaltSQL/haltsql.github.io
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
-        with:
-          path: website/build
+        working-directory: website/build
+        env:
+          DEPLOY_KEY: ${{ secrets.PAGES_DEPLOY_KEY }}
+          SOURCE_SHA: ${{ github.sha }}
+          # GitHub's published ed25519 host key (gh api meta), pinned so the
+          # push cannot be redirected to another host.
+          GITHUB_HOST_KEY: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_KEY}" ]; then
+            echo "::error::The PAGES_DEPLOY_KEY secret is not set."
+            exit 1
+          fi
+          ssh_dir="${RUNNER_TEMP}/ssh"
+          install -m 700 -d "${ssh_dir}"
+          printf '%s\n' "${DEPLOY_KEY}" > "${ssh_dir}/key"
+          chmod 600 "${ssh_dir}/key"
+          printf '%s\n' "${GITHUB_HOST_KEY}" > "${ssh_dir}/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i ${ssh_dir}/key -o IdentitiesOnly=yes -o UserKnownHostsFile=${ssh_dir}/known_hosts -o StrictHostKeyChecking=yes"
 
-  deploy:
-    name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+          # Serve the files as-is (no Jekyll processing on GitHub Pages).
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy docs from HaltSQL/HaltSQL@${SOURCE_SHA}"
+          git push --force git@github.com:HaltSQL/haltsql.github.io.git gh-pages
+          rm -rf "${ssh_dir}"
+          echo "Published https://haltsql.github.io/ from ${SOURCE_SHA}" >> "${GITHUB_STEP_SUMMARY}"

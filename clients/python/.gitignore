@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 .mypy_cache/
+# Compiled engine staged by scripts/build_wheel.sh for platform wheels
+src/haltsql/_native/

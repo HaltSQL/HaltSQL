@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from haltsql import validate_context
 
-__all__ = ["ConfigError", "TokenEntry", "Settings", "load_tokens_file", "hash_token"]
+__all__ = ["ConfigError", "TokenEntry", "Settings", "load_config_file", "load_tokens_file", "hash_token"]
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SETTING_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*$")
@@ -107,6 +107,136 @@ def _json_obj(raw: str, what: str) -> Dict[str, Any]:
     return data
 
 
+# Config file keys -> (Settings attribute, kind). Paths are resolved relative
+# to the config file's directory, so one file works natively and in Docker.
+_FILE_KEYS: Dict[str, Any] = {
+    "database_url": ("database_url", "str"),
+    "policy": ("local_policy_file", "path"),
+    "policy_file": ("policy_file", "path"),
+    "context": ("context", "obj"),
+    "tokens_file": ("tokens_file", "path"),
+    "row_cap": ("row_cap", "int"),
+    "statement_timeout_ms": ("statement_timeout_ms", "int"),
+    "set_config": ("set_config", "obj"),
+    "transport": ("transport", "str"),
+    "host": ("host", "str"),
+    "port": ("port", "int"),
+    "public_url": ("public_url", "str"),
+    "haltsql_bin": ("haltsql_bin", "path"),
+}
+_SERVER_KEYS: Dict[str, Any] = {
+    "url": ("haltsql_url", "str"),
+    "token_file": ("haltsql_token", "secret_file"),
+    "policy": ("haltsql_policy", "str"),
+    "timeout": ("haltsql_timeout", "num"),
+    "ca_file": ("haltsql_ca_file", "path"),
+    "client_cert": ("haltsql_client_cert", "path"),
+    "client_key": ("haltsql_client_key", "path"),
+}
+
+
+def _parse_config_text(path: str, raw: str) -> Any:
+    if path.endswith(".json"):
+        try:
+            return json.loads(raw)
+        except ValueError as e:
+            raise ConfigError(f"config file {path} is not valid JSON: {e}") from None
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError:
+        try:
+            return json.loads(raw)  # JSON is valid YAML
+        except ValueError:
+            raise ConfigError(
+                f"config file {path} is YAML; install PyYAML (pip install 'haltsql-mcp[yaml]') "
+                "or write it as JSON"
+            ) from None
+    try:
+        return yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        raise ConfigError(f"config file {path} is not valid YAML: {e}") from None
+
+
+def _convert(value: Any, kind: str, where: str, base: str) -> Any:
+    if kind in ("str", "path", "secret_file"):
+        if not isinstance(value, str) or not value:
+            raise ConfigError(f"{where} must be a non-empty string")
+        if kind == "str":
+            return value
+        p = os.path.join(base, os.path.expanduser(value))
+        if kind == "path":
+            return p
+        try:
+            with open(p, encoding="utf-8") as f:
+                secret = f.read().strip()
+        except OSError as e:
+            raise ConfigError(f"cannot read {where} {p}: {e.strerror}") from None
+        if not secret:
+            raise ConfigError(f"{where} {p} is empty")
+        return secret
+    if kind == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"{where} must be an integer")
+        return value
+    if kind == "num":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"{where} must be a number")
+        return float(value)
+    if not isinstance(value, dict):  # obj
+        raise ConfigError(f"{where} must be a mapping")
+    return dict(value)
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    """Read a haltsql-mcp config file and return ``{Settings attribute: value}``.
+
+    Unknown keys are errors (a typo must not silently drop a guardrail).
+    ``policy`` (local verification with the haltsql CLI) and ``server``
+    (a central haltsql-server) are mutually exclusive. The sidecar token is
+    read from ``server.token_file`` or ``HALTSQL_TOKEN``, never inline.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as e:
+        raise ConfigError(f"cannot read config file {path}: {e.strerror}") from None
+    data = _parse_config_text(path, raw)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"config file {path} must be a mapping")
+    base = os.path.dirname(os.path.abspath(path))
+    out: Dict[str, Any] = {}
+    for key, value in data.items():
+        if key == "server":
+            if not isinstance(value, dict):
+                raise ConfigError("server must be a mapping")
+            for skey, svalue in value.items():
+                if skey == "token":
+                    raise ConfigError(
+                        "server.token is not allowed in the config file; use server.token_file "
+                        "or the HALTSQL_TOKEN environment variable"
+                    )
+                if skey not in _SERVER_KEYS:
+                    raise ConfigError(
+                        f"unknown key server.{skey} in {path} (expected one of {', '.join(sorted(_SERVER_KEYS))})"
+                    )
+                attr, kind = _SERVER_KEYS[skey]
+                out[attr] = _convert(svalue, kind, f"server.{skey}", base)
+            continue
+        if key not in _FILE_KEYS:
+            raise ConfigError(
+                f"unknown key {key!r} in {path} (expected one of {', '.join(sorted([*_FILE_KEYS, 'server']))})"
+            )
+        attr, kind = _FILE_KEYS[key]
+        out[attr] = _convert(value, kind, key, base)
+    if "local_policy_file" in out and "server" in data:
+        raise ConfigError("set either policy (verify locally) or server (central haltsql-server), not both")
+    if "set_config" in out:
+        out["set_config"] = {str(k): v for k, v in out["set_config"].items()}
+    return out
+
+
 @dataclass
 class Settings:
     """Everything haltsql-mcp needs. See ``docs/mcp.md`` for each variable."""
@@ -144,35 +274,63 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
+        """Defaults overridden by environment variables."""
+        s = cls()
+        s.apply_env(os.environ if env is None else env)
+        return s
+
+    @classmethod
+    def from_sources(
+        cls, env: Optional[Mapping[str, str]] = None, config_file: Optional[str] = None
+    ) -> "Settings":
+        """Defaults, then the config file (if any), then environment variables."""
         e = os.environ if env is None else env
         s = cls()
-        s.haltsql_url = e.get("HALTSQL_URL") or s.haltsql_url
-        s.haltsql_token = e.get("HALTSQL_TOKEN") or None
-        s.haltsql_policy = e.get("HALTSQL_POLICY") or None
-        if e.get("HALTSQL_TIMEOUT"):
+        path = config_file or e.get("HALTSQL_MCP_CONFIG") or None
+        if path:
+            s.apply_file(path)
+        s.apply_env(e)
+        return s
+
+    def apply_env(self, e: Mapping[str, str]) -> None:
+        """Override settings with every environment variable that is set (non-empty)."""
+        def get(name: str) -> Optional[str]:
+            v = e.get(name)
+            return v if v else None
+
+        self.haltsql_url = get("HALTSQL_URL") or self.haltsql_url
+        self.haltsql_token = get("HALTSQL_TOKEN") or self.haltsql_token
+        self.haltsql_policy = get("HALTSQL_POLICY") or self.haltsql_policy
+        if get("HALTSQL_TIMEOUT"):
             try:
-                s.haltsql_timeout = float(e["HALTSQL_TIMEOUT"])
+                self.haltsql_timeout = float(e["HALTSQL_TIMEOUT"])
             except ValueError:
                 raise ConfigError("HALTSQL_TIMEOUT must be a number") from None
-        s.haltsql_ca_file = e.get("HALTSQL_CA_FILE") or None
-        s.haltsql_client_cert = e.get("HALTSQL_CLIENT_CERT") or None
-        s.haltsql_client_key = e.get("HALTSQL_CLIENT_KEY") or None
-        s.local_policy_file = e.get("HALTSQL_MCP_LOCAL_POLICY") or None
-        s.haltsql_bin = e.get("HALTSQL_BIN") or None
-        s.database_url = e.get("HALTSQL_MCP_DATABASE_URL") or e.get("DATABASE_URL") or None
-        s.row_cap = _env_int(e, "HALTSQL_MCP_ROW_CAP", s.row_cap)
-        s.statement_timeout_ms = _env_int(e, "HALTSQL_MCP_STATEMENT_TIMEOUT_MS", s.statement_timeout_ms)
-        if e.get("HALTSQL_MCP_SET_CONFIG"):
-            s.set_config = {str(k): v for k, v in _json_obj(e["HALTSQL_MCP_SET_CONFIG"], "HALTSQL_MCP_SET_CONFIG").items()}
-        s.policy_file = e.get("HALTSQL_MCP_POLICY_FILE") or None
-        if e.get("HALTSQL_MCP_CONTEXT"):
-            s.context = _json_obj(e["HALTSQL_MCP_CONTEXT"], "HALTSQL_MCP_CONTEXT")
-        s.tokens_file = e.get("HALTSQL_MCP_TOKENS_FILE") or None
-        s.transport = e.get("HALTSQL_MCP_TRANSPORT") or s.transport
-        s.host = e.get("HALTSQL_MCP_HOST") or s.host
-        s.port = _env_int(e, "HALTSQL_MCP_PORT", s.port)
-        s.public_url = e.get("HALTSQL_MCP_PUBLIC_URL") or None
-        return s
+        self.haltsql_ca_file = get("HALTSQL_CA_FILE") or self.haltsql_ca_file
+        self.haltsql_client_cert = get("HALTSQL_CLIENT_CERT") or self.haltsql_client_cert
+        self.haltsql_client_key = get("HALTSQL_CLIENT_KEY") or self.haltsql_client_key
+        self.local_policy_file = get("HALTSQL_MCP_LOCAL_POLICY") or self.local_policy_file
+        self.haltsql_bin = get("HALTSQL_BIN") or self.haltsql_bin
+        self.database_url = get("HALTSQL_MCP_DATABASE_URL") or get("DATABASE_URL") or self.database_url
+        self.row_cap = _env_int(e, "HALTSQL_MCP_ROW_CAP", self.row_cap)
+        self.statement_timeout_ms = _env_int(e, "HALTSQL_MCP_STATEMENT_TIMEOUT_MS", self.statement_timeout_ms)
+        if get("HALTSQL_MCP_SET_CONFIG"):
+            self.set_config = {
+                str(k): v for k, v in _json_obj(e["HALTSQL_MCP_SET_CONFIG"], "HALTSQL_MCP_SET_CONFIG").items()
+            }
+        self.policy_file = get("HALTSQL_MCP_POLICY_FILE") or self.policy_file
+        if get("HALTSQL_MCP_CONTEXT"):
+            self.context = _json_obj(e["HALTSQL_MCP_CONTEXT"], "HALTSQL_MCP_CONTEXT")
+        self.tokens_file = get("HALTSQL_MCP_TOKENS_FILE") or self.tokens_file
+        self.transport = get("HALTSQL_MCP_TRANSPORT") or self.transport
+        self.host = get("HALTSQL_MCP_HOST") or self.host
+        self.port = _env_int(e, "HALTSQL_MCP_PORT", self.port)
+        self.public_url = get("HALTSQL_MCP_PUBLIC_URL") or self.public_url
+
+    def apply_file(self, path: str) -> None:
+        """Load a config file (YAML or JSON). See ``load_config_file``."""
+        for attr, value in load_config_file(path).items():
+            setattr(self, attr, value)
 
     def load_context_file(self, path: str) -> None:
         try:

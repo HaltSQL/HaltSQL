@@ -22,6 +22,15 @@ even before 1.0.
 - `haltsql policy draft` accepts a non-authoritative snapshot: the draft then
   has no `catalog:` reference and a header comment explaining that `SELECT *`
   stays denied.
+- **Bundled engine in the Python wheel and npm package.** `pip install haltsql`
+  now ships platform wheels (`manylinux_2_28` x86_64/aarch64, `macosx_11_0_arm64`)
+  that contain `libhaltsql`, the verification engine as a self-contained C shared
+  library, plus the `haltsql` CLI. `haltsql.NativeVerifier` verifies in-process
+  (~50us per query) with no sidecar and no setup. `@haltsql/client` gains
+  `LocalVerifier`, which drives the CLI from the `@haltsql/native-<platform>`
+  packages as one long-lived process. The C ABI is in `native/include/haltsql.h`.
+- `haltsql verify --batch` flushes after every result when `--jobs` is 1, so a
+  long-lived process can be driven one request at a time over a pipe.
 - `haltsql-server` flags `--max-connections`, `--request-timeout`,
   `--idle-timeout` and `--shutdown-timeout`; `/readyz` reports
   `"draining": true` during shutdown; new gauge
@@ -247,11 +256,18 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- CI on pull requests runs only the jobs whose files changed: a `changes`
+  job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
+  `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test
+  OCaml 5.4 (Ubuntu and macOS) and Node 22; pushes to `main` still run the
+  full OCaml 5.2/5.4 x Ubuntu/macOS and Node 18/20/22 matrices. New `CI ok`
+  and `Integration ok` checks sum up each workflow for branch protection.
 - **Repository moved to `github.com/HaltSQL/HaltSQL`** (breaking). Go module
   paths are now `github.com/HaltSQL/HaltSQL/clients/go/haltsql`,
   `.../clients/go/pgxtest` and `.../deploy/operator`; container images and
   the Helm chart are published under `ghcr.io/haltsql/`; the docs site is
-  `https://haltsql.github.io/HaltSQL/`; and `cosign verify` must use the new
+  `https://haltsql.github.io/`, published from the public
+  `HaltSQL/haltsql.github.io` repository; and `cosign verify` must use the new
   repository's workflow identity. Old `ghcr.io/ardada2468/...` images are not
   republished.
 - Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,

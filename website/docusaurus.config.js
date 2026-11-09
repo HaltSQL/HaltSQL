@@ -15,9 +15,12 @@ const config = {
   favicon: 'img/favicon.svg',
 
   url: 'https://haltsql.github.io',
-  baseUrl: '/HaltSQL/',
+  // Served from the root of the public HaltSQL/haltsql.github.io repository,
+  // which .github/workflows/pages.yml updates on every push to main.
+  baseUrl: '/',
   organizationName: 'HaltSQL',
-  projectName: 'HaltSQL',
+  projectName: 'haltsql.github.io',
+  deploymentBranch: 'gh-pages',
   trailingSlash: false,
 
   // The docs folder is also read on GitHub, where some links point at repository
@@ -45,8 +48,8 @@ const config = {
           path: '../docs',
           routeBasePath: 'docs',
           sidebarPath: './sidebars.js',
-          // docPath is relative to ../docs
-          editUrl: ({ docPath }) => `${repo}/edit/main/docs/${docPath}`,
+          // No editUrl: the source repository is private, so "Edit this
+          // page" links would 404 for readers of the public site.
           beforeDefaultRemarkPlugins: [repoLinks],
           exclude: ['**/openapi.yaml', 'adr/template.md'],
         },

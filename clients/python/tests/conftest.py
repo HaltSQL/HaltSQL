@@ -32,6 +32,50 @@ def server_bin() -> Optional[str]:
     return _bin("HALTSQL_SERVER_BIN", "_build", "default", "bin", "server", "main.exe")
 
 
+def native_lib() -> Optional[str]:
+    """libhaltsql for the native tests: $HALTSQL_LIB or the dune build output."""
+    path = os.environ.get("HALTSQL_LIB") or os.path.join(
+        ROOT, "_build", "default", "native", "libhaltsql.so"
+    )
+    return path if os.path.isfile(path) else None
+
+
+def require_native() -> bool:
+    """CI sets HALTSQL_REQUIRE_NATIVE=1: a missing engine then fails instead of skipping."""
+    return os.environ.get("HALTSQL_REQUIRE_NATIVE", "") not in ("", "0")
+
+
+def skip_or_fail(reason: str) -> None:
+    if require_native():
+        pytest.fail(f"{reason} (HALTSQL_REQUIRE_NATIVE=1)")
+    pytest.skip(reason)
+
+
+@pytest.fixture(scope="session")
+def native_lib_path() -> str:
+    p = native_lib()
+    if p is None:
+        skip_or_fail("libhaltsql not built (dune build native/libhaltsql.so) and HALTSQL_LIB not set")
+    return p  # type: ignore[return-value]
+
+
+@pytest.fixture(scope="session")
+def native_bin_path() -> str:
+    b = haltsql_bin()
+    if b is None:
+        skip_or_fail("haltsql CLI not built (dune build ./bin/haltsql/main.exe) and HALTSQL_BIN not set")
+    return b  # type: ignore[return-value]
+
+
+@pytest.fixture
+def native_env(monkeypatch, native_lib_path, native_bin_path):
+    """Point NativeVerifier at the built engine; clear HALTSQL_NATIVE."""
+    monkeypatch.setenv("HALTSQL_LIB", native_lib_path)
+    monkeypatch.setenv("HALTSQL_BIN", native_bin_path)
+    monkeypatch.delenv("HALTSQL_NATIVE", raising=False)
+    return {"lib": native_lib_path, "bin": native_bin_path}
+
+
 def load_vectors() -> List[Dict[str, Any]]:
     out = []
     for path in sorted(glob.glob(os.path.join(VECTORS_DIR, "*.json"))):

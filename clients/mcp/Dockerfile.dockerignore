@@ -1,0 +1,15 @@
+# Build context filter for clients/mcp/Dockerfile (context: repository root).
+# Only the two Python packages are needed.
+*
+!clients/python/
+!clients/mcp/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/*.egg-info/
+**/build/
+**/dist/
+**/.env
+**/*.pem
+**/*.key

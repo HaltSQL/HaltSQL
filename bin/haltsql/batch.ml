@@ -3,9 +3,12 @@
     Input lines:  {"id": any, "sql": string, "context": object}
     Output lines: {"id": ..., <Verdict.to_json fields>}  or  {"id": ..., "error": "..."}
     v}
-    Output order always matches input order. With [jobs > 1], lines are read in blocks and
-    each block is split into contiguous chunks verified on separate OCaml 5 domains;
-    memory stays bounded by the block size. *)
+    Output order always matches input order. With [jobs = 1] (the default) each result is
+    flushed as soon as it is written, so a long-lived process can be driven one request at
+    a time over a pipe (the Python and Node clients' bundled-binary mode does this; the
+    extra write per line costs ~1us against ~50us per verification). With [jobs > 1],
+    lines are read in blocks and each block is split into contiguous chunks verified on
+    separate OCaml 5 domains; memory stays bounded by the block size. *)
 
 open Haltsql
 
@@ -84,6 +87,7 @@ let run ~jobs (policy : Policy.t) (default_ctx : Context.t) =
       | Some l ->
           output_string oc (f l);
           output_char oc '\n';
+          flush oc;
           loop ()
     in
     loop ()

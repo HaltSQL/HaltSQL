@@ -10,6 +10,9 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 dependencies = ["httpx>=0.24,<1"]
+# The `haltsql` console script is added by setup.py, only to platform wheels
+# that bundle the CLI (src/haltsql/_native/, staged by scripts/build_wheel.sh).
+dynamic = ["scripts"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
@@ -31,7 +34,7 @@ Documentation = "https://github.com/HaltSQL/HaltSQL/blob/main/docs/sdk-python.md
 where = ["src"]
 
 [tool.setuptools.package-data]
-haltsql = ["py.typed"]
+haltsql = ["py.typed", "_native/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -39,4 +42,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: needs the haltsql binaries or the lab Postgres (skipped when unavailable)",
+  "native: needs libhaltsql / the haltsql CLI (skipped when unavailable unless HALTSQL_REQUIRE_NATIVE=1)",
+  "wheel: installs a built wheel (HALTSQL_WHEEL=path/to/haltsql-*.whl) into a fresh venv",
 ]

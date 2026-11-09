@@ -1,4 +1,4 @@
-import type { HaltSQLClient, VerifyOptions } from "./client.js";
+import type { VerifyOptions } from "./client.js";
 import { HaltSQLDeniedError, HaltSQLUsageError } from "./errors.js";
 import { bindParamsToPositional } from "./params.js";
 import type { Context, Verdict } from "./types.js";
@@ -9,6 +9,14 @@ import type { Context, Verdict } from "./types.js";
  */
 export interface PgQueryable<R> {
   query(text: string, values?: unknown[]): Promise<R>;
+}
+
+/**
+ * Anything that verifies SQL: a {@link HaltSQLClient} (sidecar) or a
+ * {@link LocalVerifier} (bundled engine; it ignores the per-call options).
+ */
+export interface SqlVerifier {
+  verify(sql: string, context?: Context, opts?: VerifyOptions): Promise<Verdict>;
 }
 
 export interface GuardedQueryOptions extends VerifyOptions {
@@ -37,7 +45,7 @@ export interface GuardedQueryResult<R> {
  * ```
  */
 export async function guardedQuery<R>(
-  haltsql: HaltSQLClient,
+  haltsql: SqlVerifier,
   db: PgQueryable<R>,
   sql: string,
   context: Context,
