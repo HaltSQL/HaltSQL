@@ -12,6 +12,10 @@ Source: [`clients/typescript`](../clients/typescript).
 npm install @haltsql/client
 ```
 
+On Linux x64/arm64 (glibc) and macOS arm64 this also installs the compiled
+engine, so [`LocalVerifier`](#local-verification-no-sidecar) can verify SQL
+locally with no sidecar.
+
 ## Verify a query
 
 ```ts
@@ -70,6 +74,115 @@ To bind manually, use `bindParamsToPositional(verdict)`; it returns the values
 in `$1..$n` order and throws unless the verdict is an allow with contiguous,
 unique placeholders. `toPgArrayLiteral(values)` encodes a `string[]` as
 `{"a","b"}` for drivers that need a literal.
+
+## Local verification (no sidecar)
+
+`LocalVerifier` verifies SQL on the same machine with the compiled `haltsql`
+engine, so a Node.js service or agent needs no sidecar at all:
+
+```ts
+import { LocalVerifier } from "@haltsql/client";
+
+const haltsql = await LocalVerifier.create({ policyFile: "policies/saas.yaml" });
+
+const verdict = await haltsql.verify(sqlFromModel, { tenant_id: session.tenantId });
+if (verdict.allowed) { /* run exactly sqlFromModel, binding verdict.bind_params */ }
+
+await haltsql.check(sql, ctx);                         // throws HaltSQLDeniedError unless allowed
+const verdicts = await haltsql.verifyMany([a, b], ctx); // pipelined, input order
+await guardedQuery(haltsql, pool, sql, ctx);           // same helper as with HaltSQLClient
+
+await haltsql.close(); // or: await using haltsql = await LocalVerifier.create(...)
+```
+
+**Zero setup on supported platforms.** The engine ships in per-platform npm
+packages that `@haltsql/client` lists as `optionalDependencies` (the same
+scheme esbuild uses); npm installs only the one matching the machine:
+
+| Platform | Package |
+|---|---|
+| Linux x64, glibc | `@haltsql/native-linux-x64` |
+| Linux arm64, glibc | `@haltsql/native-linux-arm64` |
+| macOS arm64 (Apple silicon) | `@haltsql/native-darwin-arm64` |
+
+Each package holds `bin/haltsql` (the CLI the client runs), `lib/libhaltsql`
+(the same engine as a C shared library, `include/haltsql.h`; reserved for a
+future in-process binding) and the licenses. On other platforms (musl/Alpine,
+macOS x64, Windows), with `npm install --omit=optional`, or with Yarn PnP
+setups that drop optional packages, build or download `haltsql` yourself and
+point `HALTSQL_BIN` at it.
+
+**Finding the engine**, in order (the first that applies wins; an explicit
+choice that is not an executable file is an error, never a silent fallback):
+
+1. the `binary` option;
+2. the `HALTSQL_BIN` environment variable;
+3. the installed platform package `@haltsql/native-<platform>-<arch>`;
+4. `haltsql` in an absolute `PATH` directory.
+
+If none is found the constructor throws a `HaltSQLUsageError` that names the
+expected platform package. `verifier.binary` and `verifier.binarySource`
+(`option`, `env`, `package` or `path`) say which one was used;
+`resolveLocalBinary()` runs the same lookup without starting anything.
+
+**Options:**
+
+```ts
+new LocalVerifier({
+  policyFile: "policy.yaml",  // or policy: "<YAML or JSON text>" (exactly one of the two)
+  policyFormat: "yaml",       // for `policy` only; default: json if it starts with "{"
+  binary: "/opt/haltsql/bin/haltsql",
+  timeoutMs: 30000,           // per request, from the call to the answer
+  verifySqlHash: true,        // check verdict.sql_sha256 against the SQL sent
+});
+```
+
+An in-memory `policy` is written to a private temporary file (directory
+`0700`, file `0600`) that `close()` removes (and, as a fallback, process exit).
+Relative paths inside it, such as `catalog: ../catalogs/app.json`, would
+resolve against that temporary directory, so use absolute paths there or use
+`policyFile`.
+
+`new LocalVerifier(...)` validates options and finds the binary but starts
+nothing; the engine starts on the first call. `LocalVerifier.create(...)` (or
+`await verifier.start()`) starts it immediately and waits for a probe answer,
+so a policy that does not load fails at startup with the engine's message
+(`HaltSQLUsageError: haltsql engine failed to start (policy or usage error):
+haltsql: cannot load policy: ...`).
+
+**How it works.** The engine runs as one long-lived child process,
+`haltsql verify --policy=FILE --batch`, which reads one JSON request per line
+on stdin and writes one verdict per line, in order, flushing each. Only the
+policy path is on the command line; SQL and context only ever travel over the
+pipe. Concurrent `verify()` calls are pipelined with increasing ids, and every
+answer must carry the id of the oldest request in flight. An idle verifier
+holds no reference on the event loop, so a script that never calls `close()`
+still exits (the engine sees end-of-file and exits too).
+
+**Latency.** After the first call (process start and policy load, tens of
+milliseconds) a sequential `verify()` costs roughly 0.1-0.5 ms on a laptop:
+the engine's own analysis (`elapsed_us`, typically 30-100 us) plus a pipe round
+trip. Pipelined calls (`verifyMany`, or many concurrent `verify()`s) amortize
+the round trip. One process verifies on one core; for heavy multi-core
+throughput run [`haltsql-server`](http-api.md) and use `HaltSQLClient`.
+
+**Fail closed.** `verify()` resolves only with a strictly validated verdict
+whose `sql_sha256` equals the SHA-256 of the UTF-8 SQL that was sent.
+
+| Situation | Result |
+|---|---|
+| Bad options or context, SQL that is not a string or contains a lone UTF-16 surrogate, no engine found, closed verifier | `HaltSQLUsageError` before anything is sent |
+| Policy cannot be loaded (engine exits with code 2 before answering) | `HaltSQLUsageError` with the engine's stderr |
+| A request takes longer than `timeoutMs` | that request: `HaltSQLTimeoutError`; the engine is killed and everything else in flight rejects with `HaltSQLTransportError` |
+| The engine crashes, is killed or cannot be started | every request in flight: `HaltSQLTransportError` (with the exit status and stderr tail) |
+| A line that is not JSON, an invalid verdict, an answer out of order, or a `sql_sha256` mismatch | every request in flight: `HaltSQLProtocolError`; the engine is killed |
+| The engine rejects one request (`{"id":..,"error":..}`) | that request: `HaltSQLProtocolError`; the engine keeps running |
+| `close()` while requests are in flight | they reject with `HaltSQLTransportError` |
+
+After any failure that kills the engine, the next call starts a fresh one.
+NUL bytes, newlines and any Unicode in SQL are safe: requests are JSON-encoded
+and the engine denies a NUL byte with `E_PARSE`; SQL over the engine's size
+limit is denied with `E_LIMIT`.
 
 ## Fail-closed semantics
 
@@ -176,6 +289,32 @@ that skip cleanly when their dependency is missing:
   The test creates and drops its own database `haltsql_polyglot_ts`.
 - the real sidecar binary (`_build/default/bin/server/main.exe`, or
   `HALTSQL_SERVER_BIN`).
+
+- the real `haltsql` CLI for `LocalVerifier` (`_build/default/bin/haltsql/main.exe`,
+  or `HALTSQL_BIN`): every case in `clients/testvectors/cases`, concurrency,
+  crash and timeout handling (also against fake engines), the event loop not
+  being held, and warm latency. They skip when the binary is missing unless
+  `HALTSQL_REQUIRE_NATIVE=1`.
+
+Platform packages are built from the compiled engine and checked end to end
+(pack, offline install into a fresh project, ESM and CommonJS consumers with
+no `binary` option and no `HALTSQL_BIN`):
+
+```sh
+opam exec -- dune build ./bin/haltsql/main.exe ./native/libhaltsql.so
+cd clients/typescript
+node scripts/build-native-package.mjs --platform linux-x64 \
+  --binary ../../_build/default/bin/haltsql/main.exe \
+  --lib ../../_build/default/native/libhaltsql.so --out ../../dist-native/linux-x64
+npm run smoke:native   # builds and tests the package for this machine
+```
+
+`build-native-package.mjs` checks the binary and library against the target
+(ELF/Mach-O, CPU) and refuses dynamic dependencies a stock system may not
+have (for example Homebrew's `libgmp`); `--allow-nonsystem-deps` downgrades
+that to a warning for local testing only. Publish the three platform packages
+before `@haltsql/client`, all at the same version: the client pins them
+exactly in `optionalDependencies`.
 
 Regenerate the shared vectors after a server change (writes the TypeScript, Go
 and Java copies):
