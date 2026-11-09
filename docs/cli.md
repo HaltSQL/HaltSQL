@@ -202,14 +202,14 @@ result.)
 
 Snapshot a live Postgres catalog into a `Catalog` document (`schema pull`,
 read-only, TLS and SCRAM-SHA-256), import PII labels from dbt, DataHub,
-Unity Catalog, Atlan or Collibra exports (`schema import`), or fetch them from
+Unity Catalog, Atlan, Collibra or OpenMetadata exports (`schema import`), or fetch them from
 a live data catalog API (`schema fetch`; the token comes from an environment
 variable or a file, never the command line). See
 [schema-and-pii.md](schema-and-pii.md).
 
 ```
 haltsql schema pull --dsn postgres://... -o catalog.json
-haltsql schema import --from dbt|datahub|unity|atlan|collibra FILE -o pii.json
+haltsql schema import --from dbt|datahub|unity|atlan|collibra|openmetadata FILE -o pii.json
 haltsql schema fetch --from PROVIDER --url https://... [--token-env VAR | --token-file FILE] \
     [--service S] [--database D] [--schema S]... -o pii.json [--snapshot-out fetched.json]
 ```

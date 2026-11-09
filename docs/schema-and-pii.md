@@ -157,6 +157,7 @@ probably the wrong `--from`).
 | Unity Catalog | `information_schema.column_tags` rows (JSON array, `{"column_tags": [...]}`, or a SQL Statement Execution API result), or REST table JSON (one table, a list, or `{"tables": [...]}`) | `tag_name` and `tag_name=tag_value`; REST column `tags` as a map or a list of `{key, value}`. The catalog name is ignored. |
 | Atlan | asset search results (`{"entities": [...]}`, a list, or `{"entity": ...}`) of `Column` assets | `classifications`/`atlanTags` (`typeName`, `displayName`, `tagName`), `classificationNames`, glossary `meanings` (`displayText`) and `meaningNames`. The table is `tableName`/`viewName`/`materialisedViewName` with `schemaName`, else the end of `qualifiedName`. |
 | Collibra | asset exports (a list, `{"results": [...]}` or `{"assets": [...]}`) of `Column` assets | attributes whose type name mentions classification, sensitivity, privacy, confidentiality, personal/PII, security (as a list of `{type: {name}, value}` or a map); `tags`; `classificationMatches`/`dataClassifications` that are not `REJECTED`; relations to Business Terms. The column is identified by `fullName` (`db>schema>table>column`, or dotted). |
+| OpenMetadata | table entities from `GET /api/v1/tables?fields=columns,tags` (one table, a list, or the paged `{"data": [...]}` response) | `columns[].tags[].tagFQN`: `source: "Glossary"` labels are glossary terms, others (classifications) tags. The full FQN is matched, so `PII.Sensitive`, `PII.NonSensitive`, `PersonalData.Personal` count and `Tier.Tier1` does not. Tags on nested `children` (STRUCT fields) flag the top-level column. Column descriptions and table-level tags are ignored. The table is `databaseSchema.name` plus `name`. |
 
 ### Validation status
 
@@ -260,7 +261,23 @@ response bodies. Responses are capped at 32 MiB.
 
 | Provider | `--from` | Default token variable | Status |
 |---|---|---|---|
-| _providers are added by their own PRs_ | | | |
+| OpenMetadata | `openmetadata` | `OPENMETADATA_TOKEN` | Validated against OpenMetadata 2.0.7 (2026-11-08): real Postgres-connector ingestion, REST-applied tags, live fetch, lab tier-3 ([details](../test/catalog_live/openmetadata/README.md)). |
+
+**OpenMetadata.** `--url` is the server root (`https://om.example.com`) or the
+API root (`https://om.example.com/api`). The token is a bot JWT (Settings >
+Bots); a bot whose user has only the `DataConsumer` role is enough.
+`--service` is the database service name, `--database` the database inside it
+(it requires `--service`), `--schema` the schema names. HaltSQL lists
+`GET /api/v1/tables?fields=columns,tags&include=non-deleted`, scoped by
+`database=service.database`, `databaseSchema=service.database.schema` or
+`service=`, following `paging.after` cursors (100 tables a page), and re-checks
+every returned table against the requested scope. Labels are read as for
+`schema import --from openmetadata`: classification tags (for example
+`PII.Sensitive`, `PersonalData.Personal`) and glossary terms on columns and on
+nested STRUCT fields; `Tier.*` and other non-matching classifications, table
+tags and descriptions do not count. OpenMetadata answers unknown names with an
+empty list, so "no tables found" usually means a misspelt `--service` or
+`--database`.
 
 Coming soon (not yet validated against a live instance): Atlan, Collibra,
 dbt Cloud, Unity Catalog. The offline `schema import --from atlan|collibra`
