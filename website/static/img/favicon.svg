@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="HaltSQL">
-  <polygon points="20,2 44,2 62,20 62,44 44,62 20,62 2,44 2,20" fill="#c0392b"/>
+  <polygon points="20,2 44,2 62,20 62,44 44,62 20,62 2,44 2,20" fill="#c8102e"/>
   <polygon points="22,7 42,7 57,22 57,42 42,57 22,57 7,42 7,22" fill="none" stroke="#ffffff" stroke-width="2.5"/>
   <g fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round">
     <ellipse cx="32" cy="22" rx="12" ry="4.5"/>

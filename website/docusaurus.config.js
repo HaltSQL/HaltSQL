@@ -36,7 +36,32 @@ const config = {
     mermaid: true,
     hooks: { onBrokenMarkdownLinks: 'warn' },
   },
-  themes: ['@docusaurus/theme-mermaid'],
+  themes: [
+    '@docusaurus/theme-mermaid',
+    [
+      // Offline full-text search: the index is built with the site, so there
+      // is no third-party search service and no API key.
+      '@easyops-cn/docusaurus-search-local',
+      /** @type {import('@easyops-cn/docusaurus-search-local').PluginOptions} */
+      ({
+        hashed: true,
+        indexBlog: false,
+        indexPages: true,
+        docsRouteBasePath: '/docs',
+        docsDir: '../docs',
+        highlightSearchTermsOnTargetPage: true,
+        searchResultLimits: 10,
+        searchBarShortcutKeymap: 'mod+k',
+        explicitSearchResultPath: true,
+      }),
+    ],
+  ],
+  stylesheets: [
+    {
+      href: 'https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Fira+Code:wght@400;500&display=swap',
+      type: 'text/css',
+    },
+  ],
   clientModules: ['./src/clientModules/d3-transition.js'],
 
   presets: [
@@ -75,10 +100,13 @@ const config = {
         items: [
           { type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Docs' },
           { to: '/docs/how-it-works/architecture', label: 'How it works', position: 'left' },
-          { to: '/docs/integrations', label: 'Integrations', position: 'left' },
+          // Jumps to the landing page's integration wall; never shown as the active item.
+          { to: '/#integrations', label: 'Integrations', position: 'left', activeBaseRegex: '^$' },
           { to: '/docs/policy-reference', label: 'Reference', position: 'left' },
           { href: `${repo}/blob/main/CHANGELOG.md`, label: 'Changelog', position: 'left' },
+          { type: 'search', position: 'right' },
           { href: repo, label: 'GitHub', position: 'right' },
+          { to: '/docs/quickstart', label: 'Get started', position: 'right', className: 'navbar-cta' },
         ],
       },
       footer: {

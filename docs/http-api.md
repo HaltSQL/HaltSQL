@@ -108,7 +108,7 @@ Errors use HTTP status codes and a JSON body:
 | `404` | `POLICY_NOT_FOUND` | The request names an unknown policy, or names none and no default policy is configured. |
 | `404` | `NOT_FOUND` | Unknown path. |
 | `405` | `METHOD_NOT_ALLOWED` | Wrong HTTP method (with an `Allow` header). |
-| `413` | `PAYLOAD_TOO_LARGE` | Body exceeds `server.max_request_bytes`. Checked before authentication, so an oversized request gets `413` even without a token. The connection is then closed. |
+| `413` | `PAYLOAD_TOO_LARGE` | Body exceeds `limits.max_request_bytes`. Checked before authentication, so an oversized request gets `413` even without a token. The connection is then closed. |
 | `500` | `INTERNAL` | Unexpected server error. |
 | `503` | `NOT_READY` | No policy is loaded. |
 | `503` | `POLICY_UNAVAILABLE` | The token's pinned policy is not currently loaded. |
@@ -246,7 +246,7 @@ Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
 
 ## Operational notes
 
-- **Request size:** keep requests under `server.max_request_bytes` (default
+- **Request size:** keep requests under `limits.max_request_bytes` (default
   1 MiB). The policy's `limits.max_bytes` (default 16 KiB) applies to the SQL
   itself and gives `E_LIMIT`.
 - **Hot reload:** `SIGHUP`, or file watching (`--watch` / `reload.watch`,

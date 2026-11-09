@@ -1,146 +1,297 @@
+/* Landing page. Colours come from custom.css (--hs-*) so dark mode follows. */
+
 .hero {
-  padding: 4.5rem 0 3.5rem;
-  border-bottom: 1px solid var(--hs-border);
-  background:
-    radial-gradient(1200px 400px at 85% -10%, rgba(192, 57, 43, 0.12), transparent 60%),
-    var(--ifm-background-color);
-}
-
-.heroGrid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 3rem;
-  align-items: center;
-}
-
-.kicker {
-  display: inline-block;
-  margin-bottom: 0.75rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ifm-color-primary);
+  padding: 4rem 0 3.5rem;
 }
 
 .title {
-  font-size: 3rem;
-  line-height: 1.1;
-  margin-bottom: 1.25rem;
+  font-size: clamp(2.75rem, 7.4vw, 6rem);
+  line-height: 0.95;
+  font-weight: 900;
+  font-stretch: 125%;
+  letter-spacing: -0.035em;
+  margin: 0;
+  max-width: 13ch;
 }
 
-.titleAccent {
-  color: var(--ifm-color-primary);
+.heroRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 3.5rem;
+  align-items: end;
+  margin-top: 2rem;
 }
 
-.subtitle {
-  font-size: 1.15rem;
+.lede {
+  font-size: 1.2rem;
   color: var(--hs-muted);
-  max-width: 40rem;
-}
-
-.buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 1.75rem;
+  max-width: 34em;
+  margin: 0 0 1rem;
 }
 
 .mcpCallout {
-  margin-top: 1.25rem;
+  margin: 0;
   font-size: 0.95rem;
   color: var(--hs-muted);
 }
 
-.verdictCard {
-  border: 1px solid var(--hs-border);
-  border-radius: 14px;
-  background: var(--hs-surface);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-  overflow: hidden;
-  font-size: 0.9rem;
+.mcpCallout a {
+  font-weight: 600;
 }
 
-.verdictSql {
-  padding: 1rem 1.25rem;
-  background: var(--hs-surface-2);
-  border-bottom: 1px solid var(--hs-border);
+.mcpCallout code {
+  white-space: nowrap;
 }
 
-.verdictSql code {
-  background: none;
-  border: none;
-  padding: 0;
-  white-space: normal;
+.ctas {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
-.verdictDeny {
-  padding: 0.75rem 1.25rem 0;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: var(--hs-deny);
+.btnRed,
+.btnLine,
+.btnInv {
+  display: inline-flex;
+  align-items: center;
+  height: 46px;
+  padding: 0 1.25rem;
+  border-radius: 4px;
+  border: 2px solid;
+  font-weight: 700;
+  white-space: nowrap;
+  text-decoration: none !important;
 }
 
-.verdictReasons {
-  margin: 0.5rem 0 0;
-  padding: 0 1.25rem 0 2.5rem;
+.btnRed {
+  background: var(--hs-accent);
+  border-color: var(--hs-accent);
+  color: #fff !important;
 }
 
-.verdictReasons li {
-  margin-bottom: 0.35rem;
+.btnRed:hover {
+  background: var(--hs-accent-deep);
+  border-color: var(--hs-accent-deep);
 }
 
-.verdictHint {
-  margin: 0.75rem 1.25rem 1.1rem;
-  padding: 0.6rem 0.8rem;
-  background: var(--hs-surface-2);
-  border-radius: 6px;
-  color: var(--hs-muted);
+.btnLine {
+  border-color: var(--ifm-font-color-base);
+  color: var(--ifm-font-color-base) !important;
+}
+
+.btnInv {
+  border-color: #fff;
+  color: #fff !important;
 }
 
 .section {
-  padding: 3.5rem 0;
+  padding: 6rem 0 0;
 }
 
-.sectionAlt {
-  background: var(--hs-surface-2);
-  border-top: 1px solid var(--hs-border);
-  border-bottom: 1px solid var(--hs-border);
+.sHead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3.5rem;
+  align-items: end;
+  margin-bottom: 2.5rem;
 }
 
-.lead {
+.sHead h2 {
+  font-size: clamp(2rem, 4vw, 2.9rem);
+  line-height: 1;
+  font-weight: 900;
+  font-stretch: 125%;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.sHead p {
+  margin: 0;
+  color: var(--hs-muted);
   font-size: 1.1rem;
-  color: var(--hs-muted);
-  max-width: 50rem;
+  max-width: 36em;
 }
 
-.note {
-  margin-top: 1.25rem;
+/* three ways in */
+
+.modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 3px solid var(--ifm-font-color-base);
+}
+
+.mode {
+  display: block;
+  padding: 1.5rem 1.75rem 0.5rem 0;
+  color: inherit !important;
+  text-decoration: none !important;
+}
+
+.mode + .mode {
+  padding-left: 1.75rem;
+  border-left: 1px solid var(--hs-border);
+}
+
+.mode h3 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-stretch: 125%;
+  margin: 0 0 0.25rem;
+}
+
+.mode:hover h3 {
+  color: var(--hs-accent);
+}
+
+.mode p {
+  margin: 0;
   color: var(--hs-muted);
 }
+
+.mode .how {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.82rem;
+  color: var(--hs-accent);
+  margin-bottom: 0.75rem;
+}
+
+/* policy example */
 
 .twoCol {
   display: grid;
-  /* minmax(0, …): let a column shrink below its longest code line, so code
-     blocks scroll inside their own box instead of widening the page. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 2rem;
   align-items: start;
 }
 
-@media (max-width: 996px) {
-  .heroGrid,
-  .twoCol {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .title {
-    font-size: 2.3rem;
-  }
+/* security checklist */
+
+.checklist {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 3.5rem;
+  background: var(--hs-surface-2);
+  padding: 2.5rem 3rem;
+  border-radius: 4px;
 }
 
-@media (max-width: 480px) {
-  .buttons :global(.button) {
-    width: 100%;
-    white-space: normal;
+.check {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 0 0.9rem;
+  padding: 1.1rem 0;
+  border-bottom: 1px solid var(--hs-border);
+  color: inherit !important;
+  text-decoration: none !important;
+}
+
+.check:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.check i {
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  position: relative;
+  background: var(--ifm-font-color-base);
+  clip-path: polygon(29% 0, 71% 0, 100% 29%, 100% 71%, 71% 100%, 29% 100%, 0 71%, 0 29%);
+}
+
+.check i::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--ifm-background-color);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+.check h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.check:hover h3 {
+  color: var(--hs-accent);
+}
+
+.check p {
+  grid-column: 2;
+  margin: 0.15rem 0 0;
+  color: var(--hs-muted);
+  font-size: 0.97rem;
+}
+
+.note {
+  margin-top: 1.5rem;
+  color: var(--hs-muted);
+}
+
+/* closing band */
+
+.final {
+  margin-top: 6rem;
+  background: #1f2328;
+  color: #fff;
+  padding: 4.5rem 0;
+}
+
+.final :global(.container) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2.5rem;
+}
+
+.final h2 {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  font-weight: 900;
+  font-stretch: 125%;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin: 0;
+  max-width: 16ch;
+  color: #fff;
+}
+
+@media (max-width: 996px) {
+  .heroRow,
+  .sHead,
+  .twoCol,
+  .checklist {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .heroRow,
+  .sHead {
+    gap: 1.25rem;
+  }
+  .ctas {
+    justify-content: flex-start;
+  }
+  .modes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mode + .mode {
+    padding-left: 0;
+    border-left: 0;
+    border-top: 1px solid var(--hs-border);
+  }
+  .checklist {
+    padding: 1.5rem;
+  }
+  .check:nth-last-child(2) {
+    border-bottom: 1px solid var(--hs-border);
+  }
+  .final :global(.container) {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .section {
+    padding-top: 4rem;
   }
 }

@@ -32,7 +32,9 @@ All five packages follow the same rules:
   - Semantic Kernel and CrewAI: a mapping or callable you give the tool.
   
   The context is never a tool argument. If the model adds extra arguments
-  such as `tenant_id`, the call is refused. If no context is configured, the
+  such as `tenant_id`, they never reach HaltSQL: the OpenAI Agents SDK, ADK,
+  CrewAI and Semantic Kernel tools refuse the call, and the LangGraph and
+  LangChain tools drop the extra argument and use the trusted context. If no context is configured, the
   query is refused before it is verified.
 - **Verify, then execute.** The packages call `haltsql.guard.authorize` and
   then `guard.execute`. The database receives the exact string HaltSQL
@@ -115,7 +117,7 @@ result = await Runner.run(agent, "How many open orders?",
 By default the tool reads the `haltsql_context` attribute or key of the run
 context. Pass `context_from=lambda app: {...}` to map your own context object.
 
-`haltsql_tool_input_guardrail(verifier, sql_arg="sql")` is a tool input
+`haltsql_tool_input_guardrail(verifier, sql_arg="query")` is a tool input
 guardrail for SQL tools you already have
 (`@function_tool(tool_input_guardrails=[...])`). It verifies the tool's SQL
 argument before the tool runs. If HaltSQL does not allow it, the guardrail
