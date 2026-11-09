@@ -325,6 +325,50 @@ let test_datahub_graphql () =
          ("app", "payments", "card_token", [ "PCI"; "pci" ]);
        ])
 
+(* A live DataHub v1.8.0 scrollAcrossEntities response (test/catalog_live/datahub):
+   labels from schemaMetadata (ingestion transformers) and editableSchemaMetadata
+   (GraphQL addTag/addTerm), glossary terms whose urns are opaque UUIDs (the name comes
+   from properties.name), and decoys: the Gold tag on a column and on the customers
+   dataset, the non-PII term Revenue, a column description mentioning email. *)
+let test_datahub_live_graphql () =
+  let r =
+    check_import Imp.Datahub "datahub_fetch.json" ~scanned:63
+      [
+        ("app", "audit_events", "ip", [ "PersonalInformation" ]);
+        ("app", "customers", "email", [ "PII" ]);
+        ("app", "customers", "phone", [ "PII" ]);
+        ("app", "customers", "ssn", [ "PII"; "Sensitive" ]);
+        ("app", "payments", "card_last4", [ "PII" ]);
+        ("app", "payments", "card_token", [ "PII"; "Sensitive" ]);
+        ("app", "users", "email", [ "PII" ]);
+        ("app", "users", "full_name", [ "PersonalInformation" ]);
+        ("app", "users", "password_hash", [ "Sensitive" ]);
+      ]
+  in
+  List.iter
+    (fun (table, column) ->
+      Alcotest.(check bool)
+        (table ^ "." ^ column ^ " not flagged")
+        true
+        (Pii.find r.manifest ~schema:"app" ~table ~column = None))
+    [
+      ("orders", "note");
+      ("order_items", "description");
+      ("invoices", "amount_cents");
+      ("orgs", "name");
+      ("customers", "name");
+      ("customers", "country");
+    ];
+  (* Only "gdpr": nothing in this catalog is labelled that way. *)
+  match
+    Imp.import
+      ~config:{ Pii.Matcher.tags = [ "gdpr" ]; terms = [ "gdpr" ] }
+      Imp.Datahub
+      (Yojson.Safe.from_file (Filename.concat examples "datahub_fetch.json"))
+  with
+  | Ok r -> Alcotest.(check int) "custom terms" 0 (List.length r.manifest)
+  | Error e -> Alcotest.fail e
+
 let test_unity () =
   ignore
     (check_import Imp.Unity "unity_column_tags.json" ~scanned:5
@@ -1780,6 +1824,7 @@ let () =
               tc "dbt description only" test_dbt_description_only;
               tc "datahub mce/mcp" test_datahub_mce;
               tc "datahub graphql" test_datahub_graphql;
+              tc "datahub live graphql" test_datahub_live_graphql;
               tc "unity" test_unity;
               tc "atlan" test_atlan;
               tc "collibra" test_collibra;

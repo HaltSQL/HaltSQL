@@ -1,0 +1,25 @@
+{
+  "errors": [
+    {
+      "message": "Last unit does not have enough valid bits",
+      "locations": [
+        {
+          "line": 1,
+          "column": 61
+        }
+      ],
+      "path": [
+        "scrollAcrossEntities"
+      ],
+      "extensions": {
+        "code": 400,
+        "type": "BAD_REQUEST",
+        "classification": "DataFetchingException"
+      }
+    }
+  ],
+  "data": {
+    "scrollAcrossEntities": null
+  },
+  "extensions": {}
+}

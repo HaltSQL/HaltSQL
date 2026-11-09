@@ -1,0 +1,33 @@
+{
+  "data": {
+    "scrollAcrossEntities": {
+      "nextScrollId": null,
+      "searchResults": [
+        {
+          "entity": {
+            "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+            "type": "CONTAINER",
+            "properties": {
+              "name": "dh_src_7719"
+            },
+            "subTypes": {
+              "typeNames": [
+                "Database"
+              ]
+            },
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": []
+            }
+          }
+        }
+      ]
+    }
+  },
+  "extensions": {}
+}

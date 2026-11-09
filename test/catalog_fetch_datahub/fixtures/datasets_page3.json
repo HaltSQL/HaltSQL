@@ -1,0 +1,152 @@
+{
+  "data": {
+    "scrollAcrossEntities": {
+      "nextScrollId": null,
+      "searchResults": [
+        {
+          "entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,haltsql_lab.dh_src_7719.app.users,PROD)",
+            "type": "DATASET",
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": [
+                {
+                  "urn": "urn:li:container:679eb84cca04d86315cb2d5094ed2252",
+                  "subTypes": {
+                    "typeNames": [
+                      "Schema"
+                    ]
+                  },
+                  "properties": {
+                    "name": "app"
+                  }
+                },
+                {
+                  "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+                  "subTypes": {
+                    "typeNames": [
+                      "Database"
+                    ]
+                  },
+                  "properties": {
+                    "name": "dh_src_7719"
+                  }
+                }
+              ]
+            },
+            "schemaMetadata": {
+              "fields": [
+                {
+                  "fieldPath": "id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "tenant_id",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "email",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "full_name",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "role",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "password_hash",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "created_at",
+                  "nativeDataType": "TIMESTAMP WITH TIME ZONE",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "last_login_at",
+                  "nativeDataType": "TIMESTAMP WITH TIME ZONE",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            },
+            "editableSchemaMetadata": {
+              "editableSchemaFieldInfo": [
+                {
+                  "fieldPath": "email",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:PII",
+                          "properties": {
+                            "name": "PII"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "password_hash",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:Sensitive",
+                          "properties": {
+                            "name": "Sensitive"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "full_name",
+                  "globalTags": null,
+                  "glossaryTerms": {
+                    "terms": [
+                      {
+                        "term": {
+                          "urn": "urn:li:glossaryTerm:3f9b2c4e-8a71-4d2b-9c55-0e6a1d7b2f10",
+                          "properties": {
+                            "name": "PersonalInformation"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "extensions": {}
+}

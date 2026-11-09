@@ -1,0 +1,429 @@
+{
+  "data": {
+    "scrollAcrossEntities": {
+      "nextScrollId": "eyJzb3J0IjpbMS4wLCJ1cm46bGk6ZGF0YXNldDoodXJuOmxpOmRhdGFQbGF0Zm9ybTpwb3N0Z3JlcyxoYWx0c3FsX2xhYi5kaF9zcmNfNzcxOS5hcHAucGF5bWVudHMsUFJPRCkiXSwicGl0SWQiOm51bGwsImV4cGlyYXRpb25UaW1lIjowfQ==",
+      "searchResults": [
+        {
+          "entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,haltsql_lab.dh_src_7719.app.order_items,PROD)",
+            "type": "DATASET",
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": [
+                {
+                  "urn": "urn:li:container:679eb84cca04d86315cb2d5094ed2252",
+                  "subTypes": {
+                    "typeNames": [
+                      "Schema"
+                    ]
+                  },
+                  "properties": {
+                    "name": "app"
+                  }
+                },
+                {
+                  "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+                  "subTypes": {
+                    "typeNames": [
+                      "Database"
+                    ]
+                  },
+                  "properties": {
+                    "name": "dh_src_7719"
+                  }
+                }
+              ]
+            },
+            "schemaMetadata": {
+              "fields": [
+                {
+                  "fieldPath": "id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "tenant_id",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "order_id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "sku",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "description",
+                  "nativeDataType": "TEXT",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:Gold",
+                          "properties": {
+                            "name": "Gold"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "quantity",
+                  "nativeDataType": "INTEGER",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "unit_price_cents",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            },
+            "editableSchemaMetadata": null
+          }
+        },
+        {
+          "entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,haltsql_lab.dh_src_7719.app.orders,PROD)",
+            "type": "DATASET",
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": [
+                {
+                  "urn": "urn:li:container:679eb84cca04d86315cb2d5094ed2252",
+                  "subTypes": {
+                    "typeNames": [
+                      "Schema"
+                    ]
+                  },
+                  "properties": {
+                    "name": "app"
+                  }
+                },
+                {
+                  "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+                  "subTypes": {
+                    "typeNames": [
+                      "Database"
+                    ]
+                  },
+                  "properties": {
+                    "name": "dh_src_7719"
+                  }
+                }
+              ]
+            },
+            "schemaMetadata": {
+              "fields": [
+                {
+                  "fieldPath": "id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "tenant_id",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "customer_id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "status",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "total_cents",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "currency",
+                  "nativeDataType": "CHAR(3)",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "note",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "created_at",
+                  "nativeDataType": "TIMESTAMP WITH TIME ZONE",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            },
+            "editableSchemaMetadata": {
+              "editableSchemaFieldInfo": [
+                {
+                  "fieldPath": "note",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:Gold",
+                          "properties": {
+                            "name": "Gold"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,haltsql_lab.dh_src_7719.app.orgs,PROD)",
+            "type": "DATASET",
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": [
+                {
+                  "urn": "urn:li:container:679eb84cca04d86315cb2d5094ed2252",
+                  "subTypes": {
+                    "typeNames": [
+                      "Schema"
+                    ]
+                  },
+                  "properties": {
+                    "name": "app"
+                  }
+                },
+                {
+                  "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+                  "subTypes": {
+                    "typeNames": [
+                      "Database"
+                    ]
+                  },
+                  "properties": {
+                    "name": "dh_src_7719"
+                  }
+                }
+              ]
+            },
+            "schemaMetadata": {
+              "fields": [
+                {
+                  "fieldPath": "id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "tenant_id",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "name",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "plan",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "created_at",
+                  "nativeDataType": "TIMESTAMP WITH TIME ZONE",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            },
+            "editableSchemaMetadata": {
+              "editableSchemaFieldInfo": [
+                {
+                  "fieldPath": "name",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,haltsql_lab.dh_src_7719.app.payments,PROD)",
+            "type": "DATASET",
+            "platform": {
+              "urn": "urn:li:dataPlatform:postgres"
+            },
+            "dataPlatformInstance": {
+              "instanceId": "haltsql_lab"
+            },
+            "parentContainers": {
+              "containers": [
+                {
+                  "urn": "urn:li:container:679eb84cca04d86315cb2d5094ed2252",
+                  "subTypes": {
+                    "typeNames": [
+                      "Schema"
+                    ]
+                  },
+                  "properties": {
+                    "name": "app"
+                  }
+                },
+                {
+                  "urn": "urn:li:container:69bc9c025457aa50c8b785da984140cb",
+                  "subTypes": {
+                    "typeNames": [
+                      "Database"
+                    ]
+                  },
+                  "properties": {
+                    "name": "dh_src_7719"
+                  }
+                }
+              ]
+            },
+            "schemaMetadata": {
+              "fields": [
+                {
+                  "fieldPath": "id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "tenant_id",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "invoice_id",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "method",
+                  "nativeDataType": "TEXT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "amount_cents",
+                  "nativeDataType": "BIGINT",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "card_last4",
+                  "nativeDataType": "TEXT",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:PII",
+                          "properties": {
+                            "name": "PII"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "card_token",
+                  "nativeDataType": "TEXT",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:Sensitive",
+                          "properties": {
+                            "name": "Sensitive"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                },
+                {
+                  "fieldPath": "paid_at",
+                  "nativeDataType": "TIMESTAMP WITH TIME ZONE",
+                  "globalTags": null,
+                  "glossaryTerms": null
+                }
+              ]
+            },
+            "editableSchemaMetadata": {
+              "editableSchemaFieldInfo": [
+                {
+                  "fieldPath": "card_token",
+                  "globalTags": {
+                    "tags": [
+                      {
+                        "tag": {
+                          "urn": "urn:li:tag:PII",
+                          "properties": {
+                            "name": "PII"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "glossaryTerms": null
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "extensions": {}
+}

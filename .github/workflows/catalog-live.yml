@@ -127,3 +127,54 @@ jobs:
             ${{ runner.temp }}/dbt/policy*.yaml
             ${{ runner.temp }}/dbt/logs/
           if-no-files-found: ignore
+
+  datahub:
+    name: DataHub v1.8.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+
+      - name: Build haltsql
+        run: |
+          opam install . --deps-only -y
+          opam exec -- dune build --root . ./bin/haltsql
+          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Start lab Postgres
+        working-directory: lab
+        run: make venv up
+
+      - name: DataHub live validation (seed, fetch, assert, tier-3)
+        env:
+          PYTHON: python3.11
+          WORK: ${{ runner.temp }}/dh-live
+        run: test/catalog_live/datahub/run.sh
+
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalog-live-datahub
+          path: |
+            ${{ runner.temp }}/dh-live/*.json
+            lab/out/catalog-tier3/
+          if-no-files-found: ignore
+
+      - name: Stop lab Postgres
+        if: always()
+        working-directory: lab
+        run: make down

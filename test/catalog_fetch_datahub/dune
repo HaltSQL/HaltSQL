@@ -1,0 +1,25 @@
+; DataHub fetch provider tests: real GraphQL scrollAcrossEntities responses captured from
+; a live DataHub v1.8.0 server (fixtures/, see test/catalog_live/datahub) replayed
+; through an in-process fake HTTP server: pagination, scoping, auth, errors.
+
+(copy_files#
+ (files ../cloud/fake_http.ml))
+
+(test
+ (name test_datahub_fetch)
+ (modules test_datahub_fetch fake_http)
+ (package haltsql)
+ (libraries
+  haltsql.catalog_fetch
+  haltsql.catalog_tools
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  uri
+  lwt
+  lwt.unix
+  yojson
+  unix)
+ (deps
+  (source_tree fixtures)))
