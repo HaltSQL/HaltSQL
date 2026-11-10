@@ -7,7 +7,10 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -95,5 +98,60 @@ final class FakeServer implements AutoCloseable {
   @Override
   public void close() {
     server.stop(0);
+  }
+
+  /**
+   * A socket-level fake for answers the JDK HttpServer cannot give: for every connection it writes
+   * {@code head}, then {@code repeat} for ever (if not null), and never ends the response.
+   */
+  static final class Raw implements AutoCloseable {
+    private final ServerSocket socket;
+    private final List<Socket> accepted = new CopyOnWriteArrayList<>();
+
+    Raw(String head, String repeat) throws IOException {
+      socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
+      Thread acceptor =
+          new Thread(
+              () -> {
+                try {
+                  while (true) {
+                    Socket s = socket.accept();
+                    accepted.add(s);
+                    Thread t = new Thread(() -> answer(s, head, repeat));
+                    t.setDaemon(true);
+                    t.start();
+                  }
+                } catch (IOException closed) {
+                  // close() ends the loop
+                }
+              });
+      acceptor.setDaemon(true);
+      acceptor.start();
+    }
+
+    private static void answer(Socket s, String head, String repeat) {
+      try {
+        s.getInputStream().read(new byte[1 << 16]);
+        s.getOutputStream().write(head.getBytes(StandardCharsets.US_ASCII));
+        s.getOutputStream().flush();
+        while (repeat != null) s.getOutputStream().write(repeat.getBytes(StandardCharsets.US_ASCII));
+      } catch (IOException gone) {
+        // the client went away
+      }
+    }
+
+    int count() {
+      return accepted.size();
+    }
+
+    String url() {
+      return "http://127.0.0.1:" + socket.getLocalPort();
+    }
+
+    @Override
+    public void close() throws IOException {
+      socket.close();
+      for (Socket s : accepted) s.close();
+    }
   }
 }

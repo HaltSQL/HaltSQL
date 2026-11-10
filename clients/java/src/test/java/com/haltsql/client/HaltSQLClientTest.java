@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -210,6 +211,27 @@ class HaltSQLClientTest {
     }
   }
 
+  /** The timeout covers the body, not only the headers: a sidecar that stalls mid-body must not block the caller. */
+  @Test
+  void stalledBodyTimesOutAndIsRetried() throws Exception {
+    String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{\"allowed\":";
+    try (FakeServer.Raw srv = new FakeServer.Raw(head, null)) {
+      HaltSQLClient c =
+          HaltSQLClient.builder(srv.url())
+              .timeout(Duration.ofMillis(200))
+              .retries(1, Duration.ofMillis(1), Duration.ofMillis(1))
+              .build();
+      HaltSQLException e =
+          assertTimeoutPreemptively(
+              Duration.ofSeconds(10),
+              () -> assertThrows(HaltSQLException.class, () -> c.verify("SELECT 1")),
+              "verify() is still blocked on a stalled response body");
+      assertEquals(HaltSQLException.Kind.TIMEOUT, e.kind());
+      assertFalse(e.allowed());
+      assertEquals(2, srv.count());
+    }
+  }
+
   @Test
   void connectionRefused() throws Exception {
     int port;
@@ -323,6 +345,25 @@ class HaltSQLClientTest {
     assertThrows(
         HaltSQLException.class,
         () -> HaltSQLClient.builder("http://h").httpClient(java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.ALWAYS).build()));
+  }
+
+  @Test
+  void invalidRequestIdIsAUsageErrorAndNothingIsSent() throws Exception {
+    JsonNode v = FakeServer.vector("allowed_bound_single_tenant");
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, v.get("response").toString()))) {
+      HaltSQLClient c = fast(srv.url()).build();
+      String sql = v.get("request").get("sql").asText();
+      for (String id : List.of("", "a\r\nX-Evil: 1", "x".repeat(201), "caf\u00e9", "tab\there")) {
+        HaltSQLException e =
+            assertThrows(
+                HaltSQLException.class,
+                () -> c.verify(sql, Map.of("tenant_id", "acme"), VerifyOptions.NONE.withRequestId(id)));
+        assertEquals(HaltSQLException.Kind.USAGE, e.kind(), id);
+      }
+      assertEquals(0, srv.count());
+      assertTrue(c.verify(sql, Map.of("tenant_id", "acme"), VerifyOptions.NONE.withRequestId("x".repeat(200))).allowed());
+      assertEquals(1, srv.count());
+    }
   }
 
   @Test

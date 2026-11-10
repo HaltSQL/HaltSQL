@@ -4,7 +4,7 @@ package com.haltsql.client;
  * Per-call options for {@link HaltSQLClient#verify(String, java.util.Map, VerifyOptions)}.
  *
  * @param policy policy name, or null; with a token it must equal the token's pinned policy
- * @param requestId value for {@code X-Request-Id}, or null
+ * @param requestId value for {@code X-Request-Id} (1-200 printable ASCII characters), or null
  */
 public record VerifyOptions(String policy, String requestId) {
   /** No options. */
