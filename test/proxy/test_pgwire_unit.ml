@@ -310,6 +310,16 @@ let test_parse_verifier_errors () =
       "SCRAM-SHA-256$0:c2FsdA==$" ^ String.make 44 'A' ^ ":" ^ String.make 44 'A';
       "SCRAM-SHA-256$x:c2FsdA==$" ^ String.make 43 'A' ^ "=:" ^ String.make 43 'A' ^ "=";
       "SCRAM-SHA-1$4096:c2FsdA==$" ^ String.make 43 'A' ^ "=:" ^ String.make 43 'A' ^ "=";
+      (* keys that are not 32 bytes: a truncated StoredKey, a truncated ServerKey *)
+      "SCRAM-SHA-256$4096:c2FsdA==$"
+      ^ Sec.b64_encode (String.make 31 'k')
+      ^ ":"
+      ^ Sec.b64_encode (String.make 32 's');
+      "SCRAM-SHA-256$4096:c2FsdA==$"
+      ^ Sec.b64_encode (String.make 32 'k')
+      ^ ":"
+      ^ Sec.b64_encode (String.make 31 's');
+      "SCRAM-SHA-256$4096:c2FsdA==$" ^ Sec.b64_encode "" ^ ":" ^ Sec.b64_encode "";
     ];
   (* a verifier exactly as stored by PostgreSQL 17 for password "haltlab" *)
   check_bool "postgres format" true
@@ -783,6 +793,34 @@ let test_enforce_bind () =
       check_bool "missing param" true
         (Astring_like.contains d.message "supplies 0 parameter")
   | Ok _ -> Alcotest.fail "missing tenancy param must be rejected");
+  (* one parameter cannot stand for two different tenancy values *)
+  (match
+     Enforce.bind ~sqlstate:"42501"
+       {
+         v with
+         bind_params =
+           [ (1, Haltsql.Context.One "acme"); (1, Haltsql.Context.One "globex") ];
+       }
+       (bind_msg [ Some "x" ])
+   with
+  | Error d ->
+      Alcotest.(check (list string)) "conflict rejected" [ "E_PARAM_UNBOUND" ] d.codes;
+      check_bool "says why" true (Astring_like.contains d.message "conflicting")
+  | Ok b' ->
+      Alcotest.failf "conflicting tenancy values bound as %s"
+        (String.concat "," (List.map (Option.value ~default:"NULL") b'.params)));
+  (match
+     Enforce.bind ~sqlstate:"42501"
+       {
+         v with
+         bind_params =
+           [ (1, Haltsql.Context.One "acme"); (1, Haltsql.Context.One "acme") ];
+       }
+       (bind_msg [ Some "x" ])
+   with
+  | Ok b' ->
+      Alcotest.(check (list (option string))) "same value twice" [ Some "acme" ] b'.params
+  | Error d -> Alcotest.fail d.message);
   (* a statement without tenancy params passes unchanged *)
   let v2, _ =
     Enforce.parse ~sqlstate:"42501" b "SELECT code FROM app.currencies LIMIT 5"
@@ -894,9 +932,23 @@ let test_stmt_state () =
   let small = Stmt_state.create ~max_pending:2 () in
   Stmt_state.note_parse small "a" (verdict_with []);
   Stmt_state.note_parse small "b" (verdict_with []);
-  match Stmt_state.note_parse small "c" (verdict_with []) with
+  (match Stmt_state.note_parse small "c" (verdict_with []) with
   | () -> Alcotest.fail "expected Overflow"
-  | exception Stmt_state.Overflow -> ()
+  | exception Stmt_state.Overflow -> ());
+  (* unanswered segments are bounded too: a client that pipelines Syncs and never reads
+     cannot grow the queue without limit *)
+  let segs = Stmt_state.create ~max_pending:2 () in
+  Stmt_state.touch segs;
+  Stmt_state.end_segment segs;
+  Stmt_state.touch segs;
+  Stmt_state.end_segment segs;
+  check_int "two segments in flight" 2 (Stmt_state.in_flight segs);
+  (match Stmt_state.touch segs with
+  | () -> Alcotest.fail "expected Overflow for a third unanswered segment"
+  | exception Stmt_state.Overflow -> ());
+  Stmt_state.on_ready segs;
+  Stmt_state.touch segs;
+  check_int "room again once the upstream answered" 2 (Stmt_state.in_flight segs)
 
 (* --------------------------------------------------------- Io / Upstream *)
 
