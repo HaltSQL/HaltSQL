@@ -38,6 +38,7 @@ jobs:
       java: ${{ steps.areas.outputs.java }}
       action: ${{ steps.areas.outputs.action }}
       helm: ${{ steps.areas.outputs.helm }}
+      native: ${{ steps.areas.outputs.native }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -88,13 +89,16 @@ jobs:
     name: Build and test (${{ matrix.os }}, OCaml ${{ matrix.ocaml }})
     needs: [changes, lint]
     # lint is skipped when no OCaml changed; run anyway unless it failed.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
+    # Pushes to main run the full grid. A pull request already has an Ubuntu
+    # test run (coverage, OCaml 5.2) and an OCaml 5.4 build of the whole tree
+    # (binaries), so this job runs for it only on macOS, and only when the
+    # change can behave differently there: C stubs, the vendored parser, the
+    # native library or the build files (area `native`).
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && needs.changes.outputs.ocaml == 'true' && (github.event_name != 'pull_request' || needs.changes.outputs.native == 'true') }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # PRs test the newest OCaml on both OSes (coverage already runs 5.2 on
-        # Ubuntu); pushes to main run the full grid.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
         ocaml: ${{ fromJSON(github.event_name == 'pull_request' && '["5.4"]' || '["5.2", "5.4"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -129,13 +133,25 @@ jobs:
           HALTSQL_REQUIRE_HELM: "1"
         run: opam exec -- dune test
 
+  # The test run of every OCaml change: the whole suite with coverage, against
+  # a real Postgres 17 (the rls, schema pull and schema check suites skip
+  # without one) and with Helm (the console chart tests).
   coverage:
-    name: Coverage (bisect_ppx)
+    name: Test with coverage (Ubuntu, OCaml 5.2, Postgres 17)
     needs: [changes, lint]
     # lint is skipped when no OCaml changed; run anyway unless it failed.
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        ports: ["5417:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -150,9 +166,15 @@ jobs:
       - name: Install OCaml dependencies
         run: opam install . --deps-only --with-test --yes && opam install --yes bisect_ppx
 
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.22.1
+
+      # Docker-based suites run in integration.yml.
       - name: Run tests with instrumentation
         env:
           HALTSQL_SKIP_DOCKER: "1"
+          HALTSQL_REQUIRE_HELM: "1"
         run: opam exec -- dune runtest --instrument-with bisect_ppx --force
 
       - name: Coverage report
@@ -173,47 +195,28 @@ jobs:
           path: _coverage/
           retention-days: 14
 
-  postgres-integration:
-    name: Postgres integration (rls, schema pull, Python guard)
+  # The binaries every client job tests against, built at most once per state of
+  # the OCaml sources (.github/actions/haltsql-binaries caches them by a hash of
+  # those sources). A change that touches only an SDK reuses the binaries of the
+  # last OCaml change and installs no OCaml toolchain at all.
+  binaries:
+    name: Binaries (build once, cached by source hash)
     needs: [changes, lint]
-    # lint is skipped when no OCaml changed; run anyway unless it failed.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true') }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.python == 'true' || needs.changes.outputs.typescript == 'true' || needs.changes.outputs.action == 'true') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
-        ports: ["5417:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 2s
-          --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-
-      - name: Set up OCaml
-        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
-        with:
-          ocaml-compiler: "5.4"
-          dune-cache: true
-
-      - name: Install OCaml dependencies
-        run: opam install . --deps-only --with-test --yes
-
-      # These suites skip with a message when Postgres is unreachable; here the
-      # service container makes them run for real.
-      - name: rls generate/check and schema pull against Postgres 17
-        run: opam exec -- dune test test/rlsgen test/catalog_tools --force
+      - uses: ./.github/actions/haltsql-binaries
 
   python-clients:
     name: Python SDK, MCP server and framework integrations
-    needs: [changes, lint]
-    # lint is skipped when no OCaml changed; run anyway unless it failed.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.python == 'true') }}
-    runs-on: ubuntu-latest
+    needs: [changes, lint, binaries]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.binaries.result == 'success' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.python == 'true') }}
+    # The same image as the binaries job: the binaries link its libraries.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
@@ -229,24 +232,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up OCaml
-        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
-        with:
-          ocaml-compiler: "5.4"
-          dune-cache: true
+      - name: Binaries (from the cache filled by the binaries job)
+        uses: ./.github/actions/haltsql-binaries
 
-      - name: Build haltsql and haltsql-server
-        run: |
-          opam install . --deps-only --yes
-          opam exec -- dune build lib/pgquery/libpg_query.a
-          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe native/libhaltsql.so
-          {
-            echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe"
-            echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
-            echo "HALTSQL_LIB=$PWD/_build/default/native/libhaltsql.so"
-            # NativeVerifier tests (tests/test_native.py) must run, not skip.
-            echo "HALTSQL_REQUIRE_NATIVE=1"
-          } >> "$GITHUB_ENV"
+      # NativeVerifier tests (tests/test_native.py) must run, not skip.
+      - run: echo "HALTSQL_REQUIRE_NATIVE=1" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -263,7 +253,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
     # ubuntu-latest (26.04) has no Python 3.9 build in actions/setup-python.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -280,17 +270,17 @@ jobs:
 
   typescript-sdk:
     name: TypeScript SDK (Node ${{ matrix.node }})
-    needs: [changes, lint]
-    # lint is skipped when no OCaml changed; run anyway unless it failed.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.typescript == 'true') }}
+    needs: [changes, lint, binaries]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.binaries.result == 'success' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.typescript == 'true') }}
+    # The same image as the binaries job: the binaries link its libraries.
     strategy:
       fail-fast: false
       matrix:
         # PRs test the current LTS; pushes to main cover every supported
         # version (package.json: engines.node >= 18).
         node: ${{ fromJSON(github.event_name == 'pull_request' && '["22"]' || '["18", "20", "22"]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17
@@ -305,22 +295,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up OCaml
-        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
-        with:
-          ocaml-compiler: "5.4"
-          dune-cache: true
+      - name: Binaries (from the cache filled by the binaries job)
+        uses: ./.github/actions/haltsql-binaries
 
-      - name: Build haltsql-server and the haltsql CLI (real-sidecar and LocalVerifier tests)
-        run: |
-          opam install . --deps-only --yes
-          opam exec -- dune build ./bin/server/main.exe ./bin/haltsql/main.exe
-          {
-            echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
-            echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe"
-            # LocalVerifier tests (test/local.test.mjs) must run, not skip.
-            echo "HALTSQL_REQUIRE_NATIVE=1"
-          } >> "$GITHUB_ENV"
+      # LocalVerifier tests (test/local.test.mjs) must run, not skip.
+      - run: echo "HALTSQL_REQUIRE_NATIVE=1" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -337,7 +316,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -366,7 +345,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.java == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -391,26 +370,18 @@ jobs:
 
   policy-ci-action:
     name: GitHub Action and GitLab template self-test
-    needs: [changes, lint]
-    # lint is skipped when no OCaml changed; run anyway unless it failed.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.lint.result != 'failure' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.action == 'true') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    needs: [changes, lint, binaries]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.binaries.result == 'success' && (needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.action == 'true') }}
+    # The same image as the binaries job: the binaries link its libraries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - name: Set up OCaml
-        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
-        with:
-          ocaml-compiler: "5.4"
-          dune-cache: true
-
-      - name: Build haltsql
-        run: |
-          opam install . --deps-only --yes
-          opam exec -- dune build ./bin/haltsql/main.exe
+      - name: Binaries (from the cache filled by the binaries job)
+        uses: ./.github/actions/haltsql-binaries
 
       - name: Action script tests
         run: test/bundle/action/test_action.sh _build/default/bin/haltsql/main.exe
@@ -524,7 +495,7 @@ jobs:
       - lint
       - build-test
       - coverage
-      - postgres-integration
+      - binaries
       - python-clients
       - python-sdk-minimum
       - typescript-sdk
