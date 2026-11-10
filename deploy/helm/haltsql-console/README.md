@@ -30,6 +30,7 @@ console:
     verifiers:
       - name: haltsql
         url: http://haltsql.haltsql.svc:8080
+        allow_insecure_http: true   # the admin token over plain HTTP: prefer https + ca_file
         token: ${env:HALTSQL_ADMIN_TOKEN}     # its name is in the verifiers' server.admin.callers
         workload: deployment/haltsql
     audit:

@@ -547,12 +547,15 @@ action logged as `policy.pull_request`.
     "version": "0.1.0", "uptime_seconds": 345600,
     "policies": [ { "name", "version", "mode", "origin" } ],
     "bundle": { "source", "bundle", "version", "signed_by", "revision", "checks", "last_success", "last_error" },
+    "bundles": [ { same fields as bundle, one per bundle source } ],
     "sinks": [ { "name", "type", "healthy" } ], "unhealthy_sinks": [],
     "opa": { "configured": true, "timeouts": 12 }, "restart_pending": false,
     "connections": null, "verifies_per_second": 310.2, "note": "...", "error": null } ],
   "bundles": [ { "source", "version", "signed_by", "revision", "verifiers": 8, "in_sync": true } ],
   "sinks": [ { "type": "kafka", "target": "...", "state": "healthy | buffering | failing", "verifiers": 7 } ],
-  "opa": { "decision_path", "endpoint", "timeout_ms", "on_error", "decisions": { "allowed", "denied", "error_denied", "skipped" } }
+  "opa": { "decision_path", "endpoint", "timeout_ms", "on_error", "in_sync": true,
+           "configs": [ { "decision_path", "endpoint", "timeout_ms", "on_error", "verifiers": [names] } ],
+           "decisions": { "allowed", "denied", "error_denied", "skipped" } }
 }
 ```
 
@@ -580,6 +583,15 @@ are `null` and the lists are empty. Details:
   `error_denied`: timeouts and failures), and `opa.decisions` the decisions of
   every verifier, both over the in-memory history (the last 120 polls,
   `window_seconds`). Fields are `null` when the verifier has no `/metrics`.
+- `bundle` is the verifier's first bundle source (kept for compatibility);
+  `bundles` lists every source. Source ids and `last_error` have the query,
+  fragment and userinfo of any URL replaced (`?<redacted>`), since every role
+  can read this document.
+- `opa`: the top-level settings are the majority's; `configs` groups the
+  verifiers by OPA settings (majority first) and `in_sync` is false when they
+  differ.
+- `error` on an unreachable verifier that is backing off says when it is
+  probed next (`fleet.max_concurrent_probes` in config.md).
 - `kind: mcp`/`proxy` verifiers without admin status get their state from
   `/readyz` and `/metrics` (404s are not errors); a proxy with a non-HTTP `url`
   from a TCP connect.
@@ -588,11 +600,16 @@ are `null` and the lists are empty. Details:
 required for restarts, even for roles granted the permission outright).
 Restarts the verifier's Kubernetes workload (`fleet.kubernetes`, a rollout
 restart patch on its Deployment or StatefulSet) and returns
-`{ "verifier", "workload": "deployment/haltsql-1", "restarted_at" }`. Logged as
-`fleet.restart`. `404` for an unknown verifier, `503 NOT_CONFIGURED` without
-`fleet.kubernetes` or the verifier's `workload`, `502 UPSTREAM` when the
-Kubernetes API fails (the message carries the HTTP status and Status
-`reason`, never the token).
+`{ "verifier", "workload": "deployment/haltsql-1", "restarted_at", "result": "ok | no_rollout" }`.
+`no_rollout` (with a `warning`) means the patch was accepted but will not
+restart pods: a paused Deployment or a StatefulSet with `updateStrategy:
+OnDelete`. The intent is logged as `fleet.restart_requested` before the
+Kubernetes call (the restart is refused if that write fails), and the outcome
+as `fleet.restart`. `404` for an unknown verifier, `503 NOT_CONFIGURED`
+without `fleet.kubernetes` or the verifier's `workload`, or when the console's
+own setup fails at restart time (token file unreadable, bad CA), `502
+UPSTREAM` when the Kubernetes API fails (the message carries the HTTP status
+and Status `reason`, never the token).
 
 ### Data classification
 

@@ -56,7 +56,7 @@ let config_tests =
                     `Assoc
                       [
                         ("name", `String "a");
-                        ("url", `String "http://x/");
+                        ("url", `String "https://x/");
                         ("token", `String "${env:TOKEN}");
                       ];
                   ] );
@@ -66,7 +66,7 @@ let config_tests =
         let c = C.Console_config.of_json (C.Console_config.substitute ~resolve doc) in
         let v = List.hd c.verifiers in
         Alcotest.(check (option string)) "token" (Some "s3cret") v.v_token;
-        Alcotest.(check string) "url trimmed" "http://x" v.v_url );
+        Alcotest.(check string) "url trimmed" "https://x" v.v_url );
   ]
 
 let example_config_test =

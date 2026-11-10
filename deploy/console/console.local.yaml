@@ -22,6 +22,7 @@ auth:
 verifiers:
   - name: haltsql-1
     url: http://haltsql:8080
+    allow_insecure_http: true   # the admin token over plain HTTP: prefer https + ca_file
     kind: server
     location: docker compose, local
     # Listed as token:console in server.admin.callers (local/haltsql.yaml).

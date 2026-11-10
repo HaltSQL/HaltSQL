@@ -468,7 +468,7 @@ let doc ~integrations =
                `Assoc
                  [
                    ("name", `String "v");
-                   ("url", `String "http://v");
+                   ("url", `String "https://v");
                    ("token", `String "${env:ADMIN_TOKEN}");
                  ];
              ] );

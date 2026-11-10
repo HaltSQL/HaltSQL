@@ -4,14 +4,15 @@
    docs/console/api.md#fleet.
 
    The latest document ([GET /api/v1/fleet] shape) is read with [snapshot]. A short
-   in-memory history of metric samples per verifier (the last [history_size] polls) gives
-   request rates, OPA decision and error counts, and buffered-record peaks. *)
+   in-memory history of metric samples per verifier (the last [fleet.history_size] polls)
+   gives request rates, OPA decision and error counts, and buffered-record peaks.
+
+   At most [fleet.max_concurrent_probes] verifiers are probed at once, and a verifier that
+   stays unreachable is probed less often (exponential backoff, at most every 9th poll).
+   *)
 
 open Lwt.Syntax
 module C = Console_config
-
-let probe_timeout = 5.
-let history_size = 120
 
 let log level fmt =
   Printf.ksprintf
@@ -31,22 +32,95 @@ type 'a probe =
 
 let responded = function Got _ | Status _ -> true | Failed _ -> false
 
-let http_get ?token url =
+(* How one poll reaches one verifier: TLS trust ([verifiers[].ca_file] or the system
+   store), the probe timeout and the admin token resolved for this poll. *)
+type conn = {
+  tls : Haltsql_cloud.Http.ctx;
+  timeout : float;
+  token : string option;
+  now : unit -> float;  (** clock for sample timestamps *)
+}
+
+let http_get (c : conn) ?token url =
   let headers =
     ("accept", "application/json, text/plain")
     :: (match token with Some t -> [ ("authorization", "Bearer " ^ t) ] | None -> [])
   in
   Lwt.catch
     (fun () ->
-      Haltsql_cloud.Http.request ~timeout:probe_timeout
+      Haltsql_cloud.Http.request ~ctx:c.tls ~timeout:c.timeout
         ~max_body:(4 * 1024 * 1024)
         ~headers `GET (Uri.of_string url))
     (fun exn -> Lwt.return (Error (Printexc.to_string exn)))
 
 let json_of s = try Some (Yojson.Safe.from_string s) with _ -> None
 
-let admin_status (v : C.verifier) =
-  let+ r = http_get ?token:v.v_token (v.v_url ^ "/v1/admin/status") in
+(* ---- redaction ---- *)
+
+(* Bundle source ids are raw URLs for https sources, and the fleet document is readable
+   by every role: a presigned URL or a [?token=] query must not leak through it. Every
+   [scheme://...] run in [s] loses its query, fragment and userinfo. *)
+let redact_urls s =
+  let n = String.length s in
+  let b = Buffer.create n in
+  let is_scheme_char c =
+    match c with
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '+' | '-' | '.' -> true
+    | _ -> false
+  in
+  let is_end c =
+    match c with ' ' | '\t' | '\n' | '\r' | '"' | '\'' | '<' | '>' -> true | _ -> false
+  in
+  let rec find_sep i =
+    if i + 3 > n then None
+    else if String.sub s i 3 = "://" then Some i
+    else find_sep (i + 1)
+  in
+  let rec go pos =
+    match find_sep pos with
+    | None -> Buffer.add_string b (String.sub s pos (n - pos))
+    | Some sep ->
+        (* the URL runs from the scheme's first character to the next delimiter *)
+        let start = ref sep in
+        while !start > pos && is_scheme_char s.[!start - 1] do
+          decr start
+        done;
+        let stop = ref (sep + 3) in
+        while !stop < n && not (is_end s.[!stop]) do
+          incr stop
+        done;
+        Buffer.add_string b (String.sub s pos (sep + 3 - pos));
+        let rest = String.sub s (sep + 3) (!stop - sep - 3) in
+        let authority_end =
+          match String.index_opt rest '/' with Some i -> i | None -> String.length rest
+        in
+        let rest =
+          if authority_end = 0 then rest
+          else
+            match String.rindex_from_opt rest (authority_end - 1) '@' with
+            | Some i ->
+                "<redacted>@" ^ String.sub rest (i + 1) (String.length rest - i - 1)
+            | None -> rest
+        in
+        let cut =
+          match (String.index_opt rest '?', String.index_opt rest '#') with
+          | Some a, Some h -> Some (min a h)
+          | Some a, None -> Some a
+          | None, Some h -> Some h
+          | None, None -> None
+        in
+        (match cut with
+        | Some i -> Buffer.add_string b (String.sub rest 0 i ^ "?<redacted>")
+        | None -> Buffer.add_string b rest);
+        go !stop
+  in
+  go 0;
+  Buffer.contents b
+
+let redact_json = function `String s -> `String (redact_urls s) | j -> j
+
+let admin_status (c : conn) (v : C.verifier) =
+  let+ r = http_get c ?token:c.token (v.v_url ^ "/v1/admin/status") in
   match r with
   | Error e -> Failed e
   | Ok { status = 200; body; _ } -> (
@@ -55,15 +129,17 @@ let admin_status (v : C.verifier) =
       | _ -> Failed "admin status is not a JSON object")
   | Ok { status; _ } -> Status status
 
-let readyz (v : C.verifier) =
-  let+ r = http_get (v.v_url ^ "/readyz") in
+let readyz (c : conn) (v : C.verifier) =
+  let+ r = http_get c (v.v_url ^ "/readyz") in
   match r with
   | Error e -> Failed e
   | Ok { status = (200 | 503) as status; body; _ } ->
       Got (status, Option.value (json_of body) ~default:`Null)
   | Ok { status; _ } -> Status status
 
-let metrics (v : C.verifier) =
+(* The sample time is when this verifier's metrics arrived, not when the slowest probe
+   of the poll finished. *)
+let metrics (c : conn) (v : C.verifier) =
   let url = Option.value v.v_metrics_url ~default:(v.v_url ^ "/metrics") in
   (* The admin token only goes to the verifier's own origin, never to a separate
      metrics host. *)
@@ -71,23 +147,23 @@ let metrics (v : C.verifier) =
     let u = Uri.of_string u in
     (Uri.scheme u, Uri.host u, Uri.port u)
   in
-  let token = if origin url = origin v.v_url then v.v_token else None in
-  let+ r = http_get ?token url in
+  let token = if origin url = origin v.v_url then c.token else None in
+  let+ r = http_get c ?token url in
   match r with
   | Error e -> Failed e
-  | Ok { status = 200; body; _ } -> Got (Prom.parse body)
+  | Ok { status = 200; body; _ } -> Got (c.now (), Prom.parse body)
   | Ok { status; _ } -> Status status
 
 (* haltsql-proxy serves PostgreSQL only (no HTTP endpoints): a TCP connect to its
    address is the liveness check when its url is not http(s). *)
-let tcp_check url =
+let tcp_check ~timeout url =
   let u = Uri.of_string url in
   match (Uri.host u, Uri.port u) with
   | Some host, port ->
       let port = Option.value port ~default:5432 in
       Lwt.catch
         (fun () ->
-          Lwt_unix.with_timeout probe_timeout (fun () ->
+          Lwt_unix.with_timeout timeout (fun () ->
               let* addrs =
                 Lwt_unix.getaddrinfo host (string_of_int port)
                   [ Unix.AI_SOCKTYPE Unix.SOCK_STREAM ]
@@ -149,7 +225,14 @@ let sample_of ~at samples =
    name, newest first, and the last fleet document. *)
 type state = {
   history : (string, sample list) Hashtbl.t;
+  backoff : (string, backoff) Hashtbl.t;  (** unreachable verifiers, by name *)
   mutable doc : Yojson.Safe.t option;
+}
+
+and backoff = {
+  failures : int;  (** consecutive unreachable polls *)
+  mutable skip : int;  (** polls left before the next probe *)
+  last_error : string;
 }
 
 let key : state Ctx.Key.t = Ctx.Key.create "fleet"
@@ -158,7 +241,7 @@ let state_of (ctx : Ctx.t) =
   match Ctx.get ctx key with
   | Some s -> s
   | None ->
-      let s = { history = Hashtbl.create 8; doc = None } in
+      let s = { history = Hashtbl.create 8; backoff = Hashtbl.create 8; doc = None } in
       Ctx.set ctx key s;
       s
 
@@ -174,9 +257,9 @@ let rec take n = function
   | [] -> []
   | x :: t -> if n <= 0 then [] else x :: take (n - 1) t
 
-let record_sample st name s =
+let record_sample ~size st name s =
   let h = Option.value (Hashtbl.find_opt st.history name) ~default:[] in
-  Hashtbl.replace st.history name (take history_size (s :: h))
+  Hashtbl.replace st.history name (take size (s :: h))
 
 (* Counter increase over the history (newest first), treating a decrease as a counter
    reset (the new value is then the increase), like Prometheus [increase]. *)
@@ -224,17 +307,72 @@ type polled = {
   v : C.verifier;
   status : Yojson.Safe.t probe;
   ready : (int * Yojson.Safe.t) probe;
-  prom : Prom.sample list probe;
+  prom : (float * Prom.sample list) probe;  (** arrival time, samples *)
   tcp : (unit, string) result option;  (** proxy without HTTP endpoints *)
+  setup_error : string option;
+      (** the console could not prepare the probe (token or CA), so admin status was not
+          asked *)
+  retry_in : int option;  (** not probed this poll (backoff); polls until the next probe *)
 }
 
-let poll_verifier (v : C.verifier) =
+let failed_all ?setup_error ?retry_in v e =
+  {
+    v;
+    status = Failed e;
+    ready = Failed e;
+    prom = Failed e;
+    tcp = None;
+    setup_error;
+    retry_in;
+  }
+
+(* The admin token for this poll: re-resolved from its placeholder (the resolver caches
+   provider values for a few minutes), so a rotated token is used without a restart. *)
+let token_for (ctx : Ctx.t) (v : C.verifier) =
+  match v.v_token_ref with
+  | None -> Lwt.return (Ok v.v_token)
+  | Some template -> (
+      let+ r = C.resolve ctx.config template in
+      match r with Ok t -> Ok (Some t) | Error e -> Error ("token: " ^ e))
+
+let tls_for (v : C.verifier) =
+  match v.v_ca_file with
+  | None -> Lwt.return (Ok Haltsql_cloud.Http.default_ctx)
+  | Some f -> (
+      let+ r = Haltsql_cloud.Http.ctx_of_ca_file f in
+      match r with Ok c -> Ok c | Error e -> Error ("ca_file: " ^ e))
+
+let poll_verifier ?now (ctx : Ctx.t) (v : C.verifier) =
+  let timeout = ctx.config.fleet_probe_timeout in
   if v.v_kind = C.Proxy && not (is_http v.v_url) then
-    let+ tcp = tcp_check v.v_url in
-    { v; status = Status 404; ready = Status 404; prom = Status 404; tcp = Some tcp }
+    let+ tcp = tcp_check ~timeout v.v_url in
+    {
+      v;
+      status = Status 404;
+      ready = Status 404;
+      prom = Status 404;
+      tcp = Some tcp;
+      setup_error = None;
+      retry_in = None;
+    }
   else
-    let* status = admin_status v and* ready = readyz v and* prom = metrics v in
-    Lwt.return { v; status; ready; prom; tcp = None }
+    let* tls = tls_for v in
+    match tls with
+    | Error e -> Lwt.return (failed_all ~setup_error:e v e)
+    | Ok tls ->
+        let* token = token_for ctx v in
+        let token, setup_error =
+          match token with Ok t -> (t, None) | Error e -> (None, Some e)
+        in
+        let now = match now with Some t -> fun () -> t | None -> Ctx.now in
+        let c = { tls; timeout; token; now } in
+        let* status =
+          match setup_error with
+          | Some e -> Lwt.return (Failed e)
+          | None -> admin_status c v
+        and* ready = readyz c v
+        and* prom = metrics c v in
+        Lwt.return { v; status; ready; prom; tcp = None; setup_error; retry_in = None }
 
 let reachable p =
   match p.tcp with
@@ -297,22 +435,26 @@ let unhealthy_from_readyz p =
       | _ -> [])
   | _ -> []
 
-let bundle_of j =
-  match mem "bundle_sources" j with
-  | `List (b :: _) ->
-      let cur = mem "current" b in
-      `Assoc
-        [
-          ("source", mem "source" b);
-          ("bundle", mem "bundle" cur);
-          ("version", mem "version" cur);
-          ("signed_by", mem "signed_by" cur);
-          ("revision", mem "revision" cur);
-          ("checks", mem "checks" b);
-          ("last_success", mem "last_success" b);
-          ("last_error", mem "last_error" b);
-        ]
-  | _ -> `Null
+let bundle_json b =
+  let cur = mem "current" b in
+  `Assoc
+    [
+      ("source", redact_json (mem "source" b));
+      ("bundle", mem "bundle" cur);
+      ("version", mem "version" cur);
+      ("signed_by", mem "signed_by" cur);
+      ("revision", mem "revision" cur);
+      ("checks", mem "checks" b);
+      ("last_success", mem "last_success" b);
+      ("last_error", redact_json (mem "last_error" b));
+    ]
+
+(** Every bundle source the verifier reports, in its order. *)
+let bundles_of j =
+  match mem "bundle_sources" j with `List l -> List.map bundle_json l | _ -> []
+
+(** The first bundle source ([verifiers[].bundle], kept for compatibility). *)
+let bundle_of j = match bundles_of j with b :: _ -> b | [] -> `Null
 
 type derived = {
   state : string;
@@ -344,8 +486,20 @@ let derive p latest =
     | Failed e when reachable p -> Some ("admin status: " ^ e)
     | _ -> None
   in
+  let status_error =
+    match p.setup_error with
+    | Some e -> Some ("admin status: " ^ e)
+    | None -> status_error
+  in
   if not (reachable p) then
     let e = Option.value (first_failure p) ~default:"no answer" in
+    let e =
+      match p.retry_in with
+      | Some n ->
+          Printf.sprintf "%s (backing off: next probe in %d %s)" e n
+            (if n = 1 then "poll" else "polls")
+      | None -> e
+    in
     {
       state = "unreachable";
       note = Printf.sprintf "No answer from %s." p.v.v_url;
@@ -403,14 +557,17 @@ let derive p latest =
                  from a TCP check)."
             | Some j, _ ->
                 let n = match mem "policies" j with `List l -> List.length l | _ -> 0 in
+                let one b =
+                  match (str "bundle" b, str "version" b) with
+                  | Some name, Some ver -> Some (Printf.sprintf "%s %s" name ver)
+                  | None, Some ver -> Some ver
+                  | _ -> None
+                in
                 let bundle =
-                  match bundle_of j with
-                  | `Null -> ""
-                  | b -> (
-                      match (str "bundle" b, str "version" b) with
-                      | Some name, Some ver -> Printf.sprintf ", bundle %s %s" name ver
-                      | None, Some ver -> Printf.sprintf ", bundle %s" ver
-                      | _ -> "")
+                  match List.filter_map one (bundles_of j) with
+                  | [] -> ""
+                  | [ b ] -> ", bundle " ^ b
+                  | l -> ", bundles " ^ String.concat ", " l
                 in
                 Printf.sprintf "Ready: %d %s%s." n
                   (if n = 1 then "policy" else "policies")
@@ -488,6 +645,7 @@ let verifier_json p ~history =
       ("config_generation", int_or_null (from_status "config_generation"));
       ("policies", policies);
       ("bundle", match st with Some j -> bundle_of j | None -> `Null);
+      ("bundles", `List (match st with Some j -> bundles_of j | None -> []));
       ( "sinks",
         `List
           (List.map
@@ -540,6 +698,7 @@ let bundles_json polled =
                     match str "source" b with
                     | None -> None
                     | Some src ->
+                        let src = redact_urls src in
                         let cur = mem "current" b in
                         Some
                           ( src,
@@ -646,15 +805,27 @@ let sinks_json st polled_with_sinks =
     targets
 
 let opa_outcomes = [ "allowed"; "denied"; "error_denied"; "error_allowed"; "skipped" ]
+let opa_fields = [ "decision_path"; "host"; "timeout_ms"; "on_error" ]
 
+(* OPA settings grouped like bundles: one entry per distinct setting, majority first, so
+   drift between verifiers is visible. The top-level fields are the majority's. *)
 let opa_json st polled =
-  let conf =
-    List.find_map
+  let confs =
+    List.filter_map
       (fun p ->
         Option.bind (status_json p) (fun j ->
-            match mem "opa" j with `Null -> None | o -> Some o))
+            match mem "opa" j with
+            | `Null -> None
+            | o -> Some (pick opa_fields o, p.v.C.v_name)))
       polled
   in
+  let groups =
+    List.sort_uniq compare (List.map fst confs)
+    |> List.map (fun c ->
+        (c, List.filter_map (fun (c', n) -> if c' = c then Some n else None) confs))
+    |> List.stable_sort (fun (_, a) (_, b) -> compare (List.length b) (List.length a))
+  in
+  let conf = match groups with (c, _) :: _ -> Some c | [] -> None in
   let histories =
     List.map
       (fun p -> Option.value (Hashtbl.find_opt st.history p.v.C.v_name) ~default:[])
@@ -682,6 +853,20 @@ let opa_json st polled =
       ("endpoint", c "host");
       ("timeout_ms", c "timeout_ms");
       ("on_error", c "on_error");
+      ("in_sync", `Bool (List.length groups <= 1));
+      ( "configs",
+        `List
+          (List.map
+             (fun (o, names) ->
+               `Assoc
+                 [
+                   ("decision_path", mem "decision_path" o);
+                   ("endpoint", mem "host" o);
+                   ("timeout_ms", mem "timeout_ms" o);
+                   ("on_error", mem "on_error" o);
+                   ("verifiers", Api.strings names);
+                 ])
+             groups) );
       ("decisions", `Assoc decisions);
       ("window_seconds", `Int (to_int window));
     ]
@@ -694,20 +879,57 @@ let empty () =
       ("verifiers", `List []);
       ("bundles", `List []);
       ("sinks", `List []);
-      ("opa", opa_json { history = Hashtbl.create 1; doc = None } []);
+      ( "opa",
+        opa_json { history = Hashtbl.create 1; backoff = Hashtbl.create 1; doc = None } []
+      );
     ]
 
 (* ---- polling ---- *)
 
 (** Polls every verifier once and stores the document (read with [snapshot]). *)
+let max_skip = 8
+
+(* Probes [v] unless it is backing off, and updates its backoff: after [n] consecutive
+   unreachable polls it is skipped for [min (2^(n-1) - 1) max_skip] polls, so one blip
+   costs nothing and a dead verifier is probed at most every [max_skip + 1] polls. *)
+let probe_with_backoff ?now ctx st (v : C.verifier) =
+  match Hashtbl.find_opt st.backoff v.v_name with
+  | Some b when b.skip > 0 ->
+      b.skip <- b.skip - 1;
+      Lwt.return (failed_all ~retry_in:(b.skip + 1) v b.last_error)
+  | prev ->
+      let+ p = poll_verifier ?now ctx v in
+      (match (reachable p, p.setup_error) with
+      | true, _ | false, Some _ -> Hashtbl.remove st.backoff v.v_name
+      | false, None ->
+          let failures = match prev with Some b -> b.failures + 1 | None -> 1 in
+          let skip = min ((1 lsl min (failures - 1) 10) - 1) max_skip in
+          Hashtbl.replace st.backoff v.v_name
+            {
+              failures;
+              skip;
+              last_error = Option.value (first_failure p) ~default:"no answer";
+            });
+      p
+
 let poll_once ?now (ctx : Ctx.t) =
   let st = state_of ctx in
-  let* polled = Lwt_list.map_p poll_verifier ctx.config.verifiers in
+  (* at most [fleet.max_concurrent_probes] verifiers in flight (3 requests each) *)
+  let slots =
+    Lwt_pool.create (max 1 ctx.config.fleet_max_concurrent) (fun () -> Lwt.return_unit)
+  in
+  let* polled =
+    Lwt_list.map_p
+      (fun v -> Lwt_pool.use slots (fun () -> probe_with_backoff ?now ctx st v))
+      ctx.config.verifiers
+  in
   let now = match now with Some t -> t | None -> Ctx.now () in
   List.iter
     (fun p ->
       match p.prom with
-      | Got samples -> record_sample st p.v.C.v_name (sample_of ~at:now samples)
+      | Got (at, samples) ->
+          record_sample ~size:ctx.config.fleet_history_size st p.v.C.v_name
+            (sample_of ~at samples)
       | _ -> ())
     polled;
   let hist p = Option.value (Hashtbl.find_opt st.history p.v.C.v_name) ~default:[] in
@@ -742,9 +964,18 @@ let poll_once ?now (ctx : Ctx.t) =
   Lwt.return doc
 
 let start (ctx : Ctx.t) : unit Lwt.t =
+  (* Restarts would fail with 503 NOT_CONFIGURED; say so at startup, not during an
+     incident. *)
+  Option.iter
+    (fun k ->
+      List.iter (log "warn" "%s: restarts will fail") (C.kubernetes_file_problems k))
+    ctx.config.kubernetes;
   if ctx.config.verifiers = [] then Lwt.return_unit
   else
     let period = float_of_int (max 1 ctx.config.fleet_poll_seconds) in
+    (* +-10% jitter, so consoles (and verifiers' metrics scrapes) do not stay in lock-step *)
+    let rng = Random.State.make_self_init () in
+    let jittered () = period *. (0.9 +. Random.State.float rng 0.2) in
     let rec loop () =
       let* () =
         Lwt.catch
@@ -755,7 +986,7 @@ let start (ctx : Ctx.t) : unit Lwt.t =
             log "error" "fleet poll failed: %s" (Printexc.to_string exn);
             Lwt.return_unit)
       in
-      let* () = Lwt_unix.sleep period in
+      let* () = Lwt_unix.sleep (jittered ()) in
       loop ()
     in
     loop ()
@@ -803,42 +1034,56 @@ let restart ctx (p : Ctx.principal) (r : Router.req) =
   in
   let workload = K8s.workload_to_string w in
   let restarted_at = Api.iso8601 (Ctx.now ()) in
+  let detail extra =
+    `Assoc
+      ([ ("workload", `String workload); ("namespace", `String k.k_namespace) ] @ extra)
+  in
+  (* Audit first: the intent is durably logged before the PATCH, so a rollout never
+     happens without a trace. If this write fails the restart is refused (fail closed). *)
+  let* () =
+    Activity.log ctx p ?reason ~action:"fleet.restart_requested" ~target:name
+      ~detail:
+        (detail [ ("restarted_at", `String restarted_at); ("result", `String "pending") ])
+      ()
+  in
   let* result = K8s.restart k w ~restarted_at in
+  let outcome_detail =
+    match result with
+    | Ok K8s.Rolled_out ->
+        [ ("restarted_at", `String restarted_at); ("result", `String "ok") ]
+    | Ok (K8s.No_rollout why) ->
+        [
+          ("restarted_at", `String restarted_at);
+          ("result", `String "no_rollout");
+          ("warning", `String why);
+        ]
+    | Error (K8s.Config e | K8s.Upstream e) ->
+        [ ("result", `String "error"); ("error", `String e) ]
+  in
+  let* () =
+    Activity.log ctx p ?reason ~action:"fleet.restart" ~target:name
+      ~detail:(detail outcome_detail) ()
+  in
   match result with
-  | Ok () ->
-      let* () =
-        Activity.log ctx p ?reason ~action:"fleet.restart" ~target:name
-          ~detail:
-            (`Assoc
-               [
-                 ("workload", `String workload);
-                 ("namespace", `String k.k_namespace);
-                 ("restarted_at", `String restarted_at);
-                 ("result", `String "ok");
-               ])
-          ()
-      in
+  | Ok outcome ->
       Api.json
         (`Assoc
-           [
-             ("verifier", `String name);
-             ("workload", `String workload);
-             ("restarted_at", `String restarted_at);
-           ])
-  | Error e ->
-      let* () =
-        Activity.log ctx p ?reason ~action:"fleet.restart" ~target:name
-          ~detail:
-            (`Assoc
-               [
-                 ("workload", `String workload);
-                 ("namespace", `String k.k_namespace);
-                 ("result", `String "error");
-                 ("error", `String e);
-               ])
-          ()
-      in
-      Api.upstream "restart of %s failed: %s" workload e
+           ([
+              ("verifier", `String name);
+              ("workload", `String workload);
+              ("restarted_at", `String restarted_at);
+              ( "result",
+                `String
+                  (match outcome with
+                  | K8s.Rolled_out -> "ok"
+                  | No_rollout _ -> "no_rollout") );
+            ]
+           @
+           match outcome with
+           | K8s.No_rollout why -> [ ("warning", `String why) ]
+           | Rolled_out -> []))
+  | Error (K8s.Config e) -> Api.not_configured "restart of %s: %s" workload e
+  | Error (K8s.Upstream e) -> Api.upstream "restart of %s failed: %s" workload e
 
 let routes : Router.route list =
   [
