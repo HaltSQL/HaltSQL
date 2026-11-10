@@ -59,11 +59,15 @@ let build (ctx : Ctx.t) (range : Api.range) : agent list =
   let owner caller =
     List.find_opt (fun (a : C.agent) -> List.mem caller a.a_callers) configured
   in
+  (* Configured agent names and raw caller ids are separate namespaces: a caller whose id
+     happens to equal a configured agent's name is not that agent's caller. *)
   let by_agent = Hashtbl.create 16 and seen_order = ref [] in
   List.iter
     (fun (e : Index.entry) ->
       let key =
-        match owner e.record.caller with Some a -> a.a_name | None -> e.record.caller
+        match owner e.record.caller with
+        | Some a -> `Configured a.a_name
+        | None -> `Caller e.record.caller
       in
       if not (Hashtbl.mem by_agent key) then seen_order := key :: !seen_order;
       Hashtbl.replace by_agent key
@@ -78,23 +82,23 @@ let build (ctx : Ctx.t) (range : Api.range) : agent list =
           configured = Some a;
           via = a.a_via;
           callers = a.a_callers;
-          records = (if a.a_via = "in_process" then [] else records_of a.a_name);
+          records =
+            (if a.a_via = "in_process" then [] else records_of (`Configured a.a_name));
         })
       configured
   in
-  let names = List.map (fun (a : C.agent) -> a.a_name) configured in
   let seen =
     List.filter_map
-      (fun k ->
-        if List.mem k names then None
-        else
-          let records = records_of k in
-          let via =
-            Option.value
-              (most_frequent (List.map (guess_via ctx) records))
-              ~default:"sidecar"
-          in
-          Some { name = k; configured = None; via; callers = [ k ]; records })
+      (function
+        | `Configured _ -> None
+        | `Caller c as k ->
+            let records = records_of k in
+            let via =
+              Option.value
+                (most_frequent (List.map (guess_via ctx) records))
+                ~default:"sidecar"
+            in
+            Some { name = c; configured = None; via; callers = [ c ]; records })
       (List.rev !seen_order)
   in
   from_config @ seen

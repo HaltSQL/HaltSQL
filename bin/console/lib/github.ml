@@ -18,6 +18,9 @@ type cfg = {
   tests_path : string;  (** directory of test suites, default "tests" *)
   branch_prefix : string;  (** default "haltsql-console/" *)
   required_approvals : int;  (** shown with the PR state, default 1 *)
+  policy_paths : (string * string) list;
+      (** policy name -> file path in the repo, for policies whose file is not
+          [path/<basename>] *)
 }
 
 let trim_slashes s =
@@ -52,6 +55,7 @@ let keys =
     "api";
     "branch_prefix";
     "required_approvals";
+    "policy_paths";
   ]
 
 (* [config] before the token is resolved: [token] is the value as written (it may hold
@@ -72,16 +76,34 @@ let parse (ctx : Ctx.t) : (cfg, string) result option =
           | Some repo, _ when not (valid_repo repo) ->
               Some (Error "repo must be owner/name")
           | Some repo, Some token -> (
+              let policy_paths =
+                match Api.member "policy_paths" j with
+                | None | Some `Null -> Ok []
+                | Some (`Assoc l) ->
+                    List.fold_left
+                      (fun acc (n, v) ->
+                        match (acc, v) with
+                        | Error _, _ -> acc
+                        | Ok l, `String p when trim_slashes p <> "" ->
+                            Ok (l @ [ (n, trim_slashes p) ])
+                        | Ok _, _ ->
+                            Error
+                              (Printf.sprintf "policy_paths.%s must be a repository path"
+                                 n))
+                      (Ok []) l
+                | Some _ -> Error "policy_paths must be a mapping of policy name to path"
+              in
               let api =
                 Option.value (str "api") ~default:"https://api.github.com" |> fun s ->
                 if String.ends_with ~suffix:"/" s then String.sub s 0 (String.length s - 1)
                 else s
               in
               match
-                Haltsql_cloud.Http.check_endpoint ~what:"integrations.github.api" api
+                ( Haltsql_cloud.Http.check_endpoint ~what:"integrations.github.api" api,
+                  policy_paths )
               with
-              | Error e -> Some (Error e)
-              | Ok _ ->
+              | Error e, _ | _, Error e -> Some (Error e)
+              | Ok _, Ok policy_paths ->
                   Some
                     (Ok
                        {
@@ -99,6 +121,7 @@ let parse (ctx : Ctx.t) : (cfg, string) result option =
                            (match Api.member "required_approvals" j with
                            | Some (`Int n) when n >= 0 -> n
                            | _ -> 1);
+                         policy_paths;
                        }))))
   | Some _ -> Some (Error "must be a mapping")
 
@@ -119,6 +142,44 @@ let config (ctx : Ctx.t) : (cfg, string) result option Lwt.t =
 
 let enc s = Haltsql_cloud.Http.pct_encode ~keep_slash:true s
 
+(* Idempotent GETs are retried (at most [max_attempts] tries) on a transport error, a 5xx,
+   a 429 or a rate-limit 403, waiting for [Retry-After] or [x-ratelimit-reset] when GitHub
+   sends them and otherwise a jittered exponential backoff from [retry_base]. A wait
+   longer than [max_retry_wait] is not taken: the call fails with GitHub's answer instead,
+   so one request never outlives the console's request timeout. Writes are never
+   retried. *)
+let max_attempts = 3
+let retry_base = 0.25
+let max_retry_wait = 5.
+
+let rate_limited (resp : Haltsql_cloud.Http.response) =
+  resp.status = 429
+  || resp.status = 403
+     && (Haltsql_cloud.Http.header resp "x-ratelimit-remaining" = Some "0"
+        || Haltsql_cloud.Http.header resp "retry-after" <> None)
+
+let retryable (resp : Haltsql_cloud.Http.response) =
+  resp.status >= 500 || rate_limited resp
+
+(** Seconds to wait before retry [attempt] (1-based). *)
+let retry_wait ?resp attempt =
+  let header h = Option.bind resp (fun r -> Haltsql_cloud.Http.header r h) in
+  let after =
+    Option.bind (header "retry-after") (fun s -> float_of_string_opt (String.trim s))
+  in
+  let reset =
+    match (header "x-ratelimit-remaining", header "x-ratelimit-reset") with
+    | Some "0", Some r ->
+        Option.map
+          (fun t -> t -. Unix.gettimeofday ())
+          (float_of_string_opt (String.trim r))
+    | _ -> None
+  in
+  match (after, reset) with
+  | Some s, _ | None, Some s -> Float.max 0. s
+  | None, None ->
+      retry_base *. Float.pow 2. (float_of_int (attempt - 1)) *. (0.5 +. Random.float 0.5)
+
 let call ?(accept = "application/vnd.github+json") ?body cfg meth path =
   let uri = Uri.of_string (cfg.api ^ path) in
   let headers =
@@ -130,15 +191,32 @@ let call ?(accept = "application/vnd.github+json") ?body cfg meth path =
     ]
     @ match body with Some _ -> [ ("content-type", "application/json") ] | None -> []
   in
-  let* r =
+  let once () =
     Haltsql_cloud.Http.request ~timeout:15. ~headers
       ?body:(Option.map Yojson.Safe.to_string body)
       meth uri
   in
-  match r with
-  | Error e ->
-      Api.upstream "GitHub %s %s failed: %s" (Cohttp.Code.string_of_method meth) path e
-  | Ok resp -> Lwt.return resp
+  let rec go attempt =
+    let* r = once () in
+    let retry ?resp () =
+      let wait = retry_wait ?resp attempt in
+      if meth = `GET && attempt < max_attempts && wait <= max_retry_wait then
+        let* () = Lwt_unix.sleep wait in
+        go (attempt + 1)
+      else
+        match (r, resp) with
+        | Ok resp, _ | _, Some resp -> Lwt.return resp
+        | Error e, None ->
+            Api.upstream "GitHub %s %s failed: %s"
+              (Cohttp.Code.string_of_method meth)
+              path e
+    in
+    match r with
+    | Error _ -> retry ()
+    | Ok resp when retryable resp -> retry ~resp ()
+    | Ok resp -> Lwt.return resp
+  in
+  go 1
 
 let json_of (resp : Haltsql_cloud.Http.response) =
   try Yojson.Safe.from_string resp.body with _ -> `Null
@@ -167,6 +245,58 @@ let str_at path j =
   go j path
 
 let repo_path cfg rest = Printf.sprintf "/repos/%s%s" cfg.repo rest
+
+(** The [rel="next"] URL of a [Link] header. *)
+let next_link (resp : Haltsql_cloud.Http.response) =
+  match Haltsql_cloud.Http.header resp "link" with
+  | None -> None
+  | Some l ->
+      List.find_map
+        (fun part ->
+          match (String.index_opt part '<', String.index_opt part '>') with
+          | Some i, Some j when j > i ->
+              let rest = String.sub part (j + 1) (String.length part - j - 1) in
+              let rels =
+                String.split_on_char ';' rest |> List.map String.trim
+                |> List.filter_map (fun kv ->
+                    match String.index_opt kv '=' with
+                    | Some k when String.trim (String.sub kv 0 k) = "rel" ->
+                        Some
+                          (String.split_on_char ' '
+                             (String.trim
+                                (String.map
+                                   (fun c -> if c = '"' then ' ' else c)
+                                   (String.sub kv (k + 1) (String.length kv - k - 1)))))
+                    | _ -> None)
+                |> List.concat
+              in
+              if List.mem "next" rels then Some (String.sub part (i + 1) (j - i - 1))
+              else None
+          | _ -> None)
+        (String.split_on_char ',' l)
+
+let max_pages = 10
+
+(** Every item of a paginated GET ([per_page=100], following [Link: rel="next"] for at
+    most [max_pages] pages). [items] extracts one page's items from its JSON. A next link
+    to another host is not followed: the token is only ever sent to [cfg.api]. *)
+let get_all cfg path ~items =
+  let sep = if String.contains path '?' then "&" else "?" in
+  let rec go page path acc =
+    let* resp = call cfg `GET path in
+    if resp.status < 200 || resp.status >= 300 then fail_status `GET path resp
+    else
+      let acc = acc @ items (json_of resp) in
+      match next_link resp with
+      | Some url when page < max_pages && String.starts_with ~prefix:(cfg.api ^ "/") url
+        ->
+          go (page + 1)
+            (String.sub url (String.length cfg.api)
+               (String.length url - String.length cfg.api))
+            acc
+      | _ -> Lwt.return acc
+  in
+  go 1 (path ^ sep ^ "per_page=100") []
 
 (* ---- refs and commits ---- *)
 
@@ -201,6 +331,29 @@ let get_file cfg ~ref_ file =
   if resp.status = 404 then Lwt.return None
   else if resp.status >= 200 && resp.status < 300 then Lwt.return (Some resp.body)
   else fail_status `GET path resp
+
+(** A commit's message, [None] when the commit does not exist. *)
+let commit_message cfg sha =
+  let path = repo_path cfg ("/git/commits/" ^ enc sha) in
+  let* resp = call cfg `GET path in
+  if resp.status = 404 then Lwt.return None
+  else if resp.status >= 200 && resp.status < 300 then
+    Lwt.return (Some (Option.value (str_at [ "message" ] (json_of resp)) ~default:""))
+  else fail_status `GET path resp
+
+(** Paths of the files under [dir] at [ref_] (one recursive tree read; a tree GitHub
+    truncates is searched as far as it goes). *)
+let list_files cfg ~ref_ ~dir =
+  let* j = ok_json cfg `GET (repo_path cfg ("/git/trees/" ^ enc ref_ ^ "?recursive=1")) in
+  let prefix = if dir = "" then "" else dir ^ "/" in
+  let entries = match Api.member "tree" j with Some (`List l) -> l | _ -> [] in
+  Lwt.return
+    (List.filter_map
+       (fun e ->
+         match (str_at [ "type" ] e, str_at [ "path" ] e) with
+         | Some "blob", Some p when String.starts_with ~prefix p -> Some p
+         | _ -> None)
+       entries)
 
 (** Commits [files] (path, text) on top of [parent] in one commit and moves [branch] to
     it. Returns the new commit sha. *)
@@ -272,20 +425,6 @@ let pr_of_json j =
     head_sha = str_at [ "head"; "sha" ] j;
   }
 
-let create_pr cfg ~title ~head ~base ~body =
-  let* j =
-    ok_json cfg `POST (repo_path cfg "/pulls")
-      ~body:
-        (`Assoc
-           [
-             ("title", `String title);
-             ("head", `String head);
-             ("base", `String base);
-             ("body", `String body);
-           ])
-  in
-  Lwt.return (pr_of_json j)
-
 let update_pr cfg number ~title ~body =
   let* j =
     ok_json cfg `PATCH
@@ -305,10 +444,58 @@ let get_pr cfg number =
 
 let list_of = function `List l -> l | _ -> []
 
-(** Check runs of a commit: [{name, state, detail}]. *)
+(** The open PR whose head is [branch] of this repository, if any. *)
+let find_open_pr cfg branch =
+  let owner = List.hd (String.split_on_char '/' cfg.repo) in
+  let* j =
+    ok_json cfg `GET
+      (repo_path cfg
+         (Printf.sprintf "/pulls?state=open&head=%s&per_page=100"
+            (Haltsql_cloud.Http.pct_encode (owner ^ ":" ^ branch))))
+  in
+  Lwt.return
+    (List.find_map
+       (fun p ->
+         let pr = pr_of_json p in
+         if pr.state = "open" && str_at [ "head"; "ref" ] p = Some branch then Some pr
+         else None)
+       (list_of j))
+
+(** Opens a PR, or, when GitHub answers 422 because an open PR for [head] already exists,
+    adopts that PR and updates its title and body. The flag is true when a PR was created.
+*)
+let create_pr cfg ~title ~head ~base ~body =
+  let path = repo_path cfg "/pulls" in
+  let* resp =
+    call cfg `POST path
+      ~body:
+        (`Assoc
+           [
+             ("title", `String title);
+             ("head", `String head);
+             ("base", `String base);
+             ("body", `String body);
+           ])
+  in
+  if resp.status >= 200 && resp.status < 300 then
+    Lwt.return (pr_of_json (json_of resp), true)
+  else if resp.status = 422 then
+    let* open_pr = find_open_pr cfg head in
+    match open_pr with
+    | Some pr ->
+        let* pr = update_pr cfg pr.number ~title ~body in
+        Lwt.return (pr, false)
+    | None -> fail_status `POST path resp
+  else fail_status `POST path resp
+
+(** Check runs of a commit: [{name, state, detail}] (every page). *)
 let checks cfg sha =
-  let* j = ok_json cfg `GET (repo_path cfg ("/commits/" ^ enc sha ^ "/check-runs")) in
-  let runs = match Api.member "check_runs" j with Some l -> list_of l | None -> [] in
+  let* runs =
+    get_all cfg
+      (repo_path cfg ("/commits/" ^ enc sha ^ "/check-runs"))
+      ~items:(fun j ->
+        match Api.member "check_runs" j with Some l -> list_of l | None -> [])
+  in
   Lwt.return
     (List.map
        (fun r ->
@@ -328,9 +515,11 @@ let checks cfg sha =
        runs)
 
 (** Current approvals: each reviewer's latest decisive review, kept when it is APPROVED.
-*)
+    Reviews come oldest first, over every page. *)
 let approvals cfg number =
-  let* j = ok_json cfg `GET (repo_path cfg (Printf.sprintf "/pulls/%d/reviews" number)) in
+  let* reviews =
+    get_all cfg (repo_path cfg (Printf.sprintf "/pulls/%d/reviews" number)) ~items:list_of
+  in
   let latest = Hashtbl.create 8 and order = ref [] in
   List.iter
     (fun r ->
@@ -339,7 +528,7 @@ let approvals cfg number =
           if not (Hashtbl.mem latest who) then order := who :: !order;
           Hashtbl.replace latest who (st, str_at [ "submitted_at" ] r)
       | _ -> ())
-    (list_of j);
+    reviews;
   Lwt.return
     (List.filter_map
        (fun who ->

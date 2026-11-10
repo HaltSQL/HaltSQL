@@ -381,8 +381,35 @@ let serve handler =
         (Cohttp_lwt_unix.Server.make ~callback ()));
   Lwt.return (port, fun () -> Lwt.wakeup_later stop ())
 
+(* [serve] for handlers that also return response headers. *)
+let serve_h handler =
+  let* addrs =
+    Lwt_unix.getaddrinfo "127.0.0.1" "0" [ Unix.AI_SOCKTYPE Unix.SOCK_STREAM ]
+  in
+  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+  let* () = Lwt_unix.bind fd (List.hd addrs).Unix.ai_addr in
+  Lwt_unix.listen fd 16;
+  let port = match Lwt_unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | _ -> 0 in
+  let stop_p, stop = Lwt.wait () in
+  let callback _ req body =
+    let* b = Cohttp_lwt.Body.to_string body in
+    let* status, headers, out = handler req b in
+    Cohttp_lwt_unix.Server.respond_string
+      ~headers:(Cohttp.Header.of_list headers)
+      ~status:(Cohttp.Code.status_of_code status)
+      ~body:out ()
+  in
+  Lwt.async (fun () ->
+      Cohttp_lwt_unix.Server.create ~stop:stop_p
+        ~mode:(`TCP (`Socket fd))
+        (Cohttp_lwt_unix.Server.make ~callback ()));
+  Lwt.return (port, fun () -> Lwt.wakeup_later stop ())
+
 (* A fake GitHub repository acme/policies: refs, commits with whole-file trees, raw
-   contents, pull requests, check runs and reviews. *)
+   contents, recursive trees, pull requests (open, closed or merged; a second open PR for
+   one head is a 422), check runs and reviews (paginated like GitHub: 30 per page unless
+   [per_page], with a [Link: rel="next"] header). *)
 module Fake_github = struct
   type t = {
     mutable refs : (string * string) list;
@@ -395,6 +422,12 @@ module Fake_github = struct
     mutable check_runs : Yojson.Safe.t list;
     mutable calls : string list;
     mutable bad_auth : int;
+    pr_state : (int, string) Hashtbl.t;  (** "open" (default), "closed" or "merged" *)
+    commit_msg : (string, string) Hashtbl.t;
+    commit_parent : (string, string) Hashtbl.t;
+    mutable hide_open_list : int;
+        (** the next n GET /pulls list nothing (GitHub's list lagging behind) *)
+    mutable fail_next : int;  (** the next n GETs answer 502 *)
   }
 
   let fresh t prefix =
@@ -413,6 +446,11 @@ module Fake_github = struct
         check_runs = [];
         calls = [];
         bad_auth = 0;
+        pr_state = Hashtbl.create 4;
+        commit_msg = Hashtbl.create 8;
+        commit_parent = Hashtbl.create 8;
+        hide_open_list = 0;
+        fail_next = 0;
       }
     in
     let tree = fresh t "t" and commit = fresh t "c" in
@@ -427,16 +465,51 @@ module Fake_github = struct
     | Some tree -> Hashtbl.find_opt t.tree_files tree
     | None -> None
 
-  let json s j = Lwt.return (s, Yojson.Safe.to_string j)
+  let json s j = Lwt.return (s, [], Yojson.Safe.to_string j)
   let jstr k j = match member k j with `String s -> s | _ -> ""
+  let state_of t n = Option.value (Hashtbl.find_opt t.pr_state n) ~default:"open"
+
+  (* The commit chain of a branch, newest first. *)
+  let history t branch =
+    let rec go c acc =
+      match Hashtbl.find_opt t.commit_parent c with
+      | Some p -> go p (c :: acc)
+      | None -> List.rev (c :: acc)
+    in
+    go (List.assoc branch t.refs) []
+
+  (* One page of [items] as GitHub serves it. *)
+  let paged req uri path items =
+    let q k d =
+      Option.value (Option.bind (Uri.get_query_param uri k) int_of_string_opt) ~default:d
+    in
+    let per = q "per_page" 30 and page = q "page" 1 in
+    let slice = List.filteri (fun i _ -> i >= (page - 1) * per && i < page * per) items in
+    let host =
+      Option.value (Cohttp.Header.get (Cohttp.Request.headers req) "host") ~default:""
+    in
+    let headers =
+      if page * per < List.length items then
+        [
+          ( "link",
+            Printf.sprintf
+              "<http://%s/repos/acme/policies%s?per_page=%d&page=%d>; rel=\"next\", \
+               <http://%s/repos/acme/policies%s?per_page=%d&page=%d>; rel=\"last\""
+              host path per (page + 1) host path per
+              ((List.length items + per - 1) / per) );
+        ]
+      else []
+    in
+    (slice, headers)
 
   let pr_json t n =
     let head, title, _ = List.assoc n t.prs in
+    let st = state_of t n in
     `Assoc
       [
         ("number", `Int n);
-        ("state", `String "open");
-        ("merged", `Bool false);
+        ("state", `String (if st = "merged" then "closed" else st));
+        ("merged", `Bool (st = "merged"));
         ("title", `String title);
         ( "html_url",
           `String (Printf.sprintf "https://github.test/acme/policies/pull/%d" n) );
@@ -464,87 +537,156 @@ module Fake_github = struct
       String.sub rest (String.length p) (String.length rest - String.length p)
     in
     let starts p = String.starts_with ~prefix:p rest in
-    match (meth, rest) with
-    | "GET", _ when starts "/git/ref/heads/" -> (
-        match List.assoc_opt (after "/git/ref/heads/") t.refs with
-        | Some sha -> json 200 (`Assoc [ ("object", `Assoc [ ("sha", `String sha) ]) ])
-        | None -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
-    | "POST", "/git/refs" ->
-        let r = jstr "ref" b in
-        let br = String.sub r 11 (String.length r - 11) in
-        if List.mem_assoc br t.refs then
-          json 422 (`Assoc [ ("message", `String "exists") ])
-        else (
-          t.refs <- t.refs @ [ (br, jstr "sha" b) ];
-          json 201 (`Assoc [ ("ref", `String r) ]))
-    | "PATCH", _ when starts "/git/refs/heads/" ->
-        let br = after "/git/refs/heads/" in
-        t.refs <- (br, jstr "sha" b) :: List.remove_assoc br t.refs;
-        json 200 (`Assoc [])
-    | "GET", _ when starts "/git/commits/" ->
-        let sha = after "/git/commits/" in
-        json 200
-          (`Assoc
-             [
-               ("sha", `String sha);
-               ("tree", `Assoc [ ("sha", `String (Hashtbl.find t.commit_tree sha)) ]);
-             ])
-    | "POST", "/git/trees" ->
-        let base =
-          Option.value (Hashtbl.find_opt t.tree_files (jstr "base_tree" b)) ~default:[]
-        in
-        let files =
-          List.fold_left
-            (fun acc e ->
-              (jstr "path" e, jstr "content" e) :: List.remove_assoc (jstr "path" e) acc)
-            base
-            (match member "tree" b with `List l -> l | _ -> [])
-        in
-        let sha = fresh t "t" in
-        Hashtbl.replace t.tree_files sha files;
-        json 201 (`Assoc [ ("sha", `String sha) ])
-    | "POST", "/git/commits" ->
-        let sha = fresh t "c" in
-        Hashtbl.replace t.commit_tree sha (jstr "tree" b);
-        json 201 (`Assoc [ ("sha", `String sha) ])
-    | "GET", _ when starts "/contents/" -> (
-        let file = after "/contents/" in
-        let r = Option.value (Uri.get_query_param uri "ref") ~default:"main" in
-        match Option.bind (files_at t r) (List.assoc_opt file) with
-        | Some text -> Lwt.return (200, text)
-        | None -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
-    | "POST", "/pulls" ->
-        let n = List.length t.prs + 1 in
-        t.prs <- t.prs @ [ (n, (jstr "head" b, jstr "title" b, jstr "body" b)) ];
-        json 201 (pr_json t n)
-    | "PATCH", _ when starts "/pulls/" ->
-        let n = int_of_string (after "/pulls/") in
-        let head, _, _ = List.assoc n t.prs in
-        t.prs <- (n, (head, jstr "title" b, jstr "body" b)) :: List.remove_assoc n t.prs;
-        json 200 (pr_json t n)
-    | "GET", _ when starts "/pulls/" && String.ends_with ~suffix:"/reviews" rest ->
-        json 200 (`List t.reviews)
-    | "GET", _ when starts "/pulls/" -> (
-        match int_of_string_opt (after "/pulls/") with
-        | Some n when List.mem_assoc n t.prs -> json 200 (pr_json t n)
-        | _ -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
-    | "GET", _ when starts "/commits/" ->
-        json 200 (`Assoc [ ("check_runs", `List t.check_runs) ])
-    | _ -> json 404 (`Assoc [ ("message", `String ("no fake for " ^ meth ^ " " ^ rest)) ])
+    if meth = "GET" && t.fail_next > 0 then (
+      t.fail_next <- t.fail_next - 1;
+      json 502 (`Assoc [ ("message", `String "Server Error") ]))
+    else
+      match (meth, rest) with
+      | "GET", _ when starts "/git/ref/heads/" -> (
+          match List.assoc_opt (after "/git/ref/heads/") t.refs with
+          | Some sha -> json 200 (`Assoc [ ("object", `Assoc [ ("sha", `String sha) ]) ])
+          | None -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
+      | "POST", "/git/refs" ->
+          let r = jstr "ref" b in
+          let br = String.sub r 11 (String.length r - 11) in
+          if List.mem_assoc br t.refs then
+            json 422 (`Assoc [ ("message", `String "exists") ])
+          else (
+            t.refs <- t.refs @ [ (br, jstr "sha" b) ];
+            json 201 (`Assoc [ ("ref", `String r) ]))
+      | "PATCH", _ when starts "/git/refs/heads/" ->
+          let br = after "/git/refs/heads/" in
+          t.refs <- (br, jstr "sha" b) :: List.remove_assoc br t.refs;
+          json 200 (`Assoc [])
+      | "GET", _ when starts "/git/commits/" -> (
+          let sha = after "/git/commits/" in
+          match Hashtbl.find_opt t.commit_tree sha with
+          | None -> json 404 (`Assoc [ ("message", `String "Not Found") ])
+          | Some tree ->
+              json 200
+                (`Assoc
+                   [
+                     ("sha", `String sha);
+                     ("tree", `Assoc [ ("sha", `String tree) ]);
+                     ( "message",
+                       `String
+                         (Option.value
+                            (Hashtbl.find_opt t.commit_msg sha)
+                            ~default:"initial") );
+                   ]))
+      | "GET", _ when starts "/git/trees/" ->
+          let r = after "/git/trees/" in
+          let files = Option.value (files_at t r) ~default:[] in
+          json 200
+            (`Assoc
+               [
+                 ( "tree",
+                   `List
+                     (List.map
+                        (fun (p, _) ->
+                          `Assoc [ ("path", `String p); ("type", `String "blob") ])
+                        files) );
+                 ("truncated", `Bool false);
+               ])
+      | "POST", "/git/trees" ->
+          let base =
+            Option.value (Hashtbl.find_opt t.tree_files (jstr "base_tree" b)) ~default:[]
+          in
+          let files =
+            List.fold_left
+              (fun acc e ->
+                (jstr "path" e, jstr "content" e) :: List.remove_assoc (jstr "path" e) acc)
+              base
+              (match member "tree" b with `List l -> l | _ -> [])
+          in
+          let sha = fresh t "t" in
+          Hashtbl.replace t.tree_files sha files;
+          json 201 (`Assoc [ ("sha", `String sha) ])
+      | "POST", "/git/commits" ->
+          let sha = fresh t "c" in
+          Hashtbl.replace t.commit_tree sha (jstr "tree" b);
+          Hashtbl.replace t.commit_msg sha (jstr "message" b);
+          (match member "parents" b with
+          | `List (`String p :: _) -> Hashtbl.replace t.commit_parent sha p
+          | _ -> ());
+          json 201 (`Assoc [ ("sha", `String sha) ])
+      | "GET", _ when starts "/contents/" -> (
+          let file = after "/contents/" in
+          let r = Option.value (Uri.get_query_param uri "ref") ~default:"main" in
+          match Option.bind (files_at t r) (List.assoc_opt file) with
+          | Some text -> Lwt.return (200, [], text)
+          | None -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
+      | "POST", "/pulls" ->
+          let head = jstr "head" b in
+          if List.exists (fun (n, (h, _, _)) -> h = head && state_of t n = "open") t.prs
+          then
+            json 422
+              (`Assoc
+                 [
+                   ("message", `String ("A pull request already exists for acme:" ^ head));
+                 ])
+          else
+            let n = List.length t.prs + 1 in
+            t.prs <- t.prs @ [ (n, (head, jstr "title" b, jstr "body" b)) ];
+            json 201 (pr_json t n)
+      | "GET", "/pulls" ->
+          let head = Option.value (Uri.get_query_param uri "head") ~default:"" in
+          let open_only = Uri.get_query_param uri "state" = Some "open" in
+          let matching =
+            if t.hide_open_list > 0 then (
+              t.hide_open_list <- t.hide_open_list - 1;
+              [])
+            else
+              List.filter_map
+                (fun (n, (h, _, _)) ->
+                  if
+                    (head = "" || "acme:" ^ h = head)
+                    && ((not open_only) || state_of t n = "open")
+                  then Some (pr_json t n)
+                  else None)
+                t.prs
+          in
+          json 200 (`List matching)
+      | "PATCH", _ when starts "/pulls/" ->
+          let n = int_of_string (after "/pulls/") in
+          let head, _, _ = List.assoc n t.prs in
+          t.prs <- (n, (head, jstr "title" b, jstr "body" b)) :: List.remove_assoc n t.prs;
+          json 200 (pr_json t n)
+      | "GET", _ when starts "/pulls/" && String.ends_with ~suffix:"/reviews" rest ->
+          let page, headers = paged req uri rest t.reviews in
+          Lwt.return (200, headers, Yojson.Safe.to_string (`List page))
+      | "GET", _ when starts "/pulls/" -> (
+          match int_of_string_opt (after "/pulls/") with
+          | Some n when List.mem_assoc n t.prs -> json 200 (pr_json t n)
+          | _ -> json 404 (`Assoc [ ("message", `String "Not Found") ]))
+      | "GET", _ when starts "/commits/" ->
+          let page, headers = paged req uri rest t.check_runs in
+          Lwt.return
+            ( 200,
+              headers,
+              Yojson.Safe.to_string
+                (`Assoc
+                   [
+                     ("total_count", `Int (List.length t.check_runs));
+                     ("check_runs", `List page);
+                   ]) )
+      | _ ->
+          json 404 (`Assoc [ ("message", `String ("no fake for " ^ meth ^ " " ^ rest)) ])
 end
 
-let github_cfg port =
+let github_cfg ?(extra = []) port =
   ( "integrations",
     `Assoc
       [
         ( "github",
           `Assoc
-            [
-              ("repo", `String "acme/policies");
-              ("token", `String "ghp_test");
-              ("api", `String (Printf.sprintf "http://127.0.0.1:%d" port));
-              ("required_approvals", `Int 2);
-            ] );
+            ([
+               ("repo", `String "acme/policies");
+               ("token", `String "ghp_test");
+               ("api", `String (Printf.sprintf "http://127.0.0.1:%d" port));
+               ("required_approvals", `Int 2);
+             ]
+            @ extra) );
       ] )
 
 let existing_suite =
@@ -578,7 +720,7 @@ let pr_tests =
             ]
         in
         Lwt_main.run
-          (let* port, stop_gh = serve (Fake_github.handler gh) in
+          (let* port, stop_gh = serve_h (Fake_github.handler gh) in
            Lwt.finalize
              (fun () ->
                let dir =
@@ -750,7 +892,7 @@ let pr_tests =
       fun () ->
         let gh = Fake_github.create [ ("policies/analytics.yaml", analytics) ] in
         Lwt_main.run
-          (let* port, stop_gh = serve (Fake_github.handler gh) in
+          (let* port, stop_gh = serve_h (Fake_github.handler gh) in
            let dir = policy_dir [ ("analytics.yaml", analytics) ] in
            let cfg =
              config
@@ -1212,13 +1354,446 @@ let agent_tests =
             Lwt.return_unit) );
   ]
 
+(* ---- hardening: policies, GitHub, Playground, agents ---- *)
+
+let with_github ?(repo_files = [ ("policies/analytics.yaml", analytics) ])
+    ?(gh_extra = []) f =
+  let gh = Fake_github.create repo_files in
+  Lwt_main.run
+    (let* port, stop_gh = serve_h (Fake_github.handler gh) in
+     Lwt.finalize
+       (fun () ->
+         let dir =
+           policy_dir
+             [ ("analytics.yaml", analytics); ("analytics-v2.yaml", analytics_v2) ]
+         in
+         let cfg =
+           config
+             ~extra:
+               [
+                 ("policies", `Assoc [ ("files", `List [ `String dir ]) ]);
+                 github_cfg ~extra:gh_extra port;
+               ]
+             ()
+         in
+         let* r = start ~background:false cfg in
+         Lwt.finalize
+           (fun () ->
+             let* _ = C.Policies.reload r.ctx in
+             load_records r (report_records ());
+             f gh r)
+           (fun () ->
+             stop r;
+             Lwt.return_unit))
+       (fun () ->
+         stop_gh ();
+         Lwt.return_unit))
+
+let branch = "haltsql-console/analytics"
+let region_id = "analytics/column/app.orders.region"
+
+let propose ?(extra = []) r body =
+  post r "/api/v1/policies/analytics/pull-request" (`Assoc (body @ extra))
+
+let tests_only = [ ("tests", `List [ `String new_test ]) ]
+
+let suite_cases gh =
+  match
+    Haltsql.Docload.of_string Haltsql.Docload.Yaml
+      (List.assoc "tests/analytics.yaml" (Option.get (Fake_github.files_at gh branch)))
+  with
+  | Ok d -> List.length (list (member "cases" d))
+  | Error _ -> Alcotest.fail "suite does not parse"
+
+let hardening_pr_tests =
+  [
+    ( "lost PR doc: the open PR is adopted and its commits kept",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* code, j = propose r tests_only in
+            check_status "first" 201 (code, j);
+            let head1 = List.assoc branch gh.refs in
+            let* () = C.Store.delete r.ctx.store "pull_requests" "analytics" in
+            let* code, j = propose r tests_only in
+            check_status "second" 200 (code, j);
+            Alcotest.(check int) "same PR" 1 (int (member "number" j));
+            Alcotest.(check bool) "adopted" false (member "created" j = `Bool true);
+            Alcotest.(check int) "one PR" 1 (List.length gh.prs);
+            Alcotest.(check bool)
+              "first commit still on the branch" true
+              (List.mem head1 (Fake_github.history gh branch));
+            Alcotest.(check int) "both test cases" 2 (suite_cases gh);
+            (match C.Store.get r.ctx.store "pull_requests" "analytics" with
+            | Some d -> Alcotest.(check int) "stored again" 1 (int (member "number" d))
+            | None -> Alcotest.fail "PR not stored");
+            Lwt.return_unit) );
+    ( "concurrent proposals for one policy are serialized",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* (c1, j1), (c2, j2) =
+              Lwt.both (propose r tests_only) (propose r tests_only)
+            in
+            Alcotest.(check (list int))
+              "one opened, one updated" [ 200; 201 ]
+              (List.sort compare [ c1; c2 ]);
+            Alcotest.(check int)
+              "same PR"
+              (int (member "number" j1))
+              (int (member "number" j2));
+            Alcotest.(check int) "one PR" 1 (List.length gh.prs);
+            Alcotest.(check int) "both test cases" 2 (suite_cases gh);
+            Lwt.return_unit) );
+    ( "a 422 for an existing PR adopts it",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* code, j = propose r tests_only in
+            check_status "first" 201 (code, j);
+            let* () = C.Store.delete r.ctx.store "pull_requests" "analytics" in
+            gh.hide_open_list <- 1;
+            let* code, j = propose r tests_only in
+            check_status "adopted after 422" 200 (code, j);
+            Alcotest.(check int) "same PR" 1 (int (member "number" j));
+            Alcotest.(check int) "one PR" 1 (List.length gh.prs);
+            Lwt.return_unit) );
+    ( "closed PR: the console's stale branch restarts from base",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* code, _ = propose r tests_only in
+            Alcotest.(check int) "first" 201 code;
+            Hashtbl.replace gh.pr_state 1 "closed";
+            let* code, j = propose r tests_only in
+            check_status "new PR" 201 (code, j);
+            Alcotest.(check int) "second PR" 2 (int (member "number" j));
+            Alcotest.(check int)
+              "branch restarted from main" 2
+              (List.length (Fake_github.history gh branch));
+            Alcotest.(check int) "one case" 1 (suite_cases gh);
+            (* a merged PR with no stored doc: the trailer marks the branch as ours *)
+            Hashtbl.replace gh.pr_state 2 "merged";
+            let* () = C.Store.delete r.ctx.store "pull_requests" "analytics" in
+            let* code, j = propose r tests_only in
+            check_status "third PR" 201 (code, j);
+            Alcotest.(check int) "third" 3 (int (member "number" j));
+            Lwt.return_unit) );
+    ( "someone else's commits on a leftover branch are never reset",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let main = List.assoc "main" gh.refs in
+            let tree = Hashtbl.find gh.commit_tree main in
+            Hashtbl.replace gh.commit_tree "cmanual" tree;
+            Hashtbl.replace gh.commit_msg "cmanual" "hand-made change";
+            Hashtbl.replace gh.commit_parent "cmanual" main;
+            gh.refs <- gh.refs @ [ (branch, "cmanual") ];
+            let* code, j = propose r tests_only in
+            check_status "conflict" 409 (code, j);
+            Alcotest.(check string)
+              "branch untouched" "cmanual" (List.assoc branch gh.refs);
+            Alcotest.(check int) "no PR" 0 (List.length gh.prs);
+            Lwt.return_unit) );
+    ( "merged state, paginated reviews and checks",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* code, _ = propose r tests_only in
+            Alcotest.(check int) "open" 201 code;
+            let review who st =
+              `Assoc
+                [
+                  ("user", `Assoc [ ("login", `String who) ]);
+                  ("state", `String st);
+                  ("submitted_at", `String "2026-11-08T10:00:00Z");
+                ]
+            in
+            gh.reviews <-
+              review "alice" "APPROVED"
+              :: List.init 33 (fun i -> review (Printf.sprintf "c%d" i) "COMMENTED")
+              @ [ review "alice" "CHANGES_REQUESTED"; review "bob" "APPROVED" ];
+            gh.check_runs <-
+              List.init 30 (fun i ->
+                  `Assoc
+                    [
+                      ("name", `String (Printf.sprintf "ok-%d" i));
+                      ("status", `String "completed");
+                      ("conclusion", `String "success");
+                    ])
+              @ [
+                  `Assoc
+                    [
+                      ("name", `String "haltsql test");
+                      ("status", `String "completed");
+                      ("conclusion", `String "failure");
+                    ];
+                ];
+            let* code, rep = get r "/api/v1/policies/analytics/report" in
+            check_status "report" 200 (code, rep);
+            let pr = member "pull_request" rep in
+            Alcotest.(check (list string))
+              "latest decisions from page 2" [ "bob" ]
+              (List.map (fun a -> str (member "by" a)) (list (member "approvals" pr)));
+            let checks = list (member "checks" pr) in
+            Alcotest.(check int) "every check run" 31 (List.length checks);
+            Alcotest.(check bool)
+              "failing run on page 2" true
+              (List.exists (fun c -> member "state" c = `String "failure") checks);
+            Hashtbl.replace gh.pr_state 1 "merged";
+            Hashtbl.reset (C.Policies.state r.ctx).pr_cache;
+            let* _, rep = get r "/api/v1/policies/analytics/report" in
+            Alcotest.(check string)
+              "merged" "merged"
+              (str (member "pull_request.state" rep));
+            Lwt.return_unit) );
+    ( "transient GitHub failures are retried; PR state refresh is single-flight",
+      `Quick,
+      fun () ->
+        with_github (fun gh r ->
+            let* code, _ = propose r tests_only in
+            Alcotest.(check int) "open" 201 code;
+            gh.fail_next <- 1;
+            let* code, rep = get r "/api/v1/policies/analytics/report" in
+            check_status "report" 200 (code, rep);
+            Alcotest.(check string)
+              "state despite one 502" "open"
+              (str (member "pull_request.state" rep));
+            Alcotest.(check bool) "no error" true (member "pull_request.error" rep = `Null);
+            Hashtbl.reset (C.Policies.state r.ctx).pr_cache;
+            let pr_gets () =
+              List.length
+                (List.filter (fun c -> c = "GET /repos/acme/policies/pulls/1") gh.calls)
+            in
+            let before = pr_gets () in
+            let* a, b =
+              Lwt.both
+                (C.Policies.pr_state r.ctx "analytics")
+                (C.Policies.pr_state r.ctx "analytics")
+            in
+            Alcotest.(check bool) "same state" true (a = b);
+            Alcotest.(check int) "one refresh" 1 (pr_gets () - before);
+            Lwt.return_unit) );
+    ( "policy file in a subdirectory is patched in place",
+      `Quick,
+      fun () ->
+        with_github
+          ~repo_files:[ ("policies/team/analytics.yaml", analytics) ]
+          (fun gh r ->
+            let* code, j = propose r [ ("suggestions", `List [ `String region_id ]) ] in
+            check_status "create" 201 (code, j);
+            Alcotest.(check (list string))
+              "files"
+              [ "policies/team/analytics.yaml" ]
+              (List.map str (list (member "files" j)));
+            let files = Option.get (Fake_github.files_at gh branch) in
+            Alcotest.(check bool)
+              "no duplicate file" false
+              (List.mem_assoc "policies/analytics.yaml" files);
+            Alcotest.(check bool)
+              "patched" true
+              (contains (List.assoc "policies/team/analytics.yaml" files) "region");
+            Lwt.return_unit) );
+    ( "policy found by metadata.name, or configured, or 409",
+      `Quick,
+      fun () ->
+        with_github
+          ~repo_files:[ ("policies/data/main.yaml", analytics) ]
+          (fun _gh r ->
+            let* code, j = propose r [ ("suggestions", `List [ `String region_id ]) ] in
+            check_status "by name" 201 (code, j);
+            Alcotest.(check (list string))
+              "files" [ "policies/data/main.yaml" ]
+              (List.map str (list (member "files" j)));
+            Lwt.return_unit);
+        with_github
+          ~repo_files:[ ("teams/x/a.yaml", analytics) ]
+          ~gh_extra:
+            [ ("policy_paths", `Assoc [ ("analytics", `String "teams/x/a.yaml") ]) ]
+          (fun _gh r ->
+            let* code, j = propose r [ ("suggestions", `List [ `String region_id ]) ] in
+            check_status "configured" 201 (code, j);
+            Alcotest.(check (list string))
+              "files" [ "teams/x/a.yaml" ]
+              (List.map str (list (member "files" j)));
+            Lwt.return_unit);
+        with_github
+          ~repo_files:[ ("README.md", "hi") ]
+          (fun gh r ->
+            let* code, j = propose r [ ("suggestions", `List [ `String region_id ]) ] in
+            check_status "missing" 409 (code, j);
+            Alcotest.(check int) "no PR" 0 (List.length gh.prs);
+            let* code, j =
+              propose r
+                [
+                  ("suggestions", `List [ `String region_id ]); ("create_file", `Bool true);
+                ]
+            in
+            check_status "create_file" 201 (code, j);
+            Alcotest.(check (list string))
+              "files" [ "policies/analytics.yaml" ]
+              (List.map str (list (member "files" j)));
+            Lwt.return_unit) );
+  ]
+
+let hardening_tests =
+  [
+    ( "report analysis is cached and bounded",
+      `Quick,
+      fun () ->
+        with_policies (fun r _ ->
+            load_records r (report_records ());
+            let n0 = !C.Policies.analyses_computed in
+            let* code, j1 = get r "/api/v1/policies/analytics/report" in
+            check_status "report" 200 (code, j1);
+            let* _, j2 = get r "/api/v1/policies/analytics/report" in
+            Alcotest.(check int) "computed once" 1 (!C.Policies.analyses_computed - n0);
+            Alcotest.(check bool) "same answer" true (j1 = j2);
+            Alcotest.(check bool)
+              "not truncated" false
+              (member "truncated" j1 = `Bool true);
+            load_records r
+              [
+                server_record ~request_id:"new-1" ~allowed:false
+                  ~codes:[ "E_COLUMN_DENIED" ] ~sql:sql_region ();
+              ];
+            let* _, j3 = get r "/api/v1/policies/analytics/report" in
+            Alcotest.(check int) "recomputed" 2 (!C.Policies.analyses_computed - n0);
+            Alcotest.(check int) "new record" 8 (int (member "records" j3));
+            let saved = !C.Policies.max_report_records in
+            C.Policies.max_report_records := 5;
+            Lwt.finalize
+              (fun () ->
+                let* _, j4 = get r "/api/v1/policies/analytics/report?since=1d" in
+                Alcotest.(check int) "capped" 5 (int (member "records" j4));
+                Alcotest.(check bool) "truncated" true (member "truncated" j4 = `Bool true);
+                Lwt.return_unit)
+              (fun () ->
+                C.Policies.max_report_records := saved;
+                Lwt.return_unit)) );
+    ( "server config: other secrets are never resolved",
+      `Quick,
+      fun () ->
+        let d = policy_dir [ ("analytics.yaml", analytics) ] in
+        let server_cfg = Filename.concat d "server.yaml" in
+        write_file server_cfg
+          (String.concat "\n"
+             [
+               "apiVersion: haltsql.dev/v1";
+               "kind: Config";
+               "secrets:";
+               "  vault:";
+               "    address: http://127.0.0.1:1";
+               "    auth: { method: token, token: not-a-real-token }";
+               "telemetry:";
+               "  otlp:";
+               "    endpoint: https://otel.example:4318";
+               "    headers:";
+               "      authorization: \"Bearer ${vault:secret/data/otel#token}\"";
+               "policies:";
+               "  - path: ./analytics.yaml";
+               "";
+             ]);
+        let cfg =
+          config
+            ~extra:[ ("policies", `Assoc [ ("server_config", `String server_cfg) ]) ]
+            ()
+        in
+        with_console ~background:false cfg (fun r ->
+            let* res = C.Policies.reload r.ctx in
+            (match res with
+            | Ok () -> ()
+            | Error e -> Alcotest.failf "load: %s" (String.concat "; " e));
+            Alcotest.(check (list string))
+              "loaded" [ "analytics" ]
+              (List.map (fun (i : C.Policies.info) -> i.name) (C.Policies.all r.ctx));
+            Lwt.return_unit) );
+    ( "unchanged policy files are not parsed again",
+      `Quick,
+      fun () ->
+        with_policies (fun r dir ->
+            let p1 = (Option.get (C.Policies.find r.ctx "analytics")).policy in
+            let* _ = C.Policies.reload r.ctx in
+            let p2 = (Option.get (C.Policies.find r.ctx "analytics")).policy in
+            Alcotest.(check bool) "reused" true (p1 == p2);
+            write_file
+              (Filename.concat dir "analytics.yaml")
+              (policy_yaml ~owner:"data-team" ~columns:"[id, tenant_id, status, region]"
+                 "analytics");
+            let* _ = C.Policies.reload r.ctx in
+            let p3 = (Option.get (C.Policies.find r.ctx "analytics")).policy in
+            Alcotest.(check bool) "changed file re-read" true (p3.version <> p1.version);
+            Lwt.return_unit) );
+    ( "playground limits",
+      `Quick,
+      fun () ->
+        with_policies (fun r _ ->
+            let* code, _ =
+              post r "/api/v1/playground/check"
+                (check_body
+                   (List.init 11 (fun _ -> `Assoc [ ("policy", `String "analytics") ])))
+            in
+            Alcotest.(check int) "too many targets" 400 code;
+            let* code, _ =
+              post r "/api/v1/playground/check"
+                (check_body
+                   (List.init 10 (fun _ -> `Assoc [ ("policy", `String "analytics") ])))
+            in
+            Alcotest.(check int) "ten targets" 200 code;
+            let* code, _ =
+              post r "/api/v1/playground/check"
+                (check_body
+                   [
+                     `Assoc
+                       [
+                         ("draft", `String (draft_with_region ^ String.make 300_000 '#'));
+                       ];
+                   ])
+            in
+            Alcotest.(check int) "draft too large" 400 code;
+            Lwt.return_unit) );
+    ( "a caller named like a configured agent stays its own agent",
+      `Quick,
+      fun () ->
+        with_policies ~extra:agents_extra (fun r _ ->
+            load_records r
+              [
+                server_record ~request_id:"x-1" ~caller:"inproc" ();
+                server_record ~request_id:"x-2" ~caller:"analytics-agent" ();
+                server_record ~request_id:"a-1" ~caller:"token:a1" ();
+              ];
+            let* code, j = get r "/api/v1/agents" in
+            check_status "agents" 200 (code, j);
+            let agents = list (member "agents" j) in
+            let named n = List.filter (fun a -> member "name" a = `String n) agents in
+            (match named "inproc" with
+            | [ cfg; seen ] ->
+                Alcotest.(check bool)
+                  "configured" true
+                  (member "configured" cfg = `Bool true);
+                Alcotest.(check bool)
+                  "in-process stays without records" true
+                  (member "queries" cfg = `Null);
+                Alcotest.(check int) "caller kept" 1 (int (member "queries" seen))
+            | l -> Alcotest.failf "expected 2 inproc rows, got %d" (List.length l));
+            (match named "analytics-agent" with
+            | [ cfg; seen ] ->
+                Alcotest.(check int) "only its callers" 1 (int (member "queries" cfg));
+                Alcotest.(check int) "caller kept" 1 (int (member "queries" seen))
+            | l ->
+                Alcotest.failf "expected 2 analytics-agent rows, got %d" (List.length l));
+            Lwt.return_unit) );
+  ]
+
 let () =
   Alcotest.run "console-build"
     [
       ("policies", loading_tests);
       ("report", report_tests);
       ("pull requests", pr_tests);
+      ("pull requests (hardening)", hardening_pr_tests);
       ("playground", playground_tests);
       ("opa", opa_tests);
       ("agents", agent_tests);
+      ("hardening", hardening_tests);
     ]
