@@ -12,7 +12,19 @@ type shared = {
   cancel_table : (int, int * int * int * Proxy_config.upstream) Hashtbl.t;
 }
 
+type principal = User of string | Identity of Proxy_config.identity_match
+
+type live = {
+  live_id : string;
+  principal : principal;
+  credential : string;
+  live_binding : Proxy_config.binding;
+  live_cfg : Proxy_config.t;
+  terminate : string -> unit;
+}
+
 let audit_sqlstate = "58030"
+let shutdown_sqlstate = "57P01"
 let sentinel_prefix = "haltsql_deny_"
 let max_startup_packet = 10_000
 let max_sasl_message = 4096
@@ -24,6 +36,12 @@ exception Fatal of string * string
 exception Done
 (** Orderly end of the session (Terminate, or upstream ended it). *)
 
+type portal = { p_stmt : string; p_verdict : Haltsql.Verdict.t; p_seg : int }
+(** What a forwarded Bind created: the statement behind a portal, and the segment the Bind
+    was sent in. Only used to describe Execute in the audit log. *)
+
+let max_portals = 10_000
+
 type s = {
   sh : shared;
   id : string;
@@ -34,11 +52,20 @@ type s = {
   mutable binding : binding option;
   mutable upstream : Io.t option;
   st : Stmt_state.t;
+  portals : (string, portal) Hashtbl.t;
   mutable discarding : bool;
       (** after an injected extended-protocol denial, until Sync *)
   changed : unit Lwt_condition.t;
   mutable finished : bool;
   mutable proxy_pid : int option;
+  mutable tx_status : char;
+      (** transaction status of the upstream's last ReadyForQuery: 'I', 'T' or 'E' *)
+  mutable ending : string option;
+      (** why the session has to end at its next transaction boundary, once requested *)
+  end_requested : unit Lwt.t * unit Lwt.u;
+  boundary : unit Lwt.t * unit Lwt.u;
+      (** resolved once the session is at a transaction boundary with [ending] set *)
+  on_authenticated : live -> unit;
 }
 
 let fatal code msg = Lwt.fail (Fatal (code, msg))
@@ -94,52 +121,95 @@ let audit_refusal () =
        (or a full buffer) cannot be written; retry once the sink has recovered."
     "the audit log could not be written; statement refused"
 
-let audited s r =
-  match r with
-  | Ok () -> Ok ()
-  | Error e ->
-      log s Plog.Error "statement refused: audit log unavailable" [ ("error", `String e) ];
-      Error (audit_refusal ())
+(* Runs [f] on a worker thread (see Offload). The session's client loop handles one
+   message at a time and waits here, so per-session message order is unchanged; only
+   other sessions get to run meanwhile. A worker job cannot be cancelled: if the session
+   ended while it ran, stop instead of acting on a dead session. *)
+let off_loop s f =
+  let* r = Offload.run f in
+  if s.finished then Lwt.fail Done else Lwt.return r
+
+(* The record is written (or refused) before the caller forwards anything. *)
+let audited s fields =
+  let* r = Paudit.record_async s.sh.audit fields in
+  if s.finished then Lwt.fail Done
+  else
+    match r with
+    | Ok () -> Lwt.return (Ok ())
+    | Error e ->
+        log s Plog.Error "statement refused: audit log unavailable"
+          [ ("error", `String e) ];
+        Lwt.return (Error (audit_refusal ()))
 
 let audit_verdict s ~protocol ?stmt ~sql (v : Haltsql.Verdict.t)
     (r : (unit, Enforce.deny) result) =
   let codes = match r with Ok () -> [] | Error d -> d.codes in
   audited s
-  @@ Paudit.record s.sh.audit
-       (audit_base s ~event:"statement"
-       @ [
-           ("policy_version", `String v.policy_version);
-           ("protocol", `String protocol);
-           ("allowed", `Bool (Result.is_ok r));
-           ("reasons", `List (List.map (fun c -> `String c) codes));
-           ( "shadow_reasons",
-             `List
-               (List.map
-                  (fun (x : Haltsql.Reason.t) ->
-                    `String (Haltsql.Reason.code_to_string x.code))
-                  v.shadow_reasons) );
-           ("sql_sha256", `String v.sql_sha256);
-           ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
-           ("tables", `List (List.map (fun t -> `String t) v.tables));
-           ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
-         ]
-       @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
-       @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
+    (audit_base s ~event:"statement"
+    @ [
+        ("policy_version", `String v.policy_version);
+        ("protocol", `String protocol);
+        ("allowed", `Bool (Result.is_ok r));
+        ("reasons", `List (List.map (fun c -> `String c) codes));
+        ( "shadow_reasons",
+          `List
+            (List.map
+               (fun (x : Haltsql.Reason.t) ->
+                 `String (Haltsql.Reason.code_to_string x.code))
+               v.shadow_reasons) );
+        ("sql_sha256", `String v.sql_sha256);
+        ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
+        ("tables", `List (List.map (fun t -> `String t) v.tables));
+        ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
+      ]
+    @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+    @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
 
 let audit_local s ~event ?stmt (d : Enforce.deny) =
   audited s
-  @@ Paudit.record s.sh.audit
-       (audit_base s ~event
-       @ [
-           ("allowed", `Bool false);
-           ("reasons", `List (List.map (fun c -> `String c) d.codes));
-           ("message", `String d.message);
-         ]
-       @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+    (audit_base s ~event
+    @ [
+        ("allowed", `Bool false);
+        ("reasons", `List (List.map (fun c -> `String c) d.codes));
+        ("message", `String d.message);
+      ]
+    @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+
+(* One record per forwarded Execute: a statement prepared once and run N times leaves
+   one "statement" record (its verdict, at Parse) and N of these. Parameter values are
+   never recorded. A portal the proxy did not see being bound (a cursor opened by SQL)
+   has no statement to name. *)
+let audit_execute s ~portal ~max_rows =
+  let b = binding s in
+  let known = Hashtbl.find_opt s.portals portal in
+  let str = function Some x -> `String x | None -> `Null in
+  let of_portal f = Option.map f known in
+  audited s
+    (audit_base s ~event:"execute"
+    @ [
+        ( "policy_version",
+          `String
+            (match known with
+            | Some p -> p.p_verdict.policy_version
+            | None -> b.policy.version) );
+        ("protocol", `String "extended");
+        ("portal", `String portal);
+        ("statement", str (of_portal (fun p -> p.p_stmt)));
+        ("sql_sha256", str (of_portal (fun p -> p.p_verdict.sql_sha256)));
+        ("fingerprint", str (Option.bind known (fun p -> p.p_verdict.fingerprint)));
+        ("max_rows", `Int max_rows);
+      ])
+
+let note_portal s ~portal ~stmt v =
+  if Hashtbl.length s.portals >= max_portals && not (Hashtbl.mem s.portals portal) then
+    Hashtbl.reset s.portals;
+  Hashtbl.replace s.portals portal
+    { p_stmt = stmt; p_verdict = v; p_seg = Stmt_state.current_segment s.st }
 
 (* A proxy-level denial, replaced by the audit refusal if it cannot be audited. *)
 let local_denial s ~event ?stmt d =
-  match audit_local s ~event ?stmt d with Ok () -> d | Error refusal -> refusal
+  let+ r = audit_local s ~event ?stmt d in
+  match r with Ok () -> d | Error refusal -> refusal
 
 (* ------------------------------------------------------------------ *)
 (* Startup                                                              *)
@@ -302,7 +372,10 @@ let authenticate s =
                     match (Scram.Server.finish st final, u) with
                     | Ok server_final, Some u ->
                         let* () = Io.write s.client (Wire.auth_sasl_final server_final) in
-                        Lwt.return u.user_binding
+                        Lwt.return
+                          ( User u.user_name,
+                            Scram.verifier_to_string u.verifier,
+                            u.user_binding )
                     | Ok _, None | Error _, _ ->
                         log s Plog.Warn "authentication failed"
                           [
@@ -319,10 +392,30 @@ let authenticate s =
           | None -> fatal "28000" "a TLS client certificate is required"
           | Some cert -> (
               match match_identity ids cert with
-              | Some id -> Lwt.return id.id_binding
+              | Some id -> Lwt.return (Identity id.id_match, "", id.id_binding)
               | None ->
                   log s Plog.Warn "certificate identity not authorized" [];
                   fatal "28000" "certificate identity is not authorized")))
+
+(* What the upstream session's search_path must be: derived from the policy this session
+   is bound to. The binding never changes during a session (a reload that changes it ends
+   the session instead), so the path pinned at connect time always belongs to the policy
+   that verifies the session's statements. *)
+let search_path s = Upstream.pinned_search_path (binding s).policy.search_path
+
+let search_path_mismatch s actual =
+  log s Plog.Error "upstream search_path does not match the policy; refusing the session"
+    [
+      ( "expected",
+        `String
+          (match Upstream.search_path_value (search_path s) with
+          | Ok v -> v
+          | Error e -> e) );
+      ("actual", `String actual);
+    ];
+  fatal "08006"
+    "haltsql-proxy: the upstream session's search_path does not match the policy; \
+     session refused"
 
 let check_parameter s payload =
   let c = Wire.cursor payload in
@@ -336,6 +429,9 @@ let check_parameter s payload =
   | "standard_conforming_strings" when v <> "on" ->
       log s Plog.Error "upstream standard_conforming_strings is off" [];
       fatal "08P01" "upstream standard_conforming_strings is not on; terminating session"
+  | "search_path" when not (Upstream.search_path_matches ~expected:(search_path s) v) ->
+      (* reported by PostgreSQL 18+, at startup and whenever it changes *)
+      search_path_mismatch s v
   | _ -> Lwt.return_unit
 
 let register_cancel s ~upid ~ukey =
@@ -349,6 +445,46 @@ let register_cancel s ~upid ~ukey =
   Hashtbl.replace tbl pid (key, upid, ukey, s.sh.cfg.upstream);
   s.proxy_pid <- Some pid;
   (pid, key)
+
+(* [SHOW search_path] round trip on the fresh upstream session. The startup packet asked
+   for the pinned path; a server, pooler or login hook that ignored or changed it must
+   not go unnoticed, because the verifier's name resolution would then be wrong. Returns
+   the payload of the ReadyForQuery that ends the probe. *)
+let confirm_search_path s up =
+  let* () = Io.write up (Wire.frame 'Q' "SHOW search_path\000") in
+  let rec loop value =
+    let* tag, payload = Io.read_message up ~max:max_upstream_message in
+    match tag with
+    | 'T' | 'C' -> loop value
+    | 'D' ->
+        let c = Wire.cursor payload in
+        let cols = Wire.get_int16 c in
+        let len = if cols = 1 then Wire.get_int32 c else -1 in
+        if cols <> 1 || len < 0 || value <> None then
+          fatal "08P01" "unexpected answer to SHOW search_path from upstream"
+        else
+          let v = Wire.get_bytes c len in
+          Wire.expect_end c;
+          loop (Some v)
+    | 'S' ->
+        let* () = check_parameter s payload in
+        let* () = Io.write s.client (Wire.frame tag payload) in
+        loop value
+    | 'N' | 'A' -> loop value
+    | 'Z' -> (
+        match value with
+        | Some v when Upstream.search_path_matches ~expected:(search_path s) v ->
+            Lwt.return payload
+        | Some v -> search_path_mismatch s v
+        | None -> fatal "08P01" "upstream did not answer SHOW search_path")
+    | 'E' ->
+        log s Plog.Error "upstream refused SHOW search_path" [];
+        fatal "08006" "haltsql-proxy: could not confirm the upstream search_path"
+    | c ->
+        fatal "08P01"
+          (Printf.sprintf "unexpected message %C from upstream during startup" c)
+  in
+  loop None
 
 let rec relay_startup s up =
   let* tag, payload = Io.read_message up ~max:max_upstream_message in
@@ -368,7 +504,11 @@ let rec relay_startup s up =
   | 'N' ->
       let* () = Io.write s.client (Wire.frame tag payload) in
       relay_startup s up
-  | 'Z' -> Io.write s.client (Wire.frame tag payload)
+  | 'Z' ->
+      (* Nothing from the client reaches the upstream before its search_path is
+         confirmed; only then does the client see ReadyForQuery. *)
+      let* ready = confirm_search_path s up in
+      Io.write s.client (Wire.frame 'Z' ready)
   | 'E' ->
       log s Plog.Error "upstream rejected the session" [];
       fatal "08006" "haltsql-proxy: the upstream database rejected the session"
@@ -414,11 +554,14 @@ let handle_client_message s tag payload =
       if s.discarding then Lwt.return_unit
       else
         let sql = Wire.decode_query payload in
-        let v, r =
-          Enforce.simple ~sqlstate:(sqlstate s)
-            ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) sql
+        let b = binding s in
+        let* v, r =
+          off_loop s (fun () ->
+              Enforce.simple ~sqlstate:(sqlstate s)
+                ~allow_tx:s.sh.cfg.allow_transaction_control b sql)
         in
-        match audit_verdict s ~protocol:"simple" ~sql v r with
+        let* a = audit_verdict s ~protocol:"simple" ~sql v r in
+        match a with
         | Error refusal -> deny_simple s refusal
         | Ok () -> (
             match r with
@@ -437,11 +580,14 @@ let handle_client_message s tag payload =
       if s.discarding then Lwt.return_unit
       else
         let p = Wire.decode_parse payload in
-        let v, r =
-          Enforce.parse ~sqlstate:(sqlstate s)
-            ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) p.query
+        let b = binding s in
+        let* v, r =
+          off_loop s (fun () ->
+              Enforce.parse ~sqlstate:(sqlstate s)
+                ~allow_tx:s.sh.cfg.allow_transaction_control b p.query)
         in
-        match audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r with
+        let* a = audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r in
+        match a with
         | Error refusal -> deny_extended s refusal
         | Ok () -> (
             match r with
@@ -462,7 +608,8 @@ let handle_client_message s tag payload =
                       Enforce.local_deny ~sqlstate:"42P05" ~code:"PROXY_STATEMENT_EXISTS"
                         (Printf.sprintf "prepared statement \"%s\" already exists" p.stmt)
                     in
-                    deny_extended s (local_denial s ~event:"parse" ~stmt:p.stmt d)
+                    let* d = local_denial s ~event:"parse" ~stmt:p.stmt d in
+                    deny_extended s d
                 | _ ->
                     Stmt_state.note_parse s.st p.stmt v;
                     (* Never let the client choose how the injected tenant value is
@@ -481,34 +628,49 @@ let handle_client_message s tag payload =
             match Enforce.bind ~sqlstate:(sqlstate s) v b with
             | Ok b' ->
                 Stmt_state.touch s.st;
+                note_portal s ~portal:b.portal ~stmt:b.bstmt v;
                 forward s
                   (if v.bind_params = [] then Wire.frame 'B' payload
                    else Wire.encode_bind b')
-            | Error d -> deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
+            | Error d ->
+                let* d = local_denial s ~event:"bind" ~stmt:b.bstmt d in
+                deny_extended s d)
         | Stmt_state.Missing | Stmt_state.Wait ->
             let d =
               Enforce.local_deny ~sqlstate:"26000" ~code:"PROXY_STATEMENT_UNKNOWN"
                 (Printf.sprintf "prepared statement \"%s\" does not exist" b.bstmt)
             in
-            deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
+            let* d = local_denial s ~event:"bind" ~stmt:b.bstmt d in
+            deny_extended s d)
   | 'D' ->
       if s.discarding then Lwt.return_unit
       else (
         ignore (Wire.decode_describe_or_close payload);
         Stmt_state.touch s.st;
         forward s (Wire.frame tag payload))
-  | 'E' ->
+  | 'E' -> (
       if s.discarding then Lwt.return_unit
-      else (
-        ignore (Wire.decode_execute payload);
-        Stmt_state.touch s.st;
-        forward s (Wire.frame tag payload))
+      else
+        let portal, max_rows = Wire.decode_execute payload in
+        let* a = audit_execute s ~portal ~max_rows in
+        match a with
+        | Error refusal -> deny_extended s refusal
+        | Ok () ->
+            Stmt_state.touch s.st;
+            forward s (Wire.frame tag payload))
   | 'C' ->
       if s.discarding then Lwt.return_unit
       else (
         (match Wire.decode_describe_or_close payload with
-        | 'S', name -> Stmt_state.note_close_statement s.st name
-        | _ -> Stmt_state.note_close_portal s.st);
+        | 'S', name ->
+            Stmt_state.note_close_statement s.st name;
+            (* closing a statement closes the portals made from it *)
+            Hashtbl.filter_map_inplace
+              (fun _ p -> if p.p_stmt = name then None else Some p)
+              s.portals
+        | _, name ->
+            Stmt_state.note_close_portal s.st;
+            Hashtbl.remove s.portals name);
         forward s (Wire.frame tag payload))
   | 'H' ->
       if payload <> "" then Lwt.fail (Wire.Malformed "Flush has a body")
@@ -532,7 +694,8 @@ let handle_client_message s tag payload =
           Enforce.local_deny ~sqlstate:(sqlstate s) ~code:"PROXY_FUNCTION_CALL"
             "the fastpath function call protocol is not allowed"
         in
-        deny_simple s (local_denial s ~event:"function_call" d)
+        let* d = local_denial s ~event:"function_call" d in
+        deny_simple s d
   | 'd' | 'c' | 'f' ->
       fatal "08P01" "COPY sub-protocol is not allowed through haltsql-proxy"
   | 'p' -> fatal "08P01" "unexpected password message"
@@ -554,10 +717,62 @@ let read_client s =
     in
     wait ()
 
+(* ------------------------------------------------------------------ *)
+(* Ending a session at a transaction boundary                           *)
+
+(* Nothing in flight and no open transaction: ending the session here loses no work the
+   upstream acknowledged and leaves no statement half-answered. *)
+let at_boundary s = s.tx_status = 'I' && Stmt_state.in_flight s.st = 0
+let wake (p, u) = if Lwt.is_sleeping p then Lwt.wakeup_later u ()
+
+let request_end s reason =
+  if s.ending = None && not s.finished then (
+    s.ending <- Some reason;
+    log s Plog.Info "session will end at its next transaction boundary"
+      [ ("reason", `String reason) ];
+    wake s.end_requested;
+    if at_boundary s then wake s.boundary)
+
+(* Ends the session (FATAL 57P01, so pools and drivers reconnect) once it was asked to
+   end and reached a transaction boundary, or [limits.termination_grace_seconds] later
+   at the latest: a client that keeps a transaction open must not keep an outdated
+   policy or revoked credentials alive. *)
+let terminator s =
+  let* () = fst s.end_requested in
+  let* in_time =
+    Lwt.pick
+      [
+        Lwt.map (fun () -> true) (fst s.boundary);
+        Lwt.map (fun () -> false) (Lwt_unix.sleep s.sh.cfg.limits.termination_grace);
+      ]
+  in
+  let reason = Option.value ~default:"" s.ending in
+  if not in_time then
+    log s Plog.Warn
+      "session did not reach a transaction boundary in time; closing it anyway"
+      [ ("reason", `String reason) ];
+  fatal shutdown_sqlstate
+    (Printf.sprintf "terminating connection: %s (haltsql-proxy); reconnect" reason)
+
+let never () = fst (Lwt.task ())
+
+let lifetime_timer s =
+  let l = s.sh.cfg.limits.max_session_lifetime in
+  if l <= 0. then never ()
+  else
+    let* () = Lwt_unix.sleep l in
+    request_end s "session reached limits.max_session_lifetime_seconds";
+    never ()
+
 let rec client_loop s =
   let* tag, payload = read_client s in
-  let* () = handle_client_message s tag payload in
-  client_loop s
+  if s.ending <> None && at_boundary s then (
+    (* the session is ending: this message is neither verified nor forwarded *)
+    wake s.boundary;
+    never ())
+  else
+    let* () = handle_client_message s tag payload in
+    client_loop s
 
 let rec upstream_loop s up =
   let* tag, payload = Io.read_message up ~max:max_upstream_message in
@@ -586,8 +801,20 @@ let rec upstream_loop s up =
         | Some ("FATAL" | "PANIC") -> Lwt.fail Done
         | _ -> Lwt.return_unit)
     | 'Z' ->
+        let segment = Stmt_state.head_segment s.st in
         Stmt_state.on_ready s.st;
-        raw ()
+        if String.length payload = 1 then s.tx_status <- payload.[0];
+        (* No portal outlives its transaction: outside one, forget those bound up to
+           the segment that just finished (later ones may already be pipelined). *)
+        (match segment with
+        | Some id when s.tx_status = 'I' && Hashtbl.length s.portals > 0 ->
+            Hashtbl.filter_map_inplace
+              (fun _ p -> if p.p_seg <= id then None else Some p)
+              s.portals
+        | _ -> ());
+        let* () = raw () in
+        if s.ending <> None && at_boundary s then wake s.boundary;
+        Lwt.return_unit
     | 'G' | 'H' | 'W' | 'd' | 'c' ->
         fatal "08P01"
           "upstream entered COPY mode; COPY is not allowed through haltsql-proxy"
@@ -656,8 +883,17 @@ let run s =
               | Some a when valid_app_name a -> Some a
               | _ -> None
             in
-            let* b = authenticate s in
+            let* principal, credential, b = authenticate s in
             s.binding <- Some b;
+            s.on_authenticated
+              {
+                live_id = s.id;
+                principal;
+                credential;
+                live_binding = b;
+                live_cfg = cfg;
+                terminate = request_end s;
+              };
             let* () = Io.write s.client Wire.auth_ok in
             log s Plog.Info "client authenticated"
               [
@@ -688,7 +924,9 @@ let run s =
   | `Session app ->
       let* up =
         Lwt.catch
-          (fun () -> Upstream.connect cfg.upstream ~application_name:app)
+          (fun () ->
+            Upstream.connect ~search_path:(search_path s) cfg.upstream
+              ~application_name:app)
           (function
             | Upstream.Upstream_error m ->
                 log s Plog.Error "upstream connection failed" [ ("error", `String m) ];
@@ -709,9 +947,59 @@ let run s =
                 fatal "08006" "haltsql-proxy: the upstream database did not respond"
             | e -> Lwt.fail e)
       in
-      Lwt.pick [ client_loop s; upstream_loop s up ]
+      Lwt.pick [ client_loop s; upstream_loop s up; terminator s; lifetime_timer s ]
 
-let handle sh ~id fd =
+(* ------------------------------------------------------------------ *)
+(* What a reload changed for a live session                             *)
+
+let der certs = List.map X509.Certificate.encode_der certs
+
+let same_upstream (a : Proxy_config.upstream) (b : Proxy_config.upstream) =
+  a.host = b.host && a.port = b.port && a.database = b.database && a.user = b.user
+  && a.password = b.password && a.tls_mode = b.tls_mode
+  && der a.tls_ca = der b.tls_ca
+
+let client_ca (c : Proxy_config.t) =
+  match c.tls with Some t -> der t.client_ca | None -> []
+
+let stale (cfg : Proxy_config.t) (l : live) =
+  let found =
+    match (cfg.auth, l.principal) with
+    | Scram_users users, User name -> (
+        match List.find_opt (fun u -> u.user_name = name) users with
+        | Some u -> Ok (Scram.verifier_to_string u.verifier, u.user_binding)
+        | None -> Error "its user was removed")
+    | Cert_identities ids, Identity m -> (
+        match List.find_opt (fun i -> i.id_match = m) ids with
+        | Some i -> Ok ("", i.id_binding)
+        | None -> Error "its certificate identity was removed")
+    | Scram_users _, Identity _ | Cert_identities _, User _ ->
+        Error "the authentication method changed"
+  in
+  match found with
+  | Error r -> Some r
+  | Ok (credential, b) ->
+      let old = l.live_binding in
+      if credential <> l.credential then Some "its credentials changed"
+      else if
+        (match l.principal with Identity _ -> true | User _ -> false)
+        && client_ca cfg <> client_ca l.live_cfg
+      then Some "the client certificate authorities changed"
+      else if b.policy_name <> old.policy_name then Some "it is bound to another policy"
+      else if b.policy.version <> old.policy.version then Some "its policy changed"
+      else if
+        not
+          (Yojson.Safe.equal
+             (Haltsql.Context.to_json b.context)
+             (Haltsql.Context.to_json old.context))
+      then Some "its context changed"
+      else if not (same_upstream cfg.upstream l.live_cfg.upstream) then
+        Some "the upstream changed"
+      else if cfg.allow_transaction_control <> l.live_cfg.allow_transaction_control then
+        Some "allow_transaction_control changed"
+      else None
+
+let handle ?(on_authenticated = fun (_ : live) -> ()) sh ~id fd =
   let peer =
     match Lwt_unix.getpeername fd with
     | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%d" (Unix.string_of_inet_addr a) p
@@ -729,10 +1017,16 @@ let handle sh ~id fd =
       binding = None;
       upstream = None;
       st = Stmt_state.create ();
+      portals = Hashtbl.create 8;
       discarding = false;
       changed = Lwt_condition.create ();
       finished = false;
       proxy_pid = None;
+      tx_status = 'I';
+      ending = None;
+      end_requested = Lwt.wait ();
+      boundary = Lwt.wait ();
+      on_authenticated;
     }
   in
   (try Lwt_unix.setsockopt fd Unix.TCP_NODELAY true with _ -> ());

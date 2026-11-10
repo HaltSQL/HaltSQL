@@ -154,9 +154,10 @@ let run_cmd =
          shutdown_grace_seconds.";
       `P
         "SIGHUP reloads the config file and its policies (also on file changes with \
-         reload.watch). New connections use the new configuration, existing sessions \
-         keep theirs; an invalid configuration is logged and the current one stays in \
-         force.";
+         reload.watch). New connections use the new configuration; sessions whose \
+         credentials, policy, context or upstream changed are ended at their next \
+         transaction boundary (FATAL 57P01, see reload.terminate_changed_sessions). An \
+         invalid configuration is logged and the current one stays in force.";
       `P
         "Every statement is audited to the configured sinks (hash-chained JSON lines, \
          see haltsql audit verify). With on_error: fail_closed (the default) a statement \
@@ -184,12 +185,25 @@ let validate config json =
       else prerr_endline ("haltsql-proxy: " ^ msg);
       code
   | Ok cfg ->
+      let warnings =
+        List.filter_map
+          (function
+            | Proxy_config.Transport_warning m -> Some m
+            | Proxy_config.Transport_info _ -> None)
+          (Proxy_config.transport_notes cfg)
+      in
       if json then
         print_endline
           (Yojson.Safe.pretty_to_string
              (`Assoc
-                [ ("valid", `Bool true); ("config", Proxy_config.to_json_redacted cfg) ]))
-      else Printf.printf "%s: valid ProxyConfig\n" config;
+                [
+                  ("valid", `Bool true);
+                  ("warnings", `List (List.map (fun w -> `String w) warnings));
+                  ("config", Proxy_config.to_json_redacted cfg);
+                ]))
+      else (
+        List.iter (fun w -> prerr_endline ("haltsql-proxy: warning: " ^ w)) warnings;
+        Printf.printf "%s: valid ProxyConfig\n" config);
       exit_ok
 
 let validate_cmd =

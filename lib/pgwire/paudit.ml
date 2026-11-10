@@ -30,6 +30,10 @@ type t = {
   spec : Proxy_config.audit_sink_spec list;
   on_event : string -> unit;
   mutable stopped : bool;
+  lock : Lwt_mutex.t;
+      (** serializes {!record_async}, the retry loop and {!close}: one writer at a time,
+          served in arrival order (Lwt_mutex is FIFO), so each chain's order is the order
+          in which records were submitted *)
 }
 
 let spec t = t.spec
@@ -250,36 +254,83 @@ let deliver sink fields =
             Queue.push fields sink.pending;
             Buffered e))
 
+(* Logs one sink's outcome (on the event loop); [Some reason] when it refuses the record. *)
+let outcome sink = function
+  | Written -> None
+  | Buffered e ->
+      Plog.log Plog.Warn "audit sink write failed; record buffered"
+        [
+          ("sink", `String sink.name);
+          ("error", `String e);
+          ("buffered", `Int (Queue.length sink.pending));
+        ];
+      None
+  | Dropped e ->
+      Plog.log Plog.Warn "audit sink write failed; record dropped (on_error: drop)"
+        [
+          ("sink", `String sink.name);
+          ("error", `String e);
+          ("dropped_total", `Int sink.dropped);
+        ];
+      None
+  | Failed e ->
+      Plog.log Plog.Error "audit sink write failed; refusing the statement"
+        [ ("sink", `String sink.name); ("error", `String e) ];
+      Some (sink.name ^ ": " ^ e)
+
+let verdict_of failed =
+  match List.filter_map Fun.id failed with
+  | [] -> Ok ()
+  | l -> Error (String.concat "; " l)
+
+let stamp fields = ("ts", `String (Plog.now_rfc3339 ())) :: fields
+
 let record t fields =
-  let fields = ("ts", `String (Plog.now_rfc3339 ())) :: fields in
-  let failed =
-    List.filter_map
-      (fun sink ->
-        match deliver sink fields with
-        | Written -> None
-        | Buffered e ->
-            Plog.log Plog.Warn "audit sink write failed; record buffered"
-              [
-                ("sink", `String sink.name);
-                ("error", `String e);
-                ("buffered", `Int (Queue.length sink.pending));
-              ];
-            None
-        | Dropped e ->
-            Plog.log Plog.Warn "audit sink write failed; record dropped (on_error: drop)"
-              [
-                ("sink", `String sink.name);
-                ("error", `String e);
-                ("dropped_total", `Int sink.dropped);
-              ];
-            None
-        | Failed e ->
-            Plog.log Plog.Error "audit sink write failed; refusing the statement"
-              [ ("sink", `String sink.name); ("error", `String e) ];
-            Some (sink.name ^ ": " ^ e))
-      t.sinks
-  in
-  match failed with [] -> Ok () | l -> Error (String.concat "; " l)
+  let fields = stamp fields in
+  verdict_of (List.map (fun sink -> outcome sink (deliver sink fields)) t.sinks)
+
+(* Never raises: an unexpected exception refuses the record (fail closed). *)
+let deliver_safe sink fields =
+  try deliver sink fields
+  with e ->
+    sink.failures <- sink.failures + 1;
+    sink.last_ok <- false;
+    let m = error_message e in
+    sink.last_error <- Some m;
+    Failed m
+
+let is_fd sink = match sink.backend with Fd _ -> true | Object _ -> false
+
+(* stdout/file sinks write with blocking system calls: a slow disk, a full pipe or a
+   stalled NFS mount must stall only the statements waiting for their audit record, not
+   every session, so those writes run on a worker thread. Object sinks only append to
+   memory and their spool and share state with their uploader on the event loop, so they
+   stay here. The caller still waits for the outcome before it forwards anything: the
+   failure policy is unchanged. *)
+let record_async t fields =
+  let open Lwt.Syntax in
+  Lwt_mutex.with_lock t.lock (fun () ->
+      (* stamped under the lock, so timestamps follow chain order *)
+      let fields = stamp fields in
+      let* deliveries =
+        if t.sinks <> [] && List.for_all is_fd t.sinks then
+          (* the common case: one hop for all sinks *)
+          Lwt.catch
+            (fun () ->
+              Offload.run (fun () ->
+                  List.map (fun sink -> deliver_safe sink fields) t.sinks))
+            (fun e -> Lwt.return (List.map (fun _ -> Failed (error_message e)) t.sinks))
+        else
+          Lwt_list.map_s
+            (fun sink ->
+              if is_fd sink then
+                Lwt.catch
+                  (fun () -> Offload.run (fun () -> deliver_safe sink fields))
+                  (fun e -> Lwt.return (Failed (error_message e)))
+              else Lwt.return (deliver_safe sink fields))
+            t.sinks
+      in
+      Lwt.return (verdict_of (List.map2 outcome t.sinks deliveries)))
 
 let sink_healthy s =
   match (s.backend, s.on_error) with
@@ -295,19 +346,29 @@ let rec retry_loop t =
   let open Lwt.Syntax in
   let* () = Lwt_unix.sleep 1.0 in
   if t.stopped then Lwt.return_unit
-  else begin
-    List.iter
-      (fun s ->
-        if not (Queue.is_empty s.pending) then
-          match flush_pending s with
-          | Ok () ->
-              s.last_ok <- true;
-              s.last_error <- None;
-              t.on_event (Printf.sprintf "audit sink %s recovered; buffer drained" s.name)
-          | Error _ -> ())
-      t.sinks;
+  else
+    let* () =
+      Lwt_list.iter_s
+        (fun s ->
+          if Queue.is_empty s.pending then Lwt.return_unit
+          else
+            Lwt_mutex.with_lock t.lock (fun () ->
+                let* r =
+                  Lwt.catch
+                    (fun () -> Offload.run (fun () -> flush_pending s))
+                    (fun e -> Lwt.return (Error (error_message e)))
+                in
+                (match r with
+                | Ok () ->
+                    s.last_ok <- true;
+                    s.last_error <- None;
+                    t.on_event
+                      (Printf.sprintf "audit sink %s recovered; buffer drained" s.name)
+                | Error _ -> ());
+                Lwt.return_unit))
+        t.sinks
+    in
     retry_loop t
-  end
 
 let default_on_event m = Plog.log Plog.Warn "audit sink event" [ ("event", `String m) ]
 
@@ -337,7 +398,15 @@ let open_ ?(on_event = default_on_event) (specs : Proxy_config.audit_sink_spec l
         in
         opened := sink :: !opened)
       specs;
-    let t = { sinks = List.rev !opened; spec = specs; on_event; stopped = false } in
+    let t =
+      {
+        sinks = List.rev !opened;
+        spec = specs;
+        on_event;
+        stopped = false;
+        lock = Lwt_mutex.create ();
+      }
+    in
     if
       List.exists
         (fun s ->
@@ -382,9 +451,10 @@ let stats_json t : Yojson.Safe.t =
            | None -> []))
        t.sinks)
 
-let close t =
+let close_wait = 5.
+
+let close_sinks t =
   let open Lwt.Syntax in
-  t.stopped <- true;
   Lwt_list.iter_s
     (fun s ->
       (match flush_pending s with
@@ -409,3 +479,27 @@ let close t =
                 [ ("sink", `String s.name); ("error", `String e) ];
               Lwt.return_unit))
     t.sinks
+
+let close t =
+  let open Lwt.Syntax in
+  t.stopped <- true;
+  (* After any write still in flight; a write that never returns (the reason it runs on
+     a worker thread) must not hang the shutdown as well. *)
+  let* locked =
+    Lwt.pick
+      [
+        Lwt.map (fun () -> true) (Lwt_mutex.lock t.lock);
+        Lwt.map (fun () -> false) (Lwt_unix.sleep close_wait);
+      ]
+  in
+  if not locked then (
+    Plog.log Plog.Error
+      "an audit write is still blocked at shutdown; skipping the final flush"
+      [ ("sinks", `List (List.map (fun s -> `String s.name) t.sinks)) ];
+    Lwt.return_unit)
+  else
+    Lwt.finalize
+      (fun () -> close_sinks t)
+      (fun () ->
+        Lwt_mutex.unlock t.lock;
+        Lwt.return_unit)

@@ -15,11 +15,13 @@ val start :
     {!reload}. *)
 
 val reload : t -> trigger:string -> (unit, string list) result Lwt.t
-(** Loads a new configuration and makes it the snapshot for new connections; existing
-    sessions keep theirs. On any error (load, validation, TLS material) the current
-    configuration stays in force, the error is logged and counted. A changed listen
-    address or audit sink list is ignored with a warning (both need a restart). Reloads
-    are serialized. [trigger] (e.g. ["sighup"], ["watch"]) is logged. *)
+(** Loads a new configuration and makes it the snapshot for new connections. Live sessions
+    that it changes ({!Session.stale}) are asked to end at their next transaction boundary
+    unless [reload.terminate_changed_sessions] is false; the others keep their snapshot.
+    On any error (load, validation, TLS material) the current configuration stays in
+    force, the error is logged and counted. A changed listen address or audit sink list is
+    ignored with a warning (both need a restart). Reloads are serialized. [trigger] (e.g.
+    ["sighup"], ["watch"]) is logged. *)
 
 val generation : t -> int
 (** 1 at start, +1 per successful reload. *)
@@ -35,6 +37,11 @@ val port : t -> int
 
 val active : t -> int
 (** Number of open client connections. *)
+
+val unauthenticated : t -> int
+(** How many of them have not finished authentication. Each source address may hold at
+    most [limits.max_unauthenticated_per_ip] of these; further connections from it are
+    refused with FATAL 53300 until one authenticates or closes. *)
 
 val shutdown : t -> unit Lwt.t
 (** Stops accepting, waits up to [shutdown_grace_seconds] for sessions to finish, closes

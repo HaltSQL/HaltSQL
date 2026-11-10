@@ -40,7 +40,19 @@ val spec : t -> Proxy_config.audit_sink_spec list
 val record : t -> (string * Yojson.Safe.t) list -> (unit, string) result
 (** Prepends ["ts"] and delivers the record to every sink. [Error msg] when at least one
     sink refused it under [Audit_fail_closed] (or its buffer is full): the caller must
-    refuse the statement. Never raises. *)
+    refuse the statement. Never raises. Writes with blocking system calls on the calling
+    thread; see {!record_async}. *)
+
+val record_async : t -> (string * Yojson.Safe.t) list -> (unit, string) result Lwt.t
+(** {!record} without blocking the event loop, and what the proxy uses: writes to stdout
+    and file sinks run on an {!Offload} thread. Same result and failure policies; the
+    promise resolves once every sink has taken (or refused) the record, so a caller that
+    waits for it before forwarding a statement keeps the fail-closed guarantee.
+
+    Calls are served strictly in the order they were made, one at a time, and the
+    timestamp is taken when a call's turn comes: within each sink, chain order, timestamp
+    order and submission order agree. Do not mix with {!record} on the same [t] while
+    calls are pending. Never raises. *)
 
 val healthy : t -> bool
 (** [false] while some fail-closed sink's last write failed, a buffer is full, or an

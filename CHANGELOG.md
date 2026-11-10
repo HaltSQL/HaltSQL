@@ -32,6 +32,13 @@ even before 1.0.
   (the values the statement was verified under) and `context_source`
   (`authenticated` or `request`), so the log shows which tenant a caller acted
   as.
+- **haltsql-proxy audits executions, not only verdicts.** Every forwarded
+  extended-protocol `Execute` writes an `execute` audit record (session,
+  portal, statement name, `sql_sha256`, fingerprint, policy version, row
+  limit; never parameter values), so a statement prepared once and run N
+  times shows N records. Under `fail_closed` an Execute whose record cannot be
+  written is refused (58030). Audit consumers that count records per
+  statement should filter on `event`.
 
 ### Changed
 - **Guarded executors no longer run what a shadow policy would deny.** A
@@ -64,6 +71,51 @@ even before 1.0.
   (already a transitive dependency of `tls` and `x509`).
 - JWT verification stays in-tree; `docs/authentication.md` records why the
   `jose` package was not adopted.
+- **haltsql-proxy: policy and credential changes reach live sessions.** After
+  a reload, sessions whose user, SCRAM verifier, client CA, policy, context or
+  upstream changed are ended at their next transaction boundary with
+  `FATAL 57P01` (`reload.terminate_changed_sessions`, default `true`; `false`
+  restores the old behaviour). Sessions are also ended
+  `limits.max_session_lifetime_seconds` after authentication (default 3600,
+  `0` disables). `limits.termination_grace_seconds` (default 30) bounds how
+  long an open transaction can delay either. Clients must be able to
+  reconnect, as they already must for a PostgreSQL restart.
+- **haltsql-proxy no longer verifies or writes audit records on its event
+  loop.** `Haltsql.verify` and writes to `stdout`/`file` audit sinks run on a
+  bounded thread pool (`limits.worker_threads`, default: CPUs, 2 to 8), so one
+  session's large statement or a slow audit disk no longer stalls every other
+  session. Per-session message order, the fail-closed audit policy and the
+  order of the hash chain are unchanged.
+
+### Fixed
+- `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
+  is not hash-chained, that a failed audit write does not block the
+  statement and that there is no hot reload. All three were wrong; the page
+  now describes the code.
+
+### Security
+- **haltsql-proxy limits unauthenticated connections per source address**
+  (`limits.max_unauthenticated_per_ip`, default 20, `0` disables). One
+  address can no longer occupy every `max_connections` slot with connections
+  that never authenticate; the connection over the cap gets `FATAL 53300`.
+- **haltsql-proxy refuses MD5 upstream authentication without TLS.** If the
+  database asks for an MD5 password on an unencrypted connection, the proxy no
+  longer answers; sessions fail with `FATAL 08006` and the log names the
+  cause. **Breaking** for configurations that relied on it: enable
+  `upstream.tls`, move the role to SCRAM-SHA-256, or set the new
+  `upstream.allow_insecure_auth: true`.
+- haltsql-proxy logs an `INSECURE UPSTREAM TRANSPORT` warning at start, on
+  reload and in `validate` when `upstream.tls.mode` is `disable` for a
+  non-loopback host. The default mode is unchanged. The docs now state
+  plainly that `require` encrypts without verifying the server and that only
+  `verify-full` authenticates it.
+- **haltsql-proxy pins the upstream `search_path`.** The upstream startup
+  packet sets `search_path` from the bound policy's `search_path` (quoted,
+  with `pg_temp` last), overriding `ALTER ROLE`/`ALTER DATABASE` defaults, and
+  the proxy confirms it with `SHOW search_path` before any client statement is
+  forwarded. A mismatch refuses the session (`FATAL 08006`); on PostgreSQL 18+
+  a later reported change ends it. Before, unqualified names could resolve
+  differently upstream than in the verifier.
 
 ## [0.0.2] - 2026-11-10
 

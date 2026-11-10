@@ -25,6 +25,27 @@
  (deps
   (source_tree fixtures)))
 
+; test_proxy_session: the proxy engine in-process against a fake PostgreSQL backend
+; (fake_pg.ml): session startup (search_path pinning), enforcement, audit, reload.
+; Needs no external service.
+
+(test
+ (name test_proxy_session)
+ (package haltsql-proxy)
+ (modules test_proxy_session fake_pg)
+ (libraries
+  haltsql_pgwire
+  haltsql
+  haltsql.cloud
+  alcotest
+  yojson
+  lwt
+  lwt.unix
+  threads.posix
+  unix)
+ (deps
+  (source_tree fixtures)))
+
 (test
  (name test_proxy_integration)
  (package haltsql-proxy)

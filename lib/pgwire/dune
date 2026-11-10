@@ -12,6 +12,7 @@
   kdf.pbkdf
   lwt
   lwt.unix
+  threads.posix
   tls
   tls-lwt
   x509

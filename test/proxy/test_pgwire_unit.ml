@@ -555,6 +555,78 @@ let test_config_errors () =
    It used to be treated as a path, and the "cannot open <path>" error then printed the
    whole private key. Inline PEM is now accepted, and no TLS error ever echoes the
    value. *)
+(* Keys added after the first release: defaults, bounds, and that unknown keys next to
+   them are still refused. *)
+let test_config_new_keys () =
+  let limits kvs = base_config ~extra:[ ("limits", `Assoc kvs) ] () in
+  let ok j =
+    match load j with
+    | Ok c -> c
+    | Error es ->
+        Alcotest.failf "unexpected: %s"
+          (String.concat "; " (List.map Haltsql.Load_error.to_string es))
+  in
+  let c = ok (base_config ()) in
+  check_int "worker_threads default" (Offload.default_threads ()) c.limits.worker_threads;
+  check_bool "worker_threads default is bounded" true
+    (c.limits.worker_threads >= 2 && c.limits.worker_threads <= 8);
+  check_int "worker_threads set" 3
+    (ok (limits [ ("worker_threads", `Int 3) ])).limits.worker_threads;
+  has_error "worker_threads low" "limits.worker_threads: 0 is out of range"
+    (limits [ ("worker_threads", `Int 0) ]);
+  has_error "worker_threads high" "limits.worker_threads: 65 is out of range"
+    (limits [ ("worker_threads", `Int 65) ]);
+  has_error "unknown limits key" "limits" (limits [ ("verify_threads", `Int 2) ]);
+  Alcotest.(check (float 0.))
+    "max_session_lifetime default: one hour" 3600. c.limits.max_session_lifetime;
+  Alcotest.(check (float 0.)) "termination_grace default" 30. c.limits.termination_grace;
+  let c' =
+    ok
+      (limits
+         [
+           ("max_session_lifetime_seconds", `Int 0);
+           ("termination_grace_seconds", `Float 1.5);
+         ])
+  in
+  Alcotest.(check (float 0.)) "lifetime 0 = unlimited" 0. c'.limits.max_session_lifetime;
+  Alcotest.(check (float 0.)) "grace set" 1.5 c'.limits.termination_grace;
+  check_int "max_unauthenticated_per_ip default" 20 c.limits.max_unauthenticated_per_ip;
+  check_int "max_unauthenticated_per_ip 0 = off" 0
+    (ok (limits [ ("max_unauthenticated_per_ip", `Int 0) ])).limits
+      .max_unauthenticated_per_ip;
+  has_error "max_unauthenticated_per_ip negative" "limits.max_unauthenticated_per_ip"
+    (limits [ ("max_unauthenticated_per_ip", `Int (-1)) ]);
+  has_error "lifetime negative" "limits.max_session_lifetime_seconds"
+    (limits [ ("max_session_lifetime_seconds", `Int (-1)) ]);
+  has_error "grace too long" "limits.termination_grace_seconds"
+    (limits [ ("termination_grace_seconds", `Int 3601) ]);
+  let upstream kvs =
+    base_config
+      ~upstream:
+        (Some
+           (`Assoc
+              ([
+                 ("host", `String "127.0.0.1");
+                 ("database", `String "app");
+                 ("user", `String "svc");
+               ]
+              @ kvs)))
+      ()
+  in
+  check_bool "allow_insecure_auth default" false c.upstream.allow_insecure_auth;
+  check_bool "allow_insecure_auth set" true
+    (ok (upstream [ ("allow_insecure_auth", `Bool true) ])).upstream.allow_insecure_auth;
+  has_error "allow_insecure_auth type" "upstream.allow_insecure_auth"
+    (upstream [ ("allow_insecure_auth", `String "yes") ]);
+  has_error "unknown upstream key" "upstream" (upstream [ ("allow_md5", `Bool true) ]);
+  has_error "verify-ca is not a mode" "upstream.tls.mode"
+    (upstream [ ("tls", `Assoc [ ("mode", `String "verify-ca") ]) ]);
+  let red = Yojson.Safe.to_string (Proxy_config.to_json_redacted c) in
+  check_bool "allow_insecure_auth in the effective config" true
+    (Astring_like.contains red "\"allow_insecure_auth\":false");
+  check_bool "worker_threads in the effective config" true
+    (Astring_like.contains red "\"worker_threads\"")
+
 let test_config_tls_key_material () =
   let tmp contents =
     let f = Filename.temp_file "haltsql_tls" ".pem" in
@@ -874,6 +946,7 @@ let test_stalled_upstream () =
       tls_mode = Proxy_config.Tls_require;
       tls_ca = [];
       connect_timeout = 0.3;
+      allow_insecure_auth = false;
     }
   in
   let t0 = Unix.gettimeofday () in
@@ -929,6 +1002,7 @@ let () =
           Alcotest.test_case "valid" `Quick test_config_ok;
           Alcotest.test_case "YAML example" `Quick test_config_yaml_example;
           Alcotest.test_case "errors" `Quick test_config_errors;
+          Alcotest.test_case "newer keys" `Quick test_config_new_keys;
           Alcotest.test_case "tls key material never echoed" `Quick
             test_config_tls_key_material;
         ] );
