@@ -1,0 +1,26 @@
+; Implementation of haltsql-console, as a private library so test/console can start it
+; in-process. Feature modules (overview, signals, records, ...) each export [routes] and
+; an optional background [start]; Router collects them.
+
+(library
+ (name haltsql_console)
+ (libraries
+  haltsql
+  haltsql.report
+  haltsql.cloud
+  haltsql.catalog_fetch
+  haltsql.catalog_tools
+  haltsql-server.auth
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  http
+  uri
+  lwt
+  lwt.unix
+  ptime
+  ptime.clock.os
+  eqaf
+  yojson
+  unix
+  digestif))

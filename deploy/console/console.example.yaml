@@ -1,0 +1,77 @@
+# haltsql-console configuration. Reference: docs/console/config.md.
+# Any string may use ${env:NAME}, ${vault:path#key}, ${aws-sm:id#key} or ${gcp-sm:name}
+# placeholders; providers are configured in `secrets:` exactly as in the server config.
+
+listen: 0.0.0.0:8090
+environment: { org: Acme Corp, name: Production, region: us-east-1 }
+state_dir: /var/lib/haltsql-console      # persistent volume: cases, activity log, packs
+# frontend_dir: /usr/share/haltsql-console/web
+
+auth:
+  # Browser users: an OIDC provider (tokens from the frontend or an identity-aware proxy).
+  oidc:
+    - name: okta
+      issuer: https://acme.okta.com/oauth2/default
+      audience: haltsql-console
+      groups_claim: groups              # group names become "okta:<group>"
+  # Or trust an identity-aware proxy that is the only way to reach the console:
+  # proxy: { user_header: X-Auth-Request-Email, groups_header: X-Auth-Request-Groups, label: oauth2-proxy }
+  tokens:                               # automation (CI, evidence jobs)
+    - { name: evidence-job, sha256: "0000000000000000000000000000000000000000000000000000000000000000", role: audit }
+  roles:
+    admin:   [okta:haltsql-admins]
+    owner:   [okta:haltsql-policy-owners]
+    analyst: [okta:security]
+    audit:   [okta:compliance]
+    dev:     [okta:engineering]
+  session_hours: 8
+
+verifiers:                              # each verifier needs server.admin enabled
+  - name: haltsql-1
+    url: http://haltsql-1.haltsql.svc:8080
+    kind: server                        # server | proxy | mcp
+    location: shared service, zone a
+    token: ${env:HALTSQL_ADMIN_TOKEN}   # listed in the verifier's server.admin.callers
+    workload: deployment/haltsql        # for restarts (fleet.kubernetes)
+
+fleet:
+  poll_seconds: 30
+  # kubernetes: { namespace: haltsql }  # in-cluster service account, restart permission only
+
+audit:
+  sources:
+    - { verifier: haltsql-1, file: /var/log/haltsql/audit.jsonl }
+    # - { verifier: auto, s3: "s3://acme-audit/haltsql/", region: us-east-1 }
+    # - { verifier: auto, gcs: "gs://acme-audit/haltsql/" }
+  retention_hours: 168
+  max_records: 2000000
+  poll_seconds: 5
+
+policies:
+  server_config: /etc/haltsql/config.yaml   # the verifiers' config: same policies, same bundles
+  # files: [/etc/haltsql/policies/]
+
+# opa: { url: http://127.0.0.1:8181, decision: haltsql/decision, timeout_ms: 500, on_error: deny }
+
+catalogs:
+  - { kind: dbt, manifest: /etc/haltsql/catalogs/manifest.json }
+  # - { kind: datahub, url: https://datahub.acme.internal, token: "${vault:secret/datahub#token}" }
+  # - { kind: unity, file: /etc/haltsql/catalogs/unity.json }
+
+data:
+  exceptions:
+    - { column: app.customers.email, policy: support-copilot, owner: Lee Park, ticket: SEC-88, expires: "2027-02-01" }
+
+agents:
+  - { name: analytics-agent, team: Data platform, via: sidecar, stack: "LangGraph, Python", callers: ["oidc:okta"], policy: analytics }
+  - { name: billing-reconciler, team: Finance, via: in_process, stack: Python package, policy: finance-agent }
+
+integrations: {}
+  # github: { repo: acme/policies, token: "${vault:secret/github#token}", base: main, path: policies/ }
+  # slack: { webhook: "${vault:secret/slack#webhook}" }
+  # pagerduty: { routing_key: "${vault:secret/pagerduty#key}" }
+  # jira: { url: https://acme.atlassian.net, project: SEC, token: "${vault:secret/jira#token}" }
+
+signals:
+  cross_tenant: { window_minutes: 10, min_records: 10 }
+  deny_spike: { window_minutes: 15, factor: 3.0, min_records: 50 }
