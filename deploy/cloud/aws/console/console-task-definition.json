@@ -49,7 +49,7 @@
     },
     {
       "name": "oauth2-proxy",
-      "image": "quay.io/oauth2-proxy/oauth2-proxy:v7.8.1",
+      "image": "quay.io/oauth2-proxy/oauth2-proxy:v7.8.1@sha256:d62e2d81c6f5048f652f67c302083be1272c181b971fad80e5a30ebe2b8b75d8",
       "essential": true,
       "user": "65532:65532",
       "readonlyRootFilesystem": true,
@@ -63,6 +63,9 @@
         "--oidc-issuer-url=https://acme.okta.com/oauth2/default",
         "--redirect-url=https://haltsql-console.corp.internal/oauth2/callback",
         "--email-domain=*",
+        "--allowed-group=haltsql-admins",
+        "--allowed-group=security",
+        "--allowed-group=compliance",
         "--scope=openid email profile groups",
         "--pass-user-headers=true",
         "--reverse-proxy=true",
@@ -73,15 +76,15 @@
       "secrets": [
         {
           "name": "OAUTH2_PROXY_CLIENT_ID",
-          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:client_id::"
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console-oauth2-GhIjKl:client_id::"
         },
         {
           "name": "OAUTH2_PROXY_CLIENT_SECRET",
-          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:client_secret::"
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console-oauth2-GhIjKl:client_secret::"
         },
         {
           "name": "OAUTH2_PROXY_COOKIE_SECRET",
-          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:cookie_secret::"
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console-oauth2-GhIjKl:cookie_secret::"
         }
       ],
       "dependsOn": [

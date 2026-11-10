@@ -54,8 +54,46 @@ let string_list k j =
   | Some (`List l) -> List.filter_map (function `String s -> Some s | _ -> None) l
   | _ -> []
 
+(** Order-preserving, O(n). *)
 let dedupe l =
-  List.fold_left (fun acc x -> if List.mem x acc then acc else acc @ [ x ]) [] l
+  let seen = Hashtbl.create (List.length l) in
+  List.filter
+    (fun x ->
+      if Hashtbl.mem seen x then false
+      else (
+        Hashtbl.add seen x ();
+        true))
+    l
+
+(* Size limits: every write rewrites the case, so it stays small. *)
+let max_ids_per_request = 1000
+let max_ids_per_case = 10_000
+let max_id_bytes = 200
+let max_title_bytes = 500
+let max_note_bytes = 10_000
+let max_notes = 500
+let max_assignee_bytes = 320
+
+let check_len field max s =
+  if String.length s > max then
+    Api.bad_request "field %s is longer than %d bytes" field max
+
+(** The request ids of a request body: at most {!max_ids_per_request}, each non-empty and
+    at most {!max_id_bytes}. *)
+let request_ids_field body =
+  let ids = Api.str_list_field "request_ids" body in
+  if List.compare_length_with ids max_ids_per_request > 0 then
+    Api.bad_request "field request_ids has more than %d ids" max_ids_per_request;
+  List.iter
+    (fun id ->
+      if String.trim id = "" || String.length id > max_id_bytes then
+        Api.bad_request "request ids must be non-empty and at most %d bytes" max_id_bytes)
+    ids;
+  ids
+
+let check_case_ids ids =
+  if List.compare_length_with ids max_ids_per_case > 0 then
+    Api.bad_request "a case holds at most %d request ids" max_ids_per_case
 
 let check_resolved c =
   if get_str "status" c = Some "resolved" then
@@ -63,6 +101,12 @@ let check_resolved c =
       (Option.value (get_str "id" c) ~default:"")
 
 (* ---- handlers ---- *)
+
+let case_number c =
+  match get_str "id" c with
+  | Some id when String.starts_with ~prefix:"CASE-" id ->
+      Option.value (int_of_string_opt (String.sub id 5 (String.length id - 5))) ~default:0
+  | _ -> 0
 
 let list_cases (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let status = Option.value (Router.query r "status") ~default:"open" in
@@ -73,24 +117,31 @@ let list_cases (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
     | Some "" | None -> None
     | Some a -> Some a
   in
+  (* newest first: folding in insertion order and prepending reverses it *)
   let cases =
-    Store.list ctx.store collection
-    |> List.map snd
-    |> List.filter (fun c ->
-        (status = "all" || get_str "status" c <> Some "resolved")
-        && match assignee with None -> true | Some a -> get_str "assignee" c = Some a)
-    |> List.rev
+    Store.fold ctx.store collection
+      (fun _ c acc ->
+        if
+          (status = "all" || get_str "status" c <> Some "resolved")
+          && match assignee with None -> true | Some a -> get_str "assignee" c = Some a
+        then c :: acc
+        else acc)
+      []
   in
-  Api.json (`Assoc [ ("cases", `List (List.map normalize cases)) ])
+  let page, next, _ = Api.page_desc r.http ~key:case_number cases in
+  Api.json (`Assoc [ ("cases", `List (List.map normalize page)); ("next_cursor", next) ])
 
 let create_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
+  Signals.precheck p r.http Rbac.Write_cases;
   let* body = Router.json_body r in
   let _ = Ctx.require ~body p r.http Rbac.Write_cases in
   let title = Option.get (Api.str_field ~required:true "title" body) in
   if String.trim title = "" then Api.bad_request "field title must not be empty";
+  check_len "title" max_title_bytes title;
   let signal_id = Api.str_field "signal_id" body in
   let assignee = Api.str_field "assignee" body in
-  let request_ids = Api.str_list_field "request_ids" body in
+  Option.iter (check_len "assignee" max_assignee_bytes) assignee;
+  let request_ids = request_ids_field body in
   let signal =
     match signal_id with
     | None -> None
@@ -106,7 +157,7 @@ let create_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
     | Some l ->
         let inv = Signals.investigation ctx l in
         ( dedupe (request_ids @ string_list "request_ids" inv),
-          if l.d.kind = "cross_tenant" then cross_tenant_steps else [] )
+          if l.d.kind = Detectors.Cross_tenant then cross_tenant_steps else [] )
     | None -> (dedupe request_ids, [])
   in
   let* n = Store.next_counter ctx.store "case" ~start:1000 in
@@ -155,14 +206,8 @@ let create_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let* doc =
     match jira with
     | None -> Lwt.return doc
-    | Some key ->
-        let j =
-          `Assoc
-            [
-              ("key", `String key);
-              ("url", Api.opt_string (Notify.jira_browse_url ctx.config key));
-            ]
-        in
+    | Some (key, url) ->
+        let j = `Assoc [ ("key", `String key); ("url", `String url) ] in
         let* d = Store.update ctx.store collection id (Option.map (set "jira" j)) in
         Lwt.return (Option.value d ~default:doc)
   in
@@ -173,7 +218,7 @@ let create_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
            [
              ("title", `String title);
              ("signal_id", Api.opt_string signal_id);
-             ("jira", Api.opt_string jira);
+             ("jira", Api.opt_string (Option.map fst jira));
            ])
       ()
   in
@@ -181,6 +226,7 @@ let create_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
 
 let patch_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let id = Router.param r "id" in
+  Signals.precheck p r.http Rbac.Write_cases;
   let* body = Router.json_body r in
   let _ = Ctx.require ~body p r.http Rbac.Write_cases in
   let c = find ctx id in
@@ -191,12 +237,23 @@ let patch_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
     match Api.member "assignee" body with
     | None -> None
     | Some `Null -> Some `Null
-    | Some (`String s) when String.trim s <> "" -> Some (`String s)
-    | Some _ -> Api.bad_request "field assignee must be a non-empty string or null"
+    | Some (`String s) when String.trim s <> "" && String.length s <= max_assignee_bytes
+      ->
+        Some (`String s)
+    | Some _ ->
+        Api.bad_request
+          "field assignee must be a non-empty string of at most %d bytes, or null"
+          max_assignee_bytes
   in
   (match status with
   | Some s when not (List.mem s statuses) ->
       Api.bad_request "status must be one of %s" (String.concat ", " statuses)
+  | _ -> ());
+  Option.iter (check_len "title" max_title_bytes) title;
+  Option.iter (check_len "note" max_note_bytes) note;
+  (match (note, Api.member "notes" c) with
+  | Some _, Some (`List l) when List.compare_length_with l max_notes >= 0 ->
+      Api.bad_request "a case holds at most %d notes" max_notes
   | _ -> ());
   (match title with
   | Some t when String.trim t = "" -> Api.bad_request "field title must not be empty"
@@ -253,20 +310,21 @@ let patch_case (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
 
 let add_records (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let id = Router.param r "id" in
+  Signals.precheck p r.http Rbac.Write_cases;
   let* body = Router.json_body r in
   let _ = Ctx.require ~body p r.http Rbac.Write_cases in
   let c = find ctx id in
   check_resolved c;
-  let ids = Api.str_list_field "request_ids" body in
+  let ids = request_ids_field body in
   if ids = [] then Api.bad_request "field request_ids must be a non-empty list";
   let now = Api.iso8601 (Ctx.now ()) in
   let* updated =
     Store.update ctx.store collection id
       (Option.map (fun c ->
-           set "updated" (`String now)
-             (set "request_ids"
-                (Api.strings (dedupe (string_list "request_ids" c @ ids)))
-                c)))
+           let all = dedupe (string_list "request_ids" c @ ids) in
+           (* raised inside the update: nothing is written *)
+           check_case_ids all;
+           set "updated" (`String now) (set "request_ids" (Api.strings all) c)))
   in
   let* () =
     Activity.log ctx p ~action:"case.add_records" ~target:id
@@ -277,6 +335,7 @@ let add_records (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
 
 let set_step (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let id = Router.param r "id" in
+  Signals.precheck p r.http Rbac.Write_cases;
   let* body = Router.json_body r in
   let _ = Ctx.require ~body p r.http Rbac.Write_cases in
   let n =

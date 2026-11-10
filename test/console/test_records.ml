@@ -63,9 +63,7 @@ let poll ?env (r : running) =
   fun () -> C.Ingest.poll_once r.ctx st
 
 let status_field (r : running) i name =
-  match r.ctx.C.Ctx.ingest_status with
-  | `List l -> member name (List.nth l i)
-  | _ -> `Null
+  match C.Ingest.status r.ctx with `List l -> member name (List.nth l i) | _ -> `Null
 
 (* ---- ingestion ---- *)
 
@@ -333,7 +331,7 @@ let objects_tests =
         let lines = seal (recs ~prefix:"g" 3) in
         let body = String.concat "\n" lines ^ "\n" in
         let k = object_key ~prefix:"audit/" ~host:"haltsql-9" ~seq:0 body in
-        let authed = ref true in
+        let auth_sent = ref false in
         let handler req =
           let uri = Cohttp.Request.uri req in
           let path = Uri.pct_decode (Uri.path uri) in
@@ -343,7 +341,7 @@ let objects_tests =
               ~headers:[ ("metadata-flavor", "Google") ]
               "{\"access_token\":\"tok\",\"expires_in\":3600}"
           else begin
-            if auth <> Some "Bearer tok" then authed := false;
+            if auth <> None then auth_sent := true;
             if path = "/storage/v1/b/bkt/o" then
               respond (Printf.sprintf "{\"items\":[{\"name\":%S}]}" k)
             else if path = "/storage/v1/b/bkt/o/" ^ k then respond body
@@ -371,7 +369,8 @@ let objects_tests =
                  (fun () ->
                    let* () = poll ~env r () in
                    Alcotest.(check int) "records" 3 (C.Index.size r.ctx.index);
-                   Alcotest.(check bool) "bearer token sent" true !authed;
+                   Alcotest.(check bool)
+                     "no credentials sent to the emulator" false !auth_sent;
                    Alcotest.(check (list string))
                      "verifier" [ "haltsql-9" ]
                      (C.Index.verifiers r.ctx.index);
@@ -463,7 +462,7 @@ let chain_tests =
             Alcotest.(check string)
               "still broken" "\"broken\""
               (Yojson.Safe.to_string (member "chain_state" c));
-            (match member "chains" r.ctx.chain_status with
+            (match member "chains" (C.Chain.status r.ctx) with
             | `List [ ch ] ->
                 Alcotest.(check string)
                   "chain_status" "\"broken\""
@@ -495,7 +494,7 @@ let chain_tests =
               ];
             C.Chain.check_all r.ctx;
             let state v =
-              match member "chains" r.ctx.chain_status with
+              match member "chains" (C.Chain.status r.ctx) with
               | `List l ->
                   List.find_map
                     (fun c ->
@@ -609,7 +608,7 @@ let trail_tests =
       `Quick,
       fun () ->
         with_console ~background:false (config ()) (fun r ->
-            r.ctx.policies <- [ ("shop", shop_policy ()) ];
+            C.Policy_set.set r.ctx @@ [ ("shop", shop_policy ()) ];
             load_records r
               [
                 server_record ~request_id:"col" ~policy:"shop" ~allowed:false
@@ -623,17 +622,21 @@ let trail_tests =
               "source" "\"reverified\""
               (Yojson.Safe.to_string (member "trail_source" j));
             Alcotest.(check string) "tables denied" "denied" (stage "tables" j);
+            Alcotest.(check string)
+              "redacted by default" "\"redacted\""
+              (Yojson.Safe.to_string (member "reasons_detail" j));
             (match member "reasons" j with
             | `List (x :: _) ->
                 Alcotest.(check string)
                   "rule" "\"columns.denied\""
                   (Yojson.Safe.to_string (member "rule" x));
                 Alcotest.(check bool)
-                  "message names the column" true
-                  (match member "message" x with
-                  | `String m -> contains m "email"
-                  | _ -> false)
+                  "generic message" false
+                  (contains (Yojson.Safe.to_string j) "email")
             | _ -> Alcotest.fail "reasons");
+            (* admin has no see_raw_sql *)
+            let* denied = get ~reason:"x" r "/api/v1/records/col?details=full" in
+            check_status "admin full details" 403 denied;
             Alcotest.(check string)
               "loaded version" "true"
               (string_of_bool (member "policy.loaded_version" j <> `Null));
@@ -812,6 +815,592 @@ let sql_tests =
           [ "dev"; "admin" ] );
   ]
 
+(* ---- review fixes (#28) ---- *)
+
+let state_of_record r id =
+  let* _, j = get r ("/api/v1/records/" ^ id) in
+  Lwt.return (match member "custody.chain_state" j with `String s -> s | _ -> "missing")
+
+let rotation_tests =
+  [
+    ( "copytruncate that regrows past the old offset is read from the start",
+      `Quick,
+      fun () ->
+        let d = temp_dir "ingest" in
+        let f = Filename.concat d "audit.jsonl" in
+        let lines = seal (recs 10) in
+        write_file f (List.filteri (fun i _ -> i < 3) lines);
+        with_console ~background:false
+          (audit_cfg [ file_src f ])
+          (fun r ->
+            let poll = poll r in
+            let* () = poll () in
+            Alcotest.(check int) "first" 3 (C.Index.size r.ctx.index);
+            (* r3, r4 written, then copied away and the file truncated in place; the
+               writer goes on with r5..r9, past the old offset *)
+            write_file ~append:true f [ List.nth lines 3; List.nth lines 4 ];
+            write_file f (List.filteri (fun i _ -> i >= 5) lines);
+            let* () = poll () in
+            List.iter
+              (fun i ->
+                let id = Printf.sprintf "r%d" i in
+                Alcotest.(check bool) id true (C.Index.find r.ctx.index id <> None))
+              [ 5; 6; 7; 8; 9 ];
+            Alcotest.(check int) "no partial records" 8 (C.Index.size r.ctx.index);
+            let* st = state_of_record r "r7" in
+            Alcotest.(check string) "a gap, not a broken chain" "gap" st;
+            C.Chain.check_all r.ctx;
+            Alcotest.(check string)
+              "status" "\"gap\""
+              (match member "chains" (C.Chain.status r.ctx) with
+              | `List [ c ] -> Yojson.Safe.to_string (member "state" c)
+              | _ -> "none");
+            Lwt.return_unit) );
+    ( "rename rotation reads the old file's tail first",
+      `Quick,
+      fun () ->
+        let d = temp_dir "ingest" in
+        let f = Filename.concat d "audit.jsonl" in
+        let lines = seal (recs 7) in
+        write_file f (List.filteri (fun i _ -> i < 3) lines);
+        with_console ~background:false
+          (audit_cfg [ file_src f ])
+          (fun r ->
+            let poll = poll r in
+            let* () = poll () in
+            write_file ~append:true f [ List.nth lines 3; List.nth lines 4 ];
+            Sys.rename f (Filename.concat d "audit.jsonl.1");
+            write_file f [ List.nth lines 5; List.nth lines 6 ];
+            let* () = poll () in
+            Alcotest.(check (list string))
+              "nothing lost, in order"
+              [ "r0"; "r1"; "r2"; "r3"; "r4"; "r5"; "r6" ]
+              (List.map
+                 (fun e -> e.C.Index.request_id)
+                 (C.Index.verifier_stream r.ctx.index "haltsql-1"));
+            let* st = state_of_record r "r6" in
+            Alcotest.(check string) "intact" "intact" st;
+            Lwt.return_unit) );
+    ( "a glob matching rotated names does not duplicate records",
+      `Quick,
+      fun () ->
+        let d = temp_dir "ingest" in
+        let f = Filename.concat d "audit.jsonl" in
+        let lines = seal (recs 5) in
+        write_file f (List.filteri (fun i _ -> i < 3) lines);
+        with_console ~background:false
+          (audit_cfg [ file_src (Filename.concat d "audit.jsonl*") ])
+          (fun r ->
+            let poll = poll r in
+            let* () = poll () in
+            Sys.rename f (Filename.concat d "audit.jsonl.1");
+            write_file f (List.filteri (fun i _ -> i >= 3) lines);
+            let* () = poll () in
+            let* () = poll () in
+            Alcotest.(check int) "each record once" 5 (C.Index.size r.ctx.index);
+            Alcotest.(check int)
+              "stream" 5
+              (List.length (C.Index.verifier_stream r.ctx.index "haltsql-1"));
+            let* st = state_of_record r "r4" in
+            Alcotest.(check string) "intact" "intact" st;
+            Lwt.return_unit) );
+    ( "an over-long line is skipped and still counted",
+      `Quick,
+      fun () ->
+        let d = temp_dir "ingest" in
+        let f = Filename.concat d "audit.jsonl" in
+        let lines = seal (recs 2) in
+        write_file f [ List.nth lines 0; String.make (1536 * 1024) 'x'; List.nth lines 1 ];
+        let cfg =
+          config
+            ~extra:
+              [
+                ( "audit",
+                  `Assoc [ ("sources", `List [ file_src f ]); ("max_line_mb", `Int 1) ] );
+              ]
+            ()
+        in
+        with_console ~background:false cfg (fun r ->
+            let* () = poll r () in
+            Alcotest.(check int) "two records" 2 (C.Index.size r.ctx.index);
+            Alcotest.(check string)
+              "line numbers" (f ^ "#L3")
+              (Option.get (C.Index.find r.ctx.index "r1")).C.Index.location;
+            Lwt.return_unit) );
+    ( "overlapping sources read a file once; duplicates are rejected",
+      `Quick,
+      fun () ->
+        let d = temp_dir "ingest" in
+        let f = Filename.concat d "audit.jsonl" in
+        write_file f (seal (recs 3));
+        with_console ~background:false
+          (audit_cfg [ file_src f; file_src ~verifier:"auto" d ])
+          (fun r ->
+            let* () = poll r () in
+            Alcotest.(check int) "once" 3 (C.Index.size r.ctx.index);
+            Alcotest.(check (list string))
+              "no phantom verifier" [ "haltsql-1" ]
+              (C.Index.verifiers r.ctx.index);
+            Alcotest.(check string)
+              "overlap reported"
+              (Yojson.Safe.to_string (`List [ `String f ]))
+              (Yojson.Safe.to_string (status_field r 1 "overlaps"));
+            Lwt.return_unit);
+        Alcotest.(check bool)
+          "same file twice is invalid" true
+          (match audit_cfg [ file_src f; file_src ~verifier:"other" f ] with
+          | _ -> false
+          | exception _ -> true) );
+  ]
+
+(* An S3 fake holding [store] (key -> body); [fail] keys answer 500. Records list
+   requests' start-after values. *)
+let s3_fake ~store ~fail ~starts req =
+  let uri = Cohttp.Request.uri req in
+  let path = Uri.pct_decode (Uri.path uri) in
+  if Uri.get_query_param uri "list-type" = Some "2" then begin
+    starts := Uri.get_query_param uri "start-after" :: !starts;
+    respond
+      ("<ListBucketResult>"
+      ^ String.concat ""
+          (List.map (fun (k, _) -> "<Contents><Key>" ^ k ^ "</Key></Contents>") !store)
+      ^ "<IsTruncated>false</IsTruncated></ListBucketResult>")
+  end
+  else
+    let key = String.sub path 8 (String.length path - 8) in
+    if List.mem key !fail then
+      Cohttp_lwt_unix.Server.respond_string ~status:`Internal_server_error ~body:"" ()
+    else
+      match List.assoc_opt key !store with
+      | Some b -> respond b
+      | None -> Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"" ()
+
+let s3_env = function
+  | "AWS_ACCESS_KEY_ID" -> Some "AKIDEXAMPLE"
+  | "AWS_SECRET_ACCESS_KEY" -> Some "secret"
+  | _ -> None
+
+let s3_cfg ?(extra = []) port =
+  config
+    ~extra:
+      [
+        ( "audit",
+          `Assoc
+            ([
+               ( "sources",
+                 `List
+                   [
+                     `Assoc
+                       [
+                         ("verifier", `String "auto");
+                         ("s3", `String "s3://bucket/haltsql/");
+                         ("region", `String "us-east-1");
+                         ("endpoint", `String (Printf.sprintf "http://127.0.0.1:%d" port));
+                       ];
+                   ] );
+             ]
+            @ extra) );
+      ]
+    ()
+
+let object_fix_tests =
+  [
+    ( "a failing object does not block other hosts and is skipped after N reads",
+      `Quick,
+      fun () ->
+        let lines = seal (recs ~prefix:"a" 6) in
+        let body l = String.concat "\n" l ^ "\n" in
+        let part i = body (List.filteri (fun j _ -> j / 2 = i) lines) in
+        let ka i = object_key ~prefix:"haltsql/" ~host:"hosta" ~seq:i (part i) in
+        let bbody = body (seal (recs ~prefix:"b" 2)) in
+        let kb = object_key ~prefix:"haltsql/" ~host:"hostb" ~seq:0 bbody in
+        let store = ref [ (ka 0, part 0); (ka 1, part 1); (ka 2, part 2); (kb, bbody) ] in
+        let fail = ref [ ka 1 ] and starts = ref [] in
+        Lwt_main.run
+          (with_http (s3_fake ~store ~fail ~starts) (fun port ->
+               let* r =
+                 start ~background:false
+                   (s3_cfg ~extra:[ ("object_attempts", `Int 2) ] port)
+               in
+               Lwt.finalize
+                 (fun () ->
+                   let poll = poll ~env:s3_env r in
+                   let* () = poll () in
+                   Alcotest.(check bool)
+                     "other host read" true
+                     (C.Index.find r.ctx.index "b1" <> None);
+                   Alcotest.(check bool)
+                     "same host held back (order)" true
+                     (C.Index.find r.ctx.index "a4" = None);
+                   Alcotest.(check bool)
+                     "error reported" true
+                     (status_field r 0 "error" <> `Null);
+                   let* () = poll () in
+                   Alcotest.(check bool)
+                     "later object read after the skip" true
+                     (C.Index.find r.ctx.index "a5" <> None);
+                   (match status_field r 0 "skipped_objects" with
+                   | `List [ x ] ->
+                       Alcotest.(check string)
+                         "skipped key"
+                         (Yojson.Safe.to_string (`String (ka 1)))
+                         (Yojson.Safe.to_string (member "key" x))
+                   | j -> Alcotest.failf "skipped_objects: %s" (Yojson.Safe.to_string j));
+                   let* st = state_of_record r "a5" in
+                   Alcotest.(check string) "gap, not broken" "gap" st;
+                   let* () = poll () in
+                   Alcotest.(check int) "no re-reads" 6 (C.Index.size r.ctx.index);
+                   Lwt.return_unit)
+                 (fun () ->
+                   Helpers.stop r;
+                   Lwt.return_unit))) );
+    ( "listings start inside the retention window",
+      `Quick,
+      fun () ->
+        let store = ref [] and fail = ref [] and starts = ref [] in
+        Lwt_main.run
+          (with_http (s3_fake ~store ~fail ~starts) (fun port ->
+               let* r = start ~background:false (s3_cfg port) in
+               Lwt.finalize
+                 (fun () ->
+                   let poll = poll ~env:s3_env r in
+                   let* () = poll () in
+                   let* () = poll () in
+                   let partition t =
+                     let tm = Unix.gmtime t in
+                     Printf.sprintf "haltsql/%04d/%02d/%02d/%02d/" (tm.tm_year + 1900)
+                       (tm.tm_mon + 1) tm.tm_mday tm.tm_hour
+                   in
+                   let now = Unix.gettimeofday () in
+                   (match List.rev !starts with
+                   | [ Some full; Some recent ] ->
+                       Alcotest.(check string)
+                         "full listing from the retention start"
+                         (partition (now -. (168. *. 3600.)))
+                         full;
+                       Alcotest.(check string)
+                         "then the last hour only"
+                         (partition (now -. 3600.))
+                         recent
+                   | l ->
+                       Alcotest.failf "start-after: %s"
+                         (String.concat "," (List.map (Option.value ~default:"none") l)));
+                   Lwt.return_unit)
+                 (fun () ->
+                   Helpers.stop r;
+                   Lwt.return_unit))) );
+    ( "emulator host is checked and a bad client is not memoized",
+      `Quick,
+      fun () ->
+        let lines = seal (recs ~prefix:"g" 2) in
+        let body = String.concat "\n" lines ^ "\n" in
+        let k = object_key ~prefix:"audit/" ~host:"haltsql-9" ~seq:0 body in
+        let handler req =
+          let path = Uri.pct_decode (Uri.path (Cohttp.Request.uri req)) in
+          if path = "/storage/v1/b/bkt/o" then
+            respond (Printf.sprintf "{\"items\":[{\"name\":%S}]}" k)
+          else if path = "/storage/v1/b/bkt/o/" ^ k then respond body
+          else Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"" ()
+        in
+        Lwt_main.run
+          (with_http handler (fun port ->
+               let emulator = ref "http://storage.example.com" in
+               let env = function
+                 | "STORAGE_EMULATOR_HOST" -> Some !emulator
+                 | _ -> None
+               in
+               let cfg =
+                 audit_cfg
+                   [
+                     `Assoc
+                       [
+                         ("verifier", `String "auto"); ("gcs", `String "gs://bkt/audit/");
+                       ];
+                   ]
+               in
+               let* r = start ~background:false cfg in
+               Lwt.finalize
+                 (fun () ->
+                   let poll = poll ~env r in
+                   let* () = poll () in
+                   Alcotest.(check bool)
+                     "non-loopback http refused" true
+                     (match status_field r 0 "error" with
+                     | `String m -> contains m "loopback"
+                     | _ -> false);
+                   emulator := Printf.sprintf "127.0.0.1:%d" port;
+                   let* () = poll () in
+                   Alcotest.(check int) "rebuilt next poll" 2 (C.Index.size r.ctx.index);
+                   Lwt.return_unit)
+                 (fun () ->
+                   Helpers.stop r;
+                   Lwt.return_unit))) );
+  ]
+
+(* Adds entries with explicit seq and location. *)
+let add_lines ?(verifier = "haltsql-1") ~from ~location (r : running) lines =
+  List.iteri
+    (fun i l ->
+      match
+        C.Index.entry_of_json ~verifier
+          ~location:(Printf.sprintf "%s#L%d" location (from + i + 1))
+          ~seq:(from + i) ~now:(Unix.gettimeofday ()) (Yojson.Safe.from_string l)
+      with
+      | Some e -> C.Index.add r.ctx.index e
+      | None -> Alcotest.fail "not an audit record")
+    lines
+
+let chain_fix_tests =
+  [
+    ( "whole-list check and verify_segment agree with the incremental checker",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ()) (fun r ->
+            let lines = seal (recs 6) in
+            add_lines r ~from:0 ~location:"a.jsonl" lines;
+            let inc = C.Chain.get r.ctx "haltsql-1" in
+            let whole = C.Chain.check r.ctx.index "haltsql-1" in
+            Alcotest.(check (pair string int))
+              "check = incremental"
+              (C.Chain.state_of inc, C.Chain.records inc)
+              (C.Chain.state_of whole, C.Chain.records whole);
+            let stream = C.Index.verifier_stream r.ctx.index "haltsql-1" in
+            let seg = C.Chain.verify_segment stream in
+            Alcotest.(check (triple int int bool))
+              "segment" (0, 6, true)
+              (seg.C.Chain.first_seq, seg.count, seg.break = None);
+            (* a record that does not link to its predecessor breaks the segment *)
+            let stray = seal ~prev:(String.make 64 'f') (recs ~prefix:"x" 1) in
+            add_lines r ~from:6 ~location:"a.jsonl" stray;
+            let stream = C.Index.verifier_stream r.ctx.index "haltsql-1" in
+            Alcotest.(check bool)
+              "broken" true
+              ((C.Chain.verify_segment stream).break <> None);
+            Alcotest.(check string)
+              "check broken" "broken"
+              (C.Chain.state_of (C.Chain.check r.ctx.index "haltsql-1"));
+            Alcotest.check_raises "empty"
+              (Invalid_argument "Chain.verify_segment: no records") (fun () ->
+                ignore (C.Chain.verify_segment []));
+            Lwt.return_unit) );
+    ( "incremental chain state follows appends, tampering and eviction",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ()) (fun r ->
+            let lines = seal (recs 8) in
+            add_lines r ~from:0 ~location:"a.jsonl"
+              (List.filteri (fun i _ -> i < 5) lines);
+            let c = C.Chain.get r.ctx "haltsql-1" in
+            Alcotest.(check (pair string int))
+              "first" ("intact", 5)
+              (C.Chain.state_of c, C.Chain.records c);
+            add_lines r ~from:5 ~location:"a.jsonl"
+              (List.filteri (fun i _ -> i >= 5) lines);
+            let c = C.Chain.get r.ctx "haltsql-1" in
+            Alcotest.(check (pair string int))
+              "appended" ("intact", 8)
+              (C.Chain.state_of c, C.Chain.records c);
+            (* a record that does not link to the previous one *)
+            let stray = seal ~prev:(String.make 64 'f') (recs ~prefix:"x" 1) in
+            add_lines r ~from:8 ~location:"a.jsonl" stray;
+            Alcotest.(check string)
+              "broken" "broken"
+              (C.Chain.state_of (C.Chain.get r.ctx "haltsql-1"));
+            (* the broken record leaves the window: what is left is intact again *)
+            C.Index.expire r.ctx.index ~now:(Unix.gettimeofday () +. (8. *. 86400.));
+            let c = C.Chain.get r.ctx "haltsql-1" in
+            Alcotest.(check string) "all evicted" "unknown" (C.Chain.state_of c);
+            C.Chain.check_all r.ctx;
+            Alcotest.(check bool)
+              "dropped from status" true
+              (member "chains" (C.Chain.status r.ctx) = `List []);
+            Lwt.return_unit) );
+    ( "interleaved chains under one verifier are checked separately",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ()) (fun r ->
+            let a = seal (recs ~prefix:"a" 3) and b = seal (recs ~prefix:"b" 3) in
+            let ka = object_key ~prefix:"p/" ~host:"h1" ~seq:0 "x" in
+            let kb = object_key ~prefix:"p/" ~host:"h2" ~seq:0 "y" in
+            List.iteri
+              (fun i (l, k) -> add_lines r ~from:i ~location:("s3://bkt/" ^ k) [ l ])
+              (List.concat (List.map2 (fun x y -> [ (x, ka); (y, kb) ]) a b));
+            let c = C.Chain.get r.ctx "haltsql-1" in
+            Alcotest.(check (pair string int))
+              "intact" ("intact", 6)
+              (C.Chain.state_of c, C.Chain.records c);
+            Lwt.return_unit) );
+    ( "verify-chain calls share one walk",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ~role:"analyst" ()) (fun r ->
+            load_lines r (seal (recs 50));
+            let* results =
+              Lwt_list.map_p
+                (fun () -> post r "/api/v1/records/r3/verify-chain" (`Assoc []))
+                [ (); (); () ]
+            in
+            List.iter
+              (fun (code, c) ->
+                Alcotest.(check int) "200" 200 code;
+                Alcotest.(check string)
+                  "intact" "\"intact\""
+                  (Yojson.Safe.to_string (member "chain_state" c)))
+              results;
+            let walked = (C.Chain.get r.ctx "haltsql-1").C.Chain.full_at in
+            let* _ = post r "/api/v1/records/r3/verify-chain" (`Assoc []) in
+            Alcotest.(check bool)
+              "not walked again right away" true
+              ((C.Chain.get r.ctx "haltsql-1").C.Chain.full_at = walked);
+            Lwt.return_unit) );
+  ]
+
+(* The shop policy in literal tenancy mode: a mismatch message quotes the literal. *)
+let literal_policy () =
+  let pat = "mode: bound" in
+  let i =
+    let rec find i =
+      if String.sub policy_yaml i (String.length pat) = pat then i else find (i + 1)
+    in
+    find 0
+  in
+  let yaml =
+    String.sub policy_yaml 0 i ^ "mode: literal"
+    ^ String.sub policy_yaml
+        (i + String.length pat)
+        (String.length policy_yaml - i - String.length pat)
+  in
+  match Haltsql.Policy_load.of_string Haltsql.Docload.Yaml yaml with
+  | Ok p -> p
+  | Error errs ->
+      Alcotest.failf "policy: %s"
+        (String.concat "; " (List.map Haltsql.Load_error.to_string errs))
+
+let tenant_policy_record =
+  match
+    server_record ~request_id:"xt" ~policy:"shop" ~allowed:false
+      ~codes:[ "E_TENANT_MISMATCH" ]
+      ~sql:"SELECT id FROM app.customers WHERE tenant_id = 'globex-secret-7731' LIMIT 5"
+      ()
+  with
+  | `Assoc kv -> `Assoc (kv @ [ ("context", `Assoc [ ("tenant_id", `String "acme") ]) ])
+  | j -> j
+
+let redaction_tests =
+  [
+    ( "re-verified literals need see_raw_sql and a reason",
+      `Quick,
+      fun () ->
+        let leaks j = contains (Yojson.Safe.to_string j) "globex-secret-7731" in
+        List.iter
+          (fun role ->
+            with_console ~background:false (config ~role ()) (fun r ->
+                C.Policy_set.set r.ctx [ ("shop", literal_policy ()) ];
+                load_records r [ tenant_policy_record ];
+                let* code, j = get r "/api/v1/records/xt" in
+                Alcotest.(check int) (role ^ " 200") 200 code;
+                Alcotest.(check string)
+                  "reverified" "\"reverified\""
+                  (Yojson.Safe.to_string (member "trail_source" j));
+                Alcotest.(check bool) (role ^ " sees no literal") false (leaks j);
+                Lwt.return_unit))
+          [ "dev"; "admin"; "analyst" ];
+        with_console ~background:false (config ~role:"analyst" ()) (fun r ->
+            C.Policy_set.set r.ctx [ ("shop", literal_policy ()) ];
+            load_records r [ tenant_policy_record ];
+            let* nr = get r "/api/v1/records/xt?details=full" in
+            check_status "reason required" 403 nr;
+            let* code, j =
+              get ~reason:"CASE-7 triage" r "/api/v1/records/xt?details=full"
+            in
+            Alcotest.(check int) "with reason" 200 code;
+            Alcotest.(check string)
+              "full" "\"full\""
+              (Yojson.Safe.to_string (member "reasons_detail" j));
+            Alcotest.(check bool) "literal shown" true (leaks j);
+            let* _, acts = get r "/api/v1/activity?action=record.view_details" in
+            (match member "entries" acts with
+            | `List [ a ] ->
+                Alcotest.(check string)
+                  "reason logged" "\"CASE-7 triage\""
+                  (Yojson.Safe.to_string (member "reason" a))
+            | _ -> Alcotest.fail "one activity entry");
+            Lwt.return_unit);
+        with_console ~background:false (config ~role:"dev" ()) (fun r ->
+            load_records r [ tenant_policy_record ];
+            let* d = get ~reason:"x" r "/api/v1/records/xt?details=full" in
+            check_status "dev cannot ask for details" 403 d;
+            Lwt.return_unit) );
+  ]
+
+let keyset_tests =
+  [
+    ( "pages are stable while records arrive, ties included",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ()) (fun r ->
+            let now = Unix.gettimeofday () in
+            load_records r
+              (List.init 5 (fun i ->
+                   server_record ~request_id:(Printf.sprintf "k%d" i)
+                     ~ts:(now -. float_of_int (100 - i))
+                     ()));
+            let ids j =
+              match member "records" j with
+              | `List l ->
+                  List.map
+                    (fun x ->
+                      match member "request_id" x with `String s -> s | _ -> "?")
+                    l
+              | _ -> []
+            in
+            let* _, p1 = get r "/api/v1/queries?limit=2" in
+            Alcotest.(check (list string)) "page 1" [ "k4"; "k3" ] (ids p1);
+            Alcotest.(check string)
+              "total" "5"
+              (Yojson.Safe.to_string (member "total" p1));
+            let cursor = match member "next_cursor" p1 with `String c -> c | _ -> "" in
+            C.Index.add r.ctx.index
+              (Option.get
+                 (C.Index.entry_of_json ~verifier:"haltsql-1" ~location:"n#L1" ~seq:99
+                    ~now
+                    (server_record ~request_id:"new" ~ts:now ())));
+            let* _, p2 = get r ("/api/v1/queries?limit=2&cursor=" ^ cursor) in
+            Alcotest.(check (list string)) "page 2 unshifted" [ "k2"; "k1" ] (ids p2);
+            Alcotest.(check bool) "no total after page 1" true (member "total" p2 = `Null);
+            Lwt.return_unit);
+        with_console ~background:false (config ()) (fun r ->
+            let ts = Unix.gettimeofday () -. 10. in
+            load_records r
+              (List.init 4 (fun i ->
+                   server_record ~request_id:(Printf.sprintf "t%d" i) ~ts ()));
+            let rec walk cursor acc =
+              let path =
+                "/api/v1/queries?limit=1"
+                ^ match cursor with Some c -> "&cursor=" ^ c | None -> ""
+              in
+              let* _, j = get r path in
+              let acc =
+                acc
+                @
+                match member "records" j with
+                | `List [ x ] -> [ Yojson.Safe.to_string (member "request_id" x) ]
+                | _ -> []
+              in
+              match member "next_cursor" j with
+              | `String c -> walk (Some c) acc
+              | _ -> Lwt.return acc
+            in
+            let* all = walk None [] in
+            Alcotest.(check int)
+              "four distinct" 4
+              (List.length (List.sort_uniq compare all));
+            Alcotest.(check int) "four pages" 4 (List.length all);
+            let* bad = get r "/api/v1/queries?cursor=Mg" in
+            check_status "old offset cursor" 400 bad;
+            Lwt.return_unit) );
+  ]
+
 let () =
   Alcotest.run "console-records"
     [
@@ -821,4 +1410,9 @@ let () =
       ("trail", trail_tests);
       ("search", search_tests);
       ("sql", sql_tests);
+      ("rotation", rotation_tests);
+      ("object fixes", object_fix_tests);
+      ("chain fixes", chain_fix_tests);
+      ("redaction", redaction_tests);
+      ("keyset", keyset_tests);
     ]

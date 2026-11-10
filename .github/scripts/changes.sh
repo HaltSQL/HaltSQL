@@ -38,6 +38,11 @@ else
       lib/* | bin/* | vendor/* | test/* | examples/* | schemas/* | lab/* \
       | dune-project | dune | */dune | *.opam | .ocamlformat | Makefile)
         mark ocaml ;;
+      # Console deployment files that test/console/test_deploy.ml checks.
+      deploy/console/* | deploy/helm/* | deploy/cloud/* \
+      | deploy/terraform/examples/console-kubernetes/* | docs/console/deploy.md \
+      | .github/workflows/release.yml | scripts/console-docker-smoke.sh)
+        mark ocaml ;;
     esac
     case "$f" in
       clients/python/* | clients/mcp/* | integrations/*) mark python ;;

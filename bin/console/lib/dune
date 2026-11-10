@@ -23,6 +23,7 @@
   ptime
   ptime.clock.os
   eqaf
+  ipaddr
   yojson
   unix
   digestif))

@@ -1,9 +1,10 @@
 # haltsql-console config for the local stack (deploy/console/docker-compose.yaml).
 # Reference: docs/console/config.md. LOCAL DEMO ONLY.
 #
-# The compose file starts the console with `--dev admin`, so every browser or
-# curl request is a local admin. `auth` still needs one real entry: the token
-# below (demo-automation-token, role audit) shows how automation authenticates.
+# Dev mode only works on a loopback listen address, which a container behind a
+# published port is not, so the stack signs in with well-known demo tokens:
+#   demo-admin-token       role admin (curl -H 'authorization: Bearer demo-admin-token')
+#   demo-automation-token  role audit (how automation authenticates)
 
 listen: 0.0.0.0:8090        # the image's HALTSQL_CONSOLE_LISTEN wins inside the container
 environment: { org: HaltSQL, name: Local demo, region: docker }
@@ -11,6 +12,9 @@ state_dir: /var/lib/haltsql-console
 
 auth:
   tokens:
+    - name: demo-admin
+      sha256: 91c16f0d6cc1bec3c3603972182a07c66ff4fa71618a975e963d6dbe42b6dd37
+      role: admin
     - name: demo-automation
       sha256: 71e850fe4ce318d3e5d9e91206b66e85ce392266ffed65e32b2399da2f5f1c2d
       role: audit
@@ -18,6 +22,7 @@ auth:
 verifiers:
   - name: haltsql-1
     url: http://haltsql:8080
+    allow_insecure_http: true   # the admin token over plain HTTP: prefer https + ca_file
     kind: server
     location: docker compose, local
     # Listed as token:console in server.admin.callers (local/haltsql.yaml).

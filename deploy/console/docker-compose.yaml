@@ -1,14 +1,14 @@
 # HaltSQL Console local stack: Postgres, one haltsql-server with the admin API
-# and a file audit sink, and haltsql-console in dev mode reading that audit file
-# and polling the server. Guide: docs/console/deploy.md#local-docker-compose.
+# and a file audit sink, and haltsql-console reading that audit file and polling
+# the server. Guide: docs/console/deploy.md#local-docker-compose.
 #
 #   docker compose -f deploy/console/docker-compose.yaml up -d --build
 #   deploy/console/demo-traffic.sh                 # allowed, denied, cross-tenant
-#   curl -s localhost:8090/api/v1/overview?range=24h
+#   curl -s -H 'authorization: Bearer demo-admin-token' 'localhost:8090/api/v1/overview?range=24h'
 #   docker compose -f deploy/console/docker-compose.yaml down -v
 #
 # Host ports (127.0.0.1 only): 18080 haltsql-server, 8090 haltsql-console.
-# LOCAL DEMO ONLY: well-known tokens, dev-mode console (every request is an admin).
+# LOCAL DEMO ONLY: well-known tokens (demo-admin-token is a console admin).
 name: haltsql-console-local
 
 x-hardening: &hardening
@@ -20,7 +20,7 @@ x-hardening: &hardening
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
     environment:
       POSTGRES_PASSWORD: ${CONSOLE_DEMO_PG_PASSWORD:-haltsql-console-demo}
       POSTGRES_DB: shop
@@ -56,8 +56,9 @@ services:
     build:
       context: ../..
       target: console
-    # --dev admin: every request is authenticated as a local admin. Never in production.
-    command: ["--config", "/etc/haltsql-console/console.yaml", "--dev", "admin"]
+    # No --dev: dev mode needs a loopback listen address, and the container listens on
+    # 0.0.0.0. console.local.yaml has well-known demo tokens instead.
+    command: ["--config", "/etc/haltsql-console/console.yaml"]
     environment:
       HALTSQL_ADMIN_TOKEN: demo-console-admin-token
     volumes:

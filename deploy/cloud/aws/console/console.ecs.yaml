@@ -7,11 +7,14 @@ state_dir: /var/lib/haltsql-console
 auth:
   # An internal ALB in front runs oauth2-proxy as a second container in the
   # task (see console-task-definition.json); the console listens on loopback.
+  # Containers of a Fargate task share the loopback interface, so identity
+  # headers are accepted only from oauth2-proxy's loopback connection.
   proxy:
     user_header: X-Forwarded-Email
     name_header: X-Forwarded-Preferred-Username
     groups_header: X-Forwarded-Groups
     label: oauth2-proxy
+    trusted_proxies: [127.0.0.1/32, "::1/128"]
   tokens: []
   roles:
     admin: [haltsql-admins]
@@ -29,6 +32,8 @@ verifiers:
 audit:
   sources:
     - { verifier: auto, s3: "s3://corp-haltsql-audit/haltsql/audit/", region: eu-west-1 }
+  # About 2.4 KB per record in memory; fits the 2 GB task with oauth2-proxy.
+  max_records: 400000
 
 policies:
   server_config: /etc/haltsql/config.yaml

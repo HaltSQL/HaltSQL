@@ -9,14 +9,23 @@ never in the query path. Guide: docs/console/deploy.md.
 {{- $auth := default dict .Values.console.config.auth }}
 {{- if and (not .Values.console.existingConfigMap) (not .Values.oauth2Proxy.enabled) (not (or $auth.oidc $auth.proxy $auth.tokens $auth.dev)) }}
 
-WARNING: console.config.auth has no oidc, proxy, tokens or dev entry; the
-console refuses to start without one (console.devRole does not count).
-Configure OIDC, enable oauth2Proxy, or add automation tokens.
+WARNING: console.config.auth has no oidc, proxy or tokens entry; the console
+refuses to start without one. Configure OIDC, enable oauth2Proxy, or add
+automation tokens.
 {{- end }}
-{{- if .Values.console.devRole }}
+{{- if .Values.oauth2Proxy.enabled }}
+{{- $groupArgs := list }}
+{{- range .Values.oauth2Proxy.extraArgs }}
+{{- if regexMatch "^--(allowed-group|google-group|github-team|github-org|gitlab-group)=" (toString .) }}
+{{- $groupArgs = append $groupArgs . }}
+{{- end }}
+{{- end }}
+{{- if and (not .Values.oauth2Proxy.allowedGroups) (not $groupArgs) }}
 
-WARNING: console.devRole is set: EVERY request is authenticated as a local
-{{ .Values.console.devRole }} user. Development only; never expose this release.
+WARNING: oauth2Proxy.allowedGroups is empty: every user of the identity
+provider{{ if has "*" .Values.oauth2Proxy.emailDomains }} (any email domain){{ end }} can complete sign-in. The console still
+rejects users whose groups map to no role, but restrict sign-in to its groups.
+{{- end }}
 {{- end }}
 {{- if not .Values.persistence.enabled }}
 

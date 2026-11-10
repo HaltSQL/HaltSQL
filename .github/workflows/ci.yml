@@ -115,11 +115,18 @@ jobs:
       - name: Build
         run: opam exec -- dune build
 
+      # test/console/test_deploy.ml renders the haltsql-console chart and
+      # validates the result with the console's own config checks.
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.22.1
+
       # Docker-based suites (Kafka, Elasticsearch, OPA, Keycloak, registries,
       # MinIO) run for real in integration.yml.
       - name: Test
         env:
           HALTSQL_SKIP_DOCKER: "1"
+          HALTSQL_REQUIRE_HELM: "1"
         run: opam exec -- dune test
 
   coverage:

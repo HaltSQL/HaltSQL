@@ -127,6 +127,8 @@
    (>= 1.2.0))
   (ptime
    (>= 1.0))
+  (ipaddr
+   (>= 5.0))
   (eqaf
    (>= 0.9))
   (mirage-crypto-pk

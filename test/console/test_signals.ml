@@ -7,8 +7,11 @@ module C = Haltsql_console
 
 let dev_token = "dev-token-0123456789"
 let analyst_token = "analyst-token-0123456789"
+let admin_token = "admin-token-0123456789"
 
-(* Dev auth as admin plus service tokens for the dev and analyst roles. *)
+(* Service tokens for the admin, dev and analyst roles. Dev mode cannot be combined with
+   tokens, so requests without an explicit token use the admin token (the principal
+   [token:tester], standing in for the former dev user). *)
 let cfg ?(extra = []) () =
   let tok name t role =
     `Assoc
@@ -23,15 +26,25 @@ let cfg ?(extra = []) () =
       (( "auth",
          `Assoc
            [
-             ( "dev",
-               `Assoc [ ("user", `String "tester@acme.test"); ("role", `String "admin") ]
-             );
              ( "tokens",
-               `List [ tok "dev" dev_token "dev"; tok "analyst" analyst_token "analyst" ]
-             );
+               `List
+                 [
+                   tok "tester" admin_token "admin";
+                   tok "dev" dev_token "dev";
+                   tok "analyst" analyst_token "analyst";
+                 ] );
            ] )
       :: extra)
     ()
+
+let get ?(token = admin_token) ?reason ?headers r path =
+  Helpers.get ~token ?reason ?headers r path
+
+let post ?(token = admin_token) ?reason ?headers r path json =
+  Helpers.post ~token ?reason ?headers r path json
+
+let patch ?(token = admin_token) ?reason ?headers r path json =
+  Helpers.patch ~token ?reason ?headers r path json
 
 let run f = with_console ~background:false (cfg ()) f
 let now () = Unix.gettimeofday ()
@@ -48,7 +61,13 @@ let check_contains msg ~sub s =
   if not (contains ~sub s) then Alcotest.failf "%s: %S does not contain %S" msg s sub
 
 let signals r = C.Signals.all r.ctx
-let of_kind r kind = List.filter (fun (l : C.Signals.live) -> l.d.kind = kind) (signals r)
+
+let of_kind r kind =
+  List.filter
+    (fun (l : C.Signals.live) -> C.Detectors.kind_to_string l.d.kind = kind)
+    (signals r)
+
+let sev (l : C.Signals.live) = C.Detectors.severity_to_string l.d.severity
 
 let one_of_kind r kind =
   match of_kind r kind with
@@ -154,58 +173,60 @@ let overview_tests =
             ()
         in
         with_console ~background:false c (fun r ->
-            r.ctx.fleet <-
-              Some
-                (`Assoc
-                   [
-                     ( "verifiers",
-                       `List
-                         [
-                           `Assoc
-                             [ ("name", `String "haltsql-1"); ("state", `String "ready") ];
-                           `Assoc
-                             [
-                               ("name", `String "haltsql-2");
-                               ("state", `String "restart_pending");
-                               ("restart_pending", `Bool true);
-                             ];
-                           `Assoc
-                             [
-                               ("name", `String "haltsql-3");
-                               ("state", `String "unreachable");
-                             ];
-                         ] );
-                     ( "bundles",
-                       `List
-                         [
-                           `Assoc
-                             [
-                               ("source", `String "prod");
-                               ("version", `String "1.4.0");
-                               ("verifiers", `Int 3);
-                               ("in_sync", `Bool true);
-                             ];
-                         ] );
-                   ]);
-            r.ctx.chain_status <-
-              `Assoc
-                [
-                  ("checked_at", `String "2026-11-07T14:00:00.000Z");
-                  ( "chains",
-                    `List
-                      [
-                        `Assoc
+            C.Fleet.Testing.set_snapshot r.ctx
+            @@ Some
+                 (`Assoc
+                    [
+                      ( "verifiers",
+                        `List
                           [
-                            ("verifier", `String "haltsql-1"); ("state", `String "intact");
-                          ];
-                        `Assoc
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-1"); ("state", `String "ready");
+                              ];
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-2");
+                                ("state", `String "restart_pending");
+                                ("restart_pending", `Bool true);
+                              ];
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-3");
+                                ("state", `String "unreachable");
+                              ];
+                          ] );
+                      ( "bundles",
+                        `List
                           [
-                            ("verifier", `String "haltsql-2"); ("state", `String "broken");
-                          ];
-                      ] );
-                ];
-            r.ctx.catalog_columns <-
-              Some (`Assoc [ ("totals", `Assoc [ ("needs_review", `Int 2) ]) ]);
+                            `Assoc
+                              [
+                                ("source", `String "prod");
+                                ("version", `String "1.4.0");
+                                ("verifiers", `Int 3);
+                                ("in_sync", `Bool true);
+                              ];
+                          ] );
+                    ]);
+            C.Chain.Testing.set_status r.ctx
+            @@ `Assoc
+                 [
+                   ("checked_at", `String "2026-11-07T14:00:00.000Z");
+                   ( "chains",
+                     `List
+                       [
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-1"); ("state", `String "intact");
+                           ];
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-2"); ("state", `String "broken");
+                           ];
+                       ] );
+                 ];
+            C.Data.Testing.set_columns_doc r.ctx
+            @@ Some (`Assoc [ ("totals", `Assoc [ ("needs_review", `Int 2) ]) ]);
             let* _, o = get r "/api/v1/overview" in
             Alcotest.(check int)
               "reporting from fleet" 2
@@ -261,7 +282,7 @@ let detector_tests =
             let created = C.Signals.run_once ~now:t r.ctx in
             Alcotest.(check int) "created" 1 (List.length created);
             let l = one_of_kind r "cross_tenant" in
-            Alcotest.(check string) "severity" "high" l.d.severity;
+            Alcotest.(check string) "severity" "high" (sev l);
             check_contains "body" ~sub:"10 queries in" l.d.body;
             check_contains "body"
               ~sub:"All were denied at the tenancy check; none reached the database."
@@ -302,7 +323,7 @@ let detector_tests =
         in
         with_console ~background:false c (fun r ->
             (match Haltsql.Policy_load.of_string Haltsql.Docload.Yaml support_policy with
-            | Ok p -> r.ctx.policies <- [ ("support", p) ]
+            | Ok p -> C.Policy_set.set r.ctx @@ [ ("support", p) ]
             | Error _ -> Alcotest.fail "policy");
             let t = now () in
             let others = [| "globex"; "initech"; "globex"; "umbrella" |] in
@@ -399,7 +420,7 @@ let detector_tests =
             ignore (C.Signals.run_once ~now:t r.ctx);
             let l = one_of_kind r "deny_spike" in
             Alcotest.(check (option string)) "caller" (Some "token:etl") l.d.caller;
-            Alcotest.(check string) "severity" "medium" l.d.severity;
+            Alcotest.(check string) "severity" "medium" (sev l);
             check_contains "body"
               ~sub:"40 of 60 queries in the last 15 minutes were denied (67%)" l.d.body;
             check_contains "body" ~sub:"compared with 0.5% over the previous 24 hours"
@@ -447,7 +468,7 @@ let detector_tests =
             ignore (C.Signals.run_once ~now:t r.ctx);
             let l = one_of_kind r "new_caller" in
             Alcotest.(check (option string)) "caller" (Some "token:stranger") l.d.caller;
-            Alcotest.(check string) "low" "low" l.d.severity;
+            Alcotest.(check string) "low" "low" (sev l);
             check_contains "body" ~sub:"not listed under agents" l.d.body;
             Lwt.return_unit) );
     ( "shadow_ready",
@@ -525,26 +546,26 @@ let detector_tests =
                     `Assoc [ ("decisions", `Assoc [ ("error_denied", `Int errors) ]) ] );
                 ]
             in
-            r.ctx.fleet <- Some (fleet 5);
-            r.ctx.chain_status <-
-              `Assoc
-                [
-                  ( "chains",
-                    `List
-                      [
-                        `Assoc
-                          [
-                            ("verifier", `String "haltsql-2");
-                            ("state", `String "broken");
-                            ("records", `Int 812);
-                            ("first_break", `Assoc [ ("seq", `Int 412) ]);
-                          ];
-                        `Assoc
-                          [
-                            ("verifier", `String "haltsql-1"); ("state", `String "intact");
-                          ];
-                      ] );
-                ];
+            C.Fleet.Testing.set_snapshot r.ctx @@ Some (fleet 5);
+            C.Chain.Testing.set_status r.ctx
+            @@ `Assoc
+                 [
+                   ( "chains",
+                     `List
+                       [
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-2");
+                             ("state", `String "broken");
+                             ("records", `Int 812);
+                             ("first_break", `Assoc [ ("seq", `Int 412) ]);
+                           ];
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-1"); ("state", `String "intact");
+                           ];
+                       ] );
+                 ];
             ignore (C.Signals.run_once ~now:t r.ctx);
             let sb = one_of_kind r "sink_buffering" in
             Alcotest.(check (option string))
@@ -556,13 +577,13 @@ let detector_tests =
             check_contains "drift" ~sub:"1.4.0 (2 verifiers), 1.3.2 (1 verifier)"
               bd.d.body;
             let cb = one_of_kind r "chain_broken" in
-            Alcotest.(check string) "chain high" "high" cb.d.severity;
+            Alcotest.(check string) "chain high" "high" (sev cb);
             check_contains "chain body" ~sub:"broken at seq 412" cb.d.body;
             check_contains "chain body" ~sub:"812 records were checked." cb.d.body;
             Alcotest.(check int)
               "no opa yet (first sample)" 0
               (List.length (of_kind r "opa_errors"));
-            r.ctx.fleet <- Some (fleet 9);
+            C.Fleet.Testing.set_snapshot r.ctx @@ Some (fleet 9);
             ignore (C.Signals.run_once ~now:(t +. 30.) r.ctx);
             let op = one_of_kind r "opa_errors" in
             check_contains "opa body" ~sub:"Verifiers counted 4 errors calling OPA"
@@ -664,7 +685,7 @@ let lifecycle_tests =
             Alcotest.(check string)
               "stored by" "token:analyst"
               (str (member "updated_by" w));
-            let acts = C.Activity.entries r.ctx in
+            let acts = List.rev (C.Activity.recent r.ctx) in
             Alcotest.(check bool)
               "logged" true
               (List.exists (fun a -> member "action" a = `String "signal.update") acts);
@@ -716,14 +737,14 @@ let case_tests =
             Alcotest.(check string) "id" "CASE-1000" (str (member "id" j));
             Alcotest.(check string) "open" "open" (str (member "status" j));
             Alcotest.(check string)
-              "created_by" "tester@acme.test"
+              "created_by" "token:tester"
               (str (member "created_by" j));
             let* _, j2 =
               post r "/api/v1/cases"
                 (`Assoc
                    [
                      ("title", `String "Second");
-                     ("assignee", `String "tester@acme.test");
+                     ("assignee", `String "token:tester");
                      ("request_ids", `List [ `String "a"; `String "a"; `String "b" ]);
                    ])
             in
@@ -793,7 +814,9 @@ let case_tests =
             in
             Alcotest.(check int) "bad status" 400 c;
             let acts =
-              List.map (fun a -> str (member "action" a)) (C.Activity.entries r.ctx)
+              List.map
+                (fun a -> str (member "action" a))
+                (List.rev (C.Activity.recent r.ctx))
             in
             List.iter
               (fun a -> Alcotest.(check bool) a true (List.mem a acts))
@@ -912,7 +935,7 @@ let pause_tests =
             let e =
               List.find
                 (fun a -> member "action" a = `String "caller.pause_requested")
-                (C.Activity.entries r.ctx)
+                (List.rev (C.Activity.recent r.ctx))
             in
             Alcotest.(check string) "target" "token:support-bot" (str (member "target" e));
             Alcotest.(check string) "reason" "CASE-1000 triage" (str (member "reason" e));
@@ -1107,6 +1130,519 @@ let notify_tests =
             Lwt.return_unit) );
   ]
 
+(* ---- review fixes (#30) ---- *)
+
+let pd_integration base =
+  ( "integrations",
+    `Assoc
+      [
+        ( "pagerduty",
+          `Assoc
+            [
+              ("routing_key", `String "rk"); ("events_url", `String (base ^ "/v2/enqueue"));
+            ] );
+      ] )
+
+(* PagerDuty events seen by a fake server, oldest first: (event_action, dedup_key). *)
+let pd_events seen =
+  List.rev !seen
+  |> List.filter (fun (p, _, _) -> p = "/v2/enqueue")
+  |> List.map (fun (_, b, _) ->
+      let j = Yojson.Safe.from_string b in
+      (str (member "event_action" j), str (member "dedup_key" j)))
+
+let with_fake respond f =
+  Lwt_main.run
+    (let* port, seen, stop_fake = fake_server respond in
+     Lwt.finalize
+       (fun () -> f (Printf.sprintf "http://127.0.0.1:%d" port) seen)
+       (fun () ->
+         stop_fake ();
+         Lwt.return_unit))
+
+let raw_post ?token r path body =
+  let headers = headers_of ?token [ ("content-type", "application/json") ] in
+  let* resp, b =
+    Cohttp_lwt_unix.Client.call ~headers
+      ~body:(Cohttp_lwt.Body.of_string body)
+      `POST (uri r path)
+  in
+  let* j = body_json b in
+  Lwt.return (Cohttp.Code.code_of_status (Cohttp.Response.status resp), j)
+
+let fix_tests =
+  [
+    ( "SIG-1/NOT-2: a recurrence after auto-resolve of a case-linked signal is new",
+      `Quick,
+      fun () ->
+        with_fake
+          (fun _ -> (`OK, "{}"))
+          (fun base seen ->
+            let* r = start ~background:false (cfg ~extra:[ pd_integration base ] ()) in
+            Lwt.finalize
+              (fun () ->
+                let t = now () in
+                load_records r (tenant_denials t);
+                ignore (C.Signals.run_once ~now:t r.ctx);
+                let a = one_of_kind r "cross_tenant" in
+                let* c, _ =
+                  post r "/api/v1/cases"
+                    (`Assoc [ ("title", `String "first"); ("signal_id", `String a.id) ])
+                in
+                Alcotest.(check int) "case" 201 c;
+                ignore (C.Signals.run_once ~now:(t +. 30. +. 1800.) r.ctx);
+                let* () = C.Signals.flush r.ctx in
+                Alcotest.(check bool) "auto-resolved" true a.auto_resolved;
+                let* () = wait_for (fun () -> List.length (pd_events seen) >= 2) in
+                Alcotest.(check (list (pair string string)))
+                  "trigger then resolve"
+                  [ ("trigger", a.id); ("resolve", a.id) ]
+                  (pd_events seen);
+                (* the condition comes back later: a new signal, paged again *)
+                let t2 = t +. 4000. in
+                load_records r (tenant_denials t2);
+                let created = C.Signals.run_once ~now:t2 r.ctx in
+                Alcotest.(check int) "one new signal" 1 (List.length created);
+                let b = List.hd created in
+                Alcotest.(check bool) "new id" true (b.id <> a.id);
+                Alcotest.(check bool) "old one stays resolved" true a.auto_resolved;
+                let* () = wait_for (fun () -> List.length (pd_events seen) >= 3) in
+                Alcotest.(check (list (pair string string)))
+                  "paged for the recurrence"
+                  [ ("trigger", a.id); ("resolve", a.id); ("trigger", b.id) ]
+                  (pd_events seen);
+                let* c, _ =
+                  post r "/api/v1/cases"
+                    (`Assoc [ ("title", `String "second"); ("signal_id", `String b.id) ])
+                in
+                Alcotest.(check int) "a case for the recurrence" 201 c;
+                Lwt.return_unit)
+              (fun () ->
+                stop r;
+                Lwt.return_unit)) );
+    ( "SIG-1/SIG-5: after a restart a closed workflow is not reused; old signal still \
+       served",
+      `Quick,
+      fun () ->
+        let c = cfg () in
+        let t = now () in
+        let a_id =
+          with_console ~background:false c (fun r ->
+              load_records r (tenant_denials t);
+              ignore (C.Signals.run_once ~now:t r.ctx);
+              let a = one_of_kind r "cross_tenant" in
+              let* code, _ =
+                post r ("/api/v1/signals/" ^ a.id)
+                  (`Assoc [ ("assignee", `String "dana@acme.test") ])
+              in
+              Alcotest.(check int) "assigned" 200 code;
+              ignore (C.Signals.run_once ~now:(t +. 1900.) r.ctx);
+              let* () = C.Signals.flush r.ctx in
+              Lwt.return a.id)
+        in
+        with_console ~background:false c (fun r ->
+            (* nothing re-detected yet: the old signal is served from its snapshot *)
+            let* code, j = get r ("/api/v1/signals/" ^ a_id) in
+            Alcotest.(check int) "get after restart" 200 code;
+            Alcotest.(check string) "kind" "cross_tenant" (str (member "signal.kind" j));
+            Alcotest.(check string) "resolved" "resolved" (str (member "signal.status" j));
+            Alcotest.(check string)
+              "assignee" "dana@acme.test"
+              (str (member "signal.assignee" j));
+            let* _, l = get r "/api/v1/signals?status=all" in
+            Alcotest.(check (list string))
+              "listed" [ a_id ]
+              (List.map (fun s -> str (member "id" s)) (lst (member "signals" l)));
+            let t2 = t +. 4000. in
+            load_records r (tenant_denials t2);
+            let created = C.Signals.run_once ~now:t2 r.ctx in
+            Alcotest.(check int) "new signal" 1 (List.length created);
+            Alcotest.(check bool) "new id" true ((List.hd created).id <> a_id);
+            Lwt.return_unit) );
+    ( "SIG-1: an open workflow is re-attached after a restart",
+      `Quick,
+      fun () ->
+        let c = cfg () in
+        let t = now () in
+        let a_id =
+          with_console ~background:false c (fun r ->
+              load_records r (tenant_denials t);
+              ignore (C.Signals.run_once ~now:t r.ctx);
+              let a = one_of_kind r "cross_tenant" in
+              let* _ =
+                post r ("/api/v1/signals/" ^ a.id)
+                  (`Assoc [ ("assignee", `String "dana@acme.test") ])
+              in
+              Lwt.return a.id)
+        in
+        with_console ~background:false c (fun r ->
+            load_records r (tenant_denials t);
+            let created = C.Signals.run_once ~now:(t +. 30.) r.ctx in
+            Alcotest.(check int) "not new" 0 (List.length created);
+            Alcotest.(check string) "same id" a_id (one_of_kind r "cross_tenant").id;
+            Lwt.return_unit) );
+    ( "SIG-2: the background pass yields and gives the same result",
+      `Quick,
+      fun () ->
+        run (fun r ->
+            let t = now () in
+            load_records r (tenant_denials t);
+            let ticks = ref 0 in
+            let rec ticker () =
+              if !ticks < 1000 then (
+                incr ticks;
+                let* () = Lwt.pause () in
+                ticker ())
+              else Lwt.return_unit
+            in
+            Lwt.async ticker;
+            let* created = C.Signals.run_once_lwt ~now:t r.ctx in
+            Alcotest.(check int) "created" 1 (List.length created);
+            Alcotest.(check bool) "other promises ran meanwhile" true (!ticks > 1);
+            Lwt.return_unit) );
+    ( "SIG-3: shapes never carry literal text",
+      `Quick,
+      fun () ->
+        let shape = C.Signals.shape_of_sql in
+        let check name expected sql =
+          Alcotest.(check (option string)) name expected (shape sql)
+        in
+        let q = "SELECT * FROM t WHERE a = ?" in
+        check "dollar" (Some q) "SELECT * FROM t WHERE a = $$alice@acme.com$$";
+        check "dollar tag" (Some q) "SELECT * FROM t WHERE a = $x$it's $$ secret$x$";
+        check "E string" (Some q) "SELECT * FROM t WHERE a = E'it\\'s secret'";
+        check "E string backslash" (Some q) "SELECT * FROM t WHERE a = e'a\\\\'";
+        check "U& string" (Some q) "SELECT * FROM t WHERE a = U&'d\\0061t\\+000061'";
+        check "bit string" (Some q) "SELECT * FROM t WHERE a = B'1010'";
+        check "nested comment" (Some "SELECT ?") "SELECT /* a /* nested */ secret */ 1";
+        check "numbers" (Some "INSERT INTO t1 (c2) VALUES (?), (?), (?)")
+          "INSERT INTO t1 (c2) VALUES (1e-3), (0x1F), (.5)";
+        check "identifiers kept" (Some "SELECT col_1, \"Na\"\"me\" FROM s.t2")
+          "SELECT col_1, \"Na\"\"me\" FROM s.t2";
+        check "unterminated" None "SELECT * FROM t WHERE a = 'secret";
+        check "not sql" None "hello alice@acme.com";
+        List.iter
+          (fun sql ->
+            match shape sql with
+            | Some s when contains ~sub:"secret" s -> Alcotest.failf "leaked: %s" s
+            | _ -> ())
+          [
+            "SELECT 'secret'";
+            "SELECT E'\\'secret'";
+            "SELECT $$secret$$";
+            "SELECT $a$secret$a$";
+            "SELECT /* /* */ secret */ 1";
+            "SELECT U&'secret'";
+            "SELECT X'5ec' AS h";
+          ] );
+    ( "OV-1: an unbounded explicit range is capped",
+      `Quick,
+      fun () ->
+        run (fun r ->
+            load_records r [ server_record () ];
+            let* code, o =
+              get r
+                "/api/v1/overview?since=0000-01-01T00:00:00Z&until=9999-12-31T23:59:59Z"
+            in
+            Alcotest.(check int) "200" 200 code;
+            let n = List.length (lst (member "series" o)) in
+            Alcotest.(check bool)
+              (Printf.sprintf "at most %d buckets (got %d)" C.Detectors.max_buckets n)
+              true
+              (n >= 1 && n <= C.Detectors.max_buckets + 1);
+            Alcotest.(check int) "checked" 1 (int (member "totals.checked" o));
+            let sum =
+              List.fold_left
+                (fun a b -> a + int (member "allowed" b))
+                0
+                (lst (member "series" o))
+            in
+            Alcotest.(check int) "record counted" 1 sum;
+            Lwt.return_unit) );
+    ( "OV-2: bucket widening",
+      `Quick,
+      fun () ->
+        Alcotest.(check int) "fits" 60 (C.Detectors.fit_bucket ~since:0. ~until:3600. 60);
+        let b = C.Detectors.fit_bucket ~since:0. ~until:(30. *. 86400.) 60 in
+        Alcotest.(check bool) "multiple of 60" true (b mod 60 = 0);
+        Alcotest.(check bool)
+          "at most max_buckets" true
+          (30. *. 86400. /. float_of_int b <= float_of_int C.Detectors.max_buckets) );
+    ( "CASE-1: request id and note limits",
+      `Quick,
+      fun () ->
+        run (fun r ->
+            let ids n prefix =
+              `List (List.init n (fun i -> `String (Printf.sprintf "%s-%d" prefix i)))
+            in
+            let* c, _ =
+              post r "/api/v1/cases"
+                (`Assoc [ ("title", `String "big"); ("request_ids", ids 1001 "x") ])
+            in
+            Alcotest.(check int) "too many ids per request" 400 c;
+            let* c, _ =
+              post r "/api/v1/cases"
+                (`Assoc
+                   [
+                     ("title", `String "long");
+                     ("request_ids", `List [ `String (String.make 201 'a') ]);
+                   ])
+            in
+            Alcotest.(check int) "id too long" 400 c;
+            let* c, _ =
+              post r "/api/v1/cases" (`Assoc [ ("title", `String (String.make 501 't')) ])
+            in
+            Alcotest.(check int) "title too long" 400 c;
+            let* c, j =
+              post r "/api/v1/cases"
+                (`Assoc [ ("title", `String "ok"); ("request_ids", ids 1000 "a") ])
+            in
+            Alcotest.(check int) "1000 ids" 201 c;
+            let id = str (member "id" j) in
+            let path = "/api/v1/cases/" ^ id ^ "/records" in
+            let rec add k =
+              if k > 9 then Lwt.return_unit
+              else
+                let* c, _ =
+                  post r path
+                    (`Assoc [ ("request_ids", ids 1000 (Printf.sprintf "b%d" k)) ])
+                in
+                Alcotest.(check int) (Printf.sprintf "batch %d" k) 200 c;
+                add (k + 1)
+            in
+            let* () = add 1 in
+            let* c, j = post r path (`Assoc [ ("request_ids", ids 1000 "b1") ]) in
+            Alcotest.(check int) "duplicates are free" 200 c;
+            Alcotest.(check int)
+              "10000 ids" 10000
+              (List.length (lst (member "request_ids" j)));
+            let* c, _ = post r path (`Assoc [ ("request_ids", ids 1 "over") ]) in
+            Alcotest.(check int) "per-case cap" 400 c;
+            let* _, g = get r ("/api/v1/cases/" ^ id) in
+            Alcotest.(check int)
+              "unchanged" 10000
+              (List.length (lst (member "request_ids" g)));
+            let* c, _ =
+              patch r ("/api/v1/cases/" ^ id)
+                (`Assoc [ ("note", `String (String.make 10_001 'n')) ])
+            in
+            Alcotest.(check int) "note too long" 400 c;
+            Alcotest.(check (list string))
+              "dedupe keeps order" [ "b"; "a"; "c" ]
+              (C.Cases.dedupe [ "b"; "a"; "b"; "c"; "a" ]);
+            Lwt.return_unit) );
+    ( "SIG-4: cases and signals are paginated",
+      `Quick,
+      fun () ->
+        run (fun r ->
+            let* _ = post r "/api/v1/cases" (`Assoc [ ("title", `String "one") ]) in
+            let* _ = post r "/api/v1/cases" (`Assoc [ ("title", `String "two") ]) in
+            let* _, p1 = get r "/api/v1/cases?limit=1" in
+            Alcotest.(check (list string))
+              "newest first" [ "CASE-1001" ]
+              (List.map (fun c -> str (member "id" c)) (lst (member "cases" p1)));
+            let cursor = str (member "next_cursor" p1) in
+            let* _, p2 = get r ("/api/v1/cases?limit=1&cursor=" ^ cursor) in
+            Alcotest.(check (list string))
+              "then older" [ "CASE-1000" ]
+              (List.map (fun c -> str (member "id" c)) (lst (member "cases" p2)));
+            Alcotest.(check bool) "end" true (member "next_cursor" p2 = `Null);
+            let t = now () in
+            load_records r (tenant_denials t);
+            load_records r (tenant_denials ~caller:"token:other" t);
+            ignore (C.Signals.run_once ~now:t r.ctx);
+            let* _, s1 = get r "/api/v1/signals?limit=1" in
+            Alcotest.(check int) "one signal" 1 (List.length (lst (member "signals" s1)));
+            let cursor = str (member "next_cursor" s1) in
+            let* _, s2 = get r ("/api/v1/signals?limit=1&cursor=" ^ cursor) in
+            Alcotest.(check int) "next signal" 1 (List.length (lst (member "signals" s2)));
+            Alcotest.(check bool)
+              "different" true
+              (member "signals" s1 <> member "signals" s2);
+            Alcotest.(check bool) "last page" true (member "next_cursor" s2 = `Null);
+            Lwt.return_unit) );
+    ( "NOT-1/NOT-3: placeholder secrets resolve on use; Slack text is escaped",
+      `Quick,
+      fun () ->
+        with_fake
+          (fun p ->
+            if p = "/rest/api/2/issue" then (`Created, {|{"key":"SEC-9"}|})
+            else (`OK, "{}"))
+          (fun base seen ->
+            Unix.putenv "HALTSQL_TEST_SLACK_HOOK" (base ^ "/slack/hook");
+            Unix.putenv "HALTSQL_TEST_PD_KEY" "rk-from-env";
+            Unix.putenv "HALTSQL_TEST_JIRA_URL" base;
+            Unix.putenv "HALTSQL_TEST_JIRA_TOKEN" "jt-from-env";
+            let c =
+              cfg
+                ~extra:
+                  [
+                    ( "integrations",
+                      `Assoc
+                        [
+                          ( "slack",
+                            `Assoc
+                              [ ("webhook", `String "${env:HALTSQL_TEST_SLACK_HOOK}") ] );
+                          ( "pagerduty",
+                            `Assoc
+                              [
+                                ("routing_key", `String "${env:HALTSQL_TEST_PD_KEY}");
+                                ("events_url", `String (base ^ "/v2/enqueue"));
+                              ] );
+                          ( "jira",
+                            `Assoc
+                              [
+                                ("url", `String "${env:HALTSQL_TEST_JIRA_URL}");
+                                ("project", `String "SEC");
+                                ("token", `String "${env:HALTSQL_TEST_JIRA_TOKEN}");
+                              ] );
+                        ] );
+                  ]
+                ()
+            in
+            let* r = start ~background:false c in
+            Lwt.finalize
+              (fun () ->
+                let t = now () in
+                load_records r (tenant_denials ~caller:"token:<!channel>" t);
+                ignore (C.Signals.run_once ~now:t r.ctx);
+                let* () = wait_for (fun () -> List.length !seen >= 2) in
+                let body p =
+                  List.find_map (fun (q, b, _) -> if q = p then Some b else None) !seen
+                in
+                let pd = Yojson.Safe.from_string (Option.get (body "/v2/enqueue")) in
+                Alcotest.(check string)
+                  "resolved key" "rk-from-env"
+                  (str (member "routing_key" pd));
+                let text =
+                  str
+                    (member "text"
+                       (Yojson.Safe.from_string (Option.get (body "/slack/hook"))))
+                in
+                check_contains "escaped" ~sub:"token:&lt;!channel&gt;" text;
+                Alcotest.(check bool)
+                  "no raw mention" false
+                  (contains ~sub:"<!channel>" text);
+                let* code, j =
+                  post r "/api/v1/cases" (`Assoc [ ("title", `String "x") ])
+                in
+                Alcotest.(check int) "201" 201 code;
+                Alcotest.(check string) "jira key" "SEC-9" (str (member "jira.key" j));
+                Alcotest.(check string)
+                  "browse url from the resolved base" (base ^ "/browse/SEC-9")
+                  (str (member "jira.url" j));
+                let _, _, h =
+                  List.find (fun (q, _, _) -> q = "/rest/api/2/issue") !seen
+                in
+                Alcotest.(check (option string))
+                  "resolved token" (Some "Bearer jt-from-env")
+                  (Cohttp.Header.get h "authorization");
+                Lwt.return_unit)
+              (fun () ->
+                stop r;
+                Lwt.return_unit)) );
+    ( "NOT-2: PagerDuty retries 5xx",
+      `Quick,
+      fun () ->
+        let calls = ref 0 in
+        (C.Notify.retry_delay := fun _ -> 0.01);
+        with_fake
+          (fun _ ->
+            incr calls;
+            if !calls = 1 then (`Service_unavailable, "busy") else (`Accepted, "{}"))
+          (fun base seen ->
+            let* r = start ~background:false (cfg ~extra:[ pd_integration base ] ()) in
+            Lwt.finalize
+              (fun () ->
+                let t = now () in
+                load_records r (tenant_denials t);
+                ignore (C.Signals.run_once ~now:t r.ctx);
+                let* () = wait_for (fun () -> List.length (pd_events seen) >= 2) in
+                Alcotest.(check int) "retried once" 2 (List.length (pd_events seen));
+                Lwt.return_unit)
+              (fun () ->
+                stop r;
+                Lwt.return_unit)) );
+    ( "SIG-6: permission is checked before the body",
+      `Quick,
+      fun () ->
+        run (fun r ->
+            let* c, j = raw_post ~token:dev_token r "/api/v1/cases" "{not json" in
+            Alcotest.(check int) "403 not 400" 403 c;
+            Alcotest.(check string) "forbidden" "FORBIDDEN" (err_code j);
+            let* c, _ = raw_post ~token:dev_token r "/api/v1/signals/sig_x" "{not json" in
+            Alcotest.(check int) "signal update" 403 c;
+            let* c, _ =
+              raw_post ~token:dev_token r "/api/v1/callers/token%3Ax/pause" "{not json"
+            in
+            Alcotest.(check int) "pause" 403 c;
+            let* c, _ = raw_post ~token:admin_token r "/api/v1/cases" "{not json" in
+            Alcotest.(check int) "authorized: 400" 400 c;
+            Lwt.return_unit) );
+    ( "DET-3/SIG-8: signals settings are validated and tunable",
+      `Quick,
+      fun () ->
+        let bad name j =
+          match cfg ~extra:[ ("signals", j) ] () with
+          | _ -> Alcotest.failf "%s: accepted" name
+          | exception C.Console_config.Invalid _ -> ()
+        in
+        bad "zero window"
+          (`Assoc [ ("cross_tenant", `Assoc [ ("window_minutes", `Int 0) ]) ]);
+        bad "negative factor"
+          (`Assoc [ ("deny_spike", `Assoc [ ("factor", `Float (-1.)) ]) ]);
+        bad "rate over 1"
+          (`Assoc [ ("deny_spike", `Assoc [ ("min_baseline_rate", `Int 2) ]) ]);
+        bad "typo" (`Assoc [ ("cross_tenant", `Assoc [ ("min_record", `Int 3) ]) ]);
+        bad "unknown section" (`Assoc [ ("cross-tenant", `Assoc []) ]);
+        bad "float count"
+          (`Assoc [ ("opa_errors", `Assoc [ ("min_records", `Float 2.5) ]) ]);
+        bad "string" (`Assoc [ ("interval_seconds", `String "30") ]);
+        bad "interval" (`Assoc [ ("interval_seconds", `Int 1) ]);
+        let j =
+          `Assoc
+            [
+              ("cross_tenant", `Assoc [ ("window_minutes", `Int 6) ]);
+              ("interval_seconds", `Int 10);
+              ("resolve_after_minutes", `Int 1);
+              ("forget_after_days", `Int 2);
+              ("max_reverify", `Int 7);
+              ("notify_timeout_seconds", `Float 2.5);
+            ]
+        in
+        let c = cfg ~extra:[ ("signals", j) ] () in
+        let s = C.Detectors.settings_of_json c.signals in
+        Alcotest.(check (float 0.)) "interval" 10. s.interval;
+        Alcotest.(check (float 0.)) "resolve" 60. s.resolve_after;
+        Alcotest.(check (float 0.)) "forget" 172800. s.forget_after;
+        Alcotest.(check int) "reverify" 7 s.max_reverify;
+        Alcotest.(check (float 0.)) "timeout" 2.5 s.notify_timeout;
+        let d = C.Detectors.settings_of_json `Null in
+        Alcotest.(check (float 0.)) "default resolve" 1800. d.resolve_after;
+        with_console ~background:false c (fun r ->
+            let t = now () in
+            load_records r (tenant_denials t);
+            ignore (C.Signals.run_once ~now:t r.ctx);
+            let l = one_of_kind r "cross_tenant" in
+            ignore (C.Signals.run_once ~now:(t +. 61.) r.ctx);
+            Alcotest.(check bool) "resolved after one minute" true l.auto_resolved;
+            Lwt.return_unit) );
+    ( "DET-2: kinds and severities round-trip",
+      `Quick,
+      fun () ->
+        List.iter
+          (fun k ->
+            Alcotest.(check bool)
+              (C.Detectors.kind_to_string k)
+              true
+              (C.Detectors.kind_of_string (C.Detectors.kind_to_string k) = Some k))
+          C.Detectors.all_kinds;
+        Alcotest.(check bool) "unknown" true (C.Detectors.kind_of_string "nope" = None);
+        Alcotest.(check bool)
+          "severity" true
+          (C.Detectors.severity_of_string "high" = Some C.Detectors.High) );
+  ]
+
 (* ---- units ---- *)
 
 let unit_tests =
@@ -1114,13 +1650,14 @@ let unit_tests =
     ( "shape_of_sql",
       `Quick,
       fun () ->
-        Alcotest.(check string)
-          "literals" "SELECT a1, \"T 2\" FROM t WHERE x = ? AND y IN (?, ?) LIMIT ?"
+        Alcotest.(check (option string))
+          "literals"
+          (Some "SELECT a1, \"T 2\" FROM t WHERE x = ? AND y IN (?, ?) LIMIT ?")
           (C.Signals.shape_of_sql
              "SELECT a1,  \"T 2\" FROM t -- note\n\
              \ WHERE x = 'it''s' AND y IN (1, 2.5) LIMIT 10");
-        Alcotest.(check string)
-          "params kept" "SELECT * FROM t WHERE id = $1"
+        Alcotest.(check (option string))
+          "params kept" (Some "SELECT * FROM t WHERE id = $1")
           (C.Signals.shape_of_sql "SELECT * FROM t WHERE id = $1 /* c */") );
     ( "base64",
       `Quick,
@@ -1166,4 +1703,5 @@ let () =
       ("pause", pause_tests);
       ("notify", notify_tests);
       ("units", unit_tests);
+      ("fixes", fix_tests);
     ]

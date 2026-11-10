@@ -10,7 +10,11 @@
 #   az containerapp create -g <RG> -n haltsql-console --yaml containerapp.yaml
 #
 # minReplicas = maxReplicas = 1: state_dir is single-writer and the background
-# loops must keep running. Replace the REPLACE_* values before use.
+# loops must keep running. The console config (Key Vault secret
+# haltsql-console-config) sets auth.proxy with trusted_proxies
+# [127.0.0.1/32, "::1/128"]: oauth2-proxy reaches it over the replica's
+# loopback (docs/console/deploy.md#azure-container-apps-alternative).
+# Replace the REPLACE_* values before use.
 location: REPLACE_LOCATION
 name: haltsql-console
 type: Microsoft.App/containerApps
@@ -50,7 +54,7 @@ properties:
       maxReplicas: 1
     containers:
       - name: oauth2-proxy
-        image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1@sha256:d62e2d81c6f5048f652f67c302083be1272c181b971fad80e5a30ebe2b8b75d8
         args:
           - --http-address=0.0.0.0:4180
           - --upstream=http://127.0.0.1:8090/
@@ -58,6 +62,11 @@ properties:
           - --oidc-issuer-url=https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0
           - --redirect-url=https://haltsql-console.REPLACE_ENV_DOMAIN/oauth2/callback
           - --email-domain=*
+          # Only members of the console's groups (object IDs, the groups claim)
+          # may sign in; the console maps them to roles (auth.roles).
+          - --allowed-group=REPLACE_ADMINS_GROUP_OBJECT_ID
+          - --allowed-group=REPLACE_SECURITY_GROUP_OBJECT_ID
+          - --allowed-group=REPLACE_COMPLIANCE_GROUP_OBJECT_ID
           - --scope=openid email profile
           - --pass-user-headers=true
           - --reverse-proxy=true
@@ -70,7 +79,7 @@ properties:
           - { name: OAUTH2_PROXY_COOKIE_SECRET, secretRef: oauth2-cookie-secret }
         resources: { cpu: 0.25, memory: 0.5Gi }
       - name: console
-        image: ghcr.io/haltsql/haltsql-console:0.1.0    # pin @sha256 in production
+        image: ghcr.io/haltsql/haltsql-console:0.0.1    # pin @sha256 in production
         args: ["--config", "/etc/haltsql-console/console.yaml"]
         env:
           - { name: HALTSQL_CONSOLE_LISTEN, value: "127.0.0.1:8090" }

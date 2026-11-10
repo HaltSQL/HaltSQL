@@ -16,7 +16,7 @@
 #
 # Environment:
 #   IMAGE          image under test   (default haltsql-console-local:dev)
-#   CLIENT_IMAGE   curl client image  (default curlimages/curl:8.11.1)
+#   CLIENT_IMAGE   curl client image  (default: curl 8.11.1 from curlimages, by digest)
 #
 # Without a Docker daemon the script prints SKIPPED and exits 0. Creates (and
 # always removes) the network and containers haltsql-console-smoke-<pid>-*.
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 IMAGE=${IMAGE:-haltsql-console-local:dev}
-CLIENT_IMAGE=${CLIENT_IMAGE:-curlimages/curl:8.11.1}
+CLIENT_IMAGE=${CLIENT_IMAGE:-curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69}
 
 if ! docker info > /dev/null 2>&1; then
   echo "console-docker-smoke: SKIPPED (no Docker daemon reachable)"
