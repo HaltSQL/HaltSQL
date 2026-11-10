@@ -155,6 +155,13 @@ let cases =
         Alcotest.(check string) "format" "text" x.log_format;
         Alcotest.(check bool) "unauth" true x.allow_unauthenticated;
         Alcotest.(check (option string)) "default" (Some "p2") x.default_policy);
+    tc "env override can turn anonymous access off" (fun () ->
+        let file = "server: {auth: {allow_unauthenticated: true}}" in
+        Alcotest.(check bool) "file alone" true (c_ok file).allow_unauthenticated;
+        Alcotest.(check bool)
+          "env false wins" false
+          (c_ok ~env:(env_of [ ("HALTSQL_ALLOW_UNAUTHENTICATED", "false") ]) file)
+            .allow_unauthenticated);
     tc "file beats defaults when env absent" (fun () ->
         Alcotest.(check string) "level" "error" (c_ok "logging: {level: error}").log_level);
     tc "bad env override" (fun () ->
@@ -175,6 +182,18 @@ let cases =
              ("server: {auth: {tokens: [{name: a, token_sha256: "
              ^ String.uppercase_ascii (String.make 64 'a')
              ^ ", policy: p}]}}\npolicies:\n" ^ inline_pol "p")));
+    tc "token hash: exactly 64 hex characters" (fun () ->
+        let bad h =
+          check_err ~path:"server.auth.tokens[0].token_sha256" ~msg:"64 lower-case hex"
+            (c
+               ("server: {auth: {tokens: [{name: a, token_sha256: '" ^ h
+              ^ "', policy: p}]}}\npolicies:\n" ^ inline_pol "p"))
+        in
+        bad (String.make 63 'a');
+        bad (String.make 65 'a');
+        bad "abc123";
+        bad (String.make 63 'a' ^ "g");
+        bad (String.make 63 '0' ^ "z"));
     tc "duplicate token names and hashes" (fun () ->
         let r =
           c
@@ -225,7 +244,12 @@ let cases =
         check_err ~path:"logging.format" ~msg:"invalid value" (c "logging: {format: xml}"));
     tc "max_request_bytes range" (fun () ->
         check_err ~path:"limits.max_request_bytes" ~msg:"between"
-          (c "limits: {max_request_bytes: 1}"));
+          (c "limits: {max_request_bytes: 1}");
+        check_err ~path:"limits.max_request_bytes" ~msg:"between"
+          (c "limits: {max_request_bytes: 67108865}");
+        Alcotest.(check int)
+          "64 MiB is the largest" 67_108_864
+          (c_ok "limits: {max_request_bytes: 67108864}").max_request_bytes);
     tc "kind must be Config" (fun () ->
         check_err ~path:"kind" ~msg:"expected kind \"Config\""
           (cfg "apiVersion: haltsql.dev/v1\nkind: Policy\n"));
