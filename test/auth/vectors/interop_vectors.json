@@ -1,0 +1,104 @@
+{
+ "generator": "pyca/cryptography via test/auth/vectors/interop_vectors.py",
+ "issuer": "https://interop.example.test",
+ "audience": "haltsql",
+ "jwks": {
+  "keys": [
+   {
+    "kty": "RSA",
+    "n": "jd0DvffFwYvJxXnmOK-NWiBc76YCKfRE8Ur4Dp34c3FHHGDlmwXW3giVaPsyJHAx1R5gnSAUd6GKy2IBmHOt_p3XCp7AZw8vtpwsi2mLfBQvaCaOSscbaCf6YE7oXbvXHMyigDWH70wsMM1jM42-R3sU_AX_izk8KIOV1zws875SVTWDBxJ7XXBfH_U0gKH8qcp4vXsu2OLG1l7NGi63o_2d2iTaaNgBPRxHceJkhmPEmGu4ymxsu6ETqkGJC3pjMNfZcsoq56SI5DfKdQOHLCFLhUNRLBXbWVzBcplxZqac1a36OiQ52TEm3dKDv6LoXZOPBTmWB3MtQSkOJvOJ_w",
+    "e": "AQAB",
+    "kid": "interop-rs256",
+    "use": "sig",
+    "alg": "RS256"
+   },
+   {
+    "kty": "RSA",
+    "n": "pCrwOoLCrsq7UnFREyOgtWON63mjiWUKmyWkjkg_RNkFwZwx3t6jMT_aVrKkwieXfiTrdSPB8is-1PFhlOKFI4xbUffuByfAB4Hu-EYBC-RroqG0KYIjJG-Yako48eEehgnDrtMy4CKCcCjGftuhFGUlxJkIOAziZbNNAVnCdHUfTmPnwtn_XMCY9qxwJ7vY0taDSnX6WRJPgHF5R_mQn7R3yEWxxrIEh7rp6btkGwfkYB7X5syt2frd0_bLK_Mi3ApweUYyQdBQgMB7jpozsoy-3Peo84FGHOPEniAJqZVD5sg417w1G_76NlMpSHFlgbu4_7V2N--bKXknFWT2wQ",
+    "e": "AQAB",
+    "kid": "interop-rs384",
+    "use": "sig",
+    "alg": "RS384"
+   },
+   {
+    "kty": "RSA",
+    "n": "wMb6iD44a_ed_AOnhvSpbbJRsEp-v3oOVw3HmuS27D0h2c_SZtE5MIONdQxezrI0VVXMG71s7dwUzs8HF-CI2K0RhcbeSN6bEw_aZ8o__qQifbulqkoiqJcv6EY34m14yYdVvVZSIKZsg8CYRgAjkjeagiTb-3XyPABWdqnLae7AJB_WhDOIJu-kB4uXfhRs5dXgNPtYuPHM09IloC7-FI3crg27-72KUGVJcLM2sZTjF0ZtHcQrZoIKXLVxkP2hAclglOkgInwEfRAAEud0ovUrZFL7W4V-8D01vHDOKTB3cw-oZPQd0PxSAsZ9srNDD8aIOTlFxEY68AaBevmzuQ",
+    "e": "AQAB",
+    "kid": "interop-rs512",
+    "use": "sig",
+    "alg": "RS512"
+   },
+   {
+    "kty": "RSA",
+    "n": "njm7rQrvcZIsj3MUM-uLe0l6pmrlF2e9NgjRwpJ8qEkkzVp4WrAX3fg1o9m0Spq1WQOlrZ1iLMeAXe981PqH1PvM5UTLaLRapVQjSHw4S_SMIBeuMXrSNDieWDVDPmJkciTJxpXqPkpYzcaf-aJP-m1ssv8AWTQfuTHKxp7jzZZNU-xN2pPxO6c0ApI4qi4sldBIWsMByf7EbOKwyN7hb4fEfV70vYTyrXvlBW7vUJiJZzQcJv9F56tGXi7AlnW9AlkL0Z_fGebEhA873Epot6N5sPNLrxWmUrGbC7oKu5ltzYuZJTo-Xfp7RW8RfxXGefCZpNVSId0VwKOHgbVULw",
+    "e": "AQAB",
+    "kid": "interop-ps256",
+    "use": "sig",
+    "alg": "PS256"
+   },
+   {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "bsB0KwXOZiCsXyYIyMnqZtlJCmW9awBt1HsePn-WFTc",
+    "y": "GJ5PSezYco0aU-GawsGl8qNQSil4rvh5u9EWJTzK-cU",
+    "kid": "interop-es256",
+    "use": "sig",
+    "alg": "ES256"
+   },
+   {
+    "kty": "EC",
+    "crv": "P-384",
+    "x": "EnT7Sft-Cl_7DZeYqrWDvZAVi6MxoaCQ77-KP3NA-XcsHjJjhfB5dI46McfqLKNj",
+    "y": "iTlIVRgacCEW5U2i3o41bze-tsgQjboAbfkXlwq_aW-HtPGbolUTZZL5KSu9-yXz",
+    "kid": "interop-es384",
+    "use": "sig",
+    "alg": "ES384"
+   },
+   {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "VxEAikQq9hUtH-Mj-oDBxkvRxoITN2wNri0LReto9Eo",
+    "kid": "interop-eddsa",
+    "use": "sig",
+    "alg": "EdDSA"
+   }
+  ]
+ },
+ "tokens": [
+  {
+   "alg": "RS256",
+   "kid": "interop-rs256",
+   "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtcnMyNTYifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtUlMyNTYiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.CJvlTUOWIGd8UnaxFJhrhvfOG-y7KZJV7B9ulVvasoCiKwpkc9nEKzYWMGb_vUPEJEcPGcTdqDOlcIEZFtKUu1Ili8A-6thsihCE69meeG_VN65sxCwibWcPS_soUdxTV_NdU7vuI6maCQdgoVFSyNuEHiZGSS3CLmNHYFGXqQTXtE8huMIBxv5hsJHLHU6VPW7HxbMF9vFIQjGvDbvInUxLte6l_bzr4iYkOGsWVSD5iJdeH499qbqm6tovqBHrDHYPauQulV8FSr5j8FevcAj7s9tJo50DSrDuAfcijytRoyr1u3QyApkm6hDVPDgHwSlR2EQgbXr6Q4Y1OVpuyA"
+  },
+  {
+   "alg": "RS384",
+   "kid": "interop-rs384",
+   "token": "eyJhbGciOiJSUzM4NCIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtcnMzODQifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtUlMzODQiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.kaT8m0Lu0babWOd2yP2cE2eoUy8086sPg2_la0SEqKaWc-HWepKvGOd0iAOK7QyJy4ONXvJjeWzg_zvsaSxzgnHMFFgtUx7l-uO8XQVpZR-plpq4Kq_ggk0myInyCpLu70OM6mmAyWipm2AWLD21VKOyE8umgvuGfucQ3-VbtnElo0F4aOTrAp6bmf2MH6cs099SP7KhbrsCM9Jbp7Ww_inYKNEb7eyoGRZm3FEWGzmghDFENgF0h3e1RHRbBVLwsDsGdRRhhxtHNjHG_2l0afLJckXtSubUoxmF2gmFN3x4Sfeb66uemPB68XWUIeorrinDgnjrIthQMcuTS2e1pw"
+  },
+  {
+   "alg": "RS512",
+   "kid": "interop-rs512",
+   "token": "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtcnM1MTIifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtUlM1MTIiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.RMsgeZMotrGu_O8O8Dvgdy6gXNonfhqgIBsL_Qg3l-Vhn40kPuGm24_ee7_LJjla8kNG7wGTKXVImnYYmU_5_UprGDq-kt3ZHM2OOFVqM4VkXtJuVcd283_MO1Nn-rINle5BG642LJ255oC2eUbrBLYaj9Icdq7k5U0FYbma2A-Xg43yFtn9tDOKYEjvTKgQHa6SYRbQXCZdkBFfCVKbjFhAdWelnNXZ5L2BnyTdBhdLUuuaj00sA8ipuGMKhmwXMCKoer0pFtuKW7j0gTCSCZhI5rP08bPOeXOetojs8lKAwW7eIlwJuHpw-I3vzZ5GbMW-Aqqj-4V8er5ZPhBc8g"
+  },
+  {
+   "alg": "PS256",
+   "kid": "interop-ps256",
+   "token": "eyJhbGciOiJQUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtcHMyNTYifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtUFMyNTYiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.ZRQ71wfj1Sjk4c1tiWgujquwc2FtRBTi-HqDEwocda-uO3Q1SB0g3XcHkxdapF80oh5vgI6s--lyBCMpx--9gNbpuc6HIH56oY8Hz6BH8AUCLEkbQxsPojkUuBGTl2FJqjwSmIHRc3EHW48WrMrkmU1loaVlRxrQ3nArkrSjHwXWInD428A1t_r4ww3tERPjIMiUDf6-wWy5GirnLe8OGNSXArvQgeYV4VAEQP3uCAuebmMgGu7YqjAskLPBfvEkhoQ3t07t0tmh003iifIfPZGjPbmy7AvIHpCbODTaSC0knWrXOF-5ddafXF-QREMCSzTffhINxhEUrLW7l0cWrQ"
+  },
+  {
+   "alg": "ES256",
+   "kid": "interop-es256",
+   "token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtZXMyNTYifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtRVMyNTYiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.mbt0mBTTgbjLmQBhBXQapV3Di3Vo_9yuT18wHS32IenljjZz6-_ciqM08xojHhXKLU_2Q6tB3ESimr2CpNMm5Q"
+  },
+  {
+   "alg": "ES384",
+   "kid": "interop-es384",
+   "token": "eyJhbGciOiJFUzM4NCIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtZXMzODQifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtRVMzODQiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.qt53SlOOtxIQhjj-N8juy52zGMyInQFpOuVgXJJPj1Uqd3zGkEkkVYlvSRyy_yKAdIe_5cwDnqw7I65Gvyl4nneuw_EGYJhVGzYoRumTtBNtKDaQ0GFIEV7n4fxuA672"
+  },
+  {
+   "alg": "EdDSA",
+   "kid": "interop-eddsa",
+   "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6ImludGVyb3AtZWRkc2EifQ.eyJpc3MiOiJodHRwczovL2ludGVyb3AuZXhhbXBsZS50ZXN0IiwiYXVkIjoiaGFsdHNxbCIsInN1YiI6ImludGVyb3AtRWREU0EiLCJpYXQiOjE3NjcyMjU2MDAsImV4cCI6NDEwMjQ0NDgwMH0.iWSLFegRilampqbi0kcG4weOJRjFQhxK9uqgH56aC4zwVf0DUFK1CZ7wefopy29vOfW2wdFij-cwjMvMywtMDw"
+  }
+ ]
+}
