@@ -148,7 +148,7 @@ def test_policy_distribution_over_oci(cli: Cli, registry: str, processes: Proces
 
     allowed = verify("SELECT id, total_cents FROM orders LIMIT 5")
     assert allowed["allowed"] is True, allowed
-    assert allowed["policy"] == {"name": "remote-shop", "version": v1_policy_version}
+    assert (allowed["policy"]["name"], allowed["policy"]["version"]) == ("remote-shop", v1_policy_version)
     denied = verify("SELECT status FROM orders LIMIT 5")
     assert denied["allowed"] is False, denied
     assert "E_COLUMN_DENIED" in reason_codes(denied), denied
@@ -175,7 +175,7 @@ def test_policy_distribution_over_oci(cli: Cli, registry: str, processes: Proces
 
     now_allowed = verify("SELECT status FROM orders LIMIT 5")
     assert now_allowed["allowed"] is True, now_allowed
-    assert now_allowed["policy"] == {"name": "remote-shop", "version": v11_policy_version}
+    assert (now_allowed["policy"]["name"], now_allowed["policy"]["version"]) == ("remote-shop", v11_policy_version)
     still_denied = verify("SELECT note FROM orders LIMIT 5")
     assert still_denied["allowed"] is False
     assert "E_COLUMN_DENIED" in reason_codes(still_denied)

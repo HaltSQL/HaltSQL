@@ -102,6 +102,32 @@ supported. The client is a small built-in implementation of the PostgreSQL v3
 protocol (`Haltsql_catalog_tools.Pg_wire`), because `pgx` supports neither SCRAM
 nor TLS.
 
+## `haltsql schema check`
+
+HaltSQL verifies SQL against the schema the **policy** describes. It never
+looks at the database, so a policy that has fallen behind the schema gives
+verdicts about a database that no longer exists. `schema check` compares the
+two:
+
+```sh
+PGPASSWORD=... haltsql schema check -p policy.yaml --dsn postgres://ro@db:5432/app
+haltsql schema check -p policy.yaml --snapshot catalog.json --strict --json
+```
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `E_DRIFT_CATALOG_STALE` | error | The policy's `catalog:` entry lists other columns than the table has. `SELECT *` is expanded against that entry, so a column added since the snapshot would be read unchecked. Re-run `schema pull`. |
+| `E_DRIFT_TABLE_MISSING` | error | A policy table does not exist. |
+| `E_DRIFT_COLUMN_MISSING` | error | An allowed, tenant or writable column does not exist. |
+| `E_DRIFT_SHADOWED` | error | A relation with the same name exists in a schema that comes earlier in `search_path`; the unqualified name reaches it, not the policy table. |
+| `W_DRIFT_VIEW` | warning | A policy table is a view, materialized view or foreign table. HaltSQL does not see its definition; tenant and column rules apply to its output only. |
+| `W_DRIFT_NO_CATALOG` | warning | The policy has no `catalog:` entry for the table. |
+| `W_DRIFT_SCHEMA_NOT_PULLED` | warning | The snapshot does not cover a policy schema, so its tables were not checked. |
+
+Exit status is 1 when there are errors (with `--strict`, also on warnings).
+Run it in CI after every migration and before every policy release; it is the
+check that keeps "the policy says" and "the database is" the same thing.
+
 ## `haltsql schema import`
 
 Normalizes the PII classifications of a data catalog export into a PII

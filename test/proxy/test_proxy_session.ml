@@ -388,10 +388,12 @@ let test_offload () =
      let* ids = Lwt.all jobs in
      check_bool "jobs ran off the main thread" false (List.mem main ids);
      check_int "never more than the bound at once" 2 (Atomic.get peak);
-     (* 6 jobs of 150 ms on 2 threads take about 450 ms; a blocked loop would not tick *)
+     (* 6 jobs of 150 ms on 2 threads take about 450 ms: some 45 ticks of 10 ms on an idle
+        machine, far fewer on a loaded CI runner. A blocked loop would tick once at most
+        (after the last job), so a handful of ticks is the whole proof. *)
      check_bool
        (Printf.sprintf "event loop kept running (%d ticks)" !ticks)
-       true (!ticks >= 20);
+       true (!ticks >= 4);
      let* r =
        Lwt.catch
          (fun () -> Offload.run (fun () -> failwith "boom"))

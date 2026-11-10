@@ -200,6 +200,11 @@ result.)
 
 ## haltsql schema pull / schema import / schema fetch
 
+`haltsql schema check -p POLICY (--dsn DSN | --snapshot FILE) [--strict] [--json]`
+compares a policy with the live schema and exits 1 on drift (a stale
+`catalog:`, missing tables or columns, a shadowing relation); see
+[schema-and-pii.md](schema-and-pii.md#haltsql-schema-check).
+
 Snapshot a live Postgres catalog into a `Catalog` document (`schema pull`,
 read-only, TLS and SCRAM-SHA-256), import PII labels from dbt, DataHub,
 Unity Catalog, Atlan or Collibra exports (`schema import`), or fetch them from
