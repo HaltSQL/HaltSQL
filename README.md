@@ -25,8 +25,10 @@ caller's authenticated session (tenant ID, user ID). It returns
 query. It parses with [libpg_query](https://github.com/pganalyze/libpg_query),
 the real PostgreSQL parser, so there is no regex guessing and no grammar drift.
 
-HaltSQL never rewrites SQL and never connects to your database. If the answer is
-yes, you run the exact string you checked.
+HaltSQL never rewrites SQL. The verifier never connects to your database. The optional
+proxy and MCP server do, to run queries that passed, and `haltsql schema pull`
+reads your schema when you run it. If the answer is yes, you run the exact string you
+checked.
 
 ## Where HaltSQL sits
 

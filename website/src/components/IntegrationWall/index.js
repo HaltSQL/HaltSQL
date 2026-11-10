@@ -177,7 +177,7 @@ export default function IntegrationWall() {
             <p>
               No integration matches “{query.trim()}”
               {cat !== 'all' ? ' in this category' : ''}. Anything that can make an HTTP call can
-              use the <Link to="/docs/http-api">verify API</Link>, and unmodified Postgres drivers
+              use the <Link to="/docs/http-api">verify API</Link>, and unmodified database drivers
               can go through the <Link to="/docs/proxy">wire proxy</Link>.
             </p>
             <button

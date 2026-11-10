@@ -11,7 +11,7 @@ const repo = 'https://github.com/HaltSQL/HaltSQL';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'HaltSQL',
-  tagline: 'A policy firewall for LLM-generated PostgreSQL',
+  tagline: 'A policy firewall for LLM-generated SQL',
   favicon: 'img/favicon.svg',
 
   url: 'https://haltsql.github.io',
