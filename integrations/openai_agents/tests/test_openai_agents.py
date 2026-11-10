@@ -174,3 +174,61 @@ def test_guardrail_refuses_bound_tenancy_for_foreign_tool(local_verifier):
     results, _ = asyncio.run(_execute_via_sdk(agent, run_sql, app, {"query": OK_SQL}))
     out = json.loads(results[0].output)
     assert out["status"] == "error" and "haltsql_query" in out["message"]
+
+
+@pytest.mark.integration
+def test_context_from_returning_none_refuses(local_verifier, connections):
+    tool = haltsql_query_tool(HaltSQLToolRunner(local_verifier, connections),
+                              context_from=lambda app: app.get("ctx"))
+    out = json.loads(asyncio.run(tool.on_invoke_tool(_tool_ctx({"ctx": None}, {}), json.dumps({"query": OK_SQL}))))
+    assert out == {"status": "error", "executed": False,
+                   "message": "No trusted HaltSQL context is configured for this run; the query was not executed."}
+    assert connections.opened == 0
+
+
+def _guard_decision(guard: Any, app_ctx: Any, raw_arguments: str) -> Any:
+    """Call the guardrail the way the SDK does, with exactly these raw arguments."""
+    from types import SimpleNamespace
+
+    tool_ctx = ToolContext(context=app_ctx, tool_name="run_sql", tool_call_id="call_1",
+                           tool_arguments=raw_arguments)
+    return asyncio.run(guard.guardrail_function(SimpleNamespace(context=tool_ctx, agent=None)))
+
+
+@pytest.mark.integration
+def test_guardrail_rejects_whatever_it_cannot_check(haltsql_cli):
+    from haltsql import LocalVerifier
+
+    guard = haltsql_tool_input_guardrail(LocalVerifier(LITERAL_POLICY, binary=haltsql_cli), sql_arg="sql")
+    acme = AppContext(user_id="u1", haltsql_context={"tenant_id": "acme"})
+    ok = "SELECT id FROM orders WHERE tenant_id = 'acme' ORDER BY id LIMIT 5"
+    globex = "SELECT id FROM orders WHERE tenant_id = 'globex' LIMIT 5"
+    assert _guard_decision(guard, acme, json.dumps({"sql": ok})).behavior["type"] == "allow"
+
+    rejected = [
+        # the SQL argument is missing, under another name, or not a string
+        (acme, json.dumps({})),
+        (acme, json.dumps({"query": ok})),
+        (acme, json.dumps({"sql": None})),
+        (acme, json.dumps({"sql": ["SELECT 1"]})),
+        # the arguments are not a JSON object
+        (acme, "{not json"),
+        (acme, json.dumps([ok])),
+        # the run context is unusable
+        (AppContext(user_id="u2", haltsql_context="acme"), json.dumps({"sql": ok})),  # type: ignore[arg-type]
+        (AppContext(user_id="u3", haltsql_context={"tenant_id": 1.5}), json.dumps({"sql": ok})),
+        (None, json.dumps({"sql": ok})),
+    ]
+    for app, raw in rejected:
+        out = _guard_decision(guard, app, raw)
+        assert out.behavior["type"] == "reject_content", raw
+        assert json.loads(out.behavior["message"])["status"] == "error", raw
+        assert out.output_info["executed"] is False
+
+    # The tenant comes from the run context: a context among the tool's own
+    # (model-written) arguments changes nothing.
+    forged = json.dumps({"sql": globex, "haltsql_context": {"tenant_id": "globex"}, "tenant_id": "globex"})
+    out = _guard_decision(guard, acme, forged)
+    assert out.behavior["type"] == "reject_content"
+    assert out.output_info["status"] == "denied"
+    assert out.output_info["reasons"][0]["code"] == "E_TENANT_MISMATCH"

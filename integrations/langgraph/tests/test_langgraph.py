@@ -145,3 +145,70 @@ def test_example_graph_stops_after_max_denials(local_verifier, connections):
     assert out["denials"] == 2 and len(calls) == 2
     assert out["messages"][-1].content == "Stopping: HaltSQL refused 2 queries in this run."
     assert connections.opened == 0
+
+
+@pytest.mark.integration
+def test_context_from_returning_none_refuses(local_verifier, connections):
+    tool = haltsql_query_tool(HaltSQLToolRunner(local_verifier, connections),
+                              context_from=lambda app: app.get("ctx"))
+    g = StateGraph(MessagesState, context_schema=dict)
+    g.add_node("tools", ToolNode([tool]))
+    g.add_edge(START, "tools")
+    g.add_edge("tools", END)
+    out = g.compile().invoke({"messages": [_call(OK_SQL)]}, context={"ctx": None})
+    art = out["messages"][-1].artifact
+    assert art == {"status": "error", "executed": False,
+                   "message": "No trusted HaltSQL context is configured for this run; the query was not executed."}
+    assert connections.opened == 0
+
+
+class StateWithContextKey(MessagesState, total=False):
+    """Graph state that happens to have a ``haltsql_context`` key."""
+
+    haltsql_context: Dict[str, Any]
+
+
+@pytest.mark.integration
+def test_graph_state_cannot_supply_the_context(local_verifier, connections):
+    """Graph state is written by nodes (and so by model output); only the runtime
+    context set by the application chooses the tenant."""
+    tool = haltsql_query_tool(HaltSQLToolRunner(local_verifier, connections))
+    g = StateGraph(StateWithContextKey, context_schema=AppContext)
+    g.add_node("tools", ToolNode([tool]))
+    g.add_edge(START, "tools")
+    g.add_edge("tools", END)
+    graph = g.compile()
+    state = {"messages": [_call(OK_SQL)], "haltsql_context": {"tenant_id": "globex"}}
+    out = graph.invoke(state, context=AppContext("u1", {"tenant_id": "acme"}))
+    assert out["messages"][-1].artifact["rows"] == acme_rows()
+    out = graph.invoke(state)  # no runtime context: the state's value is not a fallback
+    assert "No trusted HaltSQL context" in out["messages"][-1].artifact["message"]
+    assert connections.opened == 1
+
+
+def test_errors_count_as_refusals_and_stop_the_loop():
+    class V:
+        def verify(self, sql, context=None):
+            raise RuntimeError("verifier down")
+
+    def connect():
+        raise AssertionError("must not connect")
+
+    tool = haltsql_query_tool(HaltSQLToolRunner(V(), connect))
+    for status, expected in (("denied", True), ("error", True), ("ok", False)):
+        assert is_denial(ToolMessage(content="x", tool_call_id="c", artifact={"status": status})) is expected
+    assert is_denial(AIMessage(content="x")) is False
+    calls = []
+
+    def stubborn(messages: List[Any]) -> AIMessage:
+        calls.append(len(messages))
+        return _call(OK_SQL, len(calls))
+
+    graph = build_sql_agent_graph(stubborn, tool, max_denials=3)
+    out = graph.invoke({"messages": [HumanMessage("x")]}, context={"haltsql_context": {"tenant_id": "acme"}},
+                       config={"recursion_limit": 40})
+    assert out["denials"] == 3 and len(calls) == 3
+    assert out["messages"][-1].content == "Stopping: HaltSQL refused 3 queries in this run."
+    for bad in (0, 21, True, 2.0):
+        with pytest.raises(ValueError):
+            build_sql_agent_graph(stubborn, tool, max_denials=bad)
