@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { HaltSQLClient, HaltSQLDeniedError, guardedQuery } from "../dist/esm/index.js";
-import { PG, fakeServer, pgReachable, vector } from "./helpers.mjs";
+import { PG, fakeServer, dropDatabase, pgReachable, recreateDatabase, vector } from "./helpers.mjs";
 
 const DB = "haltsql_polyglot_ts";
 
@@ -24,8 +24,7 @@ describe("guardedQuery against Postgres", { skip: !havePg && "Postgres not reach
   before(async () => {
     admin = new pg.Client({ ...PG, database: "postgres" });
     await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS ${DB}`);
-    await admin.query(`CREATE DATABASE ${DB}`);
+    await recreateDatabase(admin, DB);
     pool = new pg.Pool({ ...PG, database: DB, max: 2 });
     await pool.query(`
       CREATE SCHEMA app;
@@ -39,7 +38,7 @@ describe("guardedQuery against Postgres", { skip: !havePg && "Postgres not reach
   });
   after(async () => {
     await pool?.end();
-    await admin?.query(`DROP DATABASE IF EXISTS ${DB}`);
+    if (admin) await dropDatabase(admin, DB);
     await admin?.end();
   });
 

@@ -3,8 +3,10 @@ T = "clients/go/haltsql/types.go"
 G = "clients/go/haltsql/guard.go"
 P = "clients/go/haltsql/params.go"
 E = "clients/go/haltsql/errors.go"
-BUILD = "cd clients/go/haltsql && go build ./..."
-TEST = "cd clients/go/haltsql && go test -count=1 ./... && cd ../pgxtest && go test -count=1 ./..."
+# Each command runs in a subshell: the harness joins BUILD and TEST with "&&".
+BUILD = "(cd clients/go/haltsql && go build ./...)"
+TEST = ("(cd clients/go/haltsql && go test -count=1 ./... && cd ../pgxtest && "
+        "HALTSQL_REQUIRE_POSTGRES=1 go test -count=1 ./...)")
 MUTANTS = [
     # ---- client.go
     ("client: sql_sha256 check skipped", C, "if c.checkSQLHash {", "if false {"),

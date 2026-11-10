@@ -7,8 +7,9 @@ E = "clients/typescript/src/errors.ts"
 ENV = ("HALTSQL_BIN=$OLDPWD/_build/default/bin/haltsql/main.exe "
        "HALTSQL_SERVER_BIN=$OLDPWD/_build/default/bin/server/main.exe HALTSQL_REQUIRE_NATIVE=1 "
        "HALTSQL_REQUIRE_POSTGRES=1 ")
-BUILD = "cd clients/typescript && npx tsc -p tsconfig.esm.json --noEmit"
-TEST = "cd clients/typescript && " + ENV + "npm test"
+# Each command runs in a subshell: the harness joins BUILD and TEST with "&&".
+BUILD = "(cd clients/typescript && npx tsc -p tsconfig.esm.json --noEmit)"
+TEST = "(cd clients/typescript && " + ENV + "npm test)"
 MUTANTS = [
     # ---- client.ts
     ("client: sql_sha256 check skipped", C,

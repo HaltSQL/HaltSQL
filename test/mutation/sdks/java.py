@@ -5,8 +5,9 @@ G = D + "JdbcGuard.java"
 S = D + "JdbcSql.java"
 B = D + "BindParams.java"
 X = D + "HaltSQLException.java"
-BUILD = "cd clients/java && mvn -q -o compile"
-TEST = "cd clients/java && mvn -q -o test"
+# Each command runs in a subshell: the harness joins BUILD and TEST with "&&".
+BUILD = "(cd clients/java && mvn -q -o compile)"
+TEST = "(cd clients/java && HALTSQL_REQUIRE_POSTGRES=1 mvn -q -o test)"
 MUTANTS = [
     # ---- HaltSQLClient.java
     ("client: sql_sha256 check skipped", C, "if (checkSqlHash) {", "if (false) {"),

@@ -17,7 +17,7 @@ import {
   guardedTransactionOnClient,
   searchPathSetting,
 } from "../dist/esm/index.js";
-import { PG, pgReachable, vector } from "./helpers.mjs";
+import { PG, dropDatabase, pgReachable, recreateDatabase, vector } from "./helpers.mjs";
 
 /** A stub verifier: the recorded allow verdict (search_path [app], $1 = acme), changed by `patch`. */
 function verifier(patch = {}) {
@@ -194,8 +194,7 @@ describe("guardedTransaction against Postgres", { skip: !havePg && "Postgres not
   before(async () => {
     admin = new pg.Client({ ...PG, database: "postgres" });
     await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-    await admin.query(`CREATE DATABASE ${DB}`);
+    await recreateDatabase(admin, DB);
     pool = new pg.Pool({ ...PG, database: DB, max: 2, options: "-c search_path=public,app" });
     await pool.query(`
       CREATE SCHEMA app;
@@ -213,7 +212,7 @@ describe("guardedTransaction against Postgres", { skip: !havePg && "Postgres not
   });
   after(async () => {
     await pool?.end();
-    await admin?.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+    if (admin) await dropDatabase(admin, DB);
     await admin?.end();
   });
 

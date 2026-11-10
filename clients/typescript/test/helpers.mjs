@@ -35,6 +35,41 @@ export async function pgReachable() {
   return reachable;
 }
 
+/**
+ * Drops and creates database `name`. Test files run in parallel, and CREATE
+ * DATABASE fails with 55006 while another session is copying template1, so
+ * that error is retried.
+ */
+export async function recreateDatabase(admin, name) {
+  await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await admin.query(`CREATE DATABASE ${name}`);
+      return;
+    } catch (e) {
+      if (e.code !== "55006" || attempt >= 50) throw e;
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
+  }
+}
+
+/**
+ * Drops database `name` once the test's own connections are gone. Without
+ * FORCE: a backend that is still closing would be sent a FATAL error, which
+ * node-postgres reports as an uncaught error after the test has ended.
+ */
+export async function dropDatabase(admin, name) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+      return;
+    } catch (e) {
+      if (e.code !== "55006" || attempt >= 50) throw e;
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
+  }
+}
+
 export const vectors = JSON.parse(
   readFileSync(new URL("../testdata/vectors.json", import.meta.url), "utf8"),
 );
