@@ -83,7 +83,7 @@ function Hero() {
     <header className={styles.hero}>
       <div className="container">
         <Heading as="h1" className={styles.title}>
-          Give your AI agents database access your security team will sign off on.
+          Stop bad SQL before it runs.
         </Heading>
         <div className={styles.heroRow}>
           <div>
