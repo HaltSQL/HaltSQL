@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,6 +118,159 @@ func TestDefaultTimeoutAndUserAgent(t *testing.T) {
 	}
 	if ua != "haltsql-client-go/"+Version {
 		t.Fatalf("user agent = %q", ua)
+	}
+}
+
+// errorText renders an error the ways an application might log it.
+func errorText(err error) string {
+	var b strings.Builder
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		fmt.Fprintf(&b, "%v|%+v|%#v\n", e, e, e)
+	}
+	return b.String()
+}
+
+func TestTokenNeverInTransportOrTimeoutErrors(t *testing.T) {
+	const token = "super-secret-token-value"
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	c := mustNew(t, "http://"+addr, WithToken(token), WithRetries(0, 0, 0))
+	_, err = c.Verify(context.Background(), "SELECT 1", nil)
+	if !IsKind(err, KindTransport) || strings.Contains(errorText(err), token) {
+		t.Fatalf("transport error leaks the token or has the wrong kind: %s", errorText(err))
+	}
+
+	f := newFake(t, func(_ int, _ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	c = mustNew(t, f.srv.URL, WithToken(token), WithTimeout(30*time.Millisecond), WithRetries(0, 0, 0))
+	_, err = c.Verify(context.Background(), "SELECT 1", nil)
+	if !IsKind(err, KindTimeout) || strings.Contains(errorText(err), token) {
+		t.Fatalf("timeout error leaks the token or has the wrong kind: %s", errorText(err))
+	}
+}
+
+// Only 503, connection errors and timeouts are retried. A response that was
+// received and is unusable (too large) is final.
+func TestProtocolErrorsAreNotRetried(t *testing.T) {
+	v := findVector(t, "allowed_bound_single_tenant")
+	big := mutate(t, v.Response, func(m map[string]any) { m["pad"] = strings.Repeat("x", 5000) })
+	f := newFake(t, replay(200, big))
+	c := mustNew(t, f.srv.URL, WithMaxResponseBytes(1024), fastRetries())
+	_, err := c.Verify(context.Background(), v.Request.SQL, Context{"tenant_id": "acme"})
+	if !IsKind(err, KindProtocol) || f.count() != 1 {
+		t.Fatalf("err=%v attempts=%d, want one attempt", err, f.count())
+	}
+}
+
+// The size cap must hold without a Content-Length: the body is not read past
+// the cap (an endless body is cut off, it does not run into the timeout).
+func TestBodyCapOnEndlessChunkedBody(t *testing.T) {
+	chunk := []byte(strings.Repeat("x", 1024))
+	f := newFake(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		for r.Context().Err() == nil {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			fl.Flush()
+		}
+	})
+	c := mustNew(t, f.srv.URL, WithMaxResponseBytes(4096), WithTimeout(3*time.Second), WithRetries(0, 0, 0))
+	start := time.Now()
+	_, err := c.Verify(context.Background(), "SELECT 1", nil)
+	if !IsKind(err, KindProtocol) || !strings.Contains(err.Error(), "response larger than 4096 bytes") {
+		t.Fatalf("err = %v, want the size-cap protocol error", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("took %s: the body was read past the cap", d)
+	}
+}
+
+// A declared Content-Length above the cap is refused before the body is read.
+func TestBodyCapOnDeclaredLength(t *testing.T) {
+	f := newFake(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000000")
+		_, _ = w.Write([]byte(`{"allowed":`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // never sends the rest
+	})
+	c := mustNew(t, f.srv.URL, WithMaxResponseBytes(1024), WithTimeout(3*time.Second), WithRetries(0, 0, 0))
+	start := time.Now()
+	_, err := c.Verify(context.Background(), "SELECT 1", nil)
+	if !IsKind(err, KindProtocol) || !strings.Contains(err.Error(), "response larger than 1024 bytes") {
+		t.Fatalf("err = %v, want the size-cap protocol error", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("took %s: waited for a body that was already too large", d)
+	}
+}
+
+// WithTLSConfig must not weaken verification: a pool that does not contain
+// the server's CA, or a server name that does not match, fails closed.
+func TestWithTLSConfigStillVerifiesTheServer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(allowAll))
+	defer srv.Close()
+	c := mustNew(t, srv.URL, WithTLSConfig(&tls.Config{RootCAs: x509.NewCertPool()}), WithRetries(0, 0, 0))
+	if v, err := verifyAllowed(t, c); v != nil || !IsKind(err, KindTransport) {
+		t.Fatalf("unknown CA: verdict=%v err=%v, want transport error", v, err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	c = mustNew(t, srv.URL, WithTLSConfig(&tls.Config{RootCAs: pool, ServerName: "other.invalid"}), WithRetries(0, 0, 0))
+	if v, err := verifyAllowed(t, c); v != nil || !IsKind(err, KindTransport) {
+		t.Fatalf("wrong server name: verdict=%v err=%v, want transport error", v, err)
+	}
+}
+
+// Health and Policies succeed only on 200; Ready is true only on 200 + "ready".
+func TestOperationsFailClosedOnStatus(t *testing.T) {
+	vf := loadVectors(t)
+	status := 500
+	body := []byte(`{"status":"ok"}`)
+	f := newFake(t, func(_ int, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	})
+	c := mustNew(t, f.srv.URL, WithToken("tok"), WithRetries(0, 0, 0))
+	ctx := context.Background()
+	if h, err := c.Health(ctx); h != nil || !IsKind(err, KindHTTP) {
+		t.Fatalf("health on 500: %+v, %v", h, err)
+	}
+	status, body = 403, vf.Policies
+	if ps, err := c.Policies(ctx); ps != nil || !IsKind(err, KindHTTP) {
+		t.Fatalf("policies on 403: %+v, %v", ps, err)
+	}
+	status, body = 503, []byte(`{"status":"ready","policies":2}`)
+	if rd, err := c.Ready(ctx); err != nil || rd.Ready {
+		t.Fatalf("503 that says ready: %+v, %v", rd, err)
+	}
+	status, body = 200, []byte(`{"status":"not_ready","policies":0}`)
+	if rd, err := c.Ready(ctx); err != nil || rd.Ready {
+		t.Fatalf("200 that says not_ready: %+v, %v", rd, err)
+	}
+	status, body = 500, []byte(`{"status":"ready","policies":2}`)
+	if rd, err := c.Ready(ctx); rd != nil || !IsKind(err, KindHTTP) {
+		t.Fatalf("ready on 500: %+v, %v", rd, err)
+	}
+}
+
+// With the hash check off the verdict's own fields are all that is left:
+// sql_sha256 must still have the documented shape.
+func TestParseVerdictChecksHashShape(t *testing.T) {
+	v := findVector(t, "allowed_bound_single_tenant")
+	for _, bad := range []any{"", "abc", strings.ToUpper(shaHex("x")), shaHex("x") + "0", 7, nil} {
+		body := mutate(t, v.Response, func(m map[string]any) { m["sql_sha256"] = bad })
+		if pv, err := ParseVerdict(body); err == nil {
+			t.Fatalf("sql_sha256 %#v accepted: %+v", bad, pv)
+		}
+		f := newFake(t, replay(200, body))
+		c := mustNew(t, f.srv.URL, WithoutSQLHashCheck())
+		if pv, err := c.Verify(context.Background(), v.Request.SQL, Context{"tenant_id": "acme"}); pv != nil || !IsKind(err, KindProtocol) {
+			t.Fatalf("sql_sha256 %#v: verdict=%v err=%v", bad, pv, err)
+		}
 	}
 }
 
