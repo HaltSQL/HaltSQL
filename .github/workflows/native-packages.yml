@@ -13,6 +13,8 @@ name: Native packages (wheels, npm)
 
 on:
   pull_request:
+    # Only pull requests into main; PRs between feature branches run nothing.
+    branches: [main]
     paths:
       - "native/**"
       - "lib/**"

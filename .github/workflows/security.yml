@@ -6,6 +6,8 @@ name: Security
 
 on:
   pull_request:
+    # Only pull requests into main; PRs between feature branches run nothing.
+    branches: [main]
   schedule:
     - cron: "41 4 * * 1" # Mondays at 04:41 UTC
   workflow_dispatch:
