@@ -555,7 +555,49 @@ func TestArgsAndArrayLiteral(t *testing.T) {
 type recDriver struct {
 	mu    sync.Mutex
 	calls []recCall
+	// fail, when set, makes a statement (or "BEGIN", "COMMIT", "ROLLBACK") fail.
+	fail func(query string) error
 }
+
+// record notes one statement and returns the error injected for it, if any.
+func (d *recDriver) record(q string, args []driver.NamedValue) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, recCall{q, args})
+	if d.fail != nil {
+		return d.fail(q)
+	}
+	return nil
+}
+
+// queries lists the recorded statement texts.
+func (d *recDriver) queries() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, len(d.calls))
+	for i, c := range d.calls {
+		out[i] = c.query
+	}
+	return out
+}
+
+type recTx struct{ d *recDriver }
+
+func (t recTx) Commit() error   { return t.d.record("COMMIT", nil) }
+func (t recTx) Rollback() error { return t.d.record("ROLLBACK", nil) }
+
+// BeginTx records "BEGIN" or "BEGIN READ ONLY", as a Postgres driver sends it.
+func (c *recConn) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	q := "BEGIN"
+	if opts.ReadOnly {
+		q = "BEGIN READ ONLY"
+	}
+	if err := c.d.record(q, nil); err != nil {
+		return nil, err
+	}
+	return recTx{c.d}, nil
+}
+
 type recCall struct {
 	query string
 	args  []driver.NamedValue
@@ -573,15 +615,15 @@ func (c *recConn) CheckNamedValue(*driver.NamedValue) error {
 	return nil // accept []string like pgx does
 }
 func (c *recConn) QueryContext(_ context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
-	c.d.mu.Lock()
-	c.d.calls = append(c.d.calls, recCall{q, args})
-	c.d.mu.Unlock()
+	if err := c.d.record(q, args); err != nil {
+		return nil, err
+	}
 	return &recRows{}, nil
 }
 func (c *recConn) ExecContext(_ context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
-	c.d.mu.Lock()
-	c.d.calls = append(c.d.calls, recCall{q, args})
-	c.d.mu.Unlock()
+	if err := c.d.record(q, args); err != nil {
+		return nil, err
+	}
 	return driver.RowsAffected(1), nil
 }
 func (r *recRows) Columns() []string { return []string{"ok"} }

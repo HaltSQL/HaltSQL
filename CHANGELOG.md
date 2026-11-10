@@ -34,6 +34,31 @@ even before 1.0.
   per-address connection cap, the shadow opt-in, `haltsql schema check` in
   the migration pipeline and catalog snapshots. `docs/deployment.md` lists
   the proxy settings a deployment has to decide.
+- **The TypeScript, Go and Java guards can pin the search path.** Each SDK
+  has a guarded execution path that owns a transaction and sets the verdict's
+  `policy.search_path` for it, as the Python guard does: `BEGIN` (`READ ONLY`
+  when the verdict is for a `SELECT`), caller-supplied transaction settings,
+  a transaction-local `set_config('search_path', ...)` with every schema
+  quoted, the verified SQL byte for byte, `COMMIT`; `ROLLBACK` on any error.
+  - TypeScript: `guardedTransaction(haltsql, pool, sql, ctx, { settings })`
+    for a `pg.Pool`, `guardedTransactionOnClient` for a client you hold, and
+    `searchPathSetting(verdict)`.
+  - Go: `GuardedQueryTx(ctx, hc, db, sql, vctx, func(*sql.Rows) error, ...)`
+    and `GuardedExecTx` for a `*sql.DB` or `*sql.Conn`, the `TxSettings`
+    option, and `Verdict.SearchPathSetting()`.
+  - Java: `JdbcGuard.queryInTransaction` / `updateInTransaction` (autocommit
+    is restored), `transactionSettings(...)`, and
+    `JdbcGuard.searchPathSetting(verdict)`.
+
+  A verdict without `search_path` (an older engine) runs without the pin.
+  The existing single-statement functions (`guardedQuery`; `GuardedQuery`,
+  `GuardedExec`; `JdbcGuard.prepare`, `query`, `update`) are unchanged: they
+  do not pin, and their documentation now says when that is acceptable (the
+  session already uses the policy's search path, or the SQL is
+  schema-qualified).
+- **`HALTSQL_REQUIRE_POSTGRES=1`** makes the Postgres-backed tests of the
+  TypeScript, Go and Java SDKs fail instead of skip when Postgres is not
+  reachable. CI sets it.
 - **Static tokens can be bound to a context.** `server.auth.tokens[]` takes
   `context` and `request_context_fields`, like mTLS identities. A bound token's
   tenant comes from the config; a request body that names another tenant gets
@@ -51,7 +76,8 @@ even before 1.0.
   the verified SQL, so a role or database default such as
   `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
   resolve to a different table than the one the policy lists. The TypeScript, Go and Java
-  verdict types expose the field; their guards do not change session settings.
+  verdict types expose the field; their single-statement guards do not change
+  session settings (their transaction-owning guards, above, do).
 - **`haltsql schema check`** compares a policy with the live database (or a
   `schema pull` snapshot) and fails on drift: a `catalog:` entry that no longer
   matches the table (a new column would be read by `SELECT *` unchecked),

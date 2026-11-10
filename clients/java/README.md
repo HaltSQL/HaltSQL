@@ -6,7 +6,7 @@ plus `JdbcGuard` for running verified SQL through PgJDBC.
 ```java
 HaltSQLClient haltsql = HaltSQLClient.builder("http://127.0.0.1:8080")
     .token(System.getenv("HALTSQL_TOKEN")).build();
-List<Long> ids = new JdbcGuard(haltsql).query(conn, sql, Map.of("tenant_id", tenant),
+List<Long> ids = new JdbcGuard(haltsql).queryInTransaction(conn, sql, Map.of("tenant_id", tenant),
     rs -> { List<Long> out = new ArrayList<>(); while (rs.next()) out.add(rs.getLong(1)); return out; });
 ```
 

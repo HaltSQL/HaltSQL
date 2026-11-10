@@ -83,8 +83,8 @@ the typed AST. That keeps the rule code independent of libpg_query's JSON shape.
 | Directory | What it is |
 |---|---|
 | `clients/python` | Python SDK: sync and async clients, guarded execution for psycopg 3, asyncpg and SQLAlchemy, and a local CLI verifier. |
-| `clients/typescript` | `@haltsql/client` for Node.js, with `guardedQuery` for node-postgres. |
-| `clients/go` | Go client with `GuardedQuery` for `database/sql`. |
+| `clients/typescript` | `@haltsql/client` for Node.js, with `guardedTransaction` and `guardedQuery` for node-postgres. |
+| `clients/go` | Go client with `GuardedQueryTx` and `GuardedQuery` for `database/sql`. |
 | `clients/java` | `com.haltsql:haltsql-client` with `JdbcGuard` for PgJDBC. |
 | `clients/mcp` | `haltsql-mcp`, a Model Context Protocol server that gives an agent verified, read-only SQL access. |
 | `clients/testvectors` | Shared request and verdict vectors that every client is tested against. |

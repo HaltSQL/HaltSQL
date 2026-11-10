@@ -27,7 +27,12 @@ export {
   HaltSQLDeniedError,
 } from "./errors.js";
 export { bindParamsToPositional, toPgArrayLiteral } from "./params.js";
-export { guardedQuery } from "./pg.js";
+export {
+  guardedQuery,
+  guardedTransaction,
+  guardedTransactionOnClient,
+  searchPathSetting,
+} from "./pg.js";
 export { LocalVerifier, NATIVE_PLATFORMS, nativePackageName, resolveLocalBinary } from "./local.js";
 export type {
   LocalVerifierOptions,
@@ -35,7 +40,15 @@ export type {
   ResolveBinaryOptions,
   ResolvedBinary,
 } from "./local.js";
-export type { PgQueryable, GuardedQueryOptions, GuardedQueryResult, SqlVerifier } from "./pg.js";
+export type {
+  PgQueryable,
+  PgPool,
+  PgPoolClient,
+  GuardedQueryOptions,
+  GuardedTransactionOptions,
+  GuardedQueryResult,
+  SqlVerifier,
+} from "./pg.js";
 export { parseVerdict } from "./validate.js";
 export type {
   BindParam,
