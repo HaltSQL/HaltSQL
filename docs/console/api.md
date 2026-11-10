@@ -345,10 +345,40 @@ denials and PII columns are never suggested.
 `verifies_per_second` and OPA decisions come from `/metrics` when the verifier
 exposes it (deltas between polls); `null` otherwise.
 
-`POST /api/v1/fleet/{name}/restart`: `restart_verifiers` with a reason.
+Before the first poll the document is empty: `updated` and `config_generation`
+are `null` and the lists are empty. Details:
+
+- `state`: `unreachable` (no HTTP answer, or for a proxy no TCP connection;
+  `error` says why), `buffering` (an audit sink is unhealthy or has buffered
+  records), `not_ready` (`/readyz` is 503 for another reason: no policy,
+  draining), `restart_pending` (`audit_restart_pending`), else `ready`.
+  `note` is a human sentence about the state. `error` reports a failed probe
+  even when the state is known (e.g. a 403 on the admin status).
+- `config_generation` (top level) is the highest generation reported; each
+  verifier also carries its own `config_generation`.
+- Extra fields: verifier `sinks[].buffered_records`, `buffered_records` (total),
+  `opa.external_policy_denials`; bundle `versions: [ { version, revision,
+  signed_by, verifiers: [names] } ]` (majority first; the top-level version is
+  the majority's); sink `buffered_records`, `peak_buffered_records`,
+  `unhealthy_verifiers`; `opa.configured`, `opa.decisions.error_allowed` and
+  `opa.window_seconds`.
+- `opa.timeouts` (per verifier) counts OPA errors (`error_allowed` +
+  `error_denied`: timeouts and failures), and `opa.decisions` the decisions of
+  every verifier, both over the in-memory history (the last 120 polls,
+  `window_seconds`). Fields are `null` when the verifier has no `/metrics`.
+- `kind: mcp`/`proxy` verifiers without admin status get their state from
+  `/readyz` and `/metrics` (404s are not errors); a proxy with a non-HTTP `url`
+  from a TCP connect.
+
+`POST /api/v1/fleet/{name}/restart`: `restart_verifiers` and a reason (always
+required for restarts, even for roles granted the permission outright).
 Restarts the verifier's Kubernetes workload (`fleet.kubernetes`, a rollout
-restart patch on its Deployment or StatefulSet). `503 NOT_CONFIGURED`
-outside Kubernetes.
+restart patch on its Deployment or StatefulSet) and returns
+`{ "verifier", "workload": "deployment/haltsql-1", "restarted_at" }`. Logged as
+`fleet.restart`. `404` for an unknown verifier, `503 NOT_CONFIGURED` without
+`fleet.kubernetes` or the verifier's `workload`, `502 UPSTREAM` when the
+Kubernetes API fails (the message carries the HTTP status and Status
+`reason`, never the token).
 
 ### Data classification
 
