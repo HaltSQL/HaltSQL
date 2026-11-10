@@ -52,7 +52,7 @@ class JdbcGuardTest {
       s.execute("CREATE DATABASE " + DB);
       pgAvailable = true;
     } catch (SQLException e) {
-      System.out.println("skipping Postgres tests: " + e.getMessage() + " (run: make -C lab up)");
+      postgresMissing(e);
       return;
     }
     try (Connection c = DriverManager.getConnection(url(DB), USER, PASS);
@@ -71,6 +71,17 @@ class JdbcGuardTest {
           "INSERT INTO reporting.revenue_daily VALUES ('acme','2026-01-01',100,'USD'),"
               + "('acme-eu','2026-01-01',200,'EUR'),('globex','2026-01-01',999,'USD')");
     }
+  }
+
+  /**
+   * Postgres is not reachable: the tests that need it are skipped, unless
+   * HALTSQL_REQUIRE_POSTGRES=1 (set in CI), which makes it a failure.
+   */
+  static void postgresMissing(SQLException e) {
+    if ("1".equals(System.getenv("HALTSQL_REQUIRE_POSTGRES"))) {
+      throw new AssertionError("HALTSQL_REQUIRE_POSTGRES=1 but Postgres is not reachable: " + e.getMessage(), e);
+    }
+    System.out.println("skipping Postgres tests: " + e.getMessage() + " (run: make -C lab up)");
   }
 
   @AfterAll
