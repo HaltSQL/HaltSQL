@@ -127,6 +127,22 @@ even before 1.0.
   is not hash-chained, that a failed audit write does not block the
   statement and that there is no hot reload. All three were wrong; the page
   now describes the code.
+- **Go SDK: a JSON `null` inside a string array of a verdict is a protocol
+  error.** `ParseVerdict` (and so `Verify`) decoded `null` elements of
+  `bind_params[].value`, `tables`, `columns` and `policy.search_path` as empty
+  strings, so a malformed set-valued bind param such as `["acme", null]` was
+  bound as `["acme", ""]`. Such a body is now rejected (`KindProtocol`), as
+  the TypeScript, Java and Python SDKs already did.
+- **Java SDK: the timeout now covers the response body.** `HaltSQLClient`
+  relied on `HttpRequest.timeout`, which ends when the response headers
+  arrive. A sidecar (or a proxy in front of it) that sent the headers and then
+  stalled blocked `verify()` for ever. The body is now read under the same
+  per-attempt deadline; a stalled body raises `Kind.TIMEOUT` and is retried
+  like any other timeout.
+- **Java SDK: `VerifyOptions.requestId` is validated** (1-200 printable ASCII
+  characters, else `Kind.USAGE` before anything is sent), as in the TypeScript
+  and Go SDKs. Only CR/LF were refused before; an empty, over-long or
+  non-ASCII id was sent and then silently replaced by the server.
 
 ### Security
 - **haltsql-proxy limits unauthenticated connections per source address**
