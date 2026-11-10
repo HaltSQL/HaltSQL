@@ -15,7 +15,10 @@
     "shadow_reasons": [],
     "policy": {
       "name": "mixed-case",
-      "version": "sha256:5fad2a8e719bbb9b9383978bd6cd1a6d1ed141a295331fc414f582da17c51aeb"
+      "version": "sha256:b9ff143f76e5d40c5fb787817a335b092f78fd7559cbe67377be1743427e5abe",
+      "search_path": [
+        "app"
+      ]
     },
     "statement_kind": "select",
     "tables": [
@@ -34,7 +37,7 @@
     ],
     "fingerprint": "45a2f274df398a45",
     "sql_sha256": "13be5ac278aea2b18e7d81863149f39e67eb2fe1b2f4a588c7b7382ffbf36c24",
-    "elapsed_us": 257
+    "elapsed_us": 364
   },
   "compare": [
     "allowed",

@@ -3,8 +3,11 @@
  (public_name haltsql.rlsgen)
  (libraries
   haltsql.core
+  haltsql.b64
   yojson
   digestif
+  base64
+  haltsql.scram
   lwt
   lwt.unix
   tls

@@ -870,6 +870,206 @@ let check_yaml_json_twin =
       else true)
 
 (* ------------------------------------------------------------------ *)
+(* (e) metamorphic properties of the verdict                           *)
+
+(* Any SQL the other properties produce: safe queries, every transform of them, and
+   token soup. Most are denied; the properties below are about the ones that are not. *)
+let gen_mixed_sql =
+  QCheck.Gen.(
+    oneof_weighted
+      [
+        (3, gen_any_sql);
+        ( 2,
+          let* st = gen_style in
+          let* q = gen_q in
+          return (render ~st q) );
+      ])
+
+let arb_sql g = QCheck.make ~print:Fun.id g
+
+(* A policy that allows no more than [p]: something was taken away. Only removals
+   that cannot change how a name resolves are used (dropping one column of a table
+   would turn "this table has column c" into "it may have": a different question). *)
+type restriction =
+  | Drop_function of int
+  | Drop_operator of int
+  | Drop_cast of int
+  | Drop_table of int
+  | Lower_limit
+  | Lower_joins
+  | Lower_nodes
+  | No_select
+  | Deny_text_cast
+
+let gen_restriction =
+  QCheck.Gen.(
+    oneof_weighted
+      [
+        (4, map (fun i -> Drop_function i) (int_bound 1000));
+        (3, map (fun i -> Drop_operator i) (int_bound 1000));
+        (2, map (fun i -> Drop_cast i) (int_bound 1000));
+        (3, map (fun i -> Drop_table i) (int_bound 1000));
+        (1, return Lower_limit);
+        (1, return Lower_joins);
+        (1, return Lower_nodes);
+        (1, return No_select);
+        (1, return Deny_text_cast);
+      ])
+
+let drop_nth i l =
+  match l with [] -> [] | _ -> List.filteri (fun j _ -> j <> i mod List.length l) l
+
+let restrict (p : Policy.t) = function
+  | Drop_function i -> { p with functions = drop_nth i p.functions }
+  | Drop_operator i -> { p with operators = drop_nth i p.operators }
+  | Drop_cast i -> { p with casts = drop_nth i p.casts }
+  | Drop_table i -> { p with tables = drop_nth i p.tables }
+  | Lower_limit ->
+      {
+        p with
+        require_limit = Some (match p.require_limit with Some n -> n / 4 | None -> 5);
+      }
+  | Lower_joins -> { p with limits = { p.limits with max_joins = 0 } }
+  | Lower_nodes ->
+      { p with limits = { p.limits with max_nodes = p.limits.max_nodes / 40 } }
+  | No_select ->
+      { p with statements = List.filter (fun k -> k <> Policy.Select) p.statements }
+  | Deny_text_cast -> { p with deny_casts = "text" :: "int4" :: p.deny_casts }
+
+let restriction_name = function
+  | Drop_function i -> Printf.sprintf "drop function #%d" i
+  | Drop_operator i -> Printf.sprintf "drop operator #%d" i
+  | Drop_cast i -> Printf.sprintf "drop cast #%d" i
+  | Drop_table i -> Printf.sprintf "drop table #%d" i
+  | Lower_limit -> "lower require_limit"
+  | Lower_joins -> "max_joins = 0"
+  | Lower_nodes -> "lower max_nodes"
+  | No_select -> "disallow SELECT"
+  | Deny_text_cast -> "deny casts to text and int4"
+
+(* Taking something out of a policy never allows a statement the policy denied. *)
+let check_monotone =
+  QCheck.Test.make ~count:(count * 4)
+    ~name:"monotonicity: a restricted policy never allows what the policy denies"
+    (QCheck.make
+       ~print:(fun (r, sql) -> restriction_name r ^ "\nSQL: " ^ sql)
+       QCheck.Gen.(pair gen_restriction gen_mixed_sql))
+    (fun (r, sql) ->
+      let p = Lazy.force policy in
+      let full = Haltsql.verify p ctx sql in
+      let less = Haltsql.verify (restrict p r) ctx sql in
+      if less.allowed && not full.allowed then
+        QCheck.Test.fail_reportf
+          "restricted policy allows what the full policy denies [%s]\nSQL: %s"
+          (codes_str full) sql
+      else true)
+
+let other_tenant = "globex"
+let ctx_other = Context.make [ ("tenant_id", Context.One other_tenant) ]
+
+(* In bound mode the verdict cannot depend on WHO asks: the same statement is allowed
+   or denied for every tenant, and only the bound value differs. A verdict that changed
+   with the tenant would mean the tenant value leaked into the decision. *)
+let check_tenant_independence =
+  QCheck.Test.make ~count:(count * 2)
+    ~name:
+      "bound mode: the decision is the same for every tenant; only the binding differs"
+    (arb_sql gen_mixed_sql) (fun sql ->
+      let p = Lazy.force policy in
+      let a = Haltsql.verify p ctx sql and b = Haltsql.verify p ctx_other sql in
+      if a.allowed <> b.allowed || codes a <> codes b then
+        QCheck.Test.fail_reportf "decision depends on the tenant\nSQL: %s\n%s\n%s" sql
+          (verdict_json a) (verdict_json b)
+      else if
+        List.map fst a.bind_params <> List.map fst b.bind_params
+        || List.exists (fun (_, v) -> v <> Context.One tenant) a.bind_params
+        || List.exists (fun (_, v) -> v <> Context.One other_tenant) b.bind_params
+      then
+        QCheck.Test.fail_reportf "bindings are not the caller's tenant\nSQL: %s\n%s\n%s"
+          sql (verdict_json a) (verdict_json b)
+      else true)
+
+(* What an allow verdict says it read is inside the policy, and a denial binds nothing. *)
+let check_verdict_within_policy =
+  QCheck.Test.make ~count:(count * 2)
+    ~name:
+      "allowed verdicts report only policy tables and readable columns; denials bind \
+       nothing" (arb_sql gen_mixed_sql) (fun sql ->
+      let p = Lazy.force policy in
+      let v = Haltsql.verify p ctx sql in
+      let table_ok t =
+        List.exists (fun tb -> String.equal (Policy.table_qualified_name tb) t) p.tables
+      in
+      let column_ok c =
+        List.exists
+          (fun (tb : Policy.table) ->
+            let prefix = Policy.table_qualified_name tb ^ "." in
+            let n = String.length prefix in
+            String.length c > n
+            && String.equal (String.sub c 0 n) prefix
+            &&
+            let col = String.sub c n (String.length c - n) in
+            List.mem_assoc col tb.tenant_columns
+            ||
+            match tb.columns with
+            | Policy.All -> true
+            | Policy.Only l -> List.mem col l)
+          p.tables
+      in
+      if not v.allowed then
+        if v.bind_params <> [] then
+          QCheck.Test.fail_reportf "a denial carries bind_params\nSQL: %s" sql
+        else true
+      else
+        match
+          ( List.filter (fun t -> not (table_ok t)) v.tables,
+            List.filter (fun c -> not (column_ok c)) v.columns )
+        with
+        | [], [] -> true
+        | ts, cs ->
+            QCheck.Test.fail_reportf
+              "allowed verdict reads outside the policy: %s\nSQL: %s"
+              (String.concat ", " (ts @ cs))
+              sql)
+
+(* Literal mode: the same safe query with the tenant written as a literal is allowed
+   for that tenant and denied (mismatch) for any other. *)
+let policy_literal = lazy (load_policy "policies/saas_literal.yaml")
+
+let replace_all ~sub ~by s =
+  let n = String.length sub in
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i > String.length s - n then Buffer.add_substring b s i (String.length s - i)
+    else if String.equal (String.sub s i n) sub then (
+      Buffer.add_string b by;
+      go (i + n))
+    else (
+      Buffer.add_char b s.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents b
+
+let check_literal_mode =
+  QCheck.Test.make ~count
+    ~name:"literal mode: own tenant literal allowed, any other tenant's literal denied"
+    arb_case (fun (st, q) ->
+      let sql = replace_all ~sub:"$1" ~by:"'acme'" (render ~st q) in
+      let p = Lazy.force policy_literal in
+      let own = Haltsql.verify p ctx sql and other = Haltsql.verify p ctx_other sql in
+      if not own.allowed then
+        QCheck.Test.fail_reportf "own literal denied [%s]\nSQL: %s" (codes_str own) sql
+      else if own.bind_params <> [] then
+        QCheck.Test.fail_reportf "literal mode returned bind_params\nSQL: %s" sql
+      else if other.allowed then
+        QCheck.Test.fail_reportf "another tenant's literal was allowed\nSQL: %s" sql
+      else if not (List.mem Reason.E_TENANT_MISMATCH (codes other)) then
+        QCheck.Test.fail_reportf "expected E_TENANT_MISMATCH, got [%s]\nSQL: %s"
+          (codes_str other) sql
+      else true)
+
+(* ------------------------------------------------------------------ *)
 (* (d) totality                                                        *)
 
 let tokens =
@@ -1022,6 +1222,13 @@ let () =
         List.map (fun t -> to_alc (check_transform t)) breaking
         @ [ to_alc check_wrapped_breaking ] );
       ("determinism", [ to_alc check_determinism; to_alc check_yaml_json_twin ]);
+      ( "metamorphic",
+        [
+          to_alc check_monotone;
+          to_alc check_tenant_independence;
+          to_alc check_verdict_within_policy;
+          to_alc check_literal_mode;
+        ] );
       ( "totality",
         [
           to_alc (totality "random bytes never raise; denials use known codes" gen_bytes);

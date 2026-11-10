@@ -121,6 +121,12 @@ exactly `$1..$n`.
 
 ## Guarded execution
 
+> **Shadow mode.** A verdict from a `mode: shadow` policy is `allowed` even
+> when the policy would deny the query (`shadow_reasons` is then non-empty).
+> The guard raises `QueryDenied` for such a verdict unless you opt in with
+> `haltsql.guard.set_allow_shadow(True)` or `HALTSQL_ALLOW_SHADOW=1`. See
+> [rolling out a policy](tutorials/roll-out-a-policy-safely.md).
+
 ```python
 from haltsql import guard
 

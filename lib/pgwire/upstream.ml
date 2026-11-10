@@ -11,6 +11,73 @@ let max_upstream_auth_message = 65536
 let md5_password ~user ~password ~salt =
   "md5" ^ Sec.md5_hex (Sec.md5_hex (password ^ user) ^ salt)
 
+(* ------------------------------------------------------------------ *)
+(* search_path pinning                                                  *)
+
+(* The verifier resolves unqualified names against the policy's [search_path]; the
+   upstream session must resolve them the same way, whatever ALTER ROLE / ALTER DATABASE
+   defaults say. [pg_temp] is listed explicitly (last) because PostgreSQL otherwise
+   searches it FIRST for relations, ahead of every schema the policy knows about. *)
+let pinned_search_path schemas =
+  if List.mem "pg_temp" schemas then schemas else schemas @ [ "pg_temp" ]
+
+let quote_ident s =
+  let b = Buffer.create (String.length s + 2) in
+  Buffer.add_char b '"';
+  String.iter
+    (fun c ->
+      if c = '"' then Buffer.add_char b '"';
+      Buffer.add_char b c)
+    s;
+  Buffer.add_char b '"';
+  Buffer.contents b
+
+let search_path_value schemas =
+  if List.exists (fun s -> String.contains s '\000') schemas then
+    Error "a search_path schema name contains a NUL byte"
+  else Ok (String.concat ", " (List.map quote_ident schemas))
+
+(* PostgreSQL's SplitIdentifierString: comma-separated identifiers, optional whitespace,
+   unquoted names folded to lower case (ASCII), quoted names taken verbatim with ""
+   standing for one quote. [None]: not a valid list. *)
+let parse_search_path v =
+  let n = String.length v in
+  let is_space c = c = ' ' || c = '\t' || c = '\n' || c = '\r' || c = '\012' in
+  let rec skip i = if i < n && is_space v.[i] then skip (i + 1) else i in
+  let rec names i acc =
+    if i < n && v.[i] = '"' then
+      let b = Buffer.create 16 in
+      let rec quoted j =
+        if j >= n then None
+        else if v.[j] = '"' then
+          if j + 1 < n && v.[j + 1] = '"' then (
+            Buffer.add_char b '"';
+            quoted (j + 2))
+          else Some (j + 1)
+        else (
+          Buffer.add_char b v.[j];
+          quoted (j + 1))
+      in
+      match quoted (i + 1) with
+      | None -> None
+      | Some j -> after (skip j) (Buffer.contents b :: acc)
+    else
+      let rec bare j =
+        if j < n && v.[j] <> ',' && not (is_space v.[j]) then bare (j + 1) else j
+      in
+      let j = bare i in
+      if j = i then None
+      else after (skip j) (String.lowercase_ascii (String.sub v i (j - i)) :: acc)
+  and after i acc =
+    if i >= n then Some (List.rev acc)
+    else if v.[i] = ',' then names (skip (i + 1)) acc
+    else None
+  in
+  let i = skip 0 in
+  if i >= n then Some [] else names i []
+
+let search_path_matches ~expected v = parse_search_path v = Some expected
+
 let tls_config (u : upstream) =
   let authenticator =
     match u.tls_mode with
@@ -140,6 +207,14 @@ let authenticate (u : upstream) io =
               let* p = password () in
               let* () = Io.write io (Wire.password_message p) in
               loop ~scram:None
+        | Wire.Auth_md5 _, None when Io.tls io = None && not u.allow_insecure_auth ->
+            (* An MD5 response is a replayable password equivalent and a sniffed
+               exchange can be brute-forced offline: never over a plaintext link
+               unless the operator asked for it. *)
+            fail
+              "upstream requested MD5 password authentication over an unencrypted \
+               connection; refusing to send it (enable upstream.tls, switch the role to \
+               scram-sha-256, or set upstream.allow_insecure_auth: true)"
         | Wire.Auth_md5 salt, None ->
             let* p = password () in
             let* () =
@@ -153,9 +228,7 @@ let authenticate (u : upstream) io =
                 (String.concat ", " mechs)
             else
               let* p = password () in
-              let st, first =
-                Scram.Client.first ~nonce:(Sec.b64_encode (Sec.random 18)) ()
-              in
+              let st, first = Scram.Client.first ~nonce:(Scram.new_nonce ()) () in
               let* () =
                 Io.write io (Wire.sasl_initial_response ~mechanism:Scram.mechanism first)
               in
@@ -187,8 +260,15 @@ let wrap_errors f =
     | Lwt_unix.Timeout -> fail "upstream timed out"
     | e -> fail "upstream error: %s" (Printexc.to_string e))
 
-let connect (u : upstream) ~application_name =
+let connect ?search_path (u : upstream) ~application_name =
   wrap_errors (fun () ->
+      let* search_path =
+        match Option.map search_path_value search_path with
+        | None -> Lwt.return []
+        (* a startup-packet GUC overrides ALTER ROLE / ALTER DATABASE settings *)
+        | Some (Ok v) -> Lwt.return [ ("search_path", v) ]
+        | Some (Error m) -> fail "cannot pin the upstream search_path: %s" m
+      in
       let* fd = tcp_connect u in
       (* The SSLRequest answer and the TLS handshake are bounded too: a peer that
          accepts the TCP connection and then stalls must not pin the session. *)
@@ -205,6 +285,7 @@ let connect (u : upstream) ~application_name =
         (fun () ->
           let params =
             [ ("user", u.user); ("database", u.database); ("client_encoding", "UTF8") ]
+            @ search_path
             @
             match application_name with
             | Some a -> [ ("application_name", a) ]

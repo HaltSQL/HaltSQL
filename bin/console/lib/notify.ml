@@ -191,22 +191,7 @@ let resolve ?timeout cfg a = pagerduty ?timeout ~action:`Resolve cfg a
 
 (* ---- Jira ---- *)
 
-let base64 s =
-  let tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" in
-  let n = String.length s in
-  let b = Buffer.create (((n + 2) / 3 * 4) + 1) in
-  let byte i = if i < n then Char.code s.[i] else 0 in
-  let i = ref 0 in
-  while !i < n do
-    let x = (byte !i lsl 16) lor (byte (!i + 1) lsl 8) lor byte (!i + 2) in
-    Buffer.add_char b tbl.[(x lsr 18) land 63];
-    Buffer.add_char b tbl.[(x lsr 12) land 63];
-    Buffer.add_char b (if !i + 1 < n then tbl.[(x lsr 6) land 63] else '=');
-    Buffer.add_char b (if !i + 2 < n then tbl.[x land 63] else '=');
-    i := !i + 3
-  done;
-  Buffer.contents b
-
+let base64 = Haltsql_b64.encode
 let jira_configured cfg = section cfg "jira" <> None
 
 let strip_slash url =

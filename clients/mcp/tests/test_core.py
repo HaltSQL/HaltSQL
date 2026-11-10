@@ -162,3 +162,15 @@ def test_jsonable():
     assert jsonable({"a": [1, decimal.Decimal("2")]}) == {"a": [1, "2"]}
     assert jsonable(float("nan")) == "nan"
     assert jsonable("x" * 10_001).endswith("...[truncated]")
+
+
+async def test_shadow_would_deny_is_not_executed_without_opt_in(monkeypatch):
+    from haltsql import guard
+
+    monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
+    guard.set_allow_shadow(None)
+    fv = FakeVerifier(lambda sql, ctx, p: make_verdict(sql, allowed=True, shadow_codes=["E_TENANT_MISSING"]))
+    t = HaltSQLTools(fv, lambda: {"tenant_id": "acme"}, connect=never_connect)
+    out = await t.query(BAD)
+    assert out["allowed"] is False and out["executed"] is False
+    assert [r["code"] for r in out["reasons"]] == ["E_TENANT_MISSING"]

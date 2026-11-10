@@ -43,20 +43,32 @@ public final class JdbcGuard {
   private final HaltSQLClient client;
   private final Consumer<Verdict> onVerdict;
   private final boolean requireByteIdentical;
+  private final boolean allowShadow;
 
   public JdbcGuard(HaltSQLClient client) {
-    this(client, v -> {}, false);
+    this(client, v -> {}, false, false);
   }
 
-  private JdbcGuard(HaltSQLClient client, Consumer<Verdict> onVerdict, boolean strict) {
+  private JdbcGuard(
+      HaltSQLClient client, Consumer<Verdict> onVerdict, boolean strict, boolean allowShadow) {
     this.client = Objects.requireNonNull(client, "client");
     this.onVerdict = Objects.requireNonNull(onVerdict, "onVerdict");
     this.requireByteIdentical = strict;
+    this.allowShadow = allowShadow;
+  }
+
+  /**
+   * A copy that runs SQL a shadow-mode policy would deny (an allowed verdict with shadow reasons).
+   * Without it such a verdict throws {@link HaltSQLDeniedException}, so switching a policy to
+   * shadow on the server cannot by itself turn enforcement off in this application.
+   */
+  public JdbcGuard allowShadow() {
+    return new JdbcGuard(client, onVerdict, requireByteIdentical, true);
   }
 
   /** A copy that calls {@code c} with every verdict (allowed or denied), e.g. for audit logs. */
   public JdbcGuard onVerdict(Consumer<Verdict> c) {
-    return new JdbcGuard(client, c, requireByteIdentical);
+    return new JdbcGuard(client, c, requireByteIdentical, allowShadow);
   }
 
   /**
@@ -64,7 +76,7 @@ public final class JdbcGuard {
    * sends the verified string byte for byte.
    */
   public JdbcGuard requireByteIdenticalSql() {
-    return new JdbcGuard(client, onVerdict, true);
+    return new JdbcGuard(client, onVerdict, true, allowShadow);
   }
 
   /**
@@ -90,7 +102,9 @@ public final class JdbcGuard {
     }
     Verdict v = client.verify(sql, context, opts);
     onVerdict.accept(v);
-    if (!v.allowed()) throw new HaltSQLDeniedException(v);
+    if (!v.allowed() || (!allowShadow && !v.shadowReasons().isEmpty())) {
+      throw new HaltSQLDeniedException(v);
+    }
     BindParam[] params = BindParams.ordered(v);
     jsql.checkCovers(params.length);
     PreparedStatement ps = conn.prepareStatement(jsql.jdbcSql());

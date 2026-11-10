@@ -116,6 +116,7 @@ Names in a policy follow Postgres rules:
 | [`tables`](#tables) | map | no | `{}` (nothing readable) |
 | [`functions`](#functions) | object | no | no functions allowed |
 | [`operators`](#operators) | object | no | built-in default list |
+| [`casts`](#casts) | object | no | built-in scalar types |
 | [`deny_casts`](#deny_casts) | list, or object | no | built-in default list |
 | [`allow_explain`](#allow_explain) | boolean | no | `false` |
 | [`mode`](#mode) | string | no | `enforce` |
@@ -454,6 +455,31 @@ without the `~` operators.
 `AND`, `OR`, `NOT`, `IS NULL`, `IN`, `BETWEEN`, and `CASE` are syntax, not
 operators, and are always available.
 
+### casts
+
+```yaml
+casts:
+  extend: [inet, app.order_status]   # the defaults plus your additions
+```
+
+Cast targets are **denied by default**: `x::type`, `CAST(x AS type)` and typed
+literals (`interval '7 days'`) are allowed only for listed types. A cast runs
+the target type's input or conversion function, so an unlisted type is an
+unlisted function call. Anything else gives `E_CAST_DENIED`.
+
+- Omitted: the built-in list (`Policy_load.default_casts`): `text`, `varchar`,
+  `bpchar`, `int2`, `int4`, `int8`, `numeric`, `float4`, `float8`, `bool`,
+  `date`, `time`, `timetz`, `timestamp`, `timestamptz`, `interval`, `uuid`,
+  `json`, `jsonb`, `bytea`.
+- `allow`: replaces the built-in list. `extend`: adds to it (or to `allow`).
+- Use the names PostgreSQL's parser produces: `INTEGER` is `int4`, `BIGINT` is
+  `int8`, `BOOLEAN` is `bool`, `CHAR` is `bpchar`, `DOUBLE PRECISION` is
+  `float8`, `DECIMAL` is `numeric`.
+- A bare name matches the type unqualified or `pg_catalog.`-qualified. A type
+  in any other schema must be listed as `schema.type`; `public.int8` does not
+  match `int8`.
+- Array casts (`::int4[]`) are checked by their element type.
+
 ### deny_casts
 
 ```yaml
@@ -461,8 +487,10 @@ deny_casts:
   extend: [inet]            # recommended form: the defaults plus your additions
 ```
 
-Cast target types that are denied (`'x'::regclass`, `CAST(... AS regproc)`),
-lower case and unqualified. A denied cast gives `E_CAST_DENIED`.
+Cast target types that are denied even when [`casts`](#casts) lists them
+(`'x'::regclass`, `CAST(... AS regproc)`), lower case and unqualified. It is a
+second guard: extending `casts` by mistake cannot open the `reg*` types. A
+denied cast gives `E_CAST_DENIED`.
 
 - Omitted: the built-in default list (`Policy_load.default_deny_casts`):
   `regclass`, `regproc`, `regprocedure`, `regoper`, `regoperator`, `regtype`,

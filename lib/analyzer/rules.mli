@@ -42,8 +42,9 @@ val type_base : Ast.type_name -> string
 (** Lower-cased last component of a type name ([pg_catalog.int4] -> ["int4"]). *)
 
 val check_cast : Env.t -> Ast.type_name -> int -> unit
-(** Rule H: a cast to a type in [policy.deny_casts] (compared by {!type_base}) is denied
-    ([E_CAST_DENIED]). *)
+(** Rule H: a cast target must be in [policy.casts] (bare name for an unqualified or
+    [pg_catalog.] type, ["schema.type"] otherwise) and must not be in [policy.deny_casts]
+    (compared by {!type_base}); anything else is [E_CAST_DENIED]. *)
 
 val check_limit : Env.t -> Ast.select -> unit
 (** Rule C: when the policy has [require_limit = Some max], the outermost SELECT must have

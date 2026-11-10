@@ -226,6 +226,28 @@ class JdbcGuardTest {
   }
 
   @Test
+  void shadowWouldDenyNeverPreparesWithoutOptIn() throws Exception {
+    JsonNode v = FakeServer.vector("allowed_bound_single_tenant");
+    com.fasterxml.jackson.databind.node.ObjectNode resp = v.get("response").deepCopy();
+    resp.putArray("shadow_reasons")
+        .addObject()
+        .put("code", "E_TENANT_MISSING")
+        .put("message", "m")
+        .put("rule", "r");
+    String body = resp.toString();
+    AtomicInteger prepares = new AtomicInteger();
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body))) {
+      HaltSQLClient hc = HaltSQLClient.builder(srv.url()).token(v.get("token").asText()).build();
+      HaltSQLDeniedException e =
+          assertThrows(
+              HaltSQLDeniedException.class,
+              () -> new JdbcGuard(hc).prepare(fakeConnection(JdbcGuard.PGJDBC_DRIVER_NAME, prepares), v.get("request").get("sql").asText(), Map.of("tenant_id", "acme")));
+      assertTrue(e.getMessage().contains("shadow mode would deny: E_TENANT_MISSING"));
+    }
+    assertEquals(0, prepares.get());
+  }
+
+  @Test
   void sidecarErrorNeverPrepares() throws Exception {
     AtomicInteger prepares = new AtomicInteger();
     try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(500, "{\"error\":{\"code\":\"INTERNAL\",\"message\":\"boom\"}}"))) {

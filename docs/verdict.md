@@ -59,6 +59,7 @@ Messages, hints, and hash values above are illustrative.
 | `reasons` | array of [Reason](#reason) | Why the query was denied. Empty when allowed. |
 | `shadow_reasons` | array of [Reason](#reason) | Shadow mode only: the reasons the query *would* have been denied. Always empty in enforce mode. |
 | `policy.name` | string | `metadata.name` of the policy used. |
+| `policy.search_path` | list of strings | The policy's `search_path`: the schemas unqualified names were resolved against. The verdict holds only if the session that runs the SQL uses this search path. The Python guard, the MCP server and the proxy pin it; if you execute yourself, run `SET LOCAL search_path` to it in the same transaction, or have the model write schema-qualified names. |
 | `policy.version` | string | `sha256:<hex>` hash of the normalized policy (identical for YAML and JSON forms). Log it to know exactly which policy made a decision. |
 | `statement_kind` | string or null | `select`, `insert`, `update`, or `delete` when the statement parsed and is one of those kinds; otherwise `null`. |
 | `tables` | array of strings | Qualified relations the statement reads or writes (`schema.table`), sorted and unique. May be partial when the query was denied early. |

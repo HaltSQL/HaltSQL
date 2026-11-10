@@ -33,6 +33,7 @@ depends: [
   "ca-certs" {>= "1.0"}
   "domain-name" {>= "0.4"}
   "ipaddr" {>= "5.0"}
+  "kdf" {>= "1.0"}
   "eqaf" {>= "0.9"}
   "mirage-crypto-pk" {>= "1.0"}
   "mirage-crypto-ec" {>= "1.0"}

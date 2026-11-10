@@ -85,9 +85,14 @@ export function parseVerdict(body: Json, requestId?: string): Verdict {
   const shadow = parseReasons(body, "shadow_reasons", rid);
   const pol = body.policy;
   if (!isObject(pol)) fail("policy must be an object", rid);
-  const policy = {
+  const sp = pol.search_path;
+  if (sp !== undefined && !(Array.isArray(sp) && sp.every((x) => typeof x === "string"))) {
+    fail("policy.search_path must be a list of strings", rid);
+  }
+  const policy: Verdict["policy"] = {
     name: str(pol, "name", "policy", rid),
     version: str(pol, "version", "policy", rid),
+    ...(sp === undefined ? {} : { search_path: sp as string[] }),
   };
   const sk = body.statement_kind;
   if (sk !== null && typeof sk !== "string") fail("statement_kind must be a string or null", rid);

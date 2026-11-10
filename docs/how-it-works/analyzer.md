@@ -283,7 +283,7 @@ either a column or a whole-row reference to a sensitive table are all denied.
 | F | Function names must be in the policy's expanded function list. Unqualified and `pg_catalog.` names match by bare name; any other schema must be listed as `schema.fn`. | `E_FUNCTION_DENIED` |
 | F | SQL value functions: only `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, and `LOCALTIMESTAMP`. Identity and session values (`CURRENT_USER`, `SESSION_USER`, `CURRENT_SCHEMA`, ...) are denied. | `E_FUNCTION_DENIED` |
 | G | Operators (including `ANY`/`ALL`, `IN`, `LIKE`, `ILIKE`, `SIMILAR TO`) must be in the operator list. An operator qualified with a schema other than `pg_catalog` is always denied. Built-in syntax such as `BETWEEN`, `IS DISTINCT FROM`, and `NULLIF` is not an operator lookup. | `E_OPERATOR_DENIED` |
-| H | A cast whose target type (last name part, lower case) is in `deny_casts`, such as `regclass`. | `E_CAST_DENIED` |
+| H | A cast whose target type is not in `casts` (deny by default), or is in `deny_casts`, such as `regclass`. | `E_CAST_DENIED` |
 
 ### I: join budget
 
@@ -386,7 +386,7 @@ and may change.
 | F | `functions.allowlist` | `E_FUNCTION_DENIED` | `rules.ml` |
 | F | `functions.sql_value` | `E_FUNCTION_DENIED` | `rules.ml` |
 | G | `operators.allowlist` | `E_OPERATOR_DENIED` | `rules.ml` |
-| H | `casts.deny` | `E_CAST_DENIED` | `rules.ml` |
+| H | `casts.allowlist`, `casts.deny` | `E_CAST_DENIED` | `rules.ml` |
 | I | `joins.budget` | `E_JOIN_BUDGET` | `analyzer.ml` |
 | J | `params.unbound` | `E_PARAM_UNBOUND` | `analyzer.ml` |
 | J | `params.tenant_reuse` | `E_PARAM_UNBOUND` | `analyzer.ml` |

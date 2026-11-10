@@ -264,8 +264,22 @@ let policy_props () =
               arr "Adds operators to the defaults (or to allow)." (str "Operator symbol.")
             );
           ] );
+      ( "casts",
+        obj
+          "Allowed cast target types (deny by default). Default: built-in scalar types \
+           (text, integers, numeric, floats, bool, date/time, uuid, json, jsonb, bytea)."
+          [
+            ( "allow",
+              arr "Replaces the default list."
+                (str "PostgreSQL type name, e.g. int4 or app.status.") );
+            ( "extend",
+              arr "Adds types to the defaults (or to allow)."
+                (str "PostgreSQL type name, e.g. inet or app.status.") );
+          ] );
       ( "deny_casts",
-        one_of "Denied cast target types. Default: the reg* family and txid_snapshot."
+        one_of
+          "Cast target types denied even when casts lists them. Default: the reg* family \
+           and txid_snapshot."
           [
             arr "Replaces the default list." (str "Type name.");
             obj "Extends the default list."
@@ -792,6 +806,18 @@ let config =
                                 str "Lower-case hex SHA-256 of the token (64 characters)."
                               );
                               ("policy", str "Name of the policy this token may use.");
+                              ( "context",
+                                map_of
+                                  "Context bound to this token (e.g. tenant_id). When \
+                                   set, the request body cannot supply or override these \
+                                   fields."
+                                  (one_of "A value or a list of values."
+                                     [ str "Value."; arr "Values." (str "Value.") ]) );
+                              ( "request_context_fields",
+                                ctx_fields
+                                  "Context fields the request body may still supply. \
+                                   Default []. Setting this or context binds the token: \
+                                   no other body field is accepted." );
                             ]) );
                      ( "allow_unauthenticated",
                        bool ~default:false

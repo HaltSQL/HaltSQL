@@ -290,8 +290,9 @@ both sides need `WHERE` predicates.
 
 ## Equality propagation
 
-HaltSQL 0.0.1 does **not** propagate equality through joins. This query is
-denied, even though it is safe:
+An occurrence is also proven by a plain equality between its tenant column and
+the tenant column of **another occurrence in the same `SELECT`** that is itself
+proven, when both columns carry the same tenancy key:
 
 ```sql
 SELECT o.id, c.name
@@ -300,9 +301,20 @@ WHERE o.tenant_id = $1
 LIMIT 10
 ```
 
-Write a direct predicate for each occurrence instead
-(`AND c.tenant_id = $1`). Propagation through a union-find over equality
-conjuncts is planned for a later release.
+`o` has a direct predicate; `c` is proven through `c.tenant_id = o.tenant_id`.
+The same limits apply as for a direct predicate, and a few more:
+
+- The equality must be a top-level `AND` condition in one of the occurrence's
+  own locations (the `WHERE`, or a join `ON` that filters it). In
+  `customers c LEFT JOIN orders o ON c.tenant_id = o.tenant_id`, the `ON` does
+  not filter `c`, so `c` still needs its own proof.
+- Both sides must be bare column references: no cast, no `COLLATE`, no
+  expression, and only the `=` operator.
+- At least one occurrence in the chain needs a direct predicate. Two
+  occurrences that are only equal to each other prove nothing.
+- It does not cross a subquery boundary (`EXISTS`, `IN (SELECT ...)`,
+  `LATERAL`, CTEs), and `USING (tenant_id)` / `NATURAL JOIN` are not proofs.
+  Write a direct predicate there.
 
 ## Writes
 

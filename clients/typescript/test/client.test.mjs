@@ -393,6 +393,24 @@ describe("guardedQuery", () => {
     }
   });
 
+  test("shadow would-deny: runs only with allowShadow", async () => {
+    const v = vector("allowed_set_valued_tenant");
+    const shadow = { ...v, response: { ...v.response, shadow_reasons: [{ code: "E_TENANT_MISSING", message: "m", rule: "r" }] } };
+    const srv = await fakeServer(replay(shadow));
+    try {
+      const c = new HaltSQLClient({ baseUrl: srv.url, token: v.token });
+      const db = fakeDb();
+      const e = await guardedQuery(c, db, v.request.sql, v.request.context).catch((x) => x);
+      assert.ok(e instanceof HaltSQLDeniedError);
+      assert.match(e.message, /shadow mode would deny: E_TENANT_MISSING/);
+      assert.equal(db.calls.length, 0);
+      await guardedQuery(c, db, v.request.sql, v.request.context, { allowShadow: true });
+      assert.equal(db.calls.length, 1);
+    } finally {
+      await srv.close();
+    }
+  });
+
   test("sidecar error: throws and never touches the database", async () => {
     const srv = await fakeServer(() => ({ status: 500, body: { error: { code: "INTERNAL", message: "boom" } } }));
     try {

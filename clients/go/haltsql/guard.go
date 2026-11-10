@@ -22,6 +22,7 @@ type guardOpts struct {
 	verify    []VerifyOption
 	onVerdict func(*Verdict)
 	literal   bool
+	shadow    bool
 }
 
 // GuardVerify passes options to Verify (e.g. WithPolicy, WithRequestID).
@@ -32,6 +33,12 @@ func GuardVerify(opts ...VerifyOption) GuardOption {
 // OnVerdict is called with every verdict (allowed or denied) before anything
 // runs; use it for audit logging.
 func OnVerdict(f func(*Verdict)) GuardOption { return func(g *guardOpts) { g.onVerdict = f } }
+
+// AllowShadow runs SQL that a shadow-mode policy would deny (the verdict is
+// allowed with ShadowReasons set). Without it the guard returns a *DeniedError
+// for such a verdict, so switching a policy to shadow on the server cannot by
+// itself turn enforcement off in this application. Use it for shadow rollouts.
+func AllowShadow() GuardOption { return func(g *guardOpts) { g.shadow = true } }
 
 // ArrayLiteralArgs binds sets as Postgres array literals (for lib/pq).
 func ArrayLiteralArgs() GuardOption { return func(g *guardOpts) { g.literal = true } }
@@ -51,7 +58,7 @@ func guard(ctx context.Context, hc *Client, sqlText string, vctx Context, opts [
 	if g.onVerdict != nil {
 		g.onVerdict(v)
 	}
-	if !v.Allowed {
+	if !v.Allowed || (len(v.ShadowReasons) > 0 && !g.shadow) {
 		return v, nil, &DeniedError{Verdict: v}
 	}
 	var args []any

@@ -152,6 +152,8 @@ haltsql/
 │   ├── haltsql/     haltsql                # public facade: Haltsql.verify, Suite_runner
 │   ├── cloud/       haltsql.cloud          # audit hash chain, S3/GCS sinks, secret resolvers
 │   ├── bundle/      haltsql.bundle         # signed policy bundles (Ed25519)
+│   ├── b64/         haltsql.b64            # strict standard base64
+│   ├── scram/       haltsql.scram          # SCRAM-SHA-256/512, client and server, no IO
 │   ├── rlsgen/      haltsql.rlsgen         # RLS / grant DDL generation and drift checks
 │   ├── catalog_tools/ haltsql.catalog_tools # schema pull, PII importers, policy drafter
 │   ├── auth/        haltsql-server.auth    # JWT/OIDC/mTLS caller authentication
@@ -261,8 +263,8 @@ scope**:
 - A predicate in an outer query does **not** cover an inner occurrence, and
   `LEFT JOIN … ON` conditions do not filter the preserved side.
 - Equality propagation through joins (`a.tenant_id = b.tenant_id AND
-  b.tenant_id = $1`) is supported as a v1.1 enhancement, through a union-find
-  over equality conjuncts. v1 requires a direct predicate on every relation.
+  b.tenant_id = $1`) is supported within one `SELECT` (see docs/tenancy.md);
+  it does not cross subquery boundaries.
 
 Writes (v1.1): `INSERT` must set the tenant column to the tenant value in every
 row (no `INSERT … SELECT` unless the source passes the same proof); `UPDATE` may

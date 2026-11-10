@@ -444,7 +444,16 @@ let lint (p : Policy.t) =
     | Some _ -> []
   in
   let missing_catalog =
-    if p.catalog.tables = [] then []
+    if p.catalog.tables = [] then
+      if tables = [] then []
+      else
+        [
+          f "warning" "W_NO_CATALOG"
+            "no catalog snapshot: HaltSQL knows only the columns the policy lists, so it \
+             cannot expand *, must deny unqualified columns in multi-table queries, and \
+             cannot notice that a table gained a column; add `catalog:` from `haltsql \
+             schema pull`";
+        ]
     else
       List.filter_map
         (fun (t : Policy.table) ->

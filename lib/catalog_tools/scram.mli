@@ -1,9 +1,9 @@
 (** SCRAM-SHA-256 client (RFC 5802 / RFC 7677) as used by PostgreSQL authentication.
 
-    Pure functions; the caller supplies the client nonce. Channel binding is not used (GS2
-    header ["n,,"]). The password is used as given (no SASLprep normalization), which is
-    exact for ASCII passwords; PostgreSQL itself falls back to the raw bytes when a
-    password is not valid SASLprep input. *)
+    Pure functions on {!Haltsql_scram}; the caller supplies the client nonce. Channel
+    binding is not used (GS2 header ["n,,"]). The password is used as given (no SASLprep
+    normalization), which is exact for ASCII passwords; PostgreSQL itself falls back to
+    the raw bytes when a password is not valid SASLprep input. *)
 
 type client_first = { message : string;  (** full client-first message *) bare : string }
 
@@ -22,7 +22,7 @@ val client_final :
   server_first:string ->
   (client_final, string) result
 (** Validates the server-first message (the combined nonce must extend ours; the iteration
-    count must be between 1 and 10_000_000) and computes the proof. *)
+    count must be between 4096 and 600_000) and computes the proof. *)
 
 val verify_server_final : client_final -> string -> (unit, string) result
 (** Checks [v=<signature>] in constant time; [e=...] server errors are reported. *)

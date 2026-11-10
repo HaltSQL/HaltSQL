@@ -152,7 +152,7 @@ let static_caller (snap : State.snapshot) header =
           caller_type = "token";
           subject = None;
           pinned = Some t.token_policy;
-          auth_context = None;
+          auth_context = t.token_context;
         }
   | Auth.Missing when snap.allow_unauthenticated ->
       Metrics.observe_auth ~meth:"anonymous" ~result:"ok";
@@ -310,12 +310,13 @@ let parse_verify_req s =
         | Some _, _, _ -> Error "\"sql\" must be a string")
   | _ -> Error "body must be a JSON object"
 
-let audit_record (st : State.t) ~rid ~caller ~(verdict : Verdict.t) ~sql =
+let audit_record ?context (st : State.t) ~rid ~caller ~(verdict : Verdict.t) ~sql =
   let fields =
     Audit.record_fields
+      ?context:(Option.map (fun c -> (c, Option.is_some caller.auth_context)) context)
       ~ts:(Log.rfc3339 (Unix.gettimeofday ()))
       ~request_id:rid ~caller:caller.caller_name ~caller_type:caller.caller_type
-      ~subject:caller.subject ~verdict ~sql ~log_raw_sql:st.cfg.log_raw_sql
+      ~subject:caller.subject ~verdict ~sql ~log_raw_sql:st.cfg.log_raw_sql ()
   in
   let failures =
     List.filter_map
@@ -413,7 +414,9 @@ let handle_verify_inner (st : State.t) (snap : State.snapshot) ~conn ~rid ~on_ve
                            (String.concat ", " fields) caller.caller_type)
                   | Some policy, Ok ctx ->
                       let t0 = Unix.gettimeofday () in
-                      let verdict = Haltsql.verify policy ctx r.sql in
+                      (* Off the event loop: parsing and analysing a large statement
+                         must not stall other requests, health checks or reloads. *)
+                      let* verdict = Verify_pool.verify policy ctx r.sql in
                       let seconds = Unix.gettimeofday () -. t0 in
                       let* verdict = opa_check snap ~caller ~policy ~ctx verdict in
                       on_verdict verdict;
@@ -427,8 +430,8 @@ let handle_verify_inner (st : State.t) (snap : State.snapshot) ~conn ~rid ~on_ve
                           (List.map
                              (fun (x : Reason.t) -> Reason.code_to_string x.code)
                              (verdict.reasons @ verdict.shadow_reasons));
-                      if audit_record st ~rid ~caller ~verdict ~sql:r.sql then
-                        respond ~rid `OK (Verdict.to_json verdict)
+                      if audit_record ~context:ctx st ~rid ~caller ~verdict ~sql:r.sql
+                      then respond ~rid `OK (Verdict.to_json verdict)
                       else
                         error ~rid `Service_unavailable "AUDIT_UNAVAILABLE"
                           "the audit log could not be written; request denied (fail \

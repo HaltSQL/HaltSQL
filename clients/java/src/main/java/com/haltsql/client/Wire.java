@@ -144,7 +144,11 @@ final class Wire {
     List<Reason> shadow = reasons(o, "shadow_reasons");
     JsonNode pol = req(o, "policy", "verdict");
     if (!pol.isObject()) throw new Invalid("policy must be an object");
-    PolicyRef policy = new PolicyRef(str(pol, "name", "policy"), str(pol, "version", "policy"));
+    PolicyRef policy =
+        new PolicyRef(
+            str(pol, "name", "policy"),
+            str(pol, "version", "policy"),
+            pol.has("search_path") ? strList(pol, "search_path") : null);
     String kind = nullableStr(o, "statement_kind");
     String fp = nullableStr(o, "fingerprint");
     String sha = str(o, "sql_sha256", "verdict");

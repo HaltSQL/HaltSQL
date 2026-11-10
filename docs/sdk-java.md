@@ -117,6 +117,16 @@ Every failure is a `HaltSQLException` whose `kind()` is one of:
 ignored ([compatibility rules](verdict.md#stability-guarantees)); unknown
 reason codes are kept as strings.
 
+`JdbcGuard` throws `HaltSQLDeniedException` for SQL that a `mode: shadow`
+policy would deny, unless you use `new JdbcGuard(client).allowShadow()` (for a
+[shadow rollout](tutorials/roll-out-a-policy-safely.md)).
+
+**Search path.** The guard runs one statement on your connection and does not
+change session settings. The verdict holds only under the policy's search path
+(`verdict.policy().searchPath()`): configure the connection or role with that `search_path`, or have
+the model write schema-qualified names. (The Python guard and the MCP server
+set it for you; so does `haltsql-proxy`.)
+
 ## Options
 
 | Builder method | Default | Meaning |

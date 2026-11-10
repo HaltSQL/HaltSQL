@@ -1,4 +1,6 @@
-(** SCRAM-SHA-256 (RFC 5802, RFC 7677) as used by PostgreSQL, both sides.
+(** SCRAM-SHA-256 (RFC 5802, RFC 7677) as used by PostgreSQL, both sides. The protocol is
+    {!Haltsql_scram}; this module adds the CSPRNG (salts, nonces) and the proxy's error
+    wording.
 
     Channel binding is not offered (mechanism ["SCRAM-SHA-256"] only); a client that
     requests it (gs2 flag ['p']) is rejected. Passwords are used as raw UTF-8 bytes:
@@ -11,7 +13,7 @@ val mechanism : string
 val pbkdf2_sha256 : password:string -> salt:string -> iterations:int -> string
 (** RFC 5802 [Hi()], 32-byte output. *)
 
-type verifier = {
+type verifier = Haltsql_scram.verifier = {
   iterations : int;
   salt : string;  (** raw bytes *)
   stored_key : string;  (** raw 32 bytes *)
@@ -27,6 +29,9 @@ val verifier_to_string : verifier -> string
 
 val make_verifier : ?iterations:int -> ?salt:string -> string -> verifier
 (** [make_verifier password]; default 4096 iterations and a random 16-byte salt. *)
+
+val new_nonce : unit -> string
+(** A fresh nonce: 24 CSPRNG bytes, base64. *)
 
 (** Server side (the proxy authenticating its clients). *)
 module Server : sig
@@ -59,8 +64,9 @@ module Client : sig
       packet's. *)
 
   val final : t -> password:string -> string -> (t * string, string) result
-  (** [final t ~password server_first] checks the server nonce extends ours and returns
-      the client-final-message. *)
+  (** [final t ~password server_first] checks the server-first-message (the nonce must
+      extend ours; the iteration count must be within 4096..600000) and returns the
+      client-final-message. *)
 
   val verify_server : t -> string -> (unit, string) result
   (** Checks the server-final-message signature (mutual authentication). *)

@@ -38,6 +38,7 @@ let member k = function
 let sha = Auth.sha256_hex
 let token_a = "token-for-shop-agent"
 let token_b = "token-for-other-agent"
+let token_bound = "token-bound-to-acme"
 
 (* Policy files live in tmpdir so tests can modify them. *)
 let shop_path = tmp "shop.yaml"
@@ -53,11 +54,24 @@ let () =
 
 let tokens : Haltsql.Config.token list =
   [
-    { token_name = "shop-agent"; token_sha256 = sha token_a; token_policy = "shop" };
+    {
+      token_name = "shop-agent";
+      token_sha256 = sha token_a;
+      token_policy = "shop";
+      token_context = None;
+    };
     {
       token_name = "other-agent";
       token_sha256 = String.uppercase_ascii (sha token_b);
       token_policy = "other";
+      token_context = None;
+    };
+    {
+      token_name = "acme-agent";
+      token_sha256 = sha token_bound;
+      token_policy = "shop";
+      token_context =
+        Some (Haltsql.Context.make [ ("tenant_id", Haltsql.Context.One "acme") ], []);
     };
   ]
 
@@ -172,6 +186,56 @@ let request_id_echo () =
      let id = Option.value (Cohttp.Header.get r.headers "x-request-id") ~default:"" in
      Alcotest.(check int) "generated uuid" 36 (String.length id);
      Alcotest.(check char) "v4" '4' id.[14];
+     Lwt.return_unit)
+
+let audit_lines_of path =
+  List.filter
+    (fun l -> String.trim l <> "")
+    (String.split_on_char '\n' (In_channel.with_open_bin path In_channel.input_all))
+
+(* A token with a configured context is bound to it: the body cannot claim another
+   tenant, and the audit record names the tenant and where it came from. *)
+let token_bound_context () =
+  run
+    (let* r =
+       request ~meth:`POST ~token:token_bound
+         ~body:(verify_body ~context:"{}" good_sql)
+         port_a "/v1/verify"
+     in
+     check_status "bound verify" 200 r;
+     let j = json r in
+     Alcotest.(check bool) "allowed" true (member "allowed" j = `Bool true);
+     Alcotest.(check string)
+       "binds the token's tenant" {|[{"param":1,"value":"acme"}]|}
+       (Yojson.Safe.to_string (member "bind_params" j));
+     let last =
+       Yojson.Safe.from_string (List.hd (List.rev (audit_lines_of audit_path)))
+     in
+     Alcotest.(check string)
+       "audit context" {|{"tenant_id":"acme"}|}
+       (Yojson.Safe.to_string (member "context" last));
+     Alcotest.(check bool)
+       "audit context_source" true
+       (member "context_source" last = `String "authenticated");
+     let* r =
+       request ~meth:`POST ~token:token_bound
+         ~body:(verify_body ~context:{|{"tenant_id":"globex"}|} good_sql)
+         port_a "/v1/verify"
+     in
+     check_status "another tenant refused" 403 r;
+     let* r =
+       request ~meth:`POST ~token:token_a
+         ~body:(verify_body ~context:{|{"tenant_id":"globex"}|} good_sql)
+         port_a "/v1/verify"
+     in
+     check_status "unbound token" 200 r;
+     let last =
+       Yojson.Safe.from_string (List.hd (List.rev (audit_lines_of audit_path)))
+     in
+     Alcotest.(check bool)
+       "unbound: context from the request" true
+       (member "context_source" last = `String "request"
+       && Yojson.Safe.to_string (member "context" last) = {|{"tenant_id":"globex"}|});
      Lwt.return_unit)
 
 let verify_with_token () =
@@ -1102,6 +1166,7 @@ let () =
           tc "health + readiness" health;
           tc "request id" request_id_echo;
           tc "verify with token" verify_with_token;
+          tc "token bound to a context" token_bound_context;
           tc "auth failures" auth_failures;
           tc "unauthenticated mode" unauthenticated_mode;
           tc "bad requests" bad_requests;

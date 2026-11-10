@@ -54,6 +54,10 @@ val of_json : Yojson.Safe.t -> (t, string) result
 
 val of_line : string -> (t, string) result
 
+val is_execution : Yojson.Safe.t -> bool
+(** A proxy [execute] record (one per forwarded Execute). It carries no verdict, so
+    {!of_json} rejects it; callers should not count it as an unrecognised line. *)
+
 val of_verdict :
   ts:float ->
   caller:string ->

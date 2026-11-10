@@ -90,10 +90,18 @@ cases:
     expect: allow
     bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
     tags: [tenancy_composite]
-  - name: workspace propagated via join equality not supported
+  - name: workspace propagated via join equality
     sql: |-
       SELECT p.name, t.title FROM projects p
       JOIN tasks t ON t.project_id = p.id AND t.org_id = $1 AND t.workspace_id = p.workspace_id
+      WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 20
+    expect: allow
+    bind: [{ param: 1, value: o1 }, { param: 2, value: w1 }]
+    tags: [tenancy_composite, propagation]
+  - name: join equality across different tenancy keys proves nothing
+    sql: |-
+      SELECT p.name, t.title FROM projects p
+      JOIN tasks t ON t.project_id = p.id AND t.org_id = $1 AND t.workspace_id = p.org_id
       WHERE p.org_id = $1 AND p.workspace_id = $2 LIMIT 20
     expect: deny
     codes: [E_TENANT_MISSING]

@@ -28,6 +28,8 @@ let upstream (t : target) db : Proxy_config.upstream =
     tls_mode = Tls_disable;
     tls_ca = [];
     connect_timeout = 10.0;
+    (* a local benchmark client: keep accepting whatever the server asks for *)
+    allow_insecure_auth = true;
   }
 
 exception Pg_error of string

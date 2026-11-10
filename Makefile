@@ -19,7 +19,7 @@ LAB = $(LAB_DIR)/run.sh
 endif
 
 .DEFAULT_GOAL := build
-.PHONY: help deps build test fmt fmt-check doc coverage bench diagrams lab-up lab-down lab-run docker smoke console console-image console-smoke console-up console-demo console-down e2e e2e-up e2e-down clean
+.PHONY: mutation help deps build test fmt fmt-check doc coverage bench diagrams lab-up lab-down lab-run docker smoke console console-image console-smoke console-up console-demo console-down e2e e2e-up e2e-down clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -66,6 +66,9 @@ bench: ## Run benchmarks (dune alias @bench), if any are defined
 
 lab-up: ## Start the enterprise lab (Docker Compose)
 	$(LAB) up
+
+mutation: build ## Mutation-test the engine: every broken security rule must fail a test (~25 min, clean tree)
+	$(PYTHON) test/mutation/mutate.py test/mutation/engine.py
 
 lab-run: ## Run lab scenarios; report is written under lab/out/
 	$(LAB) run

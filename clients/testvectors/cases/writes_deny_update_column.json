@@ -23,7 +23,10 @@
     "shadow_reasons": [],
     "policy": {
       "name": "writes",
-      "version": "sha256:a64b2ba7fea6874c5d5a34c6e4e939d3257ccef4452028edf4d9075e7092b8a4"
+      "version": "sha256:6384de593655a2496224a045a86ba3300e310a59c94ccca6a7e4e9b68243f7dd",
+      "search_path": [
+        "app"
+      ]
     },
     "statement_kind": "update",
     "tables": [
@@ -36,7 +39,7 @@
     "bind_params": [],
     "fingerprint": "283e7dfba01ad142",
     "sql_sha256": "5ab233109661e07e2d95a80b3e0d7fdd56ab71eb2ce9a3f85f0a4a12c848c3c7",
-    "elapsed_us": 225
+    "elapsed_us": 413
   },
   "compare": [
     "allowed",

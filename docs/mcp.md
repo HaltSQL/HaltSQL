@@ -488,6 +488,10 @@ never stored or logged.
 
 ## Configuration
 
+A query that a `mode: shadow` policy would deny is **not executed** unless the
+server runs with `HALTSQL_ALLOW_SHADOW=1`; without it the tool returns the
+shadow reasons as a denial.
+
 Flags override environment variables, and environment variables override the
 [config file](#config-file).
 

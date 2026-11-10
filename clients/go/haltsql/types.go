@@ -83,6 +83,10 @@ func (b BindParam) MarshalJSON() ([]byte, error) {
 type PolicyRef struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// SearchPath lists the schemas unqualified names were resolved against
+	// (nil from an engine that does not report it). The verdict holds only if
+	// the session that runs the SQL uses this search path.
+	SearchPath []string `json:"search_path,omitempty"`
 }
 
 // Verdict is the result of verifying one SQL string.
@@ -144,8 +148,9 @@ type wireVerdict struct {
 	Reasons       *[]wireReason `json:"reasons"`
 	ShadowReasons *[]wireReason `json:"shadow_reasons"`
 	Policy        *struct {
-		Name    *string `json:"name"`
-		Version *string `json:"version"`
+		Name       *string  `json:"name"`
+		Version    *string  `json:"version"`
+		SearchPath []string `json:"search_path"`
 	} `json:"policy"`
 	StatementKind json.RawMessage `json:"statement_kind"`
 	Tables        *[]string       `json:"tables"`
@@ -248,7 +253,7 @@ func ParseVerdict(body []byte) (*Verdict, error) {
 		Allowed:       *w.Allowed,
 		Reasons:       reasons,
 		ShadowReasons: shadow,
-		Policy:        PolicyRef{Name: *w.Policy.Name, Version: *w.Policy.Version},
+		Policy:        PolicyRef{Name: *w.Policy.Name, Version: *w.Policy.Version, SearchPath: w.Policy.SearchPath},
 		StatementKind: kind,
 		Tables:        *w.Tables,
 		Columns:       *w.Columns,

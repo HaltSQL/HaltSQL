@@ -21,8 +21,10 @@ auth:
       context: { tenant_id: acme }
 limits:
   max_connections: 200
+  max_unauthenticated_per_ip: 20
   max_message_bytes: 1048576
   idle_timeout_seconds: 300
+  max_session_lifetime_seconds: 3600
 deny_sqlstate: "42501"
 audit: { type: stdout, log_raw_sql: false }
 logging: { level: info }

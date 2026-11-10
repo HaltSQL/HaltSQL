@@ -13,10 +13,21 @@ public final class HaltSQLDeniedException extends HaltSQLException {
         "denied by policy "
             + verdict.policy().name()
             + ": "
-            + (verdict.reasons().isEmpty() ? "no reasons" : String.join(", ", verdict.codes())),
+            + describe(verdict),
         null,
         null);
     this.verdict = verdict;
+  }
+
+  private static String describe(Verdict verdict) {
+    if (!verdict.reasons().isEmpty()) return String.join(", ", verdict.codes());
+    if (verdict.shadowReasons().isEmpty()) return "no reasons";
+    StringBuilder sb = new StringBuilder("shadow mode would deny: ");
+    for (int i = 0; i < verdict.shadowReasons().size(); i++) {
+      if (i > 0) sb.append(", ");
+      sb.append(verdict.shadowReasons().get(i).code());
+    }
+    return sb.toString();
   }
 
   /** The deny verdict; return its reasons (codes, messages, hints) to the agent. */

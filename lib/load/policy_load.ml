@@ -12,4 +12,5 @@ let of_string ?file ?base_dir (fmt : Docload.format) s =
 let to_json = Policy_impl.to_json
 let function_presets = Policy_impl.function_presets
 let default_operators = Policy_impl.default_operators
+let default_casts = Policy_impl.default_casts
 let default_deny_casts = Policy_impl.default_deny_casts

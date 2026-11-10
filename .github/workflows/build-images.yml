@@ -38,8 +38,42 @@ env:
   HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  # A pull request that only changes code (lib/**, bin/**) needs the benchmark
+  # gate, not two multi-architecture image builds: the images are built from
+  # the same sources by the release, and ci.yml tests the code itself.
+  scope:
+    name: What does this change need?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.s.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: s
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          image=true
+          if [ "$EVENT" = "pull_request" ]; then
+            image=false
+            while IFS= read -r f; do
+              case "$f" in
+                Dockerfile | .dockerignore | dune-project | *.opam | vendor/* | scripts/* \
+                | clients/python/setup.py | clients/python/pyproject.toml | clients/mcp/pyproject.toml \
+                | clients/mcp/Dockerfile | .github/workflows/build-images.yml | .github/workflows/release.yml)
+                  image=true ;;
+              esac
+            done < <(git diff --name-only HEAD^1 HEAD)
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
   image:
     name: Image + smoke test (${{ matrix.arch }})
+    needs: scope
+    if: needs.scope.outputs.image == 'true'
     strategy:
       fail-fast: false
       matrix:

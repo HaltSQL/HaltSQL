@@ -13,6 +13,9 @@ type t = {
   shadow_reasons : Reason.t list;  (** shadow mode only *)
   policy_name : string;
   policy_version : string;
+  search_path : string list;
+      (** the policy's [search_path]: the schemas unqualified names were resolved against.
+          The verdict holds only if the executing session uses the same search path. *)
   statement_kind : string option;  (** ["select"], ["insert"], ... when parsed *)
   tables : string list;  (** qualified relations read or written, sorted, unique *)
   columns : string list;  (** ["schema.table.column"] read, sorted, unique *)
@@ -32,8 +35,12 @@ let to_json v : Yojson.Safe.t =
       ("reasons", reasons v.reasons);
       ("shadow_reasons", reasons v.shadow_reasons);
       ( "policy",
-        `Assoc [ ("name", `String v.policy_name); ("version", `String v.policy_version) ]
-      );
+        `Assoc
+          [
+            ("name", `String v.policy_name);
+            ("version", `String v.policy_version);
+            ("search_path", `List (List.map (fun s -> `String s) v.search_path));
+          ] );
       ("statement_kind", match v.statement_kind with Some k -> `String k | None -> `Null);
       ("tables", `List (List.map (fun s -> `String s) v.tables));
       ("columns", `List (List.map (fun s -> `String s) v.columns));
