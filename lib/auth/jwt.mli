@@ -50,9 +50,12 @@ type token = {
 
 val decode : string -> (token, error) result
 (** Splits and decodes a compact JWS without verifying it. Rejects: anything but three
-    non-empty segments, invalid base64url, non-object or duplicate-key JSON in the header
-    or claims, a missing or non-string [alg], and any [crit] header (no extension is
-    understood). *)
+    non-empty segments, invalid base64url, a header or claims set that is not a JSON
+    object or has duplicate member names at any depth, a missing or non-string [alg], a
+    non-string [kid] or [typ], a [b64] header other than [true] (RFC 7797 unencoded
+    payloads), and any [crit] header (no extension is understood). Every other header
+    member is ignored, in particular [jwk], [jku], [x5u] and [x5c]: a token never supplies
+    its own key. Never raises. *)
 
 val looks_like_jwt : string -> bool
 (** Cheap shape test: three base64url segments whose first decodes to a JSON object with
@@ -69,15 +72,24 @@ val alg_of_string : string -> (Haltsql.Config.jwt_alg, error) result
 val verify_signature :
   Haltsql.Config.jwt_alg -> Jwk.key -> signing_input:string -> signature:string -> bool
 (** [true] iff the signature is valid for the algorithm and key; [false] on any key-type
-    mismatch or malformed signature (never raises). *)
+    mismatch or malformed signature (never raises).
+
+    ECDSA signatures are the fixed-width [r || s] of RFC 7518 section 3.4 (64 bytes for
+    ES256, 96 for ES384); DER and any other length are invalid. Both [s] and [n - s] are
+    accepted: JWS has no low-s rule. RSA signatures must be exactly as long as the
+    modulus; PS256 means SHA-256, MGF1 with SHA-256 and a 32-byte salt. Ed25519 signatures
+    are 64 bytes with [S] below the group order. *)
 
 val select_key :
   Haltsql.Config.jwt_alg -> kid:string option -> Jwk.t list -> (Jwk.t, error) result
-(** The first key with exactly this [kid] that is {!Jwk.compatible} with the algorithm. A
+(** The first key, in list order, with exactly this [kid] that is {!Jwk.compatible} with
+    the algorithm. When several keys share a [kid], only that first one is ever used. A
     token without [kid] is [Missing_kid]. *)
 
 val number_claim : string -> (string * Yojson.Safe.t) list -> (float option, error) result
-(** A NumericDate claim: [Ok None] when absent, [Bad_claim] when not a number. *)
+(** A NumericDate claim: [Ok None] when absent, [Bad_claim] when not a finite number
+    (strings, [1e400], integers too large for a float). Fractions and negative values are
+    numbers. *)
 
 (** {1 Signing (tests and tooling)} *)
 

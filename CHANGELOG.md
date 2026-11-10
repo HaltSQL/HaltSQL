@@ -44,6 +44,12 @@ even before 1.0.
   times shows N records. Under `fail_closed` an Execute whose record cannot be
   written is refused (58030). Audit consumers that count records per
   statement should filter on `event`.
+- **Verdicts report the search path, and the Python guard pins it.** The
+  verdict's `policy` object gains `search_path`. `haltsql.guard` (and so the
+  MCP server and the Python integrations) sets it for the transaction that runs
+  the verified SQL, so a role or database default such as
+  `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
+  resolve to a different table than the one the policy lists.
 
 ### Changed
 - **Guarded executors no longer run what a shadow policy would deny.** A
@@ -91,6 +97,11 @@ even before 1.0.
   session's large statement or a slow audit disk no longer stalls every other
   session. Per-session message order, the fail-closed audit policy and the
   order of the hash chain are unchanged.
+- JWT verification stays in-tree; `docs/authentication.md` records why the
+  `jose` package was not adopted, and what the in-tree code is tested
+  against: RFC 7515, 7520 and 8037 examples, tokens signed by
+  pyca/cryptography for all seven algorithms, about 700 negative cases, and
+  a mutation fuzzer (`test/fuzz/fuzz_jwt.ml`) that runs with `dune test`.
 
 ### Fixed
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
@@ -121,6 +132,24 @@ even before 1.0.
   forwarded. A mismatch refuses the session (`FATAL 08006`); on PostgreSQL 18+
   a later reported change ends it. Before, unqualified names could resolve
   differently upstream than in the verifier.
+- **Stricter JWK and JWT parsing in `haltsql-server`.** Found by new negative
+  tests of the in-tree JWT code:
+  - An Ed25519 JWKS key that is a point of small order was loaded; with such a
+    key one fixed signature verifies for every message. These keys are now
+    refused.
+  - RSA keys with an even public exponent, or a modulus over 8192 bits, were
+    loaded. Both are now refused.
+  - A JWK's `key_ops` was not read: a key published for `sign` or `encrypt`
+    only could verify tokens. `key_ops` must now contain `verify` when present.
+  - A JWK or JWK Set with duplicate member names was read by its first
+    occurrence. It is now refused, as are duplicate member names nested inside
+    a token's header or claims.
+  - A token with `"b64": false` (RFC 7797) and no `crit` was read as an
+    ordinary token. It is now refused; a non-string `typ` is refused too.
+  - `exp`, `nbf` or `iat` written as an integer of more than 308 digits was
+    read as infinity, so such an `exp` never expired. It is now a bad claim.
+  - An `aud` array containing a non-string next to an accepted audience was
+    accepted. Every element must now be a string.
 
 ## [0.0.2] - 2026-11-10
 

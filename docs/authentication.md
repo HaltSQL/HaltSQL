@@ -156,13 +156,13 @@ What is checked, in order:
 
 | Check | Rule | Failure |
 |---|---|---|
-| shape | three base64url segments, JSON objects without duplicate members, no `crit` header, at most 16 KiB | `401 malformed token` |
+| shape | three base64url segments, JSON objects without duplicate members at any depth, no `crit` header, no `"b64": false`, at most 16 KiB | `401 malformed token` |
 | algorithm | header `alg` is in `algorithms`; `none` and every HMAC algorithm are always rejected | `401` |
-| key | the header's `kid` names a JWKS key of the matching type (RSA for RS*/PS256, P-256 for ES256, P-384 for ES384, Ed25519 for EdDSA), with `use` absent or `sig` and `alg` absent or equal; RSA keys must be at least 2048 bits; symmetric keys are never loaded | `401` (missing or unknown `kid`) |
+| key | the header's `kid` names a JWKS key of the matching type (RSA for RS*/PS256, P-256 for ES256, P-384 for ES384, Ed25519 for EdDSA), with `use` absent or `sig`, `key_ops` absent or containing `verify`, and `alg` absent or equal; RSA keys must be 2048 to 8192 bits with an odd public exponent of at least 3; Ed25519 keys of small order, keys with private members or duplicate members, and symmetric keys are never loaded; header members that carry a key (`jwk`, `jku`, `x5u`, `x5c`) are ignored | `401` (missing or unknown `kid`) |
 | signature | verified with that key | `401` |
 | `iss` | equals `issuer` exactly | `401` |
-| `aud` | a string or array containing one of `audiences` | `401` |
-| `exp` | required; `now < exp + leeway` | `401 token has expired` |
+| `aud` | a string, or an array of strings, containing one of `audiences` | `401` |
+| `exp` | required, a finite number; `now < exp + leeway` | `401 token has expired` |
 | `nbf`, `iat` | if present, not later than `now + leeway` | `401` |
 | `required_claims` | a string must equal the claim, or be an element of an array claim, or a word of a space-separated claim such as `scope`; a list requires every value | `401` |
 | policy | `policy`, or the string value of `policy_claim` if it is in `allowed_policies`, or the first `policy_from_groups` rule the token's groups match (see [Policies from IdP groups](#policies-from-idp-groups)) | `401` |
@@ -349,3 +349,62 @@ Keeping the checks listed under [Threat notes](#threat-notes) would have
 required HaltSQL's decoder, key checks and three algorithms to stay, with
 the library wrapping the same `mirage-crypto` calls for the other four. The
 `oidc` package depends on `jose` and was not adopted for the same reason.
+
+Because the code stays in-tree, it is tested the way a library would be:
+
+- **Known-answer vectors** (`test/auth/test_jose_vectors.ml`). The RS256 and
+  ES256 examples of RFC 7515 appendix A, the Ed25519 example of RFC 8037
+  appendix A and the RS256 example of RFC 7520 section 4 must verify; the
+  HS256, ES512, PS384 and unsecured examples of the same documents must be
+  rejected. The examples are extracted from the RFC texts by a script, not
+  retyped. A second set holds one token for each of the seven accepted
+  algorithms, signed by pyca/cryptography. Both sets were verified with
+  pyca/cryptography before the tests relied on them
+  (`test/auth/vectors/interop_vectors.py check`).
+- **Negative tables** (`test/auth/test_jose_negative.ml`, about 700 rows in
+  the style of Project Wycheproof). Each row is one malformed signature, key,
+  header or claim with the error it must produce; an exception is a failure.
+  ECDSA: `r` or `s` of 0 or at least the group order, DER instead of the
+  fixed-width `r || s`, wrong lengths, a curve that does not match the
+  algorithm. RSA: signatures shorter or longer than the modulus or not below
+  it, PKCS #1 v1.5 presented as PSS and the reverse, the wrong hash, wrong PSS
+  salt length or MGF hash, hand-built padding errors. EdDSA: `S` at or above
+  the group order, public keys of small order. Keys: `oct`, private members,
+  `use`, `key_ops`, a contradicting `alg`, duplicate `kid`s, duplicate
+  members, even or tiny RSA exponents, RSA moduli outside 2048 to 8192 bits.
+  Headers: `alg: none` in any letter case, `crit`, `"b64": false`, and tokens
+  that carry their own key (`jwk`, `jku`, `x5u`, `x5c`). Claims: `exp`, `nbf`
+  and `iat` as strings, fractions, negative, non-finite and oversized
+  numbers; `aud` as a string and as an array; the exact leeway boundaries.
+- **Fuzzing** (`test/fuzz/fuzz_jwt.ml`, on every `dune test`). Valid tokens
+  for all seven algorithms and their JWKS are mutated. The decoder, the JWKS
+  parser and verification must never raise, and a token is accepted only if
+  it is byte for byte one of the valid tokens.
+
+Three behaviours are deliberate and pinned by those tests:
+
+- An ECDSA signature is accepted with either of its two `s` values. JWS has
+  no low-`s` rule and identity providers emit both. haltsql-server never
+  identifies a token by its signature bytes.
+- When a JWKS has several keys with the same `kid`, the first one that fits
+  the token's algorithm, in document order, is the only one tried.
+- `typ` is not interpreted. A token is told apart from other JWTs of the same
+  issuer by `aud` and `required_claims`.
+
+### Verifying tokens at the edge instead
+
+An operator who wants no JWT handling inside haltsql-server can leave
+`server.auth.oidc` empty and validate tokens in front of it: Envoy's
+`jwt_authn` filter, oauth2-proxy, or a service mesh's request authentication.
+haltsql-server then authenticates the edge itself, not the end user: set
+`client_auth: required` and give the proxy's client certificate (or its
+SPIFFE ID) an entry under `server.auth.mtls.identities`, which pins the
+policy and the context as described under [mTLS identities](#mtls-identities).
+haltsql-server does not read an identity, a policy or a tenant from request
+headers the edge adds (a forwarded JWT payload, `X-Forwarded-User` and
+similar); nothing of the validated token reaches the verdict. Every request
+through one edge identity therefore gets that identity's one policy and
+static context, plus the body fields named in its
+`request_context_fields`, which the edge must then be trusted to set
+correctly. When the policy or the tenant has to come from the token, either
+run one edge identity per tenant or use the built-in OIDC verification.
