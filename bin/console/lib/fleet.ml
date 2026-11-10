@@ -764,19 +764,9 @@ let start (ctx : Ctx.t) : unit Lwt.t =
 
 let restart ctx (p : Ctx.principal) (r : Router.req) =
   let* body = Router.json_body r in
+  (* The matrix grants restart_verifiers only "with a reason" (no role has a plain yes),
+     so [require] returns the reason or refuses with REASON_REQUIRED. *)
   let reason = Ctx.require ~body p r.http Rbac.Restart_verifiers in
-  let reason =
-    match reason with
-    | Some _ -> reason
-    | None -> (
-        (* restarts always need a reason, even for roles granted the permission outright *)
-        match Ctx.reason_of ~body r.http with
-        | Some _ as x -> x
-        | None ->
-            Api.fail `Forbidden "REASON_REQUIRED"
-              "restart_verifiers needs a reason (x-haltsql-reason header or reason field)"
-        )
-  in
   let name = Router.param r "name" in
   let v =
     match

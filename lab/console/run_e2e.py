@@ -20,11 +20,15 @@ What it does, all on loopback:
 
 Virtualenvs: integrations/<name>/.venv, else $E2E_VENV_DIR/venv-<name>. A missing
 virtualenv is a failure unless the adapter is listed in E2E_SKIP (comma-separated).
+
+Binaries: _build/default/bin/..., or E2E_SERVER_BIN, HALTSQL_PROXY_BIN,
+HALTSQL_CONSOLE_BIN and HALTSQL_CLI_BIN. The server deliberately does not read
+HALTSQL_SERVER_BIN: that is the integration suites' variable, which step 1 of the README
+points at server-wrapper.sh.
 """
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -39,7 +43,17 @@ import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BUILD = os.path.join(ROOT, "_build", "default", "bin")
-SERVER = os.environ.get("HALTSQL_SERVER_BIN", os.path.join(BUILD, "server", "main.exe"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def server_bin(env=os.environ):
+    """The haltsql-server binary: E2E_SERVER_BIN, else the dune build. Never
+    HALTSQL_SERVER_BIN, which the suites use for server-wrapper.sh (it needs E2E_SUITE
+    and would write the audit file somewhere else)."""
+    return env.get("E2E_SERVER_BIN") or os.path.join(BUILD, "server", "main.exe")
+
+
+SERVER = server_bin()
 PROXY = os.environ.get("HALTSQL_PROXY_BIN", os.path.join(BUILD, "proxy", "main.exe"))
 CONSOLE = os.environ.get("HALTSQL_CONSOLE_BIN", os.path.join(BUILD, "console", "main.exe"))
 CLI = os.environ.get("HALTSQL_CLI_BIN", os.path.join(BUILD, "haltsql", "main.exe"))
@@ -64,6 +78,10 @@ def free_port():
         return s.getsockname()[1]
 
 
+class HarnessError(Exception):
+    """The harness itself could not go on (a process never became ready)."""
+
+
 def wait_http(url, timeout=20):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -72,8 +90,65 @@ def wait_http(url, timeout=20):
                 if r.status == 200:
                     return
         except Exception:
+            pass
+        time.sleep(0.1)
+    raise HarnessError(f"{url} did not become ready")
+
+
+def wait_tcp(port, host="127.0.0.1", timeout=20):
+    """Returns once something accepts connections on host:port."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
             time.sleep(0.1)
-    raise SystemExit(f"{url} did not become ready")
+    raise HarnessError(f"nothing is listening on {host}:{port}")
+
+
+def wait_until(pred, timeout=30, interval=0.5):
+    """Polls pred() until it is true (returns True) or the timeout passes (False)."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            if pred():
+                return True
+        except Exception:  # noqa: BLE001 - not ready yet
+            pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def guarded(what, fn, *args):
+    """Runs fn(*args); an exception (a hung adapter, a malformed response) becomes a
+    failed check instead of ending the run before the failure summary."""
+    try:
+        return fn(*args)
+    except Exception as e:  # noqa: BLE001
+        check(False, f"{what}: harness error {type(e).__name__}: {e}")
+        return None
+
+
+def parse_dsn(dsn):
+    """The keywords of a libpq DSN (libpq's own parser when psycopg is installed)."""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+    except ImportError:
+        return dict(p.split("=", 1) for p in dsn.split() if "=" in p)
+    return conninfo_to_dict(dsn)
+
+
+def raw_sql_ok(status, body):
+    """The raw-SQL endpoint returned the cross-tenant statement with its tenant literal."""
+    return status == 200 and isinstance(body, dict) and "tenant_id = '" in body.get("sql", "")
+
+
+def load_schema():
+    """The scratch database's schema (lab/console/schema.sql)."""
+    with open(os.path.join(HERE, "schema.sql")) as f:
+        return f.read()
 
 
 def sha(s):
@@ -131,20 +206,16 @@ def main():
         if not os.path.exists(b):
             raise SystemExit(f"missing binary {b}: build it first")
 
-    # The saas schema exactly as the integration tests create it.
-    spec = importlib.util.spec_from_file_location("crewai_conftest", os.path.join(SRC_ROOT, "integrations", "crewai", "tests", "conftest.py"))
-    conftest = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(conftest)
     from haltsql.testing import temporary_database
 
     work = tempfile.mkdtemp(prefix="haltsql-console-e2e-")
     procs = []
     print(f"work dir {work}")
     try:
-        with temporary_database("haltsql_console_e2e", conftest.SETUP) as dsn:
+        with temporary_database("haltsql_console_e2e", load_schema()) as dsn:
             if dsn is None:
                 raise SystemExit("the lab Postgres on 127.0.0.1:5417 is not available (make -C lab up)")
-            run(args, skip, work, procs, dsn)
+            guarded("run", run, args, skip, work, procs, dsn)
     finally:
         if args.keep and not FAILURES:
             print("processes kept running; Ctrl-C to stop")
@@ -171,7 +242,7 @@ def main():
 
 
 def run(args, skip, work, procs, dsn):
-    dsn_parts = dict(p.split("=", 1) for p in dsn.split() if "=" in p)
+    dsn_parts = parse_dsn(dsn)
     tokens = {a: "tok-" + a + "-" + os.urandom(6).hex() for a in ADAPTERS}
     admin_token = "tok-console-admin-" + os.urandom(6).hex()
 
@@ -211,7 +282,6 @@ def run(args, skip, work, procs, dsn):
         "apiVersion": "haltsql.dev/v1",
         "kind": "ProxyConfig",
         "listen": f"127.0.0.1:{pport}",
-        "tls": None,
         "upstream": {"host": dsn_parts.get("host", "127.0.0.1"), "port": int(dsn_parts.get("port", 5417)),
                      "database": dsn_parts["dbname"], "user": dsn_parts.get("user", "postgres")}
         | ({"password": dsn_parts["password"]} if dsn_parts.get("password") else {}),
@@ -220,11 +290,10 @@ def run(args, skip, work, procs, dsn):
         "audit": {"sinks": [{"type": "file", "path": proxy_audit}], "log_raw_sql": True},
         "logging": {"level": "error"},
     }
-    proxy_cfg.pop("tls")
     proxy_cfg_path = os.path.join(work, "proxy.json")
     json.dump(proxy_cfg, open(proxy_cfg_path, "w"))
     procs.append(subprocess.Popen([PROXY, "run", "--config", proxy_cfg_path], stdout=subprocess.DEVNULL))
-    time.sleep(1.0)
+    wait_tcp(pport)
 
     # ---- traffic through every adapter ----
     print("\ntraffic")
@@ -238,9 +307,7 @@ def run(args, skip, work, procs, dsn):
         cmd = [py, mcp_driver, server_url, tokens[a], dsn] if a == "mcp" else [py, driver, a, server_url, tokens[a], dsn]
         if a == "sdk":
             cmd += ["--cross-tenant", "37"]  # the support-bot style burst
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        out = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr[-400:]
-        check(p.returncode == 0, f"{a}: {out}")
+        guarded(a, drive_one, a, cmd)
 
     # Proxy: allowed and denied statements over the wire protocol.
     import psycopg
@@ -301,8 +368,36 @@ def run(args, skip, work, procs, dsn):
     procs.append(subprocess.Popen([CONSOLE, "--config", console_cfg_path], stdout=subprocess.DEVNULL, stderr=open(os.path.join(work, "console.log"), "w")))
     wait_http(f"http://127.0.0.1:{cport}/healthz")
     print(f"haltsql-console on http://127.0.0.1:{cport}")
-    time.sleep(5)  # ingest, fleet, policies, data and signal loops
-    verify_console(Console(f"http://127.0.0.1:{cport}"), console_tokens, args, work, server_audit, proxy_audit, skip)
+    c = Console(f"http://127.0.0.1:{cport}")
+    # Wait for the ingest, fleet, policy and data loops' first passes (the checks below
+    # report anything still missing after the timeout).
+    if not wait_until(lambda: console_settled(c, console_tokens), timeout=30):
+        print("  (console loops not settled after 30 s; checking anyway)")
+    verify_console(c, console_tokens, args, work, server_audit, proxy_audit, skip)
+
+
+def drive_one(a, cmd):
+    """Runs one adapter driver; a hang past the timeout raises (caught by guarded)."""
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    out = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr[-400:]
+    check(p.returncode == 0, f"{a}: {out}")
+
+
+def console_settled(c, tok):
+    """The console has ingested both verifiers' audit files, polled both verifiers and
+    loaded the policy and the data catalog."""
+    for v in ("haltsql-1", "proxy-orders"):
+        s, q = c.get(f"/api/v1/queries?limit=1&verifier={v}", tok["analyst"])
+        if s != 200 or q.get("total", 0) == 0:
+            return False
+    s, fl = c.get("/api/v1/fleet", tok["admin"])
+    if s != 200 or any(v.get("state") != "ready" for v in fl.get("verifiers", [])):
+        return False
+    s, pol = c.get("/api/v1/policies", tok["dev"])
+    if s != 200 or not pol.get("policies"):
+        return False
+    s, dc = c.get("/api/v1/data/columns?show=all", tok["audit"])
+    return s == 200 and bool(dc.get("columns"))
 
 
 def verify_console(c, tok, args, work, server_audit, proxy_audit, skip):
@@ -345,7 +440,7 @@ def verify_console(c, tok, args, work, server_audit, proxy_audit, skip):
         s, _ = c.get(f"/api/v1/records/{rid}/sql", AN)
         check(s == 403, "raw SQL without a reason is refused")
         s, sq = c.get(f"/api/v1/records/{rid}/sql", AN, reason="e2e triage")
-        check(s == 200 and "globex" in sq.get("sql", "") or "'" in sq.get("sql", ""), "raw SQL with a reason")
+        check(raw_sql_ok(s, sq), "raw SQL with a reason")
         s, _ = c.get(f"/api/v1/records/{rid}/sql", A, reason="x")
         check(s == 403, "admin cannot see raw SQL")
         s, vc = c.post(f"/api/v1/records/{rid}/verify-chain", AN)
@@ -434,9 +529,11 @@ def verify_console(c, tok, args, work, server_audit, proxy_audit, skip):
             open(path, "wb").write(blob)
             with tarfile.open(path) as tf:
                 names = tf.getnames()
-                chains = json.load(tf.extractfile(next(n for n in names if n.endswith("chains.json"))))
+                chains_name = next((n for n in names if n.endswith("chains.json")), None)
+                chains = json.load(tf.extractfile(chains_name)) if chains_name else None
             check(any(n.endswith("manifest.json") for n in names), f"pack has manifest ({len(names)} files)")
-            check("broken" not in json.dumps(chains), "pack chain report: every chain verifies")
+            check(chains is not None, "pack has a chain report (chains.json)")
+            check(chains is not None and "broken" not in json.dumps(chains), "pack chain report: every chain verifies")
     s, _ = c.post("/api/v1/evidence/packs", DEV, {"framework": "soc2"})
     check(s == 403, "dev cannot build evidence packs")
 

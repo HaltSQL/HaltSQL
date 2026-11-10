@@ -565,8 +565,8 @@ are `null` and the lists are empty. Details:
   `/readyz` and `/metrics` (404s are not errors); a proxy with a non-HTTP `url`
   from a TCP connect.
 
-`POST /api/v1/fleet/{name}/restart`: `restart_verifiers` and a reason (always
-required for restarts, even for roles granted the permission outright).
+`POST /api/v1/fleet/{name}/restart`: `restart_verifiers`, which every role that
+has it holds only "with a reason", so a restart always needs one.
 Restarts the verifier's Kubernetes workload (`fleet.kubernetes`, a rollout
 restart patch on its Deployment or StatefulSet) and returns
 `{ "verifier", "workload": "deployment/haltsql-1", "restarted_at" }`. Logged as

@@ -22,14 +22,18 @@ google_adk and semantic_kernel. Or put them in `$E2E_VENV_DIR/venv-<name>`.
 the suites' fixtures ask, but writes a hash-chained audit file per suite:
 
 ```sh
-export E2E_REAL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe
-export HALTSQL_SERVER_BIN=$PWD/lab/console/server-wrapper.sh E2E_AUDIT_DIR=/tmp/suite-audit
-mkdir -p $E2E_AUDIT_DIR
+mkdir -p /tmp/suite-audit
+wrap="HALTSQL_SERVER_BIN=$PWD/lab/console/server-wrapper.sh E2E_AUDIT_DIR=/tmp/suite-audit"
+wrap="$wrap E2E_REAL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
 for s in crewai google_adk langgraph openai_agents semantic_kernel; do
-  (cd integrations/$s && E2E_SUITE=$s .venv/bin/python -m pytest -q)
+  (cd integrations/$s && env $wrap E2E_SUITE=$s .venv/bin/python -m pytest -q)
 done
-(cd clients/python && E2E_SUITE=python-sdk .venv/bin/python -m pytest -q)
+(cd clients/python && env $wrap E2E_SUITE=python-sdk .venv/bin/python -m pytest -q)
 ```
+
+The wrapper variables are set per command, not exported: the wrapper only works
+for a suite (it needs `E2E_SUITE`). `run_e2e.py` never reads `HALTSQL_SERVER_BIN`
+anyway; to point it at another server binary use `E2E_SERVER_BIN`.
 
 ## 2. Scenario and console checks
 
@@ -47,5 +51,14 @@ records, decision trails, chain of custody (cross-checked with
 high signal), cases, agents, fleet, policies, shadow report, playground, data
 classification, evidence packs, the activity log and role permissions.
 
+The scratch database gets `lab/console/schema.sql` (the `app.orders` table and
+rows the integration packages' fixtures create). A harness error (an adapter
+hanging past 300 s, a process that never becomes ready) is reported as a failed
+check, and the failure summary is always printed.
+
 `--keep` leaves everything running afterwards so you can explore the console
 API by hand. Exit status is non-zero if any check fails.
+
+The harness's own logic (outcome classification, DSN handling, readiness
+polling, check predicates) has unit tests that need neither Postgres nor the
+binaries: `make -C lab test` runs `lab/console/test_console_e2e_unit.py`.

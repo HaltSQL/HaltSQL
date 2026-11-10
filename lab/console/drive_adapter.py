@@ -6,6 +6,11 @@ Runs in the virtualenv of that adapter. Each query goes through the adapter's ow
 guard (so the adapter, the Python SDK and haltsql-server are all exercised) and, when
 allowed, runs on the lab Postgres. Prints one JSON line with counts per outcome.
 
+Only a structured denial counts as "denied": a QueryDenied (or an adapter error whose
+cause is one), a verdict with allowed false, or a tool result with status "denied".
+Any other failure (bad token, verifier down, database error) is an "error", which is
+always unexpected.
+
 Traffic per run: allowed tenant-scoped reads, a PII column (denied), a query without
 LIMIT (denied), a table outside the policy (denied), and optional cross-tenant probes
 (tenant_id compared to other tenants' literals: denied at the tenancy check).
@@ -13,9 +18,7 @@ LIMIT (denied), a table outside the policy (denied), and optional cross-tenant p
 
 import json
 import sys
-
-import psycopg
-from haltsql import HaltSQLClient, QueryDenied
+from urllib.parse import quote
 
 ALLOWED = [
     "SELECT o.id, o.status, o.total_cents FROM app.orders o WHERE o.tenant_id = $1 ORDER BY o.id LIMIT 20",
@@ -31,8 +34,22 @@ OTHER_TENANTS = ["globex", "initech", "umbrella", "hooli", "stark", "wayne", "wo
 CTX = {"tenant_id": "acme"}
 
 
+def outcome_of_exception(e, denied_types):
+    """'denied' when [e] is (or was raised from) a policy denial, else 'error'."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        if isinstance(e, denied_types):
+            return "denied"
+        seen.add(id(e))
+        e = e.__cause__
+    return "error"
+
+
 def make_runner(adapter, client, dsn):
-    """Returns run(sql) -> 'allowed' | 'denied', going through the adapter."""
+    """Returns run(sql) -> 'allowed' | 'denied', going through the adapter. Failures
+    that are not a structured allow or deny raise; the caller classifies them."""
+    import psycopg
+
     connect = lambda: psycopg.connect(dsn)  # noqa: E731
 
     if adapter in ("crewai", "langgraph", "openai_agents", "google_adk", "semantic_kernel"):
@@ -41,9 +58,12 @@ def make_runner(adapter, client, dsn):
 
         def run(sql):
             out = runner.run(sql, CTX)
-            if out.get("status") == "error":
-                raise RuntimeError(out.get("message"))
-            return "denied" if out.get("status") == "denied" else "allowed"
+            status = out.get("status") if isinstance(out, dict) else None
+            if status == "denied":
+                return "denied"
+            if status == "error" or not isinstance(out, dict):
+                raise RuntimeError(f"tool error: {out}")
+            return "allowed"
 
         return run
 
@@ -53,11 +73,10 @@ def make_runner(adapter, client, dsn):
         runner = HaltSQLQueryRunner(client, context=lambda: CTX, connect=connect, max_rows=200)
 
         def run(sql):
-            try:
-                out = runner.run(sql)
-            except QueryDenied:
-                return "denied"
-            return "denied" if "denied" in str(out).lower()[:200] else "allowed"
+            # execute() is what run() wraps; it raises QueryDenied on a denial instead of
+            # turning every failure into model feedback text.
+            runner.execute(sql)
+            return "allowed"
 
         return run
 
@@ -66,19 +85,12 @@ def make_runner(adapter, client, dsn):
         from llama_index.core import SQLDatabase
         from sqlalchemy import create_engine
 
-        url = "postgresql+psycopg://" + dsn_to_url(dsn)
+        url = dsn_to_url(dsn)
         db = SQLDatabase(create_engine(url), schema="app")
         guarded = guard_sql_database(db, client, lambda: CTX)
 
         def run(sql):
-            try:
-                guarded.run_sql(sql)
-            except QueryDenied:
-                return "denied"
-            except Exception as e:  # denials_as_sql_errors and friends
-                if "denied" in str(e).lower() or "E_" in str(e):
-                    return "denied"
-                raise
+            guarded.run_sql(sql)  # a denial raises QueryDenied (or an error caused by one)
             return "allowed"
 
         return run
@@ -93,10 +105,7 @@ def make_runner(adapter, client, dsn):
         install_legacy_run_sql(vn, client, lambda: CTX, connect=connect)
 
         def run(sql):
-            try:
-                vn.run_sql(sql)
-            except QueryDenied:
-                return "denied"
+            vn.run_sql(sql)
             return "allowed"
 
         return run
@@ -111,35 +120,58 @@ def make_runner(adapter, client, dsn):
     raise SystemExit(f"unknown adapter {adapter}")
 
 
-def dsn_to_url(dsn):
-    parts = dict(p.split("=", 1) for p in dsn.split() if "=" in p and not p.startswith("options"))
-    auth = parts.get("user", "postgres") + (":" + parts["password"] if parts.get("password") else "")
-    return f"{auth}@{parts.get('host', '127.0.0.1')}:{parts.get('port', '5432')}/{parts.get('dbname', 'postgres')}"
+def parse_dsn(dsn):
+    """The keywords of a libpq DSN (libpq's own parser when psycopg is installed)."""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+    except ImportError:
+        return dict(p.split("=", 1) for p in dsn.split() if "=" in p)
+    return conninfo_to_dict(dsn)
+
+
+def dsn_to_url(dsn, parse=parse_dsn):
+    """A SQLAlchemy URL for a libpq DSN, with the user and password percent-encoded."""
+    parts = parse(dsn)
+    auth = quote(parts.get("user") or "postgres", safe="")
+    if parts.get("password"):
+        auth += ":" + quote(parts["password"], safe="")
+    host = parts.get("host") or "127.0.0.1"
+    db = quote(parts.get("dbname") or "postgres", safe="")
+    return f"postgresql+psycopg://{auth}@{host}:{parts.get('port') or '5432'}/{db}"
+
+
+def drive(run, cross, denied_types):
+    """Runs the traffic through [run]; returns the counts per outcome."""
+    counts = {"allowed": 0, "denied": 0, "error": 0, "unexpected": [], "errors": []}
+
+    def one(sql, expect):
+        try:
+            r = run(sql)
+        except Exception as e:  # noqa: BLE001 - classified: denial or error
+            r = outcome_of_exception(e, denied_types)
+            if r == "error":
+                counts["errors"].append(f"{type(e).__name__}: {e}"[:200])
+        counts[r] += 1
+        if r != expect:
+            counts["unexpected"].append(sql)
+
+    for sql in ALLOWED * 3:
+        one(sql, "allowed")
+    for sql in DENIED:
+        one(sql, "denied")
+    for i in range(cross):
+        t = OTHER_TENANTS[i % len(OTHER_TENANTS)]
+        one(f"SELECT t.id, t.status FROM app.orders t WHERE t.tenant_id = '{t}' LIMIT 50", "denied")
+    return counts
 
 
 def main():
+    from haltsql import HaltSQLClient, QueryDenied
+
     adapter, url, token, dsn = sys.argv[1:5]
     cross = int(sys.argv[sys.argv.index("--cross-tenant") + 1]) if "--cross-tenant" in sys.argv else 0
-    counts = {"allowed": 0, "denied": 0, "unexpected": []}
     with HaltSQLClient(url, token=token) as client:
-        run = make_runner(adapter, client, dsn)
-        for sql in ALLOWED * 3:
-            r = run(sql)
-            counts[r] += 1
-            if r != "allowed":
-                counts["unexpected"].append(sql)
-        for sql in DENIED:
-            r = run(sql)
-            counts[r] += 1
-            if r != "denied":
-                counts["unexpected"].append(sql)
-        for i in range(cross):
-            t = OTHER_TENANTS[i % len(OTHER_TENANTS)]
-            sql = f"SELECT t.id, t.status FROM app.orders t WHERE t.tenant_id = '{t}' LIMIT 50"
-            r = run(sql)
-            counts[r] += 1
-            if r != "denied":
-                counts["unexpected"].append(sql)
+        counts = drive(make_runner(adapter, client, dsn), cross, (QueryDenied,))
     print(json.dumps({"adapter": adapter, **counts}))
     sys.exit(1 if counts["unexpected"] else 0)
 
