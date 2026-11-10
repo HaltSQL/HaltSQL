@@ -15,9 +15,10 @@ When placeholders are resolved depends on the section:
 
 - **At load:** the sections the console reads at startup (`listen`,
   `environment`, `state_dir`, `frontend_dir`, `auth`, `verifiers`, `fleet`,
-  `audit`, `policies`, `catalogs`, `data`, `agents`). A placeholder that cannot
+  `audit`, `policies`, `data`, `agents`). A placeholder that cannot
   be resolved is a startup error.
-- **On demand:** `opa`, `integrations` and `signals`. At load each placeholder
+- **On demand:** `opa`, `integrations`, `signals` and `catalogs` (resolved on
+  every catalog load, so a rotated catalog `token` is used by the next load). At load each placeholder
   is only checked: valid syntax, a known scheme, the provider configured in
   `secrets:`, and for `${env:...}` the variable set. Errors stop startup. The
   value is fetched only when a feature needs it (for example when it posts to
@@ -316,6 +317,9 @@ agents:
 ## `catalogs` and `data`
 
 Catalogs are read at startup, every 15 minutes, and on `POST /api/v1/data/refresh`.
+Export files are parsed in a worker thread, so a large `manifest.json` never stalls
+the console, and the 15-minute reload re-parses a file only when its modification time
+or size changed; `POST /api/v1/data/refresh` always re-reads every file.
 A catalog that cannot be read is reported (in `GET /api/v1/data/columns` `sources[].error`
 and as `error` under Integrations); the others still load.
 
@@ -324,7 +328,8 @@ catalogs:
   - { kind: dbt, manifest: /etc/haltsql/catalogs/manifest.json }
   - { kind: unity, file: /etc/haltsql/catalogs/unity-column-tags.json }
   - { kind: datahub, file: /etc/haltsql/catalogs/datahub-export.json }
-  - { kind: openmetadata, url: https://om.acme.internal/api, token: "${vault:secret/om#token}", service: prod_pg, database: app }
+  # live fetch: see the note below; no live provider is built in yet
+  # - { kind: openmetadata, url: https://om.acme.internal/api, token: "${vault:secret/om#token}", service: prod_pg, database: app }
   - { kind: file, file: /etc/haltsql/policies/pii.json, label: reviewed }
 data:
   exceptions:
@@ -338,7 +343,7 @@ data:
 | `manifest` | `dbt`: the `manifest.json` (column `tags`, `meta`, `config.tags`, `config.meta`, `policy_tags`, nested `meta.pii`). |
 | `catalog` | `dbt`, optional: `catalog.json` (column comments). |
 | `file` | `datahub`: a file-sink export or GraphQL response. `unity`: `information_schema.column_tags` rows or table JSON. `file`: a HaltSQL PII manifest (the `haltsql schema import` format). |
-| `url` | `datahub`, `openmetadata`, `unity`: read the catalog's API live through `Haltsql_catalog_fetch` (same providers as `haltsql schema fetch`). `https://`, or `http://` on loopback. |
+| `url` | `datahub`, `openmetadata`, `unity`: read the catalog's API live through `Haltsql_catalog_fetch` (same providers as `haltsql schema fetch`). `https://`, or `http://` on loopback. **Pending:** no live provider is built into this release yet (the DataHub and OpenMetadata providers land separately), so a catalog with `url` reports the error `no live <kind> provider is built into this console`. Use an export `file` (`dbt`, `datahub`, `unity`) until then; `openmetadata` has no file mode. |
 | `token` | Bearer token for `url`. Use a secret placeholder; never returned or logged. |
 | `service`, `database`, `schemas` | Live fetch scope, as `haltsql schema fetch --service/--database/--schema`. |
 | `ca_file`, `timeout_seconds` | Live fetch: trust only this CA bundle; per-request timeout (default 30). |
@@ -360,7 +365,12 @@ table allows `"*"`). With no such policy the column is `blocked`. Otherwise it i
 entry for the column (an entry without `policy` covers every policy), and
 `needs_review` otherwise, including when the matching exception has expired.
 `shadow_denials` counts shadow-denied records that read the column (from the record, or
-re-derived from raw SQL when it was logged).
+re-derived from raw SQL when it was logged). The counts come from a background scan of
+the record index that runs every minute (and on `POST /api/v1/data/refresh`), so a new
+record is counted within about a minute; `shadow_denials_counted` in the document is
+when the last scan finished. Columns re-derived from SQL are cached per verifier and
+request id, dropped when the record leaves the index, and re-derived after a policy
+reload. The classification follows a policy reload immediately.
 
 | `data.exceptions[]` key | Meaning |
 |---|---|

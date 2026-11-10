@@ -5,61 +5,91 @@
    a valid gzip file that every gunzip and [tar -xzf] reads, without compression. Audit
    records are what make a pack large, and they are kept verbatim on purpose. *)
 
-(* ---- CRC-32 (IEEE 802.3, as gzip uses) ---- *)
+(* ---- CRC-32 (IEEE 802.3, as gzip uses) ----
+
+   On native ints (63-bit), so no boxed Int32 per byte. *)
 
 let crc_table =
   lazy
     (Array.init 256 (fun n ->
-         let c = ref (Int32.of_int n) in
+         let c = ref n in
          for _ = 0 to 7 do
-           if Int32.logand !c 1l <> 0l then
-             c := Int32.logxor 0xEDB88320l (Int32.shift_right_logical !c 1)
-           else c := Int32.shift_right_logical !c 1
+           if !c land 1 <> 0 then c := 0xEDB88320 lxor (!c lsr 1) else c := !c lsr 1
          done;
          !c))
 
-let crc32 s =
+(** [crc32_update crc s off len] continues a CRC-32 over [s.[off .. off+len-1]]; start
+    with [0] (the result is the finished CRC of everything fed so far). *)
+let crc32_update crc s off len =
   let t = Lazy.force crc_table in
-  let c = ref 0xFFFFFFFFl in
-  String.iter
-    (fun ch ->
-      let idx =
-        Int32.to_int (Int32.logand (Int32.logxor !c (Int32.of_int (Char.code ch))) 0xFFl)
-      in
-      c := Int32.logxor t.(idx) (Int32.shift_right_logical !c 8))
-    s;
-  Int32.logxor !c 0xFFFFFFFFl
+  let c = ref (crc lxor 0xFFFFFFFF) in
+  for i = off to off + len - 1 do
+    c := t.(!c lxor Char.code (String.unsafe_get s i) land 0xFF) lxor (!c lsr 8)
+  done;
+  !c lxor 0xFFFFFFFF
 
-let add_le32 b (v : int32) =
-  for i = 0 to 3 do
-    Buffer.add_char b
-      (Char.chr (Int32.to_int (Int32.logand (Int32.shift_right_logical v (8 * i)) 0xFFl)))
-  done
+let crc32 s = Int32.of_int (crc32_update 0 s 0 (String.length s))
+let le32 (v : int) = String.init 4 (fun i -> Char.chr ((v lsr (8 * i)) land 0xFF))
+let le16 v = String.init 2 (fun i -> Char.chr ((v lsr (8 * i)) land 0xFF))
 
-let add_le16 b v =
-  Buffer.add_char b (Char.chr (v land 0xFF));
-  Buffer.add_char b (Char.chr ((v lsr 8) land 0xFF))
+(* ---- streaming gzip (stored DEFLATE blocks) ---- *)
+
+type sink = string -> unit
+(** Receives the archive's bytes in order. *)
+
+let block_max = 65535
+
+type gz = {
+  out : sink;
+  block : Buffer.t;  (** pending bytes of the current stored block *)
+  mutable crc : int;
+  mutable size : int;
+}
+
+let gz_create ?(mtime = 0.) out =
+  (* ID1 ID2 CM=deflate FLG=0 MTIME XFL=0 OS=255 (unknown) *)
+  out "\x1f\x8b\x08\x00";
+  out (le32 (int_of_float (Float.max 0. (Float.min mtime 2147483647.))));
+  out "\x00\xff";
+  { out; block = Buffer.create block_max; crc = 0; size = 0 }
+
+let gz_flush_block g ~final =
+  let len = Buffer.length g.block in
+  g.out (if final then "\x01" else "\x00");
+  g.out (le16 len);
+  g.out (le16 (lnot len land 0xFFFF));
+  g.out (Buffer.contents g.block);
+  Buffer.clear g.block
+
+let gz_add_sub g s off len =
+  g.crc <- crc32_update g.crc s off len;
+  g.size <- g.size + len;
+  let rec go off len =
+    if len > 0 then (
+      let room = block_max - Buffer.length g.block in
+      let k = min room len in
+      Buffer.add_substring g.block s off k;
+      if Buffer.length g.block = block_max then gz_flush_block g ~final:false;
+      go (off + k) (len - k))
+  in
+  go off len
+
+let gz_add g s = gz_add_sub g s 0 (String.length s)
+
+(* The last block is always flagged final, possibly empty (a valid stored block). *)
+let gz_finish g =
+  gz_flush_block g ~final:true;
+  g.out (le32 g.crc);
+  g.out (le32 (g.size land 0xFFFFFFFF))
 
 (** A gzip member holding [data] in stored DEFLATE blocks. *)
-let gzip ?(mtime = 0.) data =
-  let n = String.length data in
-  let b = Buffer.create (n + (n / 65535 * 5) + 32) in
-  (* ID1 ID2 CM=deflate FLG=0 MTIME XFL=0 OS=255 (unknown) *)
-  Buffer.add_string b "\x1f\x8b\x08\x00";
-  add_le32 b (Int32.of_float (Float.min mtime 2147483647.));
-  Buffer.add_string b "\x00\xff";
-  let rec blocks off =
-    let len = min 65535 (n - off) in
-    let final = off + len >= n in
-    Buffer.add_char b (if final then '\x01' else '\x00');
-    add_le16 b len;
-    add_le16 b (lnot len land 0xFFFF);
-    Buffer.add_substring b data off len;
-    if not final then blocks (off + len)
+let gzip ?mtime data =
+  let b =
+    Buffer.create (String.length data + (String.length data / block_max * 5) + 32)
   in
-  blocks 0;
-  add_le32 b (crc32 data);
-  add_le32 b (Int32.of_int (n land 0xFFFFFFFF));
+  let g = gz_create ?mtime (Buffer.add_string b) in
+  gz_add g data;
+  gz_finish g;
   Buffer.contents b
 
 (* ---- ustar ---- *)
@@ -112,7 +142,27 @@ let header ~name ~size ~mtime =
   String.iter (fun c -> sum := !sum + Char.code c) blank;
   h ~chk:(Printf.sprintf "%06o\000 " !sum)
 
-(** A tar archive of [(path, contents)] entries. *)
+(* ---- streaming .tar.gz ---- *)
+
+type writer = { gz : gz; mtime : int }
+
+(** A .tar.gz written to [out] as files are added, so a pack never has to be held in
+    memory as a whole: only the file being added. *)
+let create ?(mtime = 0.) out = { gz = gz_create ~mtime out; mtime = int_of_float mtime }
+
+let add_file w ~name data =
+  let size = String.length data in
+  gz_add w.gz (header ~name ~size ~mtime:w.mtime);
+  gz_add w.gz data;
+  let pad = (512 - (size mod 512)) mod 512 in
+  if pad > 0 then gz_add w.gz (String.make pad '\000')
+
+(** Writes the end-of-archive marker and the gzip trailer. *)
+let finish w =
+  gz_add w.gz (String.make 1024 '\000');
+  gz_finish w.gz
+
+(** A tar archive of [(path, contents)] entries (uncompressed). *)
 let tar ?(mtime = 0.) files =
   let b = Buffer.create 4096 in
   let mtime = int_of_float mtime in
@@ -127,4 +177,9 @@ let tar ?(mtime = 0.) files =
   Buffer.add_string b (String.make 1024 '\000');
   Buffer.contents b
 
-let tar_gz ?mtime files = gzip ?mtime (tar ?mtime files)
+let tar_gz ?mtime files =
+  let b = Buffer.create 4096 in
+  let w = create ?mtime (Buffer.add_string b) in
+  List.iter (fun (name, data) -> add_file w ~name data) files;
+  finish w;
+  Buffer.contents b

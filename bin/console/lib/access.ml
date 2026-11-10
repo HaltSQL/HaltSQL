@@ -122,37 +122,56 @@ let jwks_cache_seconds = 300.
 
 (* provider -> (checked at, result), per console. Cached so the page never hammers the
    identity provider. *)
-let jwks_key : (string, float * (int, string) result) Hashtbl.t Ctx.Key.t =
-  Ctx.Key.create "access.jwks"
+type jwks_state = {
+  results : (string, float * (int, string) result) Hashtbl.t;
+  pending : (string, (int, string) result Lwt.t) Hashtbl.t;
+      (** checks in flight: concurrent callers share one fetch per provider *)
+}
 
-let jwks_cache ctx =
+let jwks_key : jwks_state Ctx.Key.t = Ctx.Key.create "access.jwks"
+
+let jwks_state ctx =
   match Ctx.get ctx jwks_key with
   | Some h -> h
   | None ->
-      let h = Hashtbl.create 4 in
+      let h = { results = Hashtbl.create 4; pending = Hashtbl.create 4 } in
       Ctx.set ctx jwks_key h;
       h
 
 let jwks_check (ctx : Ctx.t) (o : C.oidc) =
-  let jwks_cache = jwks_cache ctx in
+  let st = jwks_state ctx in
   let key = o.provider.oidc_name in
   let now = Ctx.now () in
-  match Hashtbl.find_opt jwks_cache key with
+  match Hashtbl.find_opt st.results key with
   | Some (at, r) when now -. at < jwks_cache_seconds -> Lwt.return r
-  | _ ->
-      let fetch =
-        match !jwks_fetch with
-        | Some f -> f
-        | None -> Haltsql_auth.Oidc_client.http_fetch ~timeout:5. ()
-      in
-      let p = Haltsql_auth.Oidc_client.provider ~fetch o.provider in
-      let* r =
-        Lwt.catch
-          (fun () -> Haltsql_auth.Oidc_client.refresh p)
-          (fun e -> Lwt.return_error (Printexc.to_string e))
-      in
-      Hashtbl.replace jwks_cache key (now, r);
-      Lwt.return r
+  | _ -> (
+      match Hashtbl.find_opt st.pending key with
+      | Some p -> Lwt.protected p
+      | None ->
+          let fetch =
+            match !jwks_fetch with
+            | Some f -> f
+            | None -> Haltsql_auth.Oidc_client.http_fetch ~timeout:5. ()
+          in
+          let p = Haltsql_auth.Oidc_client.provider ~fetch o.provider in
+          let check =
+            Lwt.finalize
+              (fun () ->
+                let* r =
+                  Lwt.catch
+                    (fun () -> Haltsql_auth.Oidc_client.refresh p)
+                    (fun e -> Lwt.return_error (Printexc.to_string e))
+                in
+                Hashtbl.replace st.results key (Ctx.now (), r);
+                Lwt.return r)
+              (fun () ->
+                Hashtbl.remove st.pending key;
+                Lwt.return_unit)
+          in
+          (* The check may have finished already (no yield): only record it in flight
+             while it is. *)
+          if Lwt.state check = Lwt.Sleep then Hashtbl.replace st.pending key check;
+          Lwt.protected check)
 
 let oidc_item ctx (o : C.oidc) =
   let+ r = jwks_check ctx o in
