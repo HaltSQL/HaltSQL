@@ -33,6 +33,8 @@ import sys
 import time
 
 DUNE = os.environ.get("DUNE", "opam exec -- dune")
+# Extra dune flags, e.g. DUNE_FLAGS="--root ." when running inside a git worktree.
+FLAGS = os.environ.get("DUNE_FLAGS", "")
 
 
 def sh(cmd, timeout):
@@ -57,8 +59,8 @@ def main():
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     equivalent = getattr(m, "EQUIVALENT", {})
-    build = getattr(m, "BUILD", f"{DUNE} build")
-    test = getattr(m, "TEST", f"{DUNE} test --force " + getattr(m, "TESTS", ""))
+    build = getattr(m, "BUILD", f"{DUNE} build {FLAGS}")
+    test = getattr(m, "TEST", f"{DUNE} test {FLAGS} --force " + getattr(m, "TESTS", ""))
 
     dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
                            capture_output=True, text=True).stdout.strip()
