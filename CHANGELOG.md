@@ -63,7 +63,10 @@ even before 1.0.
   encodings only). No behaviour change. New direct dependency: `kdf`
   (already a transitive dependency of `tls` and `x509`).
 - JWT verification stays in-tree; `docs/authentication.md` records why the
-  `jose` package was not adopted.
+  `jose` package was not adopted, and what the in-tree code is tested
+  against: RFC 7515, 7520 and 8037 examples, tokens signed by
+  pyca/cryptography for all seven algorithms, about 700 negative cases, and
+  a mutation fuzzer (`test/fuzz/fuzz_jwt.ml`) that runs with `dune test`.
 
 ### Security
 - **Stricter JWK and JWT parsing in `haltsql-server`.** Found by new negative

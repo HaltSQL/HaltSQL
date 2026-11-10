@@ -74,7 +74,8 @@ sensitive column you left out.
 | Conformance | Same verdicts as the sql-guardrail test cases (MIT, attributed) | `test/conformance/` | Runs on every PR |
 | Property-based | Evasion transforms applied to allowed queries must flip the verdict to deny when they break isolation | QCheck with shrinking (`test/property/`) | Runs on every PR |
 | Differential | Allowed queries run against real Postgres; the database is the judge | `haltlab` | Nightly (lab) |
-| Fuzzing | Parser bridge and YAML/JSON loader (HTTP input planned): no crashes, every input gets a verdict | Deterministic generator (`test/fuzz/`); AFL++ planned | Runs on every PR |
+| Fuzzing | Parser bridge and YAML/JSON loader (HTTP input planned): no crashes, every input gets a verdict. JWT decoder, JWKS parser and token verification of `haltsql-server`: no exceptions, no mutated token accepted | Deterministic generators (`test/fuzz/fuzz.ml`, `test/fuzz/fuzz_jwt.ml`); AFL++ planned | Runs on every PR |
+| Cryptographic conformance | JWT/JWK verification of `haltsql-server` against RFC 7515, 7520 and 8037 examples, tokens signed by pyca/cryptography, and Wycheproof-style negative tables | Alcotest (`test/auth/test_jose_vectors.ml`, `test/auth/test_jose_negative.ml`) | Runs on every PR |
 | Mutation | Tests catch injected bugs in rule code | Mutation testing | Planned |
 | Contract | HTTP API matches `docs/openapi.yaml` | Schemathesis | Planned |
 | Coverage | Untested code | bisect_ppx (`make coverage`) | Report uploaded by CI |
