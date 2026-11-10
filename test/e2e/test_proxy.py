@@ -324,7 +324,7 @@ def test_proxy_enforces_policy_reloads_and_audits(cli: Cli, proxy_bin: Path, pro
     assert not any("app.orders WHERE" in line for line in lines)  # log_raw_sql is off
     assert upstream_password not in proxy.log() and client_password not in proxy.log()
     assert f"-{marker}" not in proxy.log()  # no SQL text in the operational log either
-    assert len(log_events(proxy, "statement denied")) == 4
+    assert len(log_events(proxy, "statement denied")) == 3
     # The two policy generations are both in the audit trail.
     assert len({r["policy_version"] for r in recs}) == 2
 

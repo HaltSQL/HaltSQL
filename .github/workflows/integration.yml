@@ -54,6 +54,23 @@ jobs:
           NIGHTLY: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: .github/scripts/changes.sh ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
 
+  # Built (or restored) once here, so the jobs below that only use the binaries
+  # all hit the cache instead of each building them in parallel.
+  binaries:
+    name: Binaries (build once, cached by source hash)
+    needs: changes
+    if: >-
+      needs.changes.outputs.idle != 'true' && (
+        needs.changes.outputs.e2e == 'true' || needs.changes.outputs.ocaml == 'true' ||
+        needs.changes.outputs.operator == 'true' || github.event_name != 'pull_request')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/haltsql-binaries
+
   ocaml-docker:
     name: OCaml integration (${{ matrix.suite.name }})
     needs: changes
@@ -135,7 +152,7 @@ jobs:
 
   e2e:
     name: E2E
-    needs: changes
+    needs: [changes, binaries]
     if: needs.changes.outputs.e2e == 'true'
     # The end-to-end suite (test/e2e, docs/testing.md#end-to-end-suite): the
     # real services in Docker Compose, the real binaries, a pytest driver.
@@ -184,7 +201,7 @@ jobs:
 
   operator:
     name: Operator (Go unit + envtest)
-    needs: changes
+    needs: [changes, binaries]
     if: needs.changes.outputs.ocaml == 'true' || needs.changes.outputs.operator == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -270,7 +287,7 @@ jobs:
 
   lab-compat:
     name: Postgres flavours (lab compat, local engines)
-    needs: changes
+    needs: [changes, binaries]
     if: (github.event_name == 'schedule' && needs.changes.outputs.idle != 'true') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -304,6 +321,7 @@ jobs:
     if: always()
     needs:
       - changes
+      - binaries
       - ocaml-docker
       - e2e
       - operator
