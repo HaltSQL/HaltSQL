@@ -65,6 +65,26 @@ even before 1.0.
 - JWT verification stays in-tree; `docs/authentication.md` records why the
   `jose` package was not adopted.
 
+### Security
+- **Stricter JWK and JWT parsing in `haltsql-server`.** Found by new negative
+  tests of the in-tree JWT code:
+  - An Ed25519 JWKS key that is a point of small order was loaded; with such a
+    key one fixed signature verifies for every message. These keys are now
+    refused.
+  - RSA keys with an even public exponent, or a modulus over 8192 bits, were
+    loaded. Both are now refused.
+  - A JWK's `key_ops` was not read: a key published for `sign` or `encrypt`
+    only could verify tokens. `key_ops` must now contain `verify` when present.
+  - A JWK or JWK Set with duplicate member names was read by its first
+    occurrence. It is now refused, as are duplicate member names nested inside
+    a token's header or claims.
+  - A token with `"b64": false` (RFC 7797) and no `crit` was read as an
+    ordinary token. It is now refused; a non-string `typ` is refused too.
+  - `exp`, `nbf` or `iat` written as an integer of more than 308 digits was
+    read as infinity, so such an `exp` never expired. It is now a bad claim.
+  - An `aud` array containing a non-string next to an accepted audience was
+    accepted. Every element must now be a string.
+
 ## [0.0.2] - 2026-11-10
 
 Packaging fix release. No changes to the engine, the server, the proxy or the

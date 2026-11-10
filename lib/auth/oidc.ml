@@ -69,7 +69,10 @@ let check_audience (p : Config.oidc_provider) claims =
   let ok a = List.mem a p.audiences in
   match List.assoc_opt "aud" claims with
   | Some (`String a) when ok a -> Ok ()
-  | Some (`List l) when List.exists (function `String a -> ok a | _ -> false) l -> Ok ()
+  | Some (`List l)
+    when List.for_all (function `String _ -> true | _ -> false) l
+         && List.exists (function `String a -> ok a | _ -> false) l ->
+      Ok ()
   | _ -> Error Jwt.Wrong_audience
 
 let rec all_ok f = function

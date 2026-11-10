@@ -156,13 +156,13 @@ What is checked, in order:
 
 | Check | Rule | Failure |
 |---|---|---|
-| shape | three base64url segments, JSON objects without duplicate members, no `crit` header, at most 16 KiB | `401 malformed token` |
+| shape | three base64url segments, JSON objects without duplicate members at any depth, no `crit` header, no `"b64": false`, at most 16 KiB | `401 malformed token` |
 | algorithm | header `alg` is in `algorithms`; `none` and every HMAC algorithm are always rejected | `401` |
-| key | the header's `kid` names a JWKS key of the matching type (RSA for RS*/PS256, P-256 for ES256, P-384 for ES384, Ed25519 for EdDSA), with `use` absent or `sig` and `alg` absent or equal; RSA keys must be at least 2048 bits; symmetric keys are never loaded | `401` (missing or unknown `kid`) |
+| key | the header's `kid` names a JWKS key of the matching type (RSA for RS*/PS256, P-256 for ES256, P-384 for ES384, Ed25519 for EdDSA), with `use` absent or `sig`, `key_ops` absent or containing `verify`, and `alg` absent or equal; RSA keys must be 2048 to 8192 bits with an odd public exponent of at least 3; Ed25519 keys of small order, keys with private members or duplicate members, and symmetric keys are never loaded; header members that carry a key (`jwk`, `jku`, `x5u`, `x5c`) are ignored | `401` (missing or unknown `kid`) |
 | signature | verified with that key | `401` |
 | `iss` | equals `issuer` exactly | `401` |
-| `aud` | a string or array containing one of `audiences` | `401` |
-| `exp` | required; `now < exp + leeway` | `401 token has expired` |
+| `aud` | a string, or an array of strings, containing one of `audiences` | `401` |
+| `exp` | required, a finite number; `now < exp + leeway` | `401 token has expired` |
 | `nbf`, `iat` | if present, not later than `now + leeway` | `401` |
 | `required_claims` | a string must equal the claim, or be an element of an array claim, or a word of a space-separated claim such as `scope`; a list requires every value | `401` |
 | policy | `policy`, or the string value of `policy_claim` if it is in `allowed_policies`, or the first `policy_from_groups` rule the token's groups match (see [Policies from IdP groups](#policies-from-idp-groups)) | `401` |

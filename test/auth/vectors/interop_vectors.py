@@ -6,7 +6,10 @@
 
 `generate` creates one key and one signed JWT for each algorithm haltsql-server
 accepts (RS256 RS384 RS512 PS256 ES256 ES384 EdDSA). Keys are fresh on every run,
-so regenerating replaces the whole file.
+so regenerating replaces the whole file. It also writes "negative" tokens: signed
+with the same keys and labelled with an accepted algorithm, but produced with
+parameters that algorithm does not allow (wrong PSS salt length or MGF hash, wrong
+digest, DER-encoded ECDSA). A verifier must reject every one of them.
 
 `check` verifies every positive vector in both files with pyca/cryptography. It is
 how the committed files were validated independently of lib/auth: the RFC examples
@@ -99,12 +102,63 @@ def generate():
         )
         sig = sign(alg, key, signing_input.encode())
         tokens.append({"alg": alg, "kid": kid, "token": signing_input + "." + b64(sig)})
+    by_alg = {alg: key for alg, key, _ in specs}
+    sha1, sha256, sha384 = hashes.SHA1(), hashes.SHA256(), hashes.SHA384()
+
+    def pss(hash_, mgf_hash, salt):
+        return lambda k, m: k.sign(m, padding.PSS(padding.MGF1(mgf_hash), salt), hash_)
+
+    def ecdsa_raw(hash_, size):
+        def f(k, m):
+            r, s = decode_dss_signature(k.sign(m, ec.ECDSA(hash_)))
+            return uint(r, size) + uint(s, size)
+
+        return f
+
+    # (name, header alg, signer); the key is the interop key of the header alg
+    bad = [
+        ("PS256 with an empty salt", "PS256", pss(sha256, sha256, 0)),
+        ("PS256 with a 20-byte salt", "PS256", pss(sha256, sha256, 20)),
+        ("PS256 with the longest salt", "PS256", pss(sha256, sha256, padding.PSS.MAX_LENGTH)),
+        ("PS256 with MGF1-SHA1", "PS256", pss(sha256, sha1, 32)),
+        ("PS256 with MGF1-SHA384", "PS256", pss(sha256, sha384, 32)),
+        ("PS384 signature labelled PS256", "PS256", pss(sha384, sha384, 48)),
+        ("PKCS1 v1.5 signature labelled PS256", "PS256",
+         lambda k, m: k.sign(m, padding.PKCS1v15(), sha256)),
+        ("PSS signature labelled RS256", "RS256", pss(sha256, sha256, 32)),
+        ("PKCS1 v1.5 SHA-1 labelled RS256", "RS256",
+         lambda k, m: k.sign(m, padding.PKCS1v15(), sha1)),
+        ("PKCS1 v1.5 SHA-384 labelled RS256", "RS256",
+         lambda k, m: k.sign(m, padding.PKCS1v15(), sha384)),
+        ("PKCS1 v1.5 SHA-256 labelled RS384", "RS384",
+         lambda k, m: k.sign(m, padding.PKCS1v15(), sha256)),
+        ("PKCS1 v1.5 SHA-256 labelled RS512", "RS512",
+         lambda k, m: k.sign(m, padding.PKCS1v15(), sha256)),
+        ("ES256 as DER", "ES256", lambda k, m: k.sign(m, ec.ECDSA(sha256))),
+        ("ES384 as DER", "ES384", lambda k, m: k.sign(m, ec.ECDSA(sha384))),
+        ("ES256 over SHA-384", "ES256", ecdsa_raw(sha384, 32)),
+        ("ES256 over SHA-1", "ES256", ecdsa_raw(sha1, 32)),
+        ("ES384 over SHA-256", "ES384", ecdsa_raw(sha256, 48)),
+    ]
+    negative = []
+    for name, alg, signer in bad:
+        kid = "interop-" + alg.lower()
+        header = {"alg": alg, "typ": "JWT", "kid": kid}
+        claims = {"iss": ISS, "aud": AUD, "sub": name, "iat": IAT, "exp": EXP}
+        signing_input = (
+            b64(json.dumps(header, separators=(",", ":")).encode())
+            + "."
+            + b64(json.dumps(claims, separators=(",", ":")).encode())
+        )
+        sig = signer(by_alg[alg], signing_input.encode())
+        negative.append({"name": name, "alg": alg, "token": signing_input + "." + b64(sig)})
     out = {
         "generator": "pyca/cryptography via test/auth/vectors/interop_vectors.py",
         "issuer": ISS,
         "audience": AUD,
         "jwks": {"keys": keys},
         "tokens": tokens,
+        "negative": negative,
     }
     json.dump(out, sys.stdout, indent=1)
     sys.stdout.write("\n")
@@ -161,7 +215,14 @@ def check(rfc_path, interop_path):
     for t in interop["tokens"]:
         print("ok", "interop", verify(by_kid[t["kid"]], t["token"]))
         n += 1
-    print(n, "vectors verified with pyca/cryptography")
+    for t in interop.get("negative", []):
+        try:
+            verify(by_kid["interop-" + t["alg"].lower()], t["token"])
+        except Exception:
+            continue
+        raise SystemExit("negative vector verifies: " + t["name"])
+    print(n, "vectors verified with pyca/cryptography;",
+          len(interop.get("negative", [])), "negative vectors rejected")
 
 
 if __name__ == "__main__":

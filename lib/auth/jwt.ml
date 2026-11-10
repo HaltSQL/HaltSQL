@@ -90,17 +90,26 @@ type token = {
 
 let ( let* ) = Result.bind
 
-let has_duplicates kv =
-  let keys = List.map fst kv in
-  List.length (List.sort_uniq compare keys) <> List.length keys
+(* Duplicate member names at any depth: two parsers may disagree on which one counts. *)
+let rec has_duplicates : Yojson.Safe.t -> bool = function
+  | `Assoc kv ->
+      let keys = List.map fst kv in
+      List.length (List.sort_uniq String.compare keys) <> List.length keys
+      || List.exists (fun (_, v) -> has_duplicates v) kv
+  | `List l -> List.exists has_duplicates l
+  | _ -> false
+
+(* Total: whatever the parser raises on hostile input is "not valid JSON". *)
+let parse_json s =
+  match Yojson.Safe.from_string s with j -> Some j | exception _ -> None
 
 let json_object what s =
-  match Yojson.Safe.from_string s with
-  | `Assoc kv when has_duplicates kv ->
+  match parse_json s with
+  | None -> Error (Malformed (what ^ " is not valid JSON"))
+  | Some (`Assoc _ as j) when has_duplicates j ->
       Error (Malformed (what ^ " has duplicate members"))
-  | `Assoc kv -> Ok kv
-  | _ -> Error (Malformed (what ^ " is not a JSON object"))
-  | exception Yojson.Json_error _ -> Error (Malformed (what ^ " is not valid JSON"))
+  | Some (`Assoc kv) -> Ok kv
+  | Some _ -> Error (Malformed (what ^ " is not a JSON object"))
 
 let b64 what s =
   match B64url.decode s with
@@ -128,6 +137,19 @@ let decode tok =
           | Some (`String k) -> Ok (Some k)
           | Some _ -> Error (Malformed "header \"kid\" must be a string")
         in
+        let* () =
+          match List.assoc_opt "typ" header with
+          | None | Some (`String _) -> Ok ()
+          | Some _ -> Error (Malformed "header \"typ\" must be a string")
+        in
+        (* RFC 7797: with "b64": false the payload is not base64url-encoded and the
+           signing input differs. Such a token must not be read as an ordinary one. *)
+        let* () =
+          match List.assoc_opt "b64" header with
+          | None | Some (`Bool true) -> Ok ()
+          | Some _ ->
+              Error (Malformed "header \"b64\" (unencoded payload) is not supported")
+        in
         if List.mem_assoc "crit" header then
           Error (Malformed "header \"crit\" extensions are not supported")
         else Ok { alg_name; kid; header; claims; signing_input = h ^ "." ^ p; signature }
@@ -148,10 +170,9 @@ let looks_like_jwt tok =
          && String.for_all is_b64url_char s -> (
       match B64url.decode h with
       | Ok hj -> (
-          match Yojson.Safe.from_string hj with
-          | `Assoc kv -> List.mem_assoc "alg" kv
-          | _ -> false
-          | exception Yojson.Json_error _ -> false)
+          match parse_json hj with
+          | Some (`Assoc kv) -> List.mem_assoc "alg" kv
+          | _ -> false)
       | Error _ -> false)
   | _ -> false
 
@@ -223,9 +244,10 @@ let number_claim name claims =
   | Some (`Int i) -> Ok (Some (float_of_int i))
   | Some (`Float f) when Float.is_finite f -> Ok (Some f)
   | Some (`Intlit s) -> (
+      (* an integer literal of more than 308 digits converts to infinity *)
       match float_of_string_opt s with
-      | Some f -> Ok (Some f)
-      | None -> Error (Bad_claim name))
+      | Some f when Float.is_finite f -> Ok (Some f)
+      | _ -> Error (Bad_claim name))
   | Some _ -> Error (Bad_claim name)
 
 type signing_key =

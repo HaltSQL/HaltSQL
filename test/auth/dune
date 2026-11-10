@@ -37,6 +37,26 @@
   (source_tree vectors))
  (libraries haltsql haltsql-server.auth alcotest yojson))
 
+; Wycheproof-style negative tables: malformed signatures, keys, headers and
+; claims, each with the typed outcome it must have (never an exception).
+
+(test
+ (name test_jose_negative)
+ (modules test_jose_negative)
+ (package haltsql-server)
+ (deps
+  (source_tree vectors))
+ (libraries
+  haltsql
+  haltsql-server.auth
+  alcotest
+  yojson
+  zarith
+  digestif
+  mirage-crypto-rng.unix
+  mirage-crypto-pk
+  mirage-crypto-ec))
+
 ; policy_from_groups: pure claim handling for Okta / Keycloak / Auth0 / Entra ID
 ; token shapes, first-match selection, overage, and the Oidc.verify hook.
 
