@@ -23,7 +23,7 @@
     "shadow_reasons": [],
     "policy": {
       "name": "saas",
-      "version": "sha256:6af2648b7ad06c8a71806f7f4712612205e22267b2c09c4577e7c766392b5c7b"
+      "version": "sha256:c4c06274995646e98e35d8a540c8d5baf1af72371a373b67255b582ec1983579"
     },
     "statement_kind": null,
     "tables": [],
@@ -31,7 +31,7 @@
     "bind_params": [],
     "fingerprint": null,
     "sql_sha256": "5d8fbdcae12213f57163ced7f07600d255c592425f66afeae54cf6c0d6febb16",
-    "elapsed_us": 169
+    "elapsed_us": 282
   },
   "compare": [
     "allowed",

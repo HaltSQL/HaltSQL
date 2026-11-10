@@ -37,6 +37,11 @@ val function_presets : (string * string list) list
 val default_operators : string list
 (** Operators allowed when a policy has no [operators] section. *)
 
+val default_casts : string list
+(** Cast target types allowed when a policy has no [casts] section: built-in scalar types
+    with pure input functions (text, integers, numeric, floats, bool, date/time, uuid,
+    json, jsonb, bytea), by the names the PostgreSQL parser produces. *)
+
 val default_deny_casts : string list
 (** Cast target types denied when a policy has no [deny_casts] section: the
     object-identifier types ([regclass], [regproc], ...) whose input functions read the

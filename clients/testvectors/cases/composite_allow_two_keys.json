@@ -16,7 +16,7 @@
     "shadow_reasons": [],
     "policy": {
       "name": "composite",
-      "version": "sha256:31505be72339317c38df2d8dc63a7b8eb5a689ba6586f894b1536e1dbf731ae0"
+      "version": "sha256:d0706031c4a8b9d02e953fc25b7e9bb479688503587433d8a4d1c0e26e42e5cd"
     },
     "statement_kind": "select",
     "tables": [
@@ -40,7 +40,7 @@
     ],
     "fingerprint": "e6c5471511bf5fb1",
     "sql_sha256": "8b242a31bd717cdca3a48e8350e37d424f678136c7032ed14aaef6db0c3555bc",
-    "elapsed_us": 249
+    "elapsed_us": 370
   },
   "compare": [
     "allowed",

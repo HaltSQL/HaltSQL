@@ -233,6 +233,7 @@ let start ?health ~tls () =
                   token_name = "static";
                   token_sha256 = Auth.sha256_hex static_token;
                   token_policy = "shop";
+                  token_context = None;
                 };
               ];
             oidc = [ oidc_provider ];

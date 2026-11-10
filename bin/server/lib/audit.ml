@@ -172,8 +172,8 @@ let seal ~prev (fields : (string * Yojson.Safe.t) list) =
   let hash = sha256_hex (prev ^ unsealed) in
   (Yojson.Safe.to_string (`Assoc (body @ [ ("hash", `String hash) ])), hash)
 
-let record_fields ~ts ~request_id ~caller ~caller_type ~(subject : string option)
-    ~(verdict : Haltsql.Verdict.t) ~sql ~log_raw_sql =
+let record_fields ?context ~ts ~request_id ~caller ~caller_type ~(subject : string option)
+    ~(verdict : Haltsql.Verdict.t) ~sql ~log_raw_sql () =
   let codes =
     List.map
       (fun (r : Haltsql.Reason.t) -> `String (Haltsql.Reason.code_to_string r.code))
@@ -185,15 +185,24 @@ let record_fields ~ts ~request_id ~caller ~caller_type ~(subject : string option
     ("caller", `String caller);
     ("caller_type", `String caller_type);
     ("subject", match subject with Some s -> `String s | None -> `Null);
-    ("policy", `String verdict.policy_name);
-    ("policy_version", `String verdict.policy_version);
-    ("allowed", `Bool verdict.allowed);
-    ("shadow", `Bool (verdict.shadow_reasons <> []));
-    ("codes", `List codes);
-    ("sql_sha256", `String verdict.sql_sha256);
-    ("fingerprint", match verdict.fingerprint with Some f -> `String f | None -> `Null);
-    ("elapsed_us", `Int verdict.elapsed_us);
   ]
+  @ (match context with
+    | None -> []
+    | Some (ctx, bound) ->
+        [
+          ("context", Haltsql.Context.to_json ctx);
+          ("context_source", `String (if bound then "authenticated" else "request"));
+        ])
+  @ [
+      ("policy", `String verdict.policy_name);
+      ("policy_version", `String verdict.policy_version);
+      ("allowed", `Bool verdict.allowed);
+      ("shadow", `Bool (verdict.shadow_reasons <> []));
+      ("codes", `List codes);
+      ("sql_sha256", `String verdict.sql_sha256);
+      ("fingerprint", match verdict.fingerprint with Some f -> `String f | None -> `Null);
+      ("elapsed_us", `Int verdict.elapsed_us);
+    ]
   @ if log_raw_sql then [ ("sql", `String sql) ] else []
 
 (* Appends one record to the sink. The chain only advances if the write

@@ -48,7 +48,8 @@ policy gets `403 FORBIDDEN`.
 |---|---|
 | mTLS identity | the identity's static `context` + body fields listed in its `request_context_fields` |
 | OIDC token | values of `context_claims` + body fields listed in the provider's `request_context_fields` |
-| static token, anonymous | the request body's `context` |
+| static token with `context` or `request_context_fields` | the token's static `context` + body fields listed in its `request_context_fields` |
+| static token without either key, anonymous | the request body's `context` |
 
 A body field outside `request_context_fields` is refused with
 `403 CONTEXT_NOT_ALLOWED`; it is never silently dropped or overridden. A body
@@ -267,9 +268,31 @@ can add a user to `data-platform-admins` grants that user the
 ## Static tokens
 
 Static tokens remain supported. Store only `token_sha256`; each token is
-pinned to one policy and the request body supplies the context. Prefer OIDC
-or mTLS when the context (tenant, user) must come from an authenticated
-identity rather than from the calling service.
+pinned to one policy.
+
+**Bind each token to its tenant.** Give the token a `context` and the request
+body can no longer claim another tenant:
+
+```yaml
+server:
+  auth:
+    tokens:
+      - name: acme-agent
+        token_sha256: "..."
+        policy: analytics-agent
+        context: { tenant_id: acme }          # fixed for this token
+        request_context_fields: [user_id]     # the body may still add these
+```
+
+A body field outside `request_context_fields` gets `403 CONTEXT_NOT_ALLOWED`.
+Use one token per tenant, or OIDC / mTLS when tenants are many.
+
+A token with neither `context` nor `request_context_fields` is **unbound**: it
+authenticates the calling service, and the request body supplies the whole
+context. Any holder of an unbound token can obtain a verdict for any tenant it
+names, so use unbound tokens only when the caller is your own trusted backend
+that takes the tenant from its authenticated session. Audit records carry the
+context and `context_source` (`authenticated` or `request`) either way.
 
 ## Observability
 

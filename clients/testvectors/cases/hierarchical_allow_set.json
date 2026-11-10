@@ -19,7 +19,7 @@
     "shadow_reasons": [],
     "policy": {
       "name": "hierarchical",
-      "version": "sha256:b3f6277ae937813ad2e1f6b4feba03382548f72fa5450a68d5796db03c715b1f"
+      "version": "sha256:9f95500d083a3db66c727d4d11d138237ff3c5967e0633d9744bcd533f7e6592"
     },
     "statement_kind": "select",
     "tables": [
@@ -42,7 +42,7 @@
     ],
     "fingerprint": "2cff99aaa0450564",
     "sql_sha256": "fdb501ed2469870453d02976dc391e3c98766d0b1c1e93dace9e6570851473e8",
-    "elapsed_us": 280
+    "elapsed_us": 413
   },
   "compare": [
     "allowed",

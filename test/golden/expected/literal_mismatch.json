@@ -13,7 +13,7 @@
   "shadow_reasons": [],
   "policy": {
     "name": "saas-literal",
-    "version": "sha256:3cadf16e091eebd8984df96b47388034e2e8cba13e15f5994646f78a68d68b5e"
+    "version": "sha256:c62411733171d75c146f35a7e68229d540951bdf10919bfbb0c48703b41ecb19"
   },
   "statement_kind": "select",
   "tables": [ "app.orders" ],

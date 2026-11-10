@@ -86,6 +86,7 @@ val close : sink -> unit
 (** {1 Writing} *)
 
 val record_fields :
+  ?context:Haltsql.Context.t * bool ->
   ts:string ->
   request_id:string ->
   caller:string ->
@@ -94,8 +95,13 @@ val record_fields :
   verdict:Haltsql.Verdict.t ->
   sql:string ->
   log_raw_sql:bool ->
+  unit ->
   (string * Yojson.Safe.t) list
-(** The unsealed fields of one record. [sql] is included only if [log_raw_sql]. *)
+(** The unsealed fields of one record. [sql] is included only if [log_raw_sql]. [context]
+    is the context the statement was verified under and whether the caller's authenticated
+    identity supplied it ([true], recorded as [context_source = "authenticated"]) or the
+    request body did ([false], ["request"]): the record then shows which tenant a caller
+    acted as. *)
 
 val append : sink -> (string * Yojson.Safe.t) list -> unit
 (** Seals and writes one record. The chain advances only if the write succeeded. Raises on

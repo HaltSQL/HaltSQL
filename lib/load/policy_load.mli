@@ -38,6 +38,9 @@ val function_presets : (string * string list) list
 val default_operators : string list
 (** Operators allowed when a policy has no [operators] section. *)
 
+val default_casts : string list
+(** Cast target types allowed when a policy has no [casts] section. *)
+
 val default_deny_casts : string list
 (** Cast target types denied when a policy has no [deny_casts] section (the
     object-identifier types such as [regclass], whose input functions read the system

@@ -143,10 +143,33 @@ let check_aexpr (env : Env.t) (kind : Ast.aexpr_kind) name loc =
 let type_base (tn : Ast.type_name) =
   match Util.last tn.type_names with Some n -> String.lowercase_ascii n | None -> ""
 
-(** Rule H: casts to types in [policy.deny_casts]. *)
+(** How a cast target is looked up in [policy.casts]: the bare name for an unqualified or
+    [pg_catalog.]-qualified type, ["schema.type"] for any other schema, [None] for a shape
+    that is never allowed (empty or more than two components). *)
+let cast_key (tn : Ast.type_name) =
+  match List.map String.lowercase_ascii tn.type_names with
+  | [ n ] | [ "pg_catalog"; n ] -> Some n
+  | [ s; n ] -> Some (s ^ "." ^ n)
+  | [] | _ :: _ :: _ :: _ -> None
+
+(** Rule H: a cast target must be in [policy.casts] (deny by default) and must not be in
+    [policy.deny_casts]. A cast runs the target type's input or conversion function, so an
+    unlisted type is an unlisted function call. *)
 let check_cast (env : Env.t) (tn : Ast.type_name) loc =
   let base = type_base tn in
-  if List.mem base env.policy.deny_casts then
+  let shown = String.concat "." (List.map String.lowercase_ascii tn.type_names) in
+  let listed =
+    match cast_key tn with Some k -> List.mem k env.policy.casts | None -> false
+  in
+  if (not listed) && not (List.mem base env.policy.deny_casts) then
+    Env.emit env ~loc ~rule:"casts.allowlist" Reason.E_CAST_DENIED
+      (Printf.sprintf "cast to %s is not in the policy's cast allowlist" shown)
+      ~hint:
+        (Printf.sprintf
+           "Remove the ::%s cast, or cast to one of the allowed types (text, integer, \
+            numeric, boolean, date, timestamp, uuid, json, ...)."
+           base)
+  else if List.mem base env.policy.deny_casts then
     Env.emit env ~loc ~rule:"casts.deny" Reason.E_CAST_DENIED
       (Printf.sprintf "cast to %s is denied by policy" base)
       ~hint:

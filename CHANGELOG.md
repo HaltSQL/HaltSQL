@@ -10,6 +10,31 @@ even before 1.0.
 
 ## [Unreleased]
 
+### Added
+- **Static tokens can be bound to a context.** `server.auth.tokens[]` takes
+  `context` and `request_context_fields`, like mTLS identities. A bound token's
+  tenant comes from the config; a request body that names another tenant gets
+  `403 CONTEXT_NOT_ALLOWED`. Tokens without either key behave as before (the
+  body supplies the context).
+- **Audit records carry the context.** Server audit records gain `context`
+  (the values the statement was verified under) and `context_source`
+  (`authenticated` or `request`), so the log shows which tenant a caller acted
+  as.
+
+### Changed
+- **`haltsql-server` verifies off the event loop.** Parsing and analysis run on
+  a bounded thread pool (`HALTSQL_VERIFY_THREADS`, default the CPU count), so a
+  large statement no longer stalls other requests, health checks or reloads.
+- **Casts are denied by default.** A new policy section `casts`
+  (`allow` / `extend`) lists the allowed cast target types; the default is the
+  built-in scalar types (text, integers, numeric, floats, bool, date/time,
+  uuid, json, jsonb, bytea). Before, only the types in `deny_casts` were
+  refused, so `'x'::xml`, `CAST(x AS oid)` and casts to user-defined types
+  passed. `deny_casts` stays as a second guard. **Breaking:** queries that cast
+  to another type now get `E_CAST_DENIED`; add the type with
+  `casts: { extend: [...] }`. Every policy's `version` hash changes because the
+  canonical policy now includes `casts`.
+
 ## [0.0.2] - 2026-11-10
 
 Packaging fix release. No changes to the engine, the server, the proxy or the

@@ -55,11 +55,13 @@ let start ~audit ~raw =
                   token_name = "analytics";
                   token_sha256 = Auth.sha256_hex token_analytics;
                   token_policy = "shop-shadow";
+                  token_context = None;
                 };
                 {
                   token_name = "bi";
                   token_sha256 = Auth.sha256_hex token_bi;
                   token_policy = "shop-enforce";
+                  token_context = None;
                 };
               ];
             allow_unauthenticated = false;

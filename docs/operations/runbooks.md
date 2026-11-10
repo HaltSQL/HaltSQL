@@ -279,7 +279,7 @@ well-behaved agent rarely produces:
 | `E_MULTI_STATEMENT` | A second, stacked statement. |
 | `E_STATEMENT_KIND`, `E_DATA_MODIFYING_CTE`, `E_WRITE_DENIED`, `E_SELECT_INTO`, `E_LOCKING_CLAUSE` | Writes, DDL or locks from a read-only agent. |
 | `E_TENANT_MISMATCH`, `E_TENANT_MISSING` | Another tenant's data, or no tenant filter. |
-| `E_CAST_DENIED` | `reg*` casts that look up catalog objects. |
+| `E_CAST_DENIED` | Casts to a type outside the policy's `casts` allowlist, and `reg*` casts that look up catalog objects. |
 | `E_COLUMN_DENIED` | Columns the policy hides. |
 
 Also watch `403` responses on `/v1/verify`

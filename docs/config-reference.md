@@ -126,6 +126,8 @@ Each token entry:
 | `name` | string | Label used in logs and audit events. Never the secret. Must be unique. |
 | `token_sha256` | hex string | SHA-256 of the bearer token as 64 lower-case hex characters. The token itself is never stored. Must be unique. |
 | `policy` | string | Name (`metadata.name`) of the one policy this token may use. |
+| `context` | mapping | Optional. Context values bound to this token (for example `tenant_id: acme`). The request body cannot supply or override them. |
+| `request_context_fields` | list | Optional. Context fields the request body may still supply. Setting this or `context` binds the token: any other body field gets `403 CONTEXT_NOT_ALLOWED`. Without either key the body supplies the whole context (see [authentication.md](authentication.md#static-tokens)). |
 
 A token can only use its pinned policy, so a compromised agent cannot pick a
 looser one. Generate a token and its hash with, for example:

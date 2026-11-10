@@ -46,6 +46,10 @@ type token = {
   token_name : string;
   token_sha256 : string;  (** lower-case hex SHA-256 of the bearer token *)
   token_policy : string;  (** name of the policy this token is pinned to *)
+  token_context : (Context.t * string list) option;
+      (** [Some (context, request_context_fields)]: the token is bound to this context and
+          the request body may add only the listed fields. [None] (neither key in the
+          file): the request body supplies the whole context. *)
 }
 
 type audit_sink = Audit_stdout | Audit_file of string
