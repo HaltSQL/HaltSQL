@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $eg := $np.egress }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "console.fullname" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "console.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+      {{- with $np.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      from:
+        - podSelector: {}
+      {{- end }}
+    {{- with $np.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  # The console only calls out: the verifiers' admin API, the IdP, GitHub and
+  # webhooks, data catalogs, S3/GCS and secret managers, and (for restarts)
+  # the Kubernetes API. Everything else is denied.
+  egress:
+    {{- if $eg.allowDNS }}
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- with $eg.verifiers }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $eg.allowHTTPS }}
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- if and .Values.rbac.create $eg.kubernetesAPI.to }}
+    - to:
+        {{- toYaml $eg.kubernetesAPI.to | nindent 8 }}
+      ports:
+        - port: {{ $eg.kubernetesAPI.port }}
+          protocol: TCP
+    {{- end }}
+    {{- with $eg.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

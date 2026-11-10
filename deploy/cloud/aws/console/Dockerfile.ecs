@@ -1,0 +1,16 @@
+# Derived image for ECS Fargate: the official haltsql-console image plus an
+# immutable console config and the verifiers' config and policies (the same
+# files deploy/cloud/aws/ecs/Dockerfile bakes into the verifier image).
+#
+#   cp ../ecs/config.yaml verifier-config.yaml && cp -r ../ecs/policies .
+#   docker build -f deploy/cloud/aws/console/Dockerfile.ecs \
+#     -t haltsql-console-config:2026-11-09 deploy/cloud/aws/console
+#
+# Pin the base by digest after verifying its signature (docs/console/deploy.md).
+ARG HALTSQL_CONSOLE_IMAGE=ghcr.io/haltsql/haltsql-console:0.1.0
+FROM ${HALTSQL_CONSOLE_IMAGE}
+COPY console.ecs.yaml /etc/haltsql-console/console.yaml
+COPY verifier-config.yaml /etc/haltsql/config.yaml
+COPY policies/ /etc/haltsql/policies/
+# ENTRYPOINT (haltsql-console), CMD (--config /etc/haltsql-console/console.yaml),
+# uid 65532 and the HEALTHCHECK are kept from the base image.

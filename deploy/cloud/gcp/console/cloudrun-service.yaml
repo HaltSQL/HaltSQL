@@ -1,0 +1,114 @@
+# Cloud Run: haltsql-console as ONE always-on instance with an internal-only
+# ingress, oauth2-proxy as the ingress container, and state_dir on a Filestore
+# (NFS) share. Guide: docs/console/deploy.md#cloud-run.
+#
+#   gcloud run services replace deploy/cloud/gcp/console/cloudrun-service.yaml \
+#     --region europe-west1
+#
+# Why these settings:
+#   * maxScale/minScale 1: state_dir is single-writer, and the background loops
+#     (audit ingestion, fleet polling, signals) must keep running between
+#     requests, hence also cpu-throttling "false" (instance-based billing).
+#   * Filestore (NFS) rather than a GCS FUSE volume: the console replaces its
+#     state files with an atomic rename, which Cloud Storage FUSE does not
+#     guarantee. Use GCS FUSE only for a disposable demo.
+#   * The console config comes from Secret Manager mounted as a file, and the
+#     verifiers' config/policies from a second secret (same files as the
+#     verifier service's).
+# Replace REPLACE_ME_PROJECT, the VPC connector/network, the Filestore IP and
+# the IdP values before use.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: haltsql-console
+  labels:
+    cloud.googleapis.com/location: europe-west1
+  annotations:
+    run.googleapis.com/ingress: internal
+    run.googleapis.com/launch-stage: BETA
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/execution-environment: gen2       # NFS volumes need gen2
+        run.googleapis.com/network-interfaces: '[{"network":"corp-vpc","subnetwork":"run-egress"}]'
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+        run.googleapis.com/container-dependencies: '{"oauth2-proxy":["console"]}'
+    spec:
+      serviceAccountName: haltsql-console@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+      timeoutSeconds: 300
+      containers:
+        # Ingress container: sign-in, then X-Forwarded-Email/-Groups to the console.
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+          ports:
+            - name: http1
+              containerPort: 4180
+          args:
+            - --http-address=0.0.0.0:4180
+            - --upstream=http://127.0.0.1:8090/
+            - --provider=google
+            - --redirect-url=https://haltsql-console.corp.example/oauth2/callback
+            - --email-domain=acme.example
+            - --google-admin-email=directory-reader@acme.example
+            - --google-service-account-json=/etc/oauth2-proxy/google-sa.json
+            - --google-group=haltsql-admins@acme.example
+            - --google-group=security@acme.example
+            - --google-group=compliance@acme.example
+            - --pass-user-headers=true
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --skip-provider-button=true
+            - --skip-auth-route=GET=^/(healthz|readyz)$
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: haltsql-console-oauth2-client-id, key: latest } }
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: haltsql-console-oauth2-client-secret, key: latest } }
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: { secretKeyRef: { name: haltsql-console-oauth2-cookie-secret, key: latest } }
+          volumeMounts:
+            - { name: google-sa, mountPath: /etc/oauth2-proxy }
+          resources:
+            limits: { cpu: "1", memory: 256Mi }
+        - name: console
+          image: ghcr.io/haltsql/haltsql-console:0.1.0    # pin @sha256 in production
+          args: ["--config", "/etc/haltsql-console/console.yaml"]
+          env:
+            # Loopback only: the console is reachable solely through oauth2-proxy.
+            - name: HALTSQL_CONSOLE_LISTEN
+              value: 127.0.0.1:8090
+          volumeMounts:
+            - { name: console-config, mountPath: /etc/haltsql-console }
+            - { name: verifier-config, mountPath: /etc/haltsql }
+            - { name: state, mountPath: /var/lib/haltsql-console }
+          startupProbe:
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 15
+          resources:
+            limits: { cpu: "1", memory: 2Gi }
+      volumes:
+        - name: console-config
+          secret:
+            secretName: haltsql-console-config      # console.yaml (docs/console/config.md)
+            items: [{ key: latest, path: console.yaml }]
+        - name: verifier-config
+          secret:
+            secretName: haltsql-verifier-config     # the verifiers' config.yaml
+            items: [{ key: latest, path: config.yaml }]
+        - name: google-sa
+          secret:
+            secretName: haltsql-console-oauth2-google-sa
+            items: [{ key: latest, path: google-sa.json }]
+        - name: state
+          nfs:
+            server: 10.20.0.2                       # Filestore instance IP
+            path: /haltsql_console
+            readOnly: false

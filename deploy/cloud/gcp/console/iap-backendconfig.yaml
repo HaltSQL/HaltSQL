@@ -1,0 +1,24 @@
+# GKE BackendConfig: Identity-Aware Proxy in front of haltsql-console, and the
+# load balancer health check on /readyz (served without a session by the
+# oauth2-proxy sidecar). Referenced by the Service annotation in gke.values.yaml.
+#
+#   kubectl -n haltsql create secret generic haltsql-console-iap \
+#     --from-literal=client_id=... --from-literal=client_secret=...
+#   kubectl apply -n haltsql -f deploy/cloud/gcp/console/iap-backendconfig.yaml
+#
+# Grant access with roles/iap.httpsResourceAccessor to the groups that use the
+# console. IAP sets x-goog-authenticated-user-email and x-goog-iap-jwt-assertion.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: haltsql-console-iap
+spec:
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: haltsql-console-iap
+  healthCheck:
+    type: HTTP
+    requestPath: /readyz
+    port: 4180
+  timeoutSec: 60

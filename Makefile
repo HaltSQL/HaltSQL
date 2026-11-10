@@ -4,6 +4,8 @@ DUNE          ?= opam exec -- dune
 OPAM          ?= opam
 OCAMLFORMAT_VERSION := $(shell sed -n 's/^version *= *//p' .ocamlformat 2>/dev/null)
 IMAGE         ?= ghcr.io/haltsql/haltsql
+CONSOLE_IMAGE ?= ghcr.io/haltsql/haltsql-console
+CONSOLE_COMPOSE = docker compose -f deploy/console/docker-compose.yaml
 VERSION       ?= $(shell sed -n 's/^(version \(.*\))/\1/p' dune-project)
 LAB_DIR       ?= lab
 PYTHON        ?= python3
@@ -17,7 +19,7 @@ LAB = $(LAB_DIR)/run.sh
 endif
 
 .DEFAULT_GOAL := build
-.PHONY: help deps build test fmt fmt-check doc coverage bench diagrams lab-up lab-down lab-run docker smoke e2e e2e-up e2e-down clean
+.PHONY: help deps build test fmt fmt-check doc coverage bench diagrams lab-up lab-down lab-run docker smoke console console-image console-smoke console-up console-demo console-down e2e e2e-up e2e-down clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -76,6 +78,24 @@ docker: ## Build the container image locally (also tagged haltsql-local:dev for 
 
 smoke: ## Smoke-test the haltsql-local:dev image (scripts/docker-smoke.sh; run `make docker` first)
 	scripts/docker-smoke.sh
+
+console: ## Build the haltsql-console binary (_build/default/bin/console/main.exe)
+	$(DUNE) build ./bin/console
+
+console-image: ## Build the haltsql-console image (Dockerfile target console; also tagged haltsql-console-local:dev)
+	docker build --target console -t $(CONSOLE_IMAGE):$(VERSION) -t $(CONSOLE_IMAGE):dev -t haltsql-console-local:dev .
+
+console-smoke: ## Smoke-test the haltsql-console-local:dev image (scripts/console-docker-smoke.sh)
+	scripts/console-docker-smoke.sh
+
+console-up: ## Local console stack: Postgres, haltsql-server, haltsql-console (deploy/console/docker-compose.yaml)
+	$(CONSOLE_COMPOSE) up -d --build
+
+console-demo: ## Send demo traffic through the local stack (deploy/console/demo-traffic.sh)
+	deploy/console/demo-traffic.sh
+
+console-down: ## Stop the local console stack and remove its volumes
+	$(CONSOLE_COMPOSE) down -v
 
 e2e: ## End-to-end suite (test/e2e): stack up, pytest, stack down; KEEP=1 keeps the stack, E2E_ARGS for pytest
 	$(DUNE) build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe

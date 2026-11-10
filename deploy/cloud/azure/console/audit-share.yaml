@@ -1,0 +1,48 @@
+# Azure Files share for the verifiers' audit files, read by haltsql-console.
+# The verifiers mount it read-write and write one file sink per pod; the
+# console mounts the same claim read-only (auditVolume in aks.values.yaml).
+#
+# In the haltsql release (values-aks.yaml), add:
+#   extraVolumes:
+#     - { name: audit-share, persistentVolumeClaim: { claimName: haltsql-audit } }
+#   extraVolumeMounts:
+#     - { name: audit-share, mountPath: /var/log/haltsql-shared }
+#   extraEnv:
+#     - name: POD_NAME
+#       valueFrom: { fieldRef: { fieldPath: metadata.name } }
+#   server:
+#     audit:
+#       sinks:
+#         - type: stdout
+#         - type: file
+#           path: /var/log/haltsql-shared/${env:POD_NAME}.jsonl
+#
+# Files are owned by uid/gid 65532 (mount options below), which both images use.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: haltsql-audit
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: haltsql-audit-azurefile
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: haltsql-audit-azurefile
+provisioner: file.csi.azure.com
+parameters:
+  skuName: Premium_ZRS
+  protocol: smb
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+mountOptions:
+  - uid=65532
+  - gid=65532
+  - file_mode=0640
+  - dir_mode=0750
+  - mfsymlinks
+  - nobrl

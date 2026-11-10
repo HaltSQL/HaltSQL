@@ -23,11 +23,12 @@ and provenance step but publish only a draft release and packages under
 | `haltsql-<tag>-darwin-arm64.tar.gz` | GitHub release | A `macos-15` runner with `ocaml/setup-ocaml`; links only system libraries |
 | `haltsql-<tag>.cdx.json` | GitHub release | CycloneDX SBOM (see [SBOMs](#sboms)) |
 | `haltsql-<version>.tgz` | GitHub release | The Helm chart archive (`helm package deploy/helm/haltsql`) |
-| `haltsql-<tag>.oci.txt` | GitHub release | The digests of the two images and the chart as pushed to GHCR |
+| `haltsql-<tag>.oci.txt` | GitHub release | The digests of the three images and the chart as pushed to GHCR |
 | `SHA256SUMS` | GitHub release | SHA-256 of every tarball, the chart archive, the SBOM and `haltsql-<tag>.oci.txt` |
 | `*.sigstore.json` | GitHub release | Keyless cosign signature bundle for every file above and `SHA256SUMS` |
 | `ghcr.io/haltsql/haltsql:<version>` | GHCR | The `runtime` stage of the `Dockerfile`, `linux/amd64` and `linux/arm64` |
 | `ghcr.io/haltsql/haltsql-mcp:<version>` | GHCR | `clients/mcp/Dockerfile`, on top of the `haltsql` image by digest |
+| `ghcr.io/haltsql/haltsql-console:<version>` | GHCR | The `console` stage of the `Dockerfile`, `linux/amd64` and `linux/arm64` |
 | `oci://ghcr.io/haltsql/charts/haltsql`, version `<version>` | GHCR | The same chart archive, pushed with `helm push` |
 
 `.github/workflows/native-packages.yml` publishes, on `v*` tags:
@@ -76,7 +77,7 @@ Known gaps:
 | Helm chart archive | Keyless cosign (`cosign sign-blob --bundle`) | GitHub build-provenance attestation |
 | `SHA256SUMS`, SBOM, `haltsql-<tag>.oci.txt` | Keyless cosign | None |
 | Helm chart in GHCR | Keyless cosign on the chart's OCI digest, verified in the same job | GitHub build-provenance attestation pushed to the registry |
-| `haltsql` and `haltsql-mcp` images | Keyless cosign on the image digest, verified in the same job | BuildKit SLSA provenance (`provenance: mode=max`) attached to the image index, plus a GitHub build-provenance attestation pushed to the registry |
+| `haltsql`, `haltsql-mcp` and `haltsql-console` images | Keyless cosign on the image digest, verified in the same job | BuildKit SLSA provenance (`provenance: mode=max`) attached to the image index, plus a GitHub build-provenance attestation pushed to the registry |
 | PyPI files | Trusted publishing through `pypa/gh-action-pypi-publish` | See the PyPI file page |
 | npm packages | npm registry signatures | npm provenance (`--provenance`) |
 

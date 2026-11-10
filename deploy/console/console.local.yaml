@@ -1,0 +1,41 @@
+# haltsql-console config for the local stack (deploy/console/docker-compose.yaml).
+# Reference: docs/console/config.md. LOCAL DEMO ONLY.
+#
+# The compose file starts the console with `--dev admin`, so every browser or
+# curl request is a local admin. `auth` still needs one real entry: the token
+# below (demo-automation-token, role audit) shows how automation authenticates.
+
+listen: 0.0.0.0:8090        # the image's HALTSQL_CONSOLE_LISTEN wins inside the container
+environment: { org: HaltSQL, name: Local demo, region: docker }
+state_dir: /var/lib/haltsql-console
+
+auth:
+  tokens:
+    - name: demo-automation
+      sha256: 71e850fe4ce318d3e5d9e91206b66e85ce392266ffed65e32b2399da2f5f1c2d
+      role: audit
+
+verifiers:
+  - name: haltsql-1
+    url: http://haltsql:8080
+    kind: server
+    location: docker compose, local
+    # Listed as token:console in server.admin.callers (local/haltsql.yaml).
+    token: ${env:HALTSQL_ADMIN_TOKEN}
+
+fleet:
+  poll_seconds: 10
+
+audit:
+  sources:
+    - { verifier: haltsql-1, file: /var/log/haltsql/audit.jsonl }
+  retention_hours: 168
+  poll_seconds: 2
+
+policies:
+  # The verifier's own config, mounted read-only: same policies, same paths.
+  server_config: /etc/haltsql/haltsql.yaml
+
+agents:
+  - { name: analytics-agent, team: Data platform, via: sidecar, stack: "demo-traffic.sh", callers: ["token:analytics-agent"], policy: saas-analytics }
+  - { name: support-bot, team: Support, via: sidecar, stack: "demo-traffic.sh", callers: ["token:support-bot"], policy: support-bot }

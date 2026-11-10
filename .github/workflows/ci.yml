@@ -446,6 +446,7 @@ jobs:
     env:
       KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
       CHART: deploy/helm/haltsql
+      CONSOLE_CHART: deploy/helm/haltsql-console
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -463,9 +464,30 @@ jobs:
             echo "::group::$f"; helm lint "$CHART" --strict -f "$f"; echo "::endgroup::"
           done
 
+      - name: helm lint haltsql-console (defaults and cloud overlays)
+        run: |
+          helm lint "$CONSOLE_CHART" --strict
+          for f in deploy/cloud/*/console/*.values.yaml; do
+            [ -e "$f" ] || continue
+            echo "::group::$f"; helm lint "$CONSOLE_CHART" --strict -f "$f"; echo "::endgroup::"
+          done
+
       - name: helm template | kubeconform
         run: |
           mkdir -p "$RUNNER_TEMP/rendered"
+          helm template t "$CONSOLE_CHART" > "$RUNNER_TEMP/rendered/console-default.yaml"
+          helm template t "$CONSOLE_CHART" \
+            --set oauth2Proxy.enabled=true --set oauth2Proxy.existingSecret=o2p \
+            --set oauth2Proxy.oidcIssuerUrl=https://idp.example \
+            --set rbac.create=true --set 'rbac.deployments[0]=haltsql' \
+            --set ingress.enabled=true --set 'ingress.hosts[0].host=console.example' \
+            --set podDisruptionBudget.enabled=true --set serviceMonitor.enabled=true \
+            --set secretEnv.HALTSQL_ADMIN_TOKEN=ci \
+            > "$RUNNER_TEMP/rendered/console-features.yaml"
+          for f in deploy/cloud/*/console/*.values.yaml; do
+            [ -e "$f" ] || continue
+            helm template t "$CONSOLE_CHART" -f "$f" > "$RUNNER_TEMP/rendered/console-$(basename "$f")"
+          done
           helm template t "$CHART" > "$RUNNER_TEMP/rendered/default.yaml"
           helm template t "$CHART" \
             --set tls.enabled=true --set tls.secretName=t-tls \

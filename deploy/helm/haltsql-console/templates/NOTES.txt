@@ -1,0 +1,36 @@
+haltsql-console is running as {{ include "console.fullname" . }} on port {{ .Values.service.port }}.
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "console.fullname" . }} 8090:{{ .Values.service.port }}
+  curl -s localhost:8090/readyz
+  curl -s localhost:8090/api/v1/me -H "Authorization: Bearer $TOKEN"
+
+The console is a control plane: it reads what the verifiers publish and is
+never in the query path. Guide: docs/console/deploy.md.
+{{- $auth := default dict .Values.console.config.auth }}
+{{- if and (not .Values.console.existingConfigMap) (not .Values.oauth2Proxy.enabled) (not (or $auth.oidc $auth.proxy $auth.tokens $auth.dev)) }}
+
+WARNING: console.config.auth has no oidc, proxy, tokens or dev entry; the
+console refuses to start without one (console.devRole does not count).
+Configure OIDC, enable oauth2Proxy, or add automation tokens.
+{{- end }}
+{{- if .Values.console.devRole }}
+
+WARNING: console.devRole is set: EVERY request is authenticated as a local
+{{ .Values.console.devRole }} user. Development only; never expose this release.
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled: cases, the activity log, signal workflow and
+evidence packs are lost when the pod is rescheduled.
+{{- end }}
+{{- if not .Values.console.config.verifiers }}
+
+NOTE: no verifiers are configured (console.config.verifiers); Fleet will be
+empty. Each verifier needs server.admin enabled with the console's token in
+server.admin.callers.
+{{- end }}
+{{- if not .Values.image.digest }}
+
+TIP: pin the image by digest (image.digest) and verify its cosign signature;
+see README.md in the chart.
+{{- end }}

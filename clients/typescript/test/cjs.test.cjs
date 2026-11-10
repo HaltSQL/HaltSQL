@@ -28,9 +28,17 @@ test("CommonJS build: LocalVerifier and binary resolution (no import.meta in CJS
   const src = require("node:fs").readFileSync(require.resolve("../dist/cjs/meta.js"), "utf8");
   assert.ok(!src.includes("import.meta"));
   assert.equal(require("../dist/cjs/meta.js").moduleUrl, require("node:url").pathToFileURL(require.resolve("../dist/cjs/meta.js")).href);
-  // Resolution from this module's location runs without throwing a SyntaxError/TypeError.
-  assert.throws(
-    () => m.resolveLocalBinary({ platform: "linux", arch: "x64", env: { PATH: "" } }),
-    (e) => e instanceof m.HaltSQLUsageError && /@haltsql\/native-linux-x64/.test(e.message),
-  );
+  // Resolution from this module's location runs without throwing a SyntaxError/TypeError:
+  // it finds @haltsql/native-linux-x64 where npm installed it (a linux-x64 machine), or
+  // reports that package as missing.
+  let resolved;
+  try {
+    resolved = m.resolveLocalBinary({ platform: "linux", arch: "x64", env: { PATH: "" } });
+  } catch (e) {
+    assert.ok(e instanceof m.HaltSQLUsageError, `unexpected ${e && e.name}: ${e && e.message}`);
+    assert.match(e.message, /@haltsql\/native-linux-x64/);
+  }
+  if (resolved !== undefined) {
+    assert.match(JSON.stringify(resolved), /@haltsql[\\/]+native-linux-x64/);
+  }
 });

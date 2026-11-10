@@ -1,0 +1,22 @@
+apiVersion: v2
+name: haltsql-console
+description: HaltSQL Console, the control plane for a HaltSQL deployment (never in the query path)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# Same floor as the haltsql chart.
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/HaltSQL/HaltSQL
+sources:
+  - https://github.com/HaltSQL/HaltSQL
+keywords: [sql, postgres, security, llm, policy, console, control-plane]
+maintainers:
+  - name: Arnav Dadarya
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/images: |
+    - name: haltsql-console
+      image: ghcr.io/haltsql/haltsql-console:0.1.0
+    - name: oauth2-proxy
+      image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1

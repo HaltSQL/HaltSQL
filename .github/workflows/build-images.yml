@@ -1,8 +1,9 @@
 name: Build images
 
-# Builds the container image and the static binaries exactly as the release does,
-# runs scripts/docker-smoke.sh against the real image (with a real Postgres for the
-# proxy), and runs the small benchmark with its regression gate. Only on changes
+# Builds the container images (haltsql, haltsql-mcp, haltsql-console) and the
+# static binaries exactly as the release does, runs scripts/docker-smoke.sh against
+# the real image (with a real Postgres for the proxy) and the mcp/console smoke
+# tests, and runs the small benchmark with its regression gate. Only on changes
 # that can affect the build or performance.
 
 on:
@@ -111,6 +112,17 @@ jobs:
 
       - name: haltsql-mcp smoke test
         run: scripts/mcp-docker-smoke.sh
+
+      # haltsql-console image (Dockerfile target "console"): same builder stage
+      # and cache as the server image, distroless, uid 65532, read-only rootfs.
+      - name: Build the haltsql-console image
+        run: |
+          docker buildx build --platform "linux/${{ matrix.arch }}" --target console --load \
+            -t haltsql-console-local:dev \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" .
+
+      - name: haltsql-console smoke test
+        run: scripts/console-docker-smoke.sh
 
   bench:
     name: Benchmark regression gate

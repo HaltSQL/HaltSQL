@@ -31,6 +31,7 @@ DIRS=(
   "modules/haltsql-azure:azurerm"
   "modules/haltsql-gcp:google"
   "examples/kind:kubernetes"
+  "examples/console-kubernetes:kubernetes"
   "examples/aws:aws"
   "examples/azure:azurerm"
   "examples/gcp:google"

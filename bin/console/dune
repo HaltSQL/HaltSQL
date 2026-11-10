@@ -1,0 +1,21 @@
+; haltsql-console: the control-plane API (and, later, the web frontend) for a HaltSQL
+; deployment. It reads what verifiers publish and is never in the query path.
+; See docs/console/architecture.md.
+
+(executable
+ (name main)
+ (public_name haltsql-console)
+ (package haltsql-server)
+ (libraries haltsql_console cmdliner lwt lwt.unix unix)
+ (link_flags
+  (:include link_flags.sexp)))
+
+(rule
+ (targets link_flags.sexp)
+ (deps
+  (env_var HALTSQL_STATIC)
+  (env_var HALTSQL_STATIC_GMP))
+ (action
+  (with-stdout-to
+   link_flags.sexp
+   (run %{ocaml} %{dep:../link_flags.ml}))))

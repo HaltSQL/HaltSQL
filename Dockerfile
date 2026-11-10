@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1.10@sha256:865e5dd094beca432e8c0a1d5e1c465db5f998dca4e439981029b3b81fb39ed5
 #
 # HaltSQL container image and static release binaries: haltsql-server (entrypoint),
-# the haltsql CLI and haltsql-proxy (the PostgreSQL wire-protocol firewall).
+# the haltsql CLI and haltsql-proxy (the PostgreSQL wire-protocol firewall), plus
+# the separate haltsql-console image (control plane, target "console").
 #
 #   docker build -t haltsql-local:dev .                    # runtime image (distroless)
 #   docker build --target scratch -t haltsql-local:scratch .  # same binaries on scratch
+#   docker build --target console -t haltsql-console-local:dev .  # haltsql-console image
 #   docker buildx build --target dist --output type=local,dest=dist .  # tarball contents
 #
 #   docker run --rm -p 8080:8080 --read-only -v $PWD/examples:/etc/haltsql:ro haltsql-local:dev \
@@ -21,7 +23,12 @@
 #            needs a C toolchain but no Postgres packages.
 #   dist     scratch with only the binaries and licences, for `--output` (release.yml).
 #   scratch  the binaries on an empty image, to prove they need no libc at all.
-#   runtime  (default) distroless/static: no shell, no libc, no package manager,
+#   console  haltsql-console (docs/console/) on the same distroless/static base:
+#            uid/gid 65532, read-only rootfs, state_dir volume at
+#            /var/lib/haltsql-console, /usr/share/haltsql-console/web reserved for
+#            the web frontend (frontend_dir), HEALTHCHECK through
+#            `haltsql-console --healthcheck` (no shell needed). Port 8090.
+#   runtime  (default; keep it the LAST stage) distroless/static: no shell, no libc, no package manager,
 #            uid/gid 65532, with /etc/ssl/certs for the OIDC, Vault, AWS and GCP
 #            clients. Nothing in the image needs to write to the root filesystem, so
 #            it runs with a read-only rootfs (`docker run --read-only`, Kubernetes
@@ -93,14 +100,17 @@ RUN --mount=type=cache,from=cache-base,target=/home/opam/.cache/dune,uid=1000,gi
     opam exec -- dune build --profile release lib/pgquery/libpg_query.a \
  && opam exec -- dune build --profile release \
       ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe \
- && mkdir -p /home/opam/out/bin /home/opam/out/doc \
+      ./bin/console/main.exe \
+ && mkdir -p /home/opam/out/bin /home/opam/out/doc /home/opam/out/console/bin \
  && install -m 0755 _build/default/bin/haltsql/main.exe /home/opam/out/bin/haltsql \
  && install -m 0755 _build/default/bin/server/main.exe /home/opam/out/bin/haltsql-server \
  && install -m 0755 _build/default/bin/proxy/main.exe /home/opam/out/bin/haltsql-proxy \
+ && install -m 0755 _build/default/bin/console/main.exe /home/opam/out/console/bin/haltsql-console \
+ && strip /home/opam/out/console/bin/haltsql-console \
  && cd /home/opam/out/bin \
  && strip haltsql haltsql-server haltsql-proxy \
- && file haltsql haltsql-server haltsql-proxy \
- && for b in haltsql haltsql-server haltsql-proxy; do \
+ && file haltsql haltsql-server haltsql-proxy ../console/bin/haltsql-console \
+ && for b in haltsql haltsql-server haltsql-proxy ../console/bin/haltsql-console; do \
       file "$b" | grep -Eq 'statically linked|static-pie linked' \
         || { echo "$b is not statically linked" >&2; exit 1; }; \
       if ldd "$b" > /tmp/ldd.out 2>&1; then \
@@ -110,10 +120,12 @@ RUN --mount=type=cache,from=cache-base,target=/home/opam/.cache/dune,uid=1000,gi
  && ./haltsql version \
  && ./haltsql-server --help=plain > /dev/null \
  && ./haltsql-proxy --help=plain > /dev/null \
+ && ../console/bin/haltsql-console --help=plain > /dev/null \
  && install -m 0644 /home/opam/src/LICENSE /home/opam/src/NOTICE /home/opam/out/doc/ \
  && install -m 0644 /home/opam/src/vendor/libpg_query/LICENSE /home/opam/out/doc/LICENSE.libpg_query \
  && install -m 0644 /home/opam/opam-packages.txt /home/opam/out/doc/opam-packages.txt \
- && mkdir -p /home/opam/out/var-log-haltsql
+ && mkdir -p /home/opam/out/var-log-haltsql \
+ && mkdir -p /home/opam/out/console/var-lib /home/opam/out/console/web
 
 # Release tarball contents: `docker buildx build --target dist --output ...`.
 FROM scratch AS dist
@@ -128,6 +140,47 @@ RUN ["/usr/local/bin/haltsql", "version"]
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/haltsql"]
 CMD ["version"]
+
+# haltsql-console: the control plane (docs/console/). Same base and hardening as
+# the runtime image. Built with `--target console`; release.yml publishes it as
+# ghcr.io/haltsql/haltsql-console. This stage must stay before `runtime` so a
+# plain `docker build .` still produces the haltsql-server image.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS console
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=1970-01-01T00:00:00Z
+LABEL org.opencontainers.image.title="haltsql-console" \
+      org.opencontainers.image.description="Control plane for HaltSQL: signals, records, agents, policies, fleet, data and evidence" \
+      org.opencontainers.image.url="https://github.com/HaltSQL/HaltSQL" \
+      org.opencontainers.image.source="https://github.com/HaltSQL/HaltSQL" \
+      org.opencontainers.image.documentation="https://github.com/HaltSQL/HaltSQL/tree/main/docs/console" \
+      org.opencontainers.image.vendor="HaltSQL" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian12:nonroot"
+COPY --from=builder /home/opam/out/console/bin/haltsql-console /usr/local/bin/
+COPY --from=builder /home/opam/out/doc/ /usr/share/doc/haltsql-console/
+# state_dir (cases, activity log, signal workflow, evidence packs): the only
+# path the console writes. Mount a persistent volume here; the root filesystem
+# stays read-only.
+COPY --from=builder --chown=65532:65532 /home/opam/out/console/var-lib /var/lib/haltsql-console
+# frontend_dir: reserved for the web frontend (empty until it ships).
+COPY --from=builder /home/opam/out/console/web /usr/share/haltsql-console/web
+VOLUME ["/var/lib/haltsql-console"]
+# Flags > HALTSQL_CONSOLE_* env > config file, so `listen:` in the config has no
+# effect inside the image; pass --listen or set HALTSQL_CONSOLE_LISTEN instead.
+ENV HALTSQL_CONSOLE_LISTEN=0.0.0.0:8090
+EXPOSE 8090
+USER 65532:65532
+STOPSIGNAL SIGTERM
+# distroless has no shell or curl: the binary probes its own /healthz.
+# Orchestrators should still use HTTP probes (liveness /healthz, readiness /readyz).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/haltsql-console", "--healthcheck"]
+ENTRYPOINT ["/usr/local/bin/haltsql-console"]
+CMD ["--config", "/etc/haltsql-console/console.yaml"]
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime
 # Build metadata. The release workflow passes these and also sets the full

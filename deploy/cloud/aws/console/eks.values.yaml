@@ -1,0 +1,121 @@
+# Helm values overlay: haltsql-console on Amazon EKS, next to the haltsql
+# release from deploy/cloud/aws/eks/values-eks.yaml (namespace haltsql).
+#
+#   kubectl -n haltsql create secret generic haltsql-console-env \
+#     --from-literal=HALTSQL_ADMIN_TOKEN="$CONSOLE_ADMIN_TOKEN"   # or External Secrets
+#   kubectl -n haltsql create secret generic haltsql-console-oauth2 \
+#     --from-literal=OAUTH2_PROXY_CLIENT_ID=... --from-literal=OAUTH2_PROXY_CLIENT_SECRET=... \
+#     --from-literal=OAUTH2_PROXY_COOKIE_SECRET="$(openssl rand -base64 32 | tr -- '+/' '-_')"
+#   helm upgrade --install haltsql-console deploy/helm/haltsql-console -n haltsql \
+#     -f deploy/cloud/aws/console/eks.values.yaml
+#
+# Replace 111122223333, eu-west-1, corp-haltsql-audit, the certificate ARN, the
+# host names and the IdP before use. Guide: docs/console/deploy.md#aws.
+
+image:
+  repository: ghcr.io/haltsql/haltsql-console
+  # digest: sha256:...   # pin the signed image in production
+
+serviceAccount:
+  create: true
+  name: haltsql-console
+  # IRSA: read the audit objects the verifiers write to S3 and resolve
+  # ${aws-sm:...} placeholders (deploy/cloud/aws/console/iam-policy.json; the
+  # trust policy names system:serviceaccount:haltsql:haltsql-console).
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/haltsql-console
+    eks.amazonaws.com/sts-regional-endpoints: "true"
+
+# Verifier restarts from Fleet: patch on deployment/haltsql only.
+rbac:
+  create: true
+  deployments: [haltsql]
+
+console:
+  config:
+    environment: { org: Acme Corp, name: Production, region: eu-west-1 }
+    auth:
+      # Browser users sign in through the oauth2-proxy sidecar (below), which
+      # sets X-Forwarded-Email/-Groups; the chart adds auth.proxy for them.
+      # Group names arrive as the IdP sends them (no prefix).
+      tokens: []                 # automation: {name, sha256, role}
+      roles:
+        admin: [haltsql-admins]
+        owner: [haltsql-policy-owners]
+        analyst: [security]
+        audit: [compliance]
+        dev: [engineering]
+    verifiers:
+      - name: haltsql
+        url: http://haltsql.haltsql.svc:8080
+        kind: server
+        location: EKS eu-west-1, shared service
+        # The verifiers list the console's token in server.admin.callers.
+        token: ${env:HALTSQL_ADMIN_TOKEN}
+        workload: deployment/haltsql
+    audit:
+      sources:
+        # The S3 audit sink of values-eks.yaml (bucket and prefix).
+        - { verifier: auto, s3: "s3://corp-haltsql-audit/haltsql/audit/", region: eu-west-1 }
+      retention_hours: 168
+    policies:
+      server_config: /etc/haltsql/config/config.yaml
+
+existingSecret: haltsql-console-env
+
+# The haltsql release's own config and policies (same files, same paths).
+verifierConfig:
+  configMap: haltsql-config
+  policiesConfigMap: haltsql-policies
+
+persistence:
+  enabled: true
+  storageClass: gp3            # EBS CSI driver; snapshot it for backups
+  size: 20Gi
+  annotations:
+    helm.sh/resource-policy: keep
+
+# Sign-in: oauth2-proxy sidecar against your IdP (Okta here; Cognito, Entra ID
+# and Google work the same). Secret haltsql-console-oauth2: OAUTH2_PROXY_CLIENT_ID,
+# OAUTH2_PROXY_CLIENT_SECRET, OAUTH2_PROXY_COOKIE_SECRET.
+# (ALB's own `auth-type: oidc` is not used: it forwards identity in
+# x-amzn-oidc-* headers without a groups header, so the console could not map
+# roles.)
+oauth2Proxy:
+  enabled: true
+  existingSecret: haltsql-console-oauth2
+  provider: oidc
+  oidcIssuerUrl: https://acme.okta.com/oauth2/default
+  redirectUrl: https://haltsql-console.corp.internal/oauth2/callback
+  scope: "openid email profile groups"
+  allowedGroups: [haltsql-admins, haltsql-policy-owners, security, compliance, engineering]
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal          # keep the console private
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:111122223333:certificate/REPLACE_ME
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+  hosts:
+    - host: haltsql-console.corp.internal
+      paths: [{ path: /, pathType: Prefix }]
+
+networkPolicy:
+  enabled: true
+  # The ALB (target-type ip) reaches the pod from the VPC subnets.
+  ingressFrom:
+    - ipBlock: { cidr: 10.0.0.0/16 }
+  egress:
+    allowHTTPS: true             # IdP (oauth2-proxy), S3, STS, Secrets Manager, EKS API on 443
+    verifiers:
+      - to:
+          - podSelector: { matchLabels: { app.kubernetes.io/name: haltsql } }
+        ports: [{ port: 8080, protocol: TCP }]
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits: { memory: 2Gi }

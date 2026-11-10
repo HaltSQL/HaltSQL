@@ -1,0 +1,58 @@
+; haltsql-console tests. Helpers starts an in-process console on an ephemeral port with
+; a temporary state dir and lets tests preload the record index; every feature PR adds
+; its own test_<feature>.ml next to test_console.ml (scaffold: config, RBAC, router,
+; store, index, auth, health).
+
+(library
+ (name console_helpers)
+ (modules helpers)
+ (wrapped false)
+ (libraries
+  haltsql_console
+  haltsql
+  haltsql.report
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  lwt
+  lwt.unix
+  yojson
+  unix))
+
+(tests
+ (names
+  test_console
+  test_fleet
+  test_records
+  test_comply
+  test_signals
+  test_build)
+ (modules
+  test_console
+  test_fleet
+  test_records
+  test_comply
+  test_signals
+  test_build)
+ (package haltsql-server)
+ (deps
+  (glob_files fixtures/*)
+  ../../deploy/console/console.example.yaml)
+ (libraries
+  console_helpers
+  haltsql_console
+  haltsql
+  haltsql.report
+  haltsql.bundle
+  haltsql.cloud
+  haltsql.catalog_tools
+  haltsql.catalog_fetch
+  alcotest
+  cohttp-lwt-unix
+  cohttp-lwt
+  cohttp
+  lwt
+  lwt.unix
+  yojson
+  unix))

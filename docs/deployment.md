@@ -47,6 +47,19 @@ code with [mingrammer/diagrams](https://github.com/mingrammer/diagrams)
 | Google Cloud | [deploy-gcp.md](deploy-gcp.md) | GKE sidecar with Workload Identity, Cloud Run, proxy in front of Cloud SQL | [`deploy/cloud/gcp/`](../deploy/cloud/gcp/) |
 | Azure | [deploy-azure.md](deploy-azure.md) | AKS sidecar with Workload Identity, Container Apps, proxy in front of Flexible Server | [`deploy/cloud/azure/`](../deploy/cloud/azure/) |
 
+## Console
+
+`haltsql-console` is the control plane for a HaltSQL deployment: signals,
+records, agents, policies, fleet, data classification and evidence. It reads
+the verifiers' audit records and admin API and is never in the query path. It
+ships as its own image, `ghcr.io/haltsql/haltsql-console` (target `console`
+in the same `Dockerfile`), with a Helm chart in
+[`deploy/helm/haltsql-console/`](../deploy/helm/haltsql-console/) and a local
+Docker Compose stack in [`deploy/console/`](../deploy/console/). Each verifier
+it watches needs `server.admin` enabled with the console's token in
+`server.admin.callers`. See [console/deploy.md](console/deploy.md) for local,
+Kubernetes, AWS, Google Cloud and Azure.
+
 **TLS:** `haltsql-server` has built-in TLS 1.2/1.3 and optional mTLS
 (`server.tls`, see [authentication.md](authentication.md)). As a sidecar bound
 to `127.0.0.1` it can also run without TLS, or behind a proxy or service mesh

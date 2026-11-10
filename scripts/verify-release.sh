@@ -175,7 +175,7 @@ elif [ -f "haltsql-$tag.oci.txt" ]; then
     digest="${ref#*@}"
     if [ "$have_docker" = 1 ]; then
       case "$kind" in
-        image|mcp-image)
+        image|mcp-image|console-image)
           check "$kind has a BuildKit SBOM" sh -c \
             'docker buildx imagetools inspect "$1" --format "{{ json .SBOM }}" | jq -e "length > 0" > /dev/null' _ "$ref"
           check "$kind has SLSA provenance" sh -c \
