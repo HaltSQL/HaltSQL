@@ -107,6 +107,12 @@ record "$chart" "appVersion" "$(first_match "$chart" 's/^appVersion: "?([^"]+)"?
 record "$chart" "artifacthub.io/images" \
   "$(first_match "$chart" 's/^ *image: ghcr\.io\/haltsql\/haltsql:([^ ]+)$/\1/p')"
 
+console_chart=deploy/helm/haltsql-console/Chart.yaml
+record "$console_chart" "version" "$(first_match "$console_chart" 's/^version: "?([^"]+)"?$/\1/p')"
+record "$console_chart" "appVersion" "$(first_match "$console_chart" 's/^appVersion: "?([^"]+)"?$/\1/p')"
+record "$console_chart" "artifacthub.io/images" \
+  "$(first_match "$console_chart" 's/^ *image: ghcr\.io\/haltsql\/haltsql-console:([^ ]+)$/\1/p')"
+
 if [ "$print" = 1 ]; then
   [ "$failures" = 0 ] || { printf '%s\n' "${rows[@]}" >&2; exit 1; }
   echo "$expected"
