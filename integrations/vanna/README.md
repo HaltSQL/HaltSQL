@@ -5,7 +5,7 @@ Vanna generates is verified by HaltSQL first; only the exact verified string
 runs, with the bound tenant parameters, in a read-only transaction.
 
 ```sh
-pip install './integrations/vanna[vanna]'   # needs ../../clients/python too
+pip install 'haltsql-vanna[vanna]'
 ```
 
 ## Vanna 2.x

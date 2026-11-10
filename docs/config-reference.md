@@ -600,7 +600,7 @@ Runtime settings come from four places. Higher rows win:
 | 3 | Config file | `server.listen: 0.0.0.0:8443` |
 | 4 (lowest) | Built-in defaults | `127.0.0.1:8080` |
 
-Environment variables recognized in 0.0.1:
+Environment variables recognized in 0.0.3:
 
 | Variable | Overrides |
 |---|---|

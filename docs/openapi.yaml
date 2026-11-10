@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: HaltSQL sidecar API
-  version: 0.0.1
+  version: 0.0.3
   summary: Verify LLM-generated PostgreSQL against a HaltSQL policy.
   description: |
     `haltsql-server` checks whether an exact SQL string is allowed for a caller

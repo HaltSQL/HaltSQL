@@ -5,7 +5,7 @@ before it runs; only the exact verified string runs, with the bound tenant
 parameters, read-only by default.
 
 ```sh
-pip install './integrations/langchain[langchain]'   # needs ../../clients/python too
+pip install 'haltsql-langchain[langchain]'
 ```
 
 ## A tool whose only argument is the SQL

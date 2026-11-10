@@ -27,12 +27,11 @@ query goes through `haltsql.guard.authorize`.
 ## Install
 
 The package needs Python 3.11 or newer and `google-adk` 2.9 or newer, below 3.
-It is not on PyPI yet, so install it and the Python SDK from a checkout of the
-repository:
+Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e integrations/google_adk
+pip install haltsql-google-adk
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do

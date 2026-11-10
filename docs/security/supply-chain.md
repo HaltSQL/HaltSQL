@@ -35,7 +35,7 @@ and provenance step but publish only a draft release and packages under
 
 | Artifact | Where | Notes |
 |---|---|---|
-| `haltsql` wheels and sdist, `haltsql-mcp` wheel and sdist | PyPI | Trusted publishing (OIDC, no long-lived PyPI token), through the `pypi` and `pypi-mcp` environments |
+| `haltsql` wheels and sdist, `haltsql-mcp` and the eight `haltsql-<framework>` integrations (wheel and sdist each) | PyPI | Trusted publishing (OIDC, no long-lived PyPI token), through the `pypi` and `pypi-mcp` environments and one `pypi-<framework>` environment per integration |
 | `@haltsql/client` and `@haltsql/native-<platform>` | npm | Published with `npm publish --provenance`, through the `npm` environment, by npm trusted publishing (OIDC); the first publish only uses a short-lived `NPM_TOKEN` |
 
 Not published by these workflows: the Kubernetes operator image (you build it from
@@ -84,7 +84,7 @@ Known gaps:
 Keyless signatures are issued by Sigstore to the identity of the GitHub
 Actions workflow that ran, so there is no long-lived signing key to protect or
 leak. The certificate identity is the workflow file and ref, for example
-`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.0.1`,
+`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.0.3`,
 and the OIDC issuer is `https://token.actions.githubusercontent.com`.
 
 > **Note:** a release rebuilt by hand (`workflow_dispatch`) runs from the
@@ -133,9 +133,9 @@ fixes while HaltSQL is pre-1.0.
 
 You need [cosign](https://github.com/sigstore/cosign) v2.4 or later (v3 works
 too), the [GitHub CLI](https://cli.github.com/) 2.49 or later, and `jq`.
-Replace `v0.0.1` with the release you are checking.
+Replace `v0.0.3` with the release you are checking.
 
-`scripts/verify-release.sh v0.0.1` runs every command below (and checks that
+`scripts/verify-release.sh v0.0.3` runs every command below (and checks that
 every asset is present, listed in `SHA256SUMS` and signed) against a
 downloaded release; the release workflow runs it on every release before
 anyone else can. The steps by hand:
@@ -143,7 +143,7 @@ anyone else can. The steps by hand:
 ### Release tarballs
 
 ```sh
-TAG=v0.0.1
+TAG=v0.0.3
 gh release download "$TAG" --repo HaltSQL/HaltSQL --dir "haltsql-$TAG"
 cd "haltsql-$TAG"
 
@@ -170,7 +170,7 @@ gh attestation verify "haltsql-$TAG-linux-amd64.tar.gz" --repo HaltSQL/HaltSQL
 ### Container images
 
 ```sh
-IMAGE=ghcr.io/haltsql/haltsql:0.0.1
+IMAGE=ghcr.io/haltsql/haltsql:0.0.3
 ID='^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v'
 
 # Signature
@@ -212,10 +212,6 @@ attestation cover the registry copy too.
 
 ### npm packages
 
-> **Note:** the Python and npm packages are not published to PyPI or npm yet.
-> These checks apply once the release workflow publishes them; until then,
-> install from a verified source tarball or the repository.
-
 ```sh
 npm install @haltsql/client
 npm audit signatures      # checks registry signatures and provenance attestations
@@ -223,8 +219,9 @@ npm audit signatures      # checks registry signatures and provenance attestatio
 
 ### Python packages
 
-The wheels and sdist are uploaded by trusted publishing from
-`.github/workflows/native-packages.yml`. Check the file's provenance on its
+`haltsql`, `haltsql-mcp` and the `haltsql-<framework>` integration packages
+are uploaded by trusted publishing from `.github/workflows/native-packages.yml`,
+with PyPI attestations. Check the file's provenance on its
 PyPI page, and pin hashes in production (`pip install --require-hashes -r
 requirements.txt`).
 

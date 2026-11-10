@@ -26,13 +26,11 @@ query goes through `haltsql.guard.authorize` and `guard.execute`.
 ## Install
 
 The package needs Python 3.10 or newer, `langgraph` 1.2 or newer (below 2),
-`langgraph-prebuilt` 1.1 or newer and `langchain-core` 1.6 or newer. It is
-not on PyPI yet, so install it and the Python SDK from a checkout of the
-repository:
+`langgraph-prebuilt` 1.1 or newer and `langchain-core` 1.6 or newer. Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e integrations/langgraph
+pip install haltsql-langgraph
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do

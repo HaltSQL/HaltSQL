@@ -131,7 +131,7 @@ spec:
             matchLabels: { app: haltsql-proxy }
       containers:
         - name: haltsql-proxy
-          image: ghcr.io/haltsql/haltsql:0.0.1      # pin by digest in production
+          image: ghcr.io/haltsql/haltsql:0.0.3      # pin by digest in production
           command: ["/usr/local/bin/haltsql-proxy"]
           args: ["run", "--config", "/etc/haltsql/proxy/proxy.yaml"]
           ports:

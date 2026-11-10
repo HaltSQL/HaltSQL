@@ -9,15 +9,15 @@ Pick one:
 
 ```sh
 # Release binary (Linux amd64 shown; also linux-arm64 and darwin-arm64)
-curl -LO https://github.com/HaltSQL/HaltSQL/releases/download/v0.0.1/haltsql-v0.0.1-linux-amd64.tar.gz
-tar -xzf haltsql-v0.0.1-linux-amd64.tar.gz
-export PATH="$PWD/haltsql-v0.0.1-linux-amd64:$PATH"
+curl -LO https://github.com/HaltSQL/HaltSQL/releases/download/v0.0.3/haltsql-v0.0.3-linux-amd64.tar.gz
+tar -xzf haltsql-v0.0.3-linux-amd64.tar.gz
+export PATH="$PWD/haltsql-v0.0.3-linux-amd64:$PATH"
 
 # Or from source with opam (OCaml 5.1+)
 opam pin add haltsql https://github.com/HaltSQL/HaltSQL.git
 
 # Or Docker (the CLI is in the image too)
-alias haltsql='docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql ghcr.io/haltsql/haltsql:0.0.1'
+alias haltsql='docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql ghcr.io/haltsql/haltsql:0.0.3'
 ```
 
 Check it works:

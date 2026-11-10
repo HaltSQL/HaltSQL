@@ -5,7 +5,7 @@ This page is for platform and SRE teams taking `haltsql-server` or
 each upgrade. Every item says why it matters, how to check it, and which page
 covers it in detail.
 
-> **Note:** HaltSQL is pre-1.0. The 0.0.1 release notes in
+> **Note:** HaltSQL is pre-1.0. The 0.0.3 release notes in
 > [CHANGELOG.md](../../CHANGELOG.md) say it is not yet recommended as the only
 > control in front of production data. Several features on this page (built-in
 > TLS, OIDC, mTLS, cloud and SIEM audit sinks, signed bundles and bundle

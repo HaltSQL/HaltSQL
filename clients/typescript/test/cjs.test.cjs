@@ -7,7 +7,7 @@ test("CommonJS build", () => {
   assert.equal(typeof m.HaltSQLClient, "function");
   assert.equal(typeof m.guardedQuery, "function");
   assert.equal(typeof m.bindParamsToPositional, "function");
-  assert.equal(m.VERSION, "0.0.2");
+  assert.equal(m.VERSION, "0.0.3");
   const e = new m.HaltSQLTimeoutError(5);
   assert.ok(e instanceof m.HaltSQLError);
   assert.equal(e.allowed, false);

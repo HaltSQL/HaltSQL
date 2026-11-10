@@ -1,6 +1,6 @@
 {
   "name": "@haltsql/client",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Fail-closed client for the HaltSQL sidecar: verify LLM-generated PostgreSQL before running it.",
   "license": "MIT",
   "repository": {

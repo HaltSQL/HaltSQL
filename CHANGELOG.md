@@ -10,6 +10,25 @@ even before 1.0.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-10
+
+### Added
+- **The framework integrations are on PyPI:** `haltsql-langchain`,
+  `haltsql-langgraph`, `haltsql-llamaindex`, `haltsql-openai-agents`,
+  `haltsql-google-adk`, `haltsql-crewai`, `haltsql-semantic-kernel` and
+  `haltsql-vanna`, published by trusted publishing after `haltsql`, which they
+  require. The release dry run builds and `twine check`s them.
+
+### Changed
+- The documentation installs published packages everywhere: `pip install
+  haltsql`, `haltsql-mcp` and `haltsql-<framework>`, `npm install
+  @haltsql/client`, `helm install oci://ghcr.io/haltsql/charts/haltsql`,
+  `go get ...@v0.0.3`, and image tags `0.0.3`. Commands that ran the
+  `haltsql-mcp` image without a tag (`:latest`, which releases do not push)
+  now pin the version. The Java SDK page says it is built from source until it
+  is on Maven Central.
+- PyPI uploads run with `verbose`, so a rejected upload shows PyPI's reason.
+
 ## [0.0.2] - 2026-11-10
 
 Packaging fix release. No changes to the engine, the server, the proxy or the
@@ -599,6 +618,7 @@ These were found while integrating the unreleased features above.
 - `INSERT` may only name columns listed in the table's `columns`.
 - `LIKE`, `ILIKE` and `SIMILAR TO` are checked against the operator allowlist.
 
-[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.0.1

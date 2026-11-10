@@ -7,7 +7,7 @@ it runs exactly the verified string with the bound tenant parameters, in a
 runs, the model gets the reason codes and hints so it can fix the query.
 
 ```sh
-pip install -e clients/python -e integrations/openai_agents   # from the repository root
+pip install haltsql-openai-agents
 ```
 
 ```python

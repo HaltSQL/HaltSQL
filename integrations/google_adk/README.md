@@ -13,7 +13,7 @@ HaltSQL for the [Google Agent Development Kit](https://github.com/google/adk-pyt
 * `build_sql_agent(runner)` is an example `LlmAgent`.
 
 ```sh
-pip install -e clients/python -e integrations/google_adk   # from the repository root
+pip install haltsql-google-adk
 ```
 
 ```python

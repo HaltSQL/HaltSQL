@@ -127,7 +127,7 @@ supported by E2, E7 and E8.
 
 ## Gaps an auditor may raise
 
-- HaltSQL 0.0.1 has not had an external security audit or penetration test
+- HaltSQL 0.0.3 has not had an external security audit or penetration test
   ([threat-model.md](../threat-model.md#guarantees-goals)).
 - Audit records do not include the context values (for example the tenant
   id) of a request, or the caller's network address. Join with your
