@@ -96,6 +96,10 @@ even before 1.0.
   iteration count that is not plain decimal digits, attributes out of order,
   and SCRAM messages over 4096 bytes. Server error text is made printable
   before it is reported. Nonces are 24 random bytes everywhere.
+- **One standard-base64 helper.** `haltsql.b64` (strict, canonical-only
+  decoding on the `base64` package) replaces the hand-written base64 in the
+  proxy and the console and the two copies in `haltsql.bundle` and
+  `haltsql.rlsgen`.
 
 ### Fixed
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log

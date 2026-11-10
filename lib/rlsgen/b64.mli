@@ -4,4 +4,5 @@ val encode : string -> string
 (** Standard alphabet, padded. *)
 
 val decode : string -> string option
-(** [None] on malformed input (bad length, characters or padding). *)
+(** [None] unless the input is the canonical padded encoding of some byte string (no
+    whitespace, no missing or extra padding, no non-zero trailing bits). *)

@@ -5,6 +5,6 @@
 (library
  (name haltsql_scram)
  (public_name haltsql.scram)
- (libraries digestif kdf.pbkdf eqaf base64)
+ (libraries haltsql.b64 digestif kdf.pbkdf eqaf)
  (instrumentation
   (backend bisect_ppx)))

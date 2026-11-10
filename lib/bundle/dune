@@ -6,6 +6,7 @@
  (libraries
   haltsql.core
   haltsql.load
+  haltsql.b64
   yojson
   digestif
   base64

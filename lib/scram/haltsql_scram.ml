@@ -29,15 +29,8 @@ let equal_ct a b = Eqaf.equal a b
 let xor a b =
   String.init (String.length a) (fun i -> Char.chr (Char.code a.[i] lxor Char.code b.[i]))
 
-let b64_encode s = Base64.encode_string s
-
-(* [Base64.decode] tolerates non-zero trailing bits and excess padding; comparing the
-   re-encoded value accepts the canonical padded encoding only. *)
-let b64_decode s =
-  match Base64.decode s with
-  | Ok v when String.equal (b64_encode v) s -> Some v
-  | Ok _ | Error _ -> None
-
+let b64_encode = Haltsql_b64.encode
+let b64_decode = Haltsql_b64.decode
 let nonce_of_entropy = b64_encode
 
 type error =
