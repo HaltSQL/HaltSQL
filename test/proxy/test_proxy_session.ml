@@ -37,8 +37,8 @@ let user_json ?(name = "agent") ?(policy = "proxy-test") ?(tenant = "acme")
     ]
 
 let config ~up_port ~audit_file ?(policy = "fixtures/policy.yaml")
-    ?(users = [ user_json () ]) ?auth ?(limits = []) ?(upstream = []) ?(extra = []) () :
-    Yojson.Safe.t =
+    ?(users = [ user_json () ]) ?auth ?(audit = []) ?(limits = []) ?(upstream = [])
+    ?(extra = []) () : Yojson.Safe.t =
   let auth =
     match auth with
     | Some a -> a
@@ -63,7 +63,8 @@ let config ~up_port ~audit_file ?(policy = "fixtures/policy.yaml")
            @ upstream) );
        ("policies", `List [ `Assoc [ ("path", `String policy) ] ]);
        ("auth", auth);
-       ("audit", `Assoc [ ("type", `String "file"); ("path", `String audit_file) ]);
+       ( "audit",
+         `Assoc ([ ("type", `String "file"); ("path", `String audit_file) ] @ audit) );
        ("logging", `Assoc [ ("level", `String "error") ]);
        ("shutdown_grace_seconds", `Float 0.2);
      ]
@@ -1696,6 +1697,198 @@ let test_reload_client_ca () =
       in
       Io.close io)
 
+(* ------------------------------------- the same rules, without PostgreSQL *)
+
+(* test_proxy_integration checks what follows against the lab database and skips without
+   it; these are the in-process counterparts, so that the rules are checked wherever the
+   test suite runs. *)
+
+(* The tenant parameter of a Bind is the session's, whatever the client sent. *)
+let test_bind_overwrites_tenant () =
+  with_env (fun e ->
+      let* io = login_ok e.port in
+      let* () =
+        Io.write io
+          (parse ~name:"t" q_tenant ^ bind ~stmt:"t" [ "globex" ] ^ execute () ^ sync)
+      in
+      let* ms = read_until_ready io in
+      check_str "served" "12CZ" (tags ms);
+      let sent =
+        List.filter_map
+          (function 'B', p -> Some (Wire.decode_bind p).params | _ -> None)
+          (Fake_pg.received e.pg)
+      in
+      Alcotest.(check (list (list (option string))))
+        "the upstream is bound to the session's tenant" [ [ Some "acme" ] ] sent;
+      Io.close io)
+
+(* Startup packets the proxy refuses before authentication. *)
+let test_startup_refusals () =
+  with_env (fun e ->
+      let refused name params code =
+        let* io = connect e.port in
+        let* () = Io.write io (Wire.encode_startup params) in
+        let* ms = read_until_ready io in
+        check_str name code (sqlstate ms);
+        check_bool (name ^ ": FATAL") true (List.exists is_fatal ms);
+        check_bool
+          (name ^ ": before any authentication exchange")
+          false
+          (String.contains (tags ms) 'R');
+        Io.close io
+      in
+      let* () =
+        refused "replication connection"
+          [ ("user", "agent"); ("database", "app"); ("replication", "database") ]
+          "28000"
+      in
+      let* () =
+        refused "another database" [ ("user", "agent"); ("database", "postgres") ] "3D000"
+      in
+      let* () = refused "no user" [ ("database", "app") ] "28000" in
+      check_int "no upstream connection was opened" 0 e.pg.connections;
+      Lwt.return_unit)
+
+(* COPY data from the client ends the session; nothing of it reaches the upstream. *)
+let test_client_copy_data () =
+  with_env (fun e ->
+      let* io = login_ok e.port in
+      let* () = Io.write io (Wire.frame 'd' "1\tacme\n") in
+      let* ms = read_until_ready io in
+      check_str "protocol violation" "08P01" (sqlstate ms);
+      check_bool "FATAL" true (List.exists is_fatal ms);
+      let* () = wait_until "upstream closed" (fun () -> e.pg.closed = 1) in
+      check_int "no CopyData reached the upstream" 0 (Fake_pg.count_tag e.pg 'd');
+      Io.close io)
+
+let server_tls required =
+  ( "tls",
+    `Assoc
+      [
+        ("cert", Pki.cert_pem (Lazy.force Pki.server));
+        ("key", Pki.key_pem (Lazy.force Pki.server));
+        ("required", `Bool required);
+      ] )
+
+(* tls.required: a plaintext startup is refused before authentication. *)
+let test_tls_required () =
+  let attempt required =
+    let got = ref "" in
+    with_env
+      ~make:(fun ~up_port ~audit_file ->
+        config ~up_port ~audit_file ~extra:[ server_tls required ] ())
+      (fun e ->
+        let* io, ms = login_startup_only e.port in
+        (got :=
+           match ms with
+           | [ ('E', p) ] -> field 'C' p
+           | [ ('R', _) ] -> "authentication requested"
+           | _ -> tags ms);
+        Io.close io);
+    !got
+  in
+  check_str "required: plaintext refused" "28000" (attempt true);
+  check_str "not required: plaintext may authenticate" "authentication requested"
+    (attempt false)
+
+(* Bytes sent in the clear right behind an SSLRequest are not read as if they had come
+   through TLS (CVE-2021-23214). *)
+let test_ssl_request_pipelined () =
+  with_env
+    ~make:(fun ~up_port ~audit_file ->
+      config ~up_port ~audit_file ~extra:[ server_tls false ] ())
+    (fun e ->
+      let* io = connect e.port in
+      let* () =
+        Io.write io
+          (Wire.encode_ssl_request
+          ^ Wire.encode_startup [ ("user", "agent"); ("database", "app") ])
+      in
+      let* first = Lwt.catch (fun () -> Io.read_byte io) (fun _ -> Lwt.return '!') in
+      check_bool "TLS is not started over the smuggled bytes" false (first = 'S');
+      check_bool "and they are not answered as a startup packet" false (first = 'R');
+      let* () = wait_until "connection dropped" (fun () -> Server.active e.srv = 0) in
+      check_int "nothing reached the upstream" 0 e.pg.connections;
+      Io.close io)
+
+let test_max_connections () =
+  with_env
+    ~make:(limits [ ("max_connections", `Int 2) ])
+    (fun e ->
+      let* a = login_ok e.port in
+      let* b = connect e.port in
+      let* () = wait_until "two connections" (fun () -> Server.active e.srv = 2) in
+      let* c = connect e.port in
+      let* code, msg = refused_at_accept c in
+      check_str "the third is refused" "53300" code;
+      check_bool "says which limit" true (contains msg "max_connections");
+      let* () = Io.close c in
+      let* () = Io.close b in
+      let* () = wait_until "slot released" (fun () -> Server.active e.srv = 1) in
+      let* d = login_ok e.port in
+      let* ms = simple a q_ok in
+      check_str "established sessions are unaffected" "CZ" (tags ms);
+      let* () = Io.close d in
+      Io.close a)
+
+let test_idle_timeout () =
+  with_env
+    ~make:(limits [ ("idle_timeout_seconds", `Float 0.3) ])
+    (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io q_ok in
+      check_str "served" "CZ" (tags ms);
+      let t0 = Unix.gettimeofday () in
+      let* ms = read_until_ready io in
+      check_str "idle session ended" "57P05" (sqlstate ms);
+      check_bool "FATAL" true (List.exists is_fatal ms);
+      check_bool "not before the timeout" true (Unix.gettimeofday () -. t0 >= 0.25);
+      let* () = wait_until "upstream closed" (fun () -> e.pg.closed = 1) in
+      Io.close io)
+
+(* upstream.tls.mode: require against a server without TLS: no session, and nothing is
+   sent to it in the clear (not even the startup packet with the user name). *)
+let test_upstream_tls_unavailable () =
+  with_env
+    ~make:(fun ~up_port ~audit_file ->
+      config ~up_port ~audit_file
+        ~upstream:[ ("tls", `Assoc [ ("mode", `String "require") ]) ]
+        ())
+    (fun e ->
+      let* io, ms = login e.port in
+      check_str "upstream connection failure" "08006" (sqlstate ms);
+      check_bool "FATAL" true (List.exists is_fatal ms);
+      let* () = wait_until "upstream closed" (fun () -> e.pg.closed = 1) in
+      Alcotest.(check (list (list (pair string string))))
+        "no startup packet was sent in the clear" [] e.pg.startups;
+      Io.close io)
+
+(* Raw SQL is written to the audit log only when audit.log_raw_sql asks for it. *)
+let test_audit_raw_sql () =
+  let sql_fields audit =
+    let got = ref [] in
+    with_env
+      ~make:(fun ~up_port ~audit_file -> config ~up_port ~audit_file ~audit ())
+      (fun e ->
+        let* io = login_ok e.port in
+        let* ms = simple io q_ok in
+        check_str "served" "CZ" (tags ms);
+        let* ms = simple io q_denied in
+        check_str "denied" "EZ" (tags ms);
+        got := List.map (jstr "sql") (events e "statement");
+        check_bool "the hash is always there" true
+          (List.for_all
+             (fun r -> jstr "sql_sha256" r <> "<missing>")
+             (events e "statement"));
+        Io.close io);
+    !got
+  in
+  Alcotest.(check (list string))
+    "default: no statement text" [ "<missing>"; "<missing>" ] (sql_fields []);
+  Alcotest.(check (list string))
+    "log_raw_sql: true" [ q_ok; q_denied ]
+    (sql_fields [ ("log_raw_sql", `Bool true) ])
+
 (* Regression: the FATAL error that ends a session was lost on TLS connections. The
    session's pending read was cancelled first, tls-lwt then treats the connection as
    failed and refuses the write, and the client saw the connection drop without a
@@ -1777,6 +1970,22 @@ let () =
             test_proxy_level_denials;
           Alcotest.test_case "unnamed statement gone after a simple query" `Quick
             test_unnamed_statement_after_simple_query;
+        ] );
+      ( "without PostgreSQL",
+        [
+          Alcotest.test_case "Bind: tenant parameter overwritten on the wire" `Quick
+            test_bind_overwrites_tenant;
+          Alcotest.test_case "startup: replication, other database, no user" `Quick
+            test_startup_refusals;
+          Alcotest.test_case "COPY data from the client" `Quick test_client_copy_data;
+          Alcotest.test_case "tls.required" `Quick test_tls_required;
+          Alcotest.test_case "SSLRequest with pipelined plaintext" `Quick
+            test_ssl_request_pipelined;
+          Alcotest.test_case "max_connections" `Quick test_max_connections;
+          Alcotest.test_case "idle timeout" `Quick test_idle_timeout;
+          Alcotest.test_case "upstream TLS required but unavailable" `Quick
+            test_upstream_tls_unavailable;
+          Alcotest.test_case "audit.log_raw_sql" `Quick test_audit_raw_sql;
         ] );
       ( "misbehaving upstream",
         [
