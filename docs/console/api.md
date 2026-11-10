@@ -20,6 +20,7 @@ The machine-readable contract is [openapi.yaml](openapi.yaml).
 | 403 | `REASON_REQUIRED` | The permission is "with a reason" and none was given. |
 | 404 | `NOT_FOUND` | Unknown route or object. |
 | 409 | `CONFLICT` | State conflict (for example a case already resolved). |
+| 429 | `RATE_LIMITED` | Too soon to repeat the action (for example `POST /data/refresh`). |
 | 501 | `NOT_IMPLEMENTED` | The action needs verifier support that does not exist yet. |
 | 502 | `UPSTREAM` | A verifier, catalog, GitHub or Kubernetes call failed. Message has no secrets. |
 | 503 | `NOT_CONFIGURED` | The feature needs configuration that is missing (for example no GitHub integration). |
@@ -429,27 +430,55 @@ Kubernetes API fails (the message carries the HTTP status and Status
 `GET /api/v1/data/columns?show=allowed|all&q=`:
 
 ```json
-{ "sources": [ { "kind": "dbt", "detail": "manifest.json from acme/analytics", "as_of": "...", "authoritative": true, "error": null } ],
+{ "updated": "...", "loaded": "...",
+  "sources": [ { "kind": "dbt", "label": "dbt", "detail": "manifest.json from acme/analytics", "as_of": "...", "authoritative": true, "error": null } ],
   "totals": { "tagged": 312, "tables": 41, "blocked": 309, "exception": 2, "needs_review": 1 },
   "columns": [ { "column": "billing.invoices.tax_id", "tags": ["PII", "government id"], "sources": ["datahub"],
+                 "authoritative": true,
                  "allowed_by": ["finance-agent"], "status": "needs_review | exception | blocked",
-                 "exception": { "owner", "ticket", "expires" }, "shadow_denials": 0 } ] }
+                 "exception": { "column", "policy", "owner", "ticket", "expires", "expired": false }, "shadow_denials": 0 } ] }
 ```
+
+`show` defaults to `allowed` (every status but `blocked`); `totals` always count every
+tagged column. `q` matches a substring of the column or of a tag. `exception` is `null`
+unless an exception matches; for `needs_review` it is the expired (or partial)
+exception, with `expired`. Column `sources` are catalog labels (default: the kind);
+`authoritative` is false when only live fetches tag the column. See
+[config.md](config.md#catalogs-and-data) for how the status is derived.
 
 A column allowed by a policy is `exception` when listed in
 `data.exceptions` (owner, ticket, expiry), otherwise `needs_review`.
 `POST /api/v1/data/refresh` re-reads every catalog (any role; rate-limited to
-once a minute). A live fetch (DataHub, OpenMetadata) only flags columns; it is
+once a minute, `429 RATE_LIMITED` otherwise; logged as `data.refresh`) and returns
+`{ "updated", "sources", "totals" }`. A live fetch (DataHub, OpenMetadata) only flags columns; it is
 never loaded as a policy catalog.
 
 ### Evidence and controls
 
 | | |
 |---|---|
-| `GET /api/v1/evidence/controls?framework=soc2\|iso27001\|gdpr\|hipaa` | Control mapping: `[ { id, name, what, evidence } ]` |
-| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until" }` → `202 { id, state: "building" }` |
-| `GET /api/v1/evidence/packs` | `[ { id, framework, since, until, built_by, created, state, records, chains: {verified, total}, manifest_sha256, gaps: [] } ]` |
-| `GET /api/v1/evidence/packs/{id}/download` | `application/gzip`: a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. |
+| `GET /api/v1/evidence/controls?framework=soc2\|iso27001\|gdpr\|hipaa` | Any role. Control mapping (default `soc2`): `{ framework, framework_name, disclaimer, controls: [ { id, name, what, evidence: [string] } ] }` |
+| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until"? }` (`until` defaults to now) → `202 { id: "pack_<n>", state: "building" }`. Logged as `evidence.build`. |
+| `GET /api/v1/evidence/packs` | `build_evidence`. `{ "packs": [ { id, framework, since, until, built_by, created, state: "building\|ready\|failed", records, chains: {verified, total}, manifest_sha256, bytes, gaps: [ { kind, name, detail } ], error } ] }`, newest first. |
+| `GET /api/v1/evidence/packs/{id}/download` | `build_evidence`. `application/gzip`: a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. `409 CONFLICT` while building or after a failure. Logged as `evidence.download`. |
+
+Control ids: `soc2` CC6.1, CC6.3, CC7.2, CC8.1, A1.2; `iso27001` A.5.15, A.8.2, A.8.15,
+A.8.16, A.8.32; `gdpr` Art. 5(1)(f), Art. 25, Art. 30, Art. 32; `hipaa`
+164.308(a)(1)(ii)(D), 164.312(a)(1), 164.312(b), 164.312(c)(1). Wording follows
+[security/compliance.md](../security/compliance.md).
+
+The archive has one top-level directory `pack_<n>/` with `README.md` (scope,
+disclaimer, gaps, file list), `manifest.json` (SHA-256 and size of every other file,
+record counts per verifier, chain results, builder, period, generator),
+`records/<verifier>.jsonl` (the raw audit lines in the period, as ingested),
+`chains.json` (per verifier: `state` `intact | broken | unknown`, `verified`, and
+`first_break` `{ line, problem, request_id, location }`; the first included record's
+`prev_hash` is accepted as is, since a period rarely starts at genesis),
+`policies.json` (`seen_in_records` versions and the `loaded` policies), `activity.jsonl`,
+`exceptions.json` and `controls.json`. `manifest_sha256` in the listing is the SHA-256 of
+`manifest.json`. The gzip stream uses uncompressed (stored) DEFLATE blocks; it is a
+standard gzip file. Gap kinds: `in_process_agent` (agents with `via: in_process`) and
+`source_error` (audit sources whose ingestion reports an error).
 
 The pack states plainly that HaltSQL holds no certification and lists gaps
 (in-process agents, sources that could not be read).
@@ -469,6 +498,9 @@ The pack states plainly that HaltSQL holds no certification and lists gaps
 | `GET /api/v1/integrations` | `{ "groups": [ { "name": "Caller identity", "items": [ { "id", "name", "detail", "state": "connected | degraded | not_set_up | error", "error" } ] } ] }` |
 
 Integrations are derived from configuration and live checks: OIDC providers
-(JWKS reachable), bundle sources (from fleet), OPA, catalogs, secrets
-providers, audit sinks (from fleet), Slack, PagerDuty, Jira, GitHub.
-Credentials are never returned.
+(JWKS reachable, checked at most every 5 minutes: `degraded` when the JWKS has no
+usable key, `error` when unreachable), bundle sources (from fleet; `degraded` when
+verifiers serve different versions), OPA, catalogs (`error` when the last load failed),
+audit sources (`error` when ingestion reports one), audit sinks (from fleet; `degraded`
+unless healthy), Slack, PagerDuty, Jira, GitHub. Credentials are never returned; URLs
+are shown without user info or query.
