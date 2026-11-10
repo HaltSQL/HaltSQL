@@ -1,0 +1,11 @@
+{{- if not .Values.console.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "console.configMapName" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+data:
+  console.yaml: |
+    {{- include "console.config" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,124 @@
+# Helm values overlay: haltsql-console on GKE, next to the haltsql release from
+# deploy/cloud/gcp/gke/values-gke.yaml (namespace haltsql).
+#
+#   kubectl apply -n haltsql -f deploy/cloud/gcp/console/iap-backendconfig.yaml
+#   helm upgrade --install haltsql-console deploy/helm/haltsql-console -n haltsql \
+#     -f deploy/cloud/gcp/console/gke.values.yaml
+#
+# Replace REPLACE_ME_PROJECT, the host and the groups before use.
+# Guide: docs/console/deploy.md#google-cloud.
+
+image:
+  repository: ghcr.io/haltsql/haltsql-console
+  # digest: sha256:...
+
+serviceAccount:
+  create: true
+  name: haltsql-console
+  # Workload Identity: GCS audit reads and ${gcp-sm:...} placeholders.
+  annotations:
+    iam.gke.io/gcp-service-account: haltsql-console@REPLACE_ME_PROJECT.iam.gserviceaccount.com
+
+rbac:
+  create: true
+  deployments: [haltsql]
+
+console:
+  config:
+    environment: { org: Acme Corp, name: Production, region: europe-west1 }
+    auth:
+      # Identity-Aware Proxy decides who can reach the console at all.
+      # IAP sends x-goog-authenticated-user-email but no groups, so roles come
+      # from the oauth2-proxy sidecar (Google provider + Workspace groups),
+      # which sets X-Forwarded-Email/-Groups; the chart adds auth.proxy.
+      tokens: []
+      roles:
+        admin: [haltsql-admins@acme.example]
+        owner: [haltsql-policy-owners@acme.example]
+        analyst: [security@acme.example]
+        audit: [compliance@acme.example]
+        dev: [engineering@acme.example]
+    verifiers:
+      - name: haltsql
+        url: http://haltsql.haltsql.svc:8080
+        kind: server
+        location: GKE europe-west1
+        token: ${gcp-sm:haltsql-console-admin-token}   # in secrets.gcp.project
+        workload: deployment/haltsql
+    audit:
+      sources:
+        # The GCS audit sink of values-gke.yaml.
+        - { verifier: auto, gcs: "gs://REPLACE_ME_PROJECT-haltsql-audit/haltsql/audit/shared/" }
+    policies:
+      server_config: /etc/haltsql/config/config.yaml
+    secrets:
+      gcp: { project: REPLACE_ME_PROJECT }   # Workload Identity via the metadata server
+
+verifierConfig:
+  configMap: haltsql-config
+  policiesConfigMap: haltsql-policies
+
+persistence:
+  enabled: true
+  storageClass: premium-rwo        # PD CSI; snapshot schedule for backups
+  size: 20Gi
+  annotations:
+    helm.sh/resource-policy: keep
+
+# Workspace groups through the Admin SDK (a service account with domain-wide
+# delegation, read-only group scope, key in the Secret as a file).
+oauth2Proxy:
+  enabled: true
+  existingSecret: haltsql-console-oauth2
+  provider: google
+  redirectUrl: https://haltsql-console.corp.example/oauth2/callback
+  emailDomains: [acme.example]
+  allowedGroups: []
+  extraArgs:
+    - --google-admin-email=directory-reader@acme.example
+    - --google-service-account-json=/etc/oauth2-proxy/google-sa.json
+    - --google-group=haltsql-admins@acme.example
+    - --google-group=haltsql-policy-owners@acme.example
+    - --google-group=security@acme.example
+    - --google-group=compliance@acme.example
+    - --google-group=engineering@acme.example
+  extraVolumeMounts:
+    - { name: google-sa, mountPath: /etc/oauth2-proxy, readOnly: true }
+
+extraVolumes:
+  - name: google-sa
+    secret:
+      secretName: haltsql-console-oauth2-google-sa   # key google-sa.json
+      defaultMode: 0440
+
+service:
+  annotations:
+    cloud.google.com/backend-config: '{"default": "haltsql-console-iap"}'
+    cloud.google.com/neg: '{"ingress": true}'
+
+ingress:
+  enabled: true
+  className: gce-internal          # internal Application Load Balancer
+  annotations:
+    kubernetes.io/ingress.allow-http: "false"
+  hosts:
+    - host: haltsql-console.corp.example
+      paths: [{ path: /, pathType: Prefix }]
+  tls:
+    - secretName: haltsql-console-tls
+      hosts: [haltsql-console.corp.example]
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    # Google front ends and health checkers (container-native LB, NEG).
+    - ipBlock: { cidr: 35.191.0.0/16 }
+    - ipBlock: { cidr: 130.211.0.0/22 }
+    # The proxy-only subnet of the internal ALB.
+    - ipBlock: { cidr: 10.129.0.0/23 }
+  egress:
+    allowHTTPS: true               # Google APIs (GCS, Secret Manager, OAuth), GKE API
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits: { memory: 2Gi }

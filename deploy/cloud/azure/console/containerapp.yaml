@@ -1,0 +1,105 @@
+# Azure Container Apps: haltsql-console as ONE replica with internal ingress,
+# oauth2-proxy (Entra ID) as the ingress container, state_dir on an Azure
+# Files share, and secrets referenced from Key Vault by the app's managed
+# identity (Container Apps resolves them; the console only sees env vars).
+# Guide: docs/console/deploy.md#azure-container-apps.
+#
+#   az containerapp env storage set -g <RG> -n cae-agents --storage-name console-state \
+#     --azure-file-account-name <account> --azure-file-account-key <key> \
+#     --azure-file-share-name haltsql-console --access-mode ReadWrite
+#   az containerapp create -g <RG> -n haltsql-console --yaml containerapp.yaml
+#
+# minReplicas = maxReplicas = 1: state_dir is single-writer and the background
+# loops must keep running. Replace the REPLACE_* values before use.
+location: REPLACE_LOCATION
+name: haltsql-console
+type: Microsoft.App/containerApps
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console: {}
+properties:
+  managedEnvironmentId: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.App/managedEnvironments/cae-agents
+  workloadProfileName: Consumption
+  configuration:
+    activeRevisionsMode: Single       # never two revisions on one state_dir
+    ingress:
+      external: false                 # VNet-internal only
+      targetPort: 4180                # oauth2-proxy
+      transport: http
+      allowInsecure: false
+    secrets:
+      - name: admin-token
+        keyVaultUrl: https://kv-haltsql.vault.azure.net/secrets/haltsql-console-admin-token
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console
+      - name: oauth2-client-id
+        keyVaultUrl: https://kv-haltsql.vault.azure.net/secrets/haltsql-console-oauth2-client-id
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console
+      - name: oauth2-client-secret
+        keyVaultUrl: https://kv-haltsql.vault.azure.net/secrets/haltsql-console-oauth2-client-secret
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console
+      - name: oauth2-cookie-secret
+        keyVaultUrl: https://kv-haltsql.vault.azure.net/secrets/haltsql-console-oauth2-cookie-secret
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console
+      - name: console-config
+        keyVaultUrl: https://kv-haltsql.vault.azure.net/secrets/haltsql-console-config
+        identity: /subscriptions/REPLACE_SUB/resourceGroups/REPLACE_RG/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-haltsql-console
+  template:
+    scale:
+      minReplicas: 1
+      maxReplicas: 1
+    containers:
+      - name: oauth2-proxy
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+        args:
+          - --http-address=0.0.0.0:4180
+          - --upstream=http://127.0.0.1:8090/
+          - --provider=oidc
+          - --oidc-issuer-url=https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0
+          - --redirect-url=https://haltsql-console.REPLACE_ENV_DOMAIN/oauth2/callback
+          - --email-domain=*
+          - --scope=openid email profile
+          - --pass-user-headers=true
+          - --reverse-proxy=true
+          - --cookie-secure=true
+          - --skip-provider-button=true
+          - --skip-auth-route=GET=^/(healthz|readyz)$
+        env:
+          - { name: OAUTH2_PROXY_CLIENT_ID, secretRef: oauth2-client-id }
+          - { name: OAUTH2_PROXY_CLIENT_SECRET, secretRef: oauth2-client-secret }
+          - { name: OAUTH2_PROXY_COOKIE_SECRET, secretRef: oauth2-cookie-secret }
+        resources: { cpu: 0.25, memory: 0.5Gi }
+      - name: console
+        image: ghcr.io/haltsql/haltsql-console:0.1.0    # pin @sha256 in production
+        args: ["--config", "/etc/haltsql-console/console.yaml"]
+        env:
+          - { name: HALTSQL_CONSOLE_LISTEN, value: "127.0.0.1:8090" }
+          - { name: HALTSQL_ADMIN_TOKEN, secretRef: admin-token }
+        volumeMounts:
+          - { volumeName: console-config, mountPath: /etc/haltsql-console }
+          - { volumeName: state, mountPath: /var/lib/haltsql-console }
+          - { volumeName: audit, mountPath: /var/log/haltsql }
+        probes:
+          - type: Startup
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 2
+            failureThreshold: 60
+          - type: Liveness
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 15
+        resources: { cpu: 1.0, memory: 2Gi }
+    volumes:
+      # console.yaml from the Key Vault-backed secret, as a file.
+      - name: console-config
+        storageType: Secret
+        secrets:
+          - { secretRef: console-config, path: console.yaml }
+      - name: state
+        storageType: AzureFile
+        storageName: console-state
+        mountOptions: "uid=65532,gid=65532,file_mode=0600,dir_mode=0700,mfsymlinks,nobrl"
+      # The verifiers' file audit sinks on a shared Azure Files share (read-only use).
+      - name: audit
+        storageType: AzureFile
+        storageName: haltsql-audit
+        mountOptions: "uid=65532,gid=65532,file_mode=0440,dir_mode=0550"

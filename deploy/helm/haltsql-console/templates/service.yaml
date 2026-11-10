@@ -1,0 +1,24 @@
+{{- $svc := .Values.service }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "console.fullname" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+    {{- with $svc.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.type }}
+  selector:
+    {{- include "console.selectorLabels" . | nindent 4 }}
+  ports:
+    # "http" is the console, or the oauth2-proxy sidecar when it is enabled.
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP

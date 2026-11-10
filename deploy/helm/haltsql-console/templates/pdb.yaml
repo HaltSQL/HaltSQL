@@ -1,0 +1,22 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $pdb := .Values.podDisruptionBudget }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "console.fullname" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+spec:
+  {{- /* maxUnavailable wins when set. */}}
+  {{- if not (kindIs "invalid" $pdb.maxUnavailable) }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ default 1 $pdb.minAvailable }}
+  {{- end }}
+  {{- with $pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "console.selectorLabels" . | nindent 6 }}
+{{- end }}

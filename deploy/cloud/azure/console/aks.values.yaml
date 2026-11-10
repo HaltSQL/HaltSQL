@@ -1,0 +1,126 @@
+# Helm values overlay: haltsql-console on AKS, next to the haltsql release from
+# deploy/cloud/azure/aks/values-aks.yaml (namespace haltsql).
+#
+#   kubectl apply -n haltsql -f deploy/cloud/azure/console/secretproviderclass.yaml
+#   kubectl apply -n haltsql -f deploy/cloud/azure/console/audit-share.yaml
+#   helm upgrade --install haltsql-console deploy/helm/haltsql-console -n haltsql \
+#     -f deploy/cloud/azure/console/aks.values.yaml
+#
+# Replace REPLACE_CLIENT_ID, REPLACE_TENANT_ID, the host and the group object
+# IDs before use. Guide: docs/console/deploy.md#azure.
+
+image:
+  repository: ghcr.io/haltsql/haltsql-console
+  # digest: sha256:...
+
+serviceAccount:
+  create: true
+  name: haltsql-console
+  # AKS Workload Identity: the Key Vault CSI driver uses this identity to
+  # fetch the console's secrets (Key Vault is not a console secrets provider).
+  annotations:
+    azure.workload.identity/client-id: REPLACE_CLIENT_ID
+    azure.workload.identity/tenant-id: REPLACE_TENANT_ID
+
+podLabels:
+  azure.workload.identity/use: "true"
+
+rbac:
+  create: true
+  deployments: [haltsql]
+
+console:
+  config:
+    environment: { org: Acme Corp, name: Production, region: westeurope }
+    auth:
+      # Entra ID sign-in through the oauth2-proxy sidecar; group claims are
+      # object IDs (enable "groupMembershipClaims": "SecurityGroup" on the
+      # app registration). The chart adds auth.proxy.
+      tokens: []
+      roles:
+        admin: [00000000-0000-0000-0000-00000000a001]     # haltsql-admins
+        owner: [00000000-0000-0000-0000-00000000a002]     # haltsql-policy-owners
+        analyst: [00000000-0000-0000-0000-00000000a003]   # security
+        audit: [00000000-0000-0000-0000-00000000a004]     # compliance
+    verifiers:
+      - name: haltsql
+        url: http://haltsql.haltsql.svc:8080
+        kind: server
+        location: AKS westeurope
+        token: ${env:HALTSQL_ADMIN_TOKEN}   # synced from Key Vault by the CSI driver
+        workload: deployment/haltsql
+    audit:
+      sources:
+        # Azure Blob is not an audit source yet: the verifiers write per-pod
+        # file sinks to an Azure Files share (audit-share.yaml) and the
+        # console reads every file in it.
+        - { verifier: auto, file: "/var/log/haltsql/*.jsonl" }
+    policies:
+      server_config: /etc/haltsql/config/config.yaml
+
+# Synced by the SecretProviderClass (secretObjects) into this Secret.
+existingSecret: haltsql-console-env
+
+verifierConfig:
+  configMap: haltsql-config
+  policiesConfigMap: haltsql-policies
+
+auditVolume:
+  mountPath: /var/log/haltsql
+  volume:
+    persistentVolumeClaim: { claimName: haltsql-audit, readOnly: true }
+
+# The CSI volume must be mounted for the driver to sync the Secret.
+extraVolumes:
+  - name: kv-secrets
+    csi:
+      driver: secrets-store.csi.k8s.io
+      readOnly: true
+      volumeAttributes: { secretProviderClass: haltsql-console-kv }
+extraVolumeMounts:
+  - { name: kv-secrets, mountPath: /mnt/secrets-store, readOnly: true }
+
+persistence:
+  enabled: true
+  storageClass: managed-csi-premium   # Azure Disk (ZRS: managed-csi-premium-zrs)
+  size: 20Gi
+  annotations:
+    helm.sh/resource-policy: keep
+
+oauth2Proxy:
+  enabled: true
+  existingSecret: haltsql-console-oauth2
+  provider: oidc
+  oidcIssuerUrl: https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0
+  redirectUrl: https://haltsql-console.corp.example/oauth2/callback
+  scope: "openid email profile"
+  allowedGroups:
+    - 00000000-0000-0000-0000-00000000a001
+    - 00000000-0000-0000-0000-00000000a002
+    - 00000000-0000-0000-0000-00000000a003
+    - 00000000-0000-0000-0000-00000000a004
+
+ingress:
+  enabled: true
+  className: azure-application-gateway
+  annotations:
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/use-private-ip: "true"     # keep it private
+    appgw.ingress.kubernetes.io/health-probe-path: /readyz
+  hosts:
+    - host: haltsql-console.corp.example
+      paths: [{ path: /, pathType: Prefix }]
+  tls:
+    - secretName: haltsql-console-tls
+      hosts: [haltsql-console.corp.example]
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - ipBlock: { cidr: 10.225.0.0/24 }   # the Application Gateway subnet
+  egress:
+    allowHTTPS: true                     # Entra ID, Key Vault (CSI), AKS API
+
+resources:
+  requests: { cpu: 200m, memory: 512Mi }
+  limits: { memory: 2Gi }

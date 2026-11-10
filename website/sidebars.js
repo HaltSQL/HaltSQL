@@ -95,6 +95,16 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: 'Console',
+      items: [
+        doc('console/architecture', 'Architecture'),
+        doc('console/deploy', 'Deploy the console'),
+        doc('console/config', 'Configuration'),
+        doc('console/api', 'HTTP API'),
+      ],
+    },
+    {
+      type: 'category',
       label: 'Operate',
       items: [
         doc('operations/production-checklist', 'Production checklist'),

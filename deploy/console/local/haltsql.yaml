@@ -1,0 +1,47 @@
+# haltsql-server config for the local console stack (deploy/console/docker-compose.yaml).
+# LOCAL DEMO ONLY: the tokens below are well-known strings (demo-analytics-token,
+# demo-support-token, demo-console-admin-token) and the server is published on
+# 127.0.0.1 only. Never reuse this file anywhere else.
+apiVersion: haltsql.dev/v1
+kind: Config
+server:
+  listen: 0.0.0.0:8080
+  auth:
+    allow_unauthenticated: false
+    tokens:
+      - name: analytics-agent
+        token_sha256: 2e7b59d421ac7f8f97ddea7d7a40c9100927ac8676854fc327aec7b9c7e57e02
+        policy: saas-analytics
+      - name: support-bot
+        token_sha256: 87fd089ee94c1965c343faebfbff0e3689d571169a4abe77fbad0e8ce03a6aba
+        policy: support-bot
+      # The console's admin token. Every token is pinned to a policy; this one
+      # is only used for the admin API.
+      - name: console
+        token_sha256: 128443612a0dd2655abc692cd43a27ffb5ae97b0d11c74bcabb2318279656574
+        policy: saas-analytics
+  # GET /v1/admin/status and /v1/admin/report, polled by the console's Fleet.
+  admin:
+    enabled: true
+    callers: [token:console]
+    report_window: 24h
+policies:
+  - path: ./policies/saas-analytics.yaml
+  - path: ./policies/support-bot.yaml
+reload:
+  watch: true
+audit:
+  sinks:
+    # Shared with the console (read-only there) through the `audit` volume.
+    - type: file
+      path: /var/log/haltsql/audit.jsonl
+  # On for the demo so the console's raw-SQL view (see_raw_sql) has something
+  # to show. Keep it off in production unless you need it: SQL can carry
+  # sensitive literals.
+  log_raw_sql: true
+telemetry:
+  metrics:
+    prometheus: true
+logging:
+  level: info
+  format: json

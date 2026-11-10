@@ -729,6 +729,19 @@ workaround above.
 | **`haltsql-proxy` operations** | No metrics endpoint and no HTTP health endpoint. Audit goes only to `stdout` or `file`. | TCP probes; the audit stream in Log Analytics. |
 | **Byte-exact chain via Log Analytics** | Container Insights parses JSON log lines, so the exact bytes are not guaranteed to be preserved. | Use the file and Blob route for the verifiable record. |
 
+## Console
+
+To run `haltsql-console` (the control plane) next to these deployments: on
+AKS with the `haltsql-console` chart, Workload Identity, the Key Vault CSI
+driver for its secrets (Key Vault is not a console secrets provider yet), an
+Azure Files share for the verifiers' audit files, Entra ID sign-in through an
+oauth2-proxy sidecar behind Application Gateway, and an Azure Disk for its
+state; or on Azure Container Apps as a single replica with Azure Files. See
+[console/deploy.md](console/deploy.md#azure) and
+[`deploy/cloud/azure/console/`](../deploy/cloud/azure/console/). Each
+verifier needs `server.admin` enabled with the console's token in
+`server.admin.callers`.
+
 ## Regenerating the diagrams
 
 The architecture images on this page are drawn as code with

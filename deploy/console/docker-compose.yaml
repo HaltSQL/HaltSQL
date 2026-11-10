@@ -1,0 +1,78 @@
+# HaltSQL Console local stack: Postgres, one haltsql-server with the admin API
+# and a file audit sink, and haltsql-console in dev mode reading that audit file
+# and polling the server. Guide: docs/console/deploy.md#local-docker-compose.
+#
+#   docker compose -f deploy/console/docker-compose.yaml up -d --build
+#   deploy/console/demo-traffic.sh                 # allowed, denied, cross-tenant
+#   curl -s localhost:8090/api/v1/overview?range=24h
+#   docker compose -f deploy/console/docker-compose.yaml down -v
+#
+# Host ports (127.0.0.1 only): 18080 haltsql-server, 8090 haltsql-console.
+# LOCAL DEMO ONLY: well-known tokens, dev-mode console (every request is an admin).
+name: haltsql-console-local
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:size=64m
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${CONSOLE_DEMO_PG_PASSWORD:-haltsql-console-demo}
+      POSTGRES_DB: shop
+    volumes:
+      - ./local/seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shop"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  haltsql:
+    <<: *hardening
+    # `make docker` builds the same tag; --build rebuilds it from this checkout.
+    image: ${HALTSQL_IMAGE:-haltsql-local:dev}
+    build:
+      context: ../..
+      target: runtime
+    command: ["--config", "/etc/haltsql/haltsql.yaml"]
+    volumes:
+      - ./local:/etc/haltsql:ro
+      # File audit sink. The image's /var/log/haltsql is owned by uid 65532, so
+      # the named volume starts with the right owner.
+      - audit:/var/log/haltsql
+    ports: ["127.0.0.1:18080:8080"]
+    # No healthcheck: the image is distroless (no shell, no curl).
+
+  console:
+    <<: *hardening
+    image: ${HALTSQL_CONSOLE_IMAGE:-haltsql-console-local:dev}
+    build:
+      context: ../..
+      target: console
+    # --dev admin: every request is authenticated as a local admin. Never in production.
+    command: ["--config", "/etc/haltsql-console/console.yaml", "--dev", "admin"]
+    environment:
+      HALTSQL_ADMIN_TOKEN: demo-console-admin-token
+    volumes:
+      - ./console.local.yaml:/etc/haltsql-console/console.yaml:ro
+      # The verifier's config and policies (Playground, decision trails).
+      - ./local:/etc/haltsql:ro
+      # The verifier's audit file, read-only.
+      - audit:/var/log/haltsql:ro
+      # state_dir: cases, activity log, signal workflow, evidence packs.
+      - console-state:/var/lib/haltsql-console
+    ports: ["127.0.0.1:8090:8090"]
+    depends_on:
+      haltsql: { condition: service_started }
+    # The image's HEALTHCHECK runs `haltsql-console --healthcheck` (GET /healthz).
+
+volumes:
+  audit:
+  console-state:

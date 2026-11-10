@@ -21,6 +21,7 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
   IMAGE: ghcr.io/haltsql/haltsql
   MCP_IMAGE: ghcr.io/haltsql/haltsql-mcp
+  CONSOLE_IMAGE: ghcr.io/haltsql/haltsql-console
   OCAML_VERSION: "5.2"
   # The static Linux tarballs are built from the `dist` stage of the Dockerfile,
   # which pins the builder image by digest and the opam-repository commit
@@ -338,9 +339,102 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+  console-image:
+    name: haltsql-console image (GHCR, signed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ env.TAG }}
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.CONSOLE_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.title=haltsql-console
+            org.opencontainers.image.licenses=MIT
+
+      # Same Dockerfile and builder stage as the haltsql image (target "console").
+      - name: Build and smoke-test the amd64 image before pushing
+        run: |
+          docker buildx build --platform linux/amd64 --target console --load \
+            -t haltsql-console-local:dev --cache-from type=gha .
+          scripts/console-docker-smoke.sh
+
+      - name: Build metadata
+        id: buildinfo
+        run: |
+          echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          target: console
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.TAG }}
+            REVISION=${{ steps.buildinfo.outputs.revision }}
+            CREATED=${{ steps.buildinfo.outputs.created }}
+          # SLSA provenance (max) and an SPDX SBOM, as for the haltsql image.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign image (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${CONSOLE_IMAGE}@${DIGEST}"
+
+      - name: Verify the image signature
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign verify "${CONSOLE_IMAGE}@${DIGEST}" \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.CONSOLE_IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
   publish:
     name: Checksums, SBOM, signatures, GitHub release
-    needs: [linux-static, macos, image]
+    needs: [linux-static, macos, image, console-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -399,6 +493,7 @@ jobs:
           {
             echo
             echo "Container image: \`${IMAGE}:${version}\` (digest \`${{ needs.image.outputs.digest }}\`)."
+            echo "Console image: \`${CONSOLE_IMAGE}:${version}\` (digest \`${{ needs.console-image.outputs.digest }}\`)."
             echo
             echo "Verify downloads with \`sha256sum -c SHA256SUMS\` and"
             echo "\`cosign verify-blob --bundle FILE.sigstore.json --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' --certificate-oidc-issuer https://token.actions.githubusercontent.com FILE\`."

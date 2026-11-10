@@ -1,0 +1,26 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+{{- $p := .Values.persistence }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "console.pvcName" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+  {{- with $p.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $p.accessModes | nindent 4 }}
+  {{- if $p.storageClass }}
+  {{- if eq $p.storageClass "-" }}
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ $p.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $p.size | quote }}
+{{- end }}
