@@ -203,3 +203,65 @@ def test_real_llamaindex_sqldatabase_and_retriever(pg):
             retriever.retrieve(BAD)
     finally:
         engine.dispose()
+
+
+def test_non_string_command_refused():
+    g = guard_sql_database(FakeSQLDatabase(), FakeVerifier(decide), {"tenant_id": "acme"})
+    with pytest.raises(GuardError, match="only SQL strings"):
+        g.run_sql(object())
+
+
+def test_context_callable_evaluated_per_query():
+    tenants = iter(["a", "b"])
+    fv = FakeVerifier(decide)
+    g = guard_sql_database(FakeSQLDatabase(), fv, lambda: {"tenant_id": next(tenants)})
+    for _ in range(2):
+        with pytest.raises(QueryDenied):
+            g.run_sql(BAD)
+    assert [c for _sql, c in fv.calls] == [{"tenant_id": "a"}, {"tenant_id": "b"}]
+
+
+def test_sql_error_text_never_quotes_connection_failures():
+    class LeakyEngine:
+        def raw_connection(self):
+            raise RuntimeError("could not connect to postgresql://agent:s3cret@db.internal:5432/app")
+
+    g = guard_sql_database(EngineDB(LeakyEngine()), FakeVerifier(decide), {"tenant_id": "acme"},
+                           denials_as_sql_errors=True)
+    with pytest.raises(HaltSQLSQLError) as ei:
+        g.run_sql(OK)
+    assert str(ei.value) == "Database error: RuntimeError"
+
+
+@pytest.mark.integration
+def test_limits_settings_and_read_only_reach_the_transaction(pg):
+    pytest.importorskip("llama_index.core")
+    from llama_index.core import SQLDatabase
+    from sqlalchemy import create_engine
+
+    engine = create_engine(pg)
+    try:
+        db = SQLDatabase(engine, include_tables=["orders"])
+        g = guard_sql_database(db, FakeVerifier(decide), {"tenant_id": "acme"}, max_rows=1,
+                               statement_timeout_ms=150, settings={"app.tenant_id": "acme-setting"},
+                               denials_as_sql_errors=True)
+        text, meta = g.run_sql(OK)
+        assert text == "[(1, 'open')]" and meta["truncated"] is True
+        probe = ("SELECT current_setting('app.tenant_id'), current_setting('statement_timeout'), "
+                 "current_setting('transaction_read_only') FROM orders WHERE tenant_id = $1 LIMIT 1")
+        assert g.run_sql(probe)[1]["result"] == [("acme-setting", "150ms", "on")]
+        with pytest.raises(HaltSQLSQLError, match="^Database error: QueryCanceled: canceling statement"):
+            g.run_sql("SELECT pg_sleep(3) FROM orders WHERE tenant_id = $1 LIMIT 1")
+        # read_only=False still runs SELECTs READ ONLY; an allowed write runs read-write.
+        allow_all = FakeVerifier(lambda s, c, p: make_verdict_dict(
+            s, allowed=True, bind=[c["tenant_id"]], statement_kind=s.split()[0].lower()))
+        rw = guard_sql_database(db, allow_all, {"tenant_id": "acme"}, read_only=False)
+        assert rw.run_sql("SELECT current_setting('transaction_read_only') FROM orders "
+                          "WHERE tenant_id = $1 LIMIT 1")[1]["result"] == [("on",)]
+        assert rw.run_sql("UPDATE orders SET status = 'held' WHERE tenant_id = $1 AND id = 3") == ("", {})
+        with engine.connect() as c:
+            assert c.exec_driver_sql("SELECT id FROM orders WHERE status = 'held'").fetchall() == [(3,)]
+            c.exec_driver_sql("UPDATE orders SET status = 'paid' WHERE id = 3")
+            c.commit()
+    finally:
+        engine.dispose()

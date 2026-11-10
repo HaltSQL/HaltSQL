@@ -246,3 +246,90 @@ def test_langchain_tool(pg):
     out = json.loads(tool.invoke({"query": OK}))
     assert out == {"columns": ["id", "status"], "rows": [[1, "open"]], "truncated": True}
     assert tool.invoke({"query": BAD}).startswith("HaltSQL denied the query")
+
+
+def test_guarded_database_refuses_non_string_commands():
+    g = guard_sql_database(FakeSQLDatabase(), FakeVerifier(decide), {"tenant_id": "acme"})
+    with pytest.raises(GuardError, match="only SQL strings"):
+        g.run(object())
+    assert g.run_no_throw(object()) == "Error: The query was not executed: only SQL strings can be guarded"
+
+
+def test_feedback_never_quotes_connection_failures():
+    """Only what the database server reported is quoted to the model; a failed
+    connect() (which can name the host, the role or the whole DSN) is not."""
+
+    def connect():
+        raise RuntimeError("could not connect to postgresql://agent:s3cret@db.internal:5432/app")
+
+    r = HaltSQLQueryRunner(FakeVerifier(decide), {"tenant_id": "acme"}, connect=connect)
+    out = r.run(OK)
+    assert out == "Database error: RuntimeError"
+    g = guard_sql_database(FakeSQLDatabase(), FakeVerifier(decide), {"tenant_id": "acme"})
+    g._haltsql_runner.execute = lambda sql: connect()
+    assert g.run_no_throw(OK) == "Error: Database error: RuntimeError"
+
+
+@pytest.mark.integration
+def test_unreachable_database_message_has_no_host_or_role(pg):
+    import psycopg
+
+    bad = pg.replace("user=postgres", "user=no_such_role_s3cret")
+    r = HaltSQLQueryRunner(FakeVerifier(decide), {"tenant_id": "acme"},
+                           connect=lambda: psycopg.connect(bad, connect_timeout=5))
+    out = r.run(OK)
+    assert out == "Database error: OperationalError"
+    assert "127.0.0.1" not in out and "no_such_role" not in out
+
+
+@pytest.mark.integration
+def test_statement_timeout_settings_and_read_only_reach_the_transaction(pg):
+    import psycopg
+
+    def connect():
+        return psycopg.connect(pg)
+
+    r = HaltSQLQueryRunner(FakeVerifier(decide), {"tenant_id": "acme"}, connect=connect,
+                           statement_timeout_ms=150, settings={"app.tenant_id": "acme-setting"})
+    slow = "SELECT pg_sleep(3) FROM orders WHERE tenant_id = $1 LIMIT 1"
+    assert r.run(slow) == "Database error: QueryCanceled: canceling statement due to statement timeout"
+    probe = ("SELECT current_setting('app.tenant_id'), current_setting('statement_timeout'), "
+             "current_setting('transaction_read_only') FROM orders WHERE tenant_id = $1 LIMIT 1")
+    assert json.loads(r.run(probe))["rows"] == [["acme-setting", "150ms", "on"]]
+    # A statement the verifier allowed but that writes is stopped by the READ ONLY transaction.
+    write = "UPDATE orders SET status = 'x' WHERE tenant_id = $1"
+    allow_all = FakeVerifier(lambda s, c, p: make_verdict_dict(s, allowed=True, bind=[c["tenant_id"]]))
+    r2 = HaltSQLQueryRunner(allow_all, {"tenant_id": "acme"}, connect=connect)
+    assert r2.run(write).startswith("Database error: ReadOnlySqlTransaction")
+    with psycopg.connect(pg) as c:
+        assert c.execute("SELECT count(*) FROM orders WHERE status = 'x'").fetchone() == (0,)
+
+
+@pytest.mark.integration
+def test_guard_sql_database_passes_runner_options(pg):
+    pytest.importorskip("langchain_community")
+    from langchain_community.utilities import SQLDatabase
+
+    db = SQLDatabase.from_uri(_url(pg))
+    try:
+        g = guard_sql_database(db, FakeVerifier(decide), {"tenant_id": "acme"}, max_rows=1,
+                               statement_timeout_ms=150)
+        assert g.run(OK) == "[(1, 'open')]"
+        slow = "SELECT pg_sleep(3) FROM orders WHERE tenant_id = $1 LIMIT 1"
+        assert g.run_no_throw(slow) == "Error: Database error: QueryCanceled: canceling statement due to statement timeout"
+    finally:
+        db._engine.dispose()
+
+
+@pytest.mark.integration
+def test_langchain_tool_ignores_model_supplied_context(pg):
+    pytest.importorskip("langchain_core")
+    import psycopg
+
+    fv = FakeVerifier(decide)
+    tool = HaltSQLQueryTool(runner=HaltSQLQueryRunner(
+        fv, {"tenant_id": "acme"}, connect=lambda: psycopg.connect(pg)))
+    out = json.loads(tool.invoke({"query": OK, "tenant_id": "globex", "context": {"tenant_id": "globex"},
+                                  "haltsql_context": {"tenant_id": "globex"}}))
+    assert out["rows"] == [[1, "open"], [3, "paid"]]
+    assert fv.calls == [(OK, {"tenant_id": "acme"})]

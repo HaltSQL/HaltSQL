@@ -137,3 +137,96 @@ def test_legacy_returns_dataframe(pg):
     vn = SimpleNamespace()
     install_legacy_run_sql(vn, FakeVerifier(decide), lambda: {"tenant_id": "globex"}, dsn=pg)
     assert vn.run_sql(OK).values.tolist() == [[2, "open"]]
+
+
+async def test_context_never_comes_from_tool_arguments():
+    """RunSqlToolArgs are model-written: nothing in them can choose the tenant."""
+    fv = FakeVerifier(decide)
+    r = HaltSQLSqlRunner(fv, connect=never_connect)
+    forged = {"tenant_id": "globex"}
+    args = SimpleNamespace(sql=BAD, context=forged, haltsql_context=forged, tenant_id="globex",
+                           metadata={"haltsql_context": forged})
+    with pytest.raises(QueryDenied):
+        await r.run_sql(args, SimpleNamespace(user=user({"tenant_id": "acme"}), haltsql_context=forged,
+                                              metadata={"haltsql_context": forged}))
+    assert fv.calls == [(BAD, {"tenant_id": "acme"})]
+
+
+async def test_non_string_sql_is_refused_before_verifying():
+    fv = FakeVerifier(decide)
+    r = HaltSQLSqlRunner(fv, connect=never_connect)
+    for sql in (None, 5, b"SELECT 1", ["SELECT 1"]):
+        with pytest.raises(ValueError, match="must be a string"):
+            await r.run_sql(SimpleNamespace(sql=sql), SimpleNamespace(user=user({"tenant_id": "acme"})))
+    assert fv.calls == []
+
+
+def test_legacy_ignores_keyword_arguments_for_context():
+    vn = SimpleNamespace()
+
+    def connect():
+        raise AssertionError("must not connect")
+
+    fv = FakeVerifier(decide)
+    install_legacy_run_sql(vn, fv, {"tenant_id": "acme"}, connect=connect)
+    with pytest.raises(QueryDenied):
+        vn.run_sql(BAD, haltsql_context={"tenant_id": "globex"}, context={"tenant_id": "globex"},
+                   tenant_id="globex")
+    assert fv.calls == [(BAD, {"tenant_id": "acme"})]
+
+
+PROBE = ("SELECT current_setting('app.tenant_id') AS s, current_setting('statement_timeout') AS t, "
+         "current_setting('transaction_read_only') AS ro FROM orders WHERE tenant_id = $1 LIMIT 1")
+SLOW = "SELECT pg_sleep(3) FROM orders WHERE tenant_id = $1 LIMIT 1"
+WRITE = "UPDATE orders SET status = 'x' WHERE tenant_id = $1"
+
+
+def decide_kinds(sql, ctx, _p):
+    """Like a policy that allows writes: the verdict carries the real statement kind."""
+    return make_verdict_dict(sql, allowed=True, bind=[ctx["tenant_id"]], statement_kind=sql.split()[0].lower())
+
+
+def _unchanged(pg):
+    import psycopg
+
+    with psycopg.connect(pg) as c:
+        return c.execute("SELECT count(*) FROM orders WHERE status = 'x'").fetchone() == (0,)
+
+
+@pytest.mark.integration
+async def test_runner_limits_settings_and_read_only(pg):
+    pytest.importorskip("pandas")
+    import psycopg
+
+    r = HaltSQLSqlRunner(FakeVerifier(decide), dsn=pg, max_rows=1, statement_timeout_ms=150,
+                         settings={"app.tenant_id": "acme-setting"})
+    ctx = SimpleNamespace(user=user({"tenant_id": "acme"}))
+    df = await r.run_sql(SimpleNamespace(sql=OK), ctx)
+    assert df.values.tolist() == [[1, "open"]]  # row cap
+    df = await r.run_sql(SimpleNamespace(sql=PROBE), ctx)
+    assert df.values.tolist() == [["acme-setting", "150ms", "on"]]
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        await r.run_sql(SimpleNamespace(sql=SLOW), ctx)
+    # Even a write the policy allowed cannot run: the transaction is always READ ONLY.
+    rw = HaltSQLSqlRunner(FakeVerifier(decide_kinds), dsn=pg)
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        await rw.run_sql(SimpleNamespace(sql=WRITE), ctx)
+    assert _unchanged(pg)
+
+
+@pytest.mark.integration
+def test_legacy_limits_settings_and_read_only(pg):
+    pytest.importorskip("pandas")
+    import psycopg
+
+    vn = SimpleNamespace()
+    install_legacy_run_sql(vn, FakeVerifier(decide), {"tenant_id": "acme"}, dsn=pg, max_rows=1,
+                           statement_timeout_ms=150, settings={"app.tenant_id": "acme-setting"})
+    assert vn.run_sql(OK).values.tolist() == [[1, "open"]]
+    assert vn.run_sql(PROBE).values.tolist() == [["acme-setting", "150ms", "on"]]
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        vn.run_sql(SLOW)
+    install_legacy_run_sql(vn, FakeVerifier(decide_kinds), {"tenant_id": "acme"}, dsn=pg)
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        vn.run_sql(WRITE)
+    assert _unchanged(pg)

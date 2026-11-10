@@ -75,8 +75,13 @@ def load_tokens_file(path: str) -> List[TokenEntry]:
             raise ConfigError(f"{where}.token_sha256 must be 64 lower-case hex characters")
         if name in names or h in hashes:
             raise ConfigError(f"{where}: duplicate name or token")
+        raw_ctx = t.get("context", {})
+        if not isinstance(raw_ctx, dict):
+            # null, "", [] or 0 here is a mistake (an unset template variable,
+            # say), not a request for an empty context.
+            raise ConfigError(f"{where}.context must be an object")
         try:
-            ctx = validate_context(t.get("context") or {})
+            ctx = validate_context(raw_ctx)
         except ValueError as e:
             raise ConfigError(f"{where}.context: {e}") from None
         names.add(name)

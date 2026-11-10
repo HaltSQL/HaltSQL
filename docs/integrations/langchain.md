@@ -143,7 +143,8 @@ Other failures:
 | `No trusted HaltSQL context is configured for this request; the query was not executed.` | The context callable returned `None`. |
 | `SQL verification is unavailable; the query was not executed.` | The sidecar or CLI failed, timed out, rejected the request, or returned a verdict for a different string, or the context callable raised. |
 | `The query was not executed: <reason>` | The guard refused, for example a statement other than `SELECT` with `read_only=True`, or an unsupported connection. |
-| `Database error: <class>: <first line>` | HaltSQL allowed the query but the database rejected it, or another error occurred. |
+| `Database error: <class>: <first line>` | HaltSQL allowed the query but the database server rejected it (the error has an SQLSTATE). |
+| `Database error: <class>` | HaltSQL allowed the query but the connection failed or another error occurred. The message is withheld because it can name hosts, roles or a connection string. |
 
 The guarded `SQLDatabase` behaves like a normal one:
 
