@@ -13,7 +13,8 @@ generated for this test) with SCRAM, and:
   role logs every statement (log_statement = all, set for that role only) and
   the server log is read back from the Postgres container;
 * rewriting the policy and sending SIGHUP changes what new sessions may do,
-  while a session opened before the reload keeps its snapshot;
+  and a session opened before the reload is ended rather than left on the old
+  policy;
 * `haltsql audit verify` passes on the proxy's audit file, whose records
   match every statement the client sent, and fails once a record is edited.
 
@@ -30,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+import psycopg
 import pytest
 
 from conftest import (
@@ -270,10 +272,12 @@ def test_proxy_enforces_policy_reloads_and_audits(cli: Cli, proxy_bin: Path, pro
     with connect(dsn) as conn:
         assert conn.execute(q_total, ["globex"]).fetchall() == [(1, 1250), (3, 4200)]
         sent.append((pg_text(q_total), True))
-    # A session accepted before the reload keeps the policy it started with.
-    codes = expect_denied(old_session, q_total, ["acme"])
-    assert codes == ["E_COLUMN_DENIED"]
-    sent += [(pg_text(q_total), False), (pg_text(q_probe), True)]
+    # A session accepted before the reload is not left on the old policy: the proxy
+    # ends it (FATAL 57P01, as for an administrator shutdown) so the pool reconnects
+    # under the new one. It never runs another statement.
+    with pytest.raises(psycopg.OperationalError) as ended:
+        old_session.execute(q_total, ["acme"]).fetchall()
+    assert ended.value.sqlstate in (None, "57P01"), ended.value.sqlstate
     old_session.close()
 
     # ---- What Postgres saw ----
@@ -307,9 +311,14 @@ def test_proxy_enforces_policy_reloads_and_audits(cli: Cli, proxy_bin: Path, pro
     lines = audit.read_text().splitlines()
     recs = [json.loads(line) for line in lines]
     stmts = [r for r in recs if r.get("event") == "statement"]
-    assert len(stmts) == len(recs), [r.get("event") for r in recs]
-    assert [(r["sql_sha256"], r["allowed"]) for r in recs] == [
+    execs = [r for r in recs if r.get("event") == "execute"]
+    assert len(stmts) + len(execs) == len(recs), [r.get("event") for r in recs]
+    assert [(r["sql_sha256"], r["allowed"]) for r in stmts] == [
         (sha256_hex(sql), allowed) for sql, allowed in sent]
+    # Every forwarded Execute has its own record, and only allowed statements run.
+    allowed_hashes = {sha256_hex(sql) for sql, allowed in sent if allowed}
+    assert execs and {r["sql_sha256"] for r in execs} <= allowed_hashes, execs
+    assert sha256_hex(pg_text(q_total)) in {r["sql_sha256"] for r in execs}
     assert all(r["user"] == "analyst" and r["policy"] == "proxy-shop" for r in recs)
     assert recs[0]["prev_hash"] == GENESIS
     assert not any("app.orders WHERE" in line for line in lines)  # log_raw_sql is off
@@ -321,17 +330,18 @@ def test_proxy_enforces_policy_reloads_and_audits(cli: Cli, proxy_bin: Path, pro
 
     p = cli.run("audit", "verify", "--json", "--expect-head", recs[-1]["hash"], audit, check=False)
     rep = json.loads(p.stdout)
-    assert p.returncode == 0 and rep["ok"] is True and rep["records"] == len(sent), rep
+    assert p.returncode == 0 and rep["ok"] is True and rep["records"] == len(recs), rep
 
     tampered = list(lines)
-    tampered[1] = tampered[1].replace('"allowed":false', '"allowed":true', 1)
-    assert tampered[1] != lines[1]
+    victim = next(i for i, line in enumerate(lines) if '"allowed":false' in line)
+    tampered[victim] = tampered[victim].replace('"allowed":false', '"allowed":true', 1)
+    assert tampered[victim] != lines[victim]
     bad = tmp_path / "tampered.jsonl"
     bad.write_text("\n".join(tampered) + "\n")
     p = cli.run("audit", "verify", "--json", bad, check=False)
     rep = json.loads(p.stdout)
     assert p.returncode == 1 and rep["first_broken"]["kind"] == "bad_hash", rep
-    assert rep["first_broken"]["line"] == 2
+    assert rep["first_broken"]["line"] == victim + 1
 
     # A restarted proxy continues the file's chain.
     proxy2 = processes.proxy(["run", "--config", str(cfg)], PROXY_PORT, name="haltsql-proxy-2",
@@ -342,5 +352,7 @@ def test_proxy_enforces_policy_reloads_and_audits(cli: Cli, proxy_bin: Path, pro
     proxy2.stop()
     p = cli.run("audit", "verify", "--json", "--strict", audit, check=False)
     rep = json.loads(p.stdout)
-    assert p.returncode == 0 and rep["records"] == len(sent) + 1 and rep["inputs"][0]["chains"] == 1, rep
+    after_restart = len(audit.read_text().splitlines())
+    assert after_restart > len(recs), "the restarted proxy wrote no audit record"
+    assert p.returncode == 0 and rep["records"] == after_restart and rep["inputs"][0]["chains"] == 1, rep
 
