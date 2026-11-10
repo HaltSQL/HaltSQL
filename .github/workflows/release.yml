@@ -238,15 +238,111 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # Each architecture is built, smoke-tested and pushed on a native runner (no
+  # QEMU: the emulated arm64 OCaml build took well over an hour), by digest only,
+  # with its own SBOM and SLSA provenance. The `image` job below merges the two
+  # into one multi-arch index, tags it, signs it and attests it.
+  image-build:
+    name: Container image (${{ matrix.arch }}, native)
+    needs: [meta]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and smoke-test the image before pushing
+        run: |
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load -t haltsql-local:dev \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=image-${{ matrix.arch }}" .
+          docker buildx build --platform "linux/${{ matrix.arch }}" --target scratch --load \
+            -t haltsql-local:scratch \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=image-${{ matrix.arch }}" .
+          docker run -d --name haltsql-release-pg -p 5417:5432 \
+            -e POSTGRES_PASSWORD="ci-${{ github.run_id }}" postgres:17-alpine
+          for _ in $(seq 60); do
+            docker exec haltsql-release-pg pg_isready -U postgres > /dev/null 2>&1 && break
+            sleep 1
+          done
+          # IMAGE is also this job's registry name; the smoke test runs the local build.
+          IMAGE=haltsql-local:dev HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 \
+            SCRATCH_IMAGE=haltsql-local:scratch scripts/docker-smoke.sh
+          docker rm -f haltsql-release-pg
+
+      - name: Build metadata
+        id: buildinfo
+        run: |
+          echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=haltsql
+            org.opencontainers.image.licenses=MIT
+          build-args: |
+            VERSION=${{ env.TAG }}
+            REVISION=${{ steps.buildinfo.outputs.revision }}
+            CREATED=${{ steps.buildinfo.outputs.created }}
+          # SLSA provenance (max) and an SPDX SBOM, kept through the merge below.
+          provenance: mode=max
+          sbom: true
+          cache-from: |
+            type=gha,scope=static-${{ matrix.arch }}
+            type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p digests
+          echo "$DIGEST" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          touch "digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
   image:
-    name: Container image (multi-arch)
-    # After linux-static: its native amd64/arm64 builds fill the static-<arch>
-    # caches with the `builder` stage (the version build args only reach the
-    # `runtime` stage), so the arm64 image here, built under QEMU, is a cache hit
-    # instead of an hours-long emulated OCaml build.
-    needs: [meta, linux-static]
+    name: Container image (multi-arch index, signed)
+    needs: [meta, image-build]
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -254,16 +350,15 @@ jobs:
       attestations: write
     env:
       IMAGE: ${{ needs.meta.outputs.image }}
-      DRY_RUN: ${{ needs.meta.outputs.dry_run }}
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.merge.outputs.digest }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          persist-credentials: false
-          ref: ${{ needs.meta.outputs.ref }}
+          pattern: image-digest-*
+          path: digests
+          merge-multiple: true
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
@@ -284,66 +379,43 @@ jobs:
             type=semver,pattern={{version}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
             type=raw,value=dryrun-${{ github.run_id }},enable=${{ needs.meta.outputs.dry_run == 'true' }}
-          labels: |
-            org.opencontainers.image.title=haltsql
-            org.opencontainers.image.licenses=MIT
 
-      - name: Build and smoke-test the amd64 image before pushing
+      - name: Create the multi-arch index
+        id: merge
+        working-directory: digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
         run: |
-          docker buildx build --platform linux/amd64 --load -t haltsql-local:dev \
-            --cache-from type=gha,scope=static-amd64 --cache-from type=gha .
-          docker buildx build --platform linux/amd64 --target scratch --load \
-            -t haltsql-local:scratch --cache-from type=gha,scope=static-amd64 .
-          docker run -d --name haltsql-release-pg -p 5417:5432 \
-            -e POSTGRES_PASSWORD="ci-${{ github.run_id }}" postgres:17-alpine
-          for _ in $(seq 60); do
-            docker exec haltsql-release-pg pg_isready -U postgres > /dev/null 2>&1 && break
-            sleep 1
+          set -euo pipefail
+          digests=(*)
+          [ "${#digests[@]}" -eq 2 ] || { echo "::error::expected 2 platform digests, got ${digests[*]}"; exit 1; }
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -r '.tags[] | "-t " + .' <<< "$TAGS_JSON") \
+            $(printf "${IMAGE}@sha256:%s " "${digests[@]}")
+          tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${IMAGE}@${digest}"
+          # Both platforms, each with its SBOM and provenance, are in the index.
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .Image}}' \
+              | jq -e --arg p "$platform" 'has($p)' > /dev/null || { echo "::error::$platform missing"; exit 1; }
           done
-          # IMAGE is also this job's registry name; the smoke test runs the local build.
-          IMAGE=haltsql-local:dev HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 \
-            SCRATCH_IMAGE=haltsql-local:scratch scripts/docker-smoke.sh
-          docker rm -f haltsql-release-pg
-
-      - name: Build metadata
-        id: buildinfo
-        run: |
-          echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
-          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ env.TAG }}
-            REVISION=${{ steps.buildinfo.outputs.revision }}
-            CREATED=${{ steps.buildinfo.outputs.created }}
-          # SLSA provenance (max) and an SPDX SBOM are attached to the image
-          # index as in-toto attestations.
-          provenance: mode=max
-          sbom: true
-          cache-from: |
-            type=gha,scope=static-amd64
-            type=gha,scope=static-arm64
-            type=gha
-          cache-to: type=gha,mode=max
+          docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .SBOM}}' | jq -e 'length > 0' > /dev/null
+          docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .Provenance}}' | jq -e 'length > 0' > /dev/null
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign image (keyless)
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: Verify the image signature
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: |
           cosign verify "${IMAGE}@${DIGEST}" \
             --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
@@ -353,7 +425,7 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
           push-to-registry: true
 
   mcp-image:

@@ -1,0 +1,56 @@
+name: Cancel runs of closed pull requests
+
+# When a pull request is merged (or closed without merging), its checks no
+# longer matter: cancel every pull_request run of that PR that is still queued
+# or in progress. The push to main that a merge creates starts its own runs,
+# which are not touched (they are push events, not pull_request events).
+#
+# Runs on `pull_request`, not `pull_request_target`, so it never runs with
+# write access for a fork's PR: for forks the token is read-only and the
+# cancel calls fail harmlessly (the step logs a warning and succeeds).
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cancel:
+    name: Cancel this PR's running checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel queued and in-progress runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR: ${{ github.event.pull_request.number }}
+          SELF: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cancelled=0
+          for status in queued in_progress waiting pending requested; do
+            # Runs of this PR's head branch, from this PR's head repository,
+            # that are pull_request runs; never this run itself.
+            ids=$(gh api --paginate \
+              "repos/$REPO/actions/runs?event=pull_request&status=$status&branch=$BRANCH&per_page=100" \
+              --jq ".workflow_runs[]
+                    | select(.id != $SELF)
+                    | select(.head_repository.full_name == \"$HEAD_REPO\")
+                    | .id")
+            for id in $ids; do
+              if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null 2>&1; then
+                echo "cancelled run $id ($status)"
+                cancelled=$((cancelled + 1))
+              else
+                echo "::warning::could not cancel run $id"
+              fi
+            done
+          done
+          echo "PR #$PR closed: cancelled $cancelled run(s)" | tee -a "$GITHUB_STEP_SUMMARY"
