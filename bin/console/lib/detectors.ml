@@ -17,6 +17,11 @@ type settings = {
   opa_min : int;  (** E_EXTERNAL_POLICY denials in the window *)
   shadow_min : int;  (** shadow-denied records in 24 h per policy *)
   new_caller_hours : float;
+  interval : float;  (** seconds between detector passes *)
+  resolve_after : float;  (** seconds a cleared condition takes to auto-resolve *)
+  forget_after : float;  (** seconds after which a resolved signal leaves memory *)
+  max_reverify : int;  (** cross_tenant: statements re-verified per signal and pass *)
+  notify_timeout : float;  (** seconds per Slack/PagerDuty request *)
 }
 
 let defaults =
@@ -31,16 +36,24 @@ let defaults =
     opa_min = 10;
     shadow_min = 1;
     new_caller_hours = 24.;
+    interval = 30.;
+    resolve_after = 1800.;
+    forget_after = 7. *. 86400.;
+    max_reverify = 500;
+    notify_timeout = 5.;
   }
 
 let num = function `Int i -> Some (float_of_int i) | `Float f -> Some f | _ -> None
 
+(* Ranges are enforced at config load (Console_config checks every key of [signals]);
+   this only reads the values. *)
 let settings_of_json (j : Yojson.Safe.t) =
   let get sect key =
     Option.bind (Api.member sect j) (Api.member key) |> Fun.flip Option.bind num
   in
   let f sect key d = Option.value (get sect key) ~default:d in
   let i sect key d = match get sect key with Some x -> int_of_float x | None -> d in
+  let top key d = Option.value (Option.bind (Api.member key j) num) ~default:d in
   let m = defaults in
   {
     ct_window = 60. *. f "cross_tenant" "window_minutes" (m.ct_window /. 60.);
@@ -53,16 +66,68 @@ let settings_of_json (j : Yojson.Safe.t) =
     opa_min = max 1 (i "opa_errors" "min_records" m.opa_min);
     shadow_min = max 1 (i "shadow_ready" "min_records" m.shadow_min);
     new_caller_hours = f "new_caller" "hours" m.new_caller_hours;
+    interval = top "interval_seconds" m.interval;
+    resolve_after = 60. *. top "resolve_after_minutes" (m.resolve_after /. 60.);
+    forget_after = 86400. *. top "forget_after_days" (m.forget_after /. 86400.);
+    max_reverify = int_of_float (top "max_reverify" (float_of_int m.max_reverify));
+    notify_timeout = top "notify_timeout_seconds" m.notify_timeout;
   }
 
 (* ---- detections ---- *)
 
+type kind =
+  | Cross_tenant
+  | Deny_spike
+  | Opa_errors
+  | Sink_buffering
+  | Restart_pending
+  | Bundle_drift
+  | Chain_broken
+  | New_caller
+  | Shadow_ready
+
+let all_kinds =
+  [
+    Cross_tenant;
+    Deny_spike;
+    Opa_errors;
+    Sink_buffering;
+    Restart_pending;
+    Bundle_drift;
+    Chain_broken;
+    New_caller;
+    Shadow_ready;
+  ]
+
+let kind_to_string = function
+  | Cross_tenant -> "cross_tenant"
+  | Deny_spike -> "deny_spike"
+  | Opa_errors -> "opa_errors"
+  | Sink_buffering -> "sink_buffering"
+  | Restart_pending -> "restart_pending"
+  | Bundle_drift -> "bundle_drift"
+  | Chain_broken -> "chain_broken"
+  | New_caller -> "new_caller"
+  | Shadow_ready -> "shadow_ready"
+
+let kind_of_string s = List.find_opt (fun k -> kind_to_string k = s) all_kinds
+
+type severity = High | Medium | Low
+
+let severity_to_string = function High -> "high" | Medium -> "medium" | Low -> "low"
+
+let severity_of_string = function
+  | "high" -> Some High
+  | "medium" -> Some Medium
+  | "low" -> Some Low
+  | _ -> None
+
 type detection = {
-  kind : string;
+  kind : kind;
   subject : string;  (** what the signal is about: caller, policy, verifier, source *)
   slug : string;  (** id-safe form of the subject *)
   bucket : float;  (** start of the window bucket the episode began in *)
-  severity : string;  (** high | medium | low *)
+  severity : severity;
   title : string;
   body : string;
   first_seen : float;
@@ -76,14 +141,14 @@ type detection = {
   facts : Yojson.Safe.t;
 }
 
-let severity_rank = function "high" -> 3 | "medium" -> 2 | "low" -> 1 | _ -> 0
+let severity_rank = function High -> 3 | Medium -> 2 | Low -> 1
 
 let stamp t =
   let tm = Unix.gmtime t in
   Printf.sprintf "%04d%02d%02dT%02d%02d" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min
 
-let id d = Printf.sprintf "sig_%s_%s_%s" d.kind d.slug (stamp d.bucket)
+let id d = Printf.sprintf "sig_%s_%s_%s" (kind_to_string d.kind) d.slug (stamp d.bucket)
 
 let slug s =
   let b = Buffer.create (String.length s) in
@@ -105,6 +170,55 @@ let slug s =
   else (if r = "" then "x" else r) ^ "-" ^ String.sub (Haltsql.sha256_hex s) 0 6
 
 let floor_to w t = if w <= 0. then t else Float.of_int (int_of_float (t /. w)) *. w
+
+(* ---- bucketed series (Overview and signal timelines) ---- *)
+
+(** Upper bound on the buckets of one series: wider ranges get wider buckets. *)
+let max_buckets = 2000
+
+(** [bucket] seconds, widened to a whole multiple of itself when [since..until] would need
+    more than {!max_buckets} buckets. *)
+let fit_bucket ~since ~until bucket =
+  let bucket = max 1 bucket in
+  let span = Float.max 0. (until -. since) in
+  let need = Float.ceil (span /. float_of_int max_buckets) in
+  if need <= float_of_int bucket then bucket
+  else
+    let k = Float.ceil (need /. float_of_int bucket) in
+    if k *. float_of_int bucket >= float_of_int max_int then max_int
+    else int_of_float k * bucket
+
+(** Allowed, denied and shadow-denied counts per bucket from [floor_to bucket since] to
+    [until]. Returns the bucket width used (see {!fit_bucket}) and the series. *)
+let series (entries : Index.entry list) ~since ~until ~bucket =
+  let bucket = fit_bucket ~since ~until bucket in
+  let w = float_of_int bucket in
+  let start = floor_to w since in
+  let nb = max 1 (int_of_float (Float.ceil ((until -. start) /. w))) in
+  let a = Array.make nb (0, 0, 0) in
+  List.iter
+    (fun (e : Index.entry) ->
+      let i = int_of_float ((e.ts -. start) /. w) in
+      if i >= 0 && i < nb then
+        let x, y, z = a.(i) in
+        a.(i) <-
+          (match e.record.outcome with
+          | R.Allowed -> (x + 1, y, z)
+          | R.Denied -> (x, y + 1, z)
+          | R.Shadow_denied -> (x, y, z + 1)))
+    entries;
+  ( bucket,
+    Array.to_list
+      (Array.mapi
+         (fun i (x, y, z) ->
+           `Assoc
+             [
+               ("start", `String (Api.iso8601 (start +. (float_of_int i *. w))));
+               ("allowed", `Int x);
+               ("denied", `Int y);
+               ("shadow_denied", `Int z);
+             ])
+         a) )
 
 (* ---- helpers ---- *)
 
@@ -183,6 +297,24 @@ let jstr k j = match mem k j with Some (`String s) -> Some s | _ -> None
 let jbool k j = match mem k j with Some (`Bool b) -> b | _ -> false
 let jint k j = match mem k j with Some (`Int i) -> Some i | _ -> None
 let jlist k j = match mem k j with Some (`List l) -> l | _ -> []
+
+(* Fleet predicates shared by the detectors and Overview's posture checks. *)
+
+let bundle_source b = Option.value (jstr "source" b) ~default:"(bundle)"
+let bundle_versions bs = List.sort_uniq compare (List.filter_map (jstr "version") bs)
+
+(** Bundles of one source drift when verifiers report different versions or any reports
+    [in_sync: false]. *)
+let bundles_drift bs =
+  List.length (bundle_versions bs) > 1
+  || List.exists (fun b -> mem "in_sync" b = Some (`Bool false)) bs
+
+(** [(source, bundles)] for every source whose bundles drift. *)
+let drifting_bundles bundles =
+  group_by bundle_source bundles |> List.filter (fun (_, bs) -> bundles_drift bs)
+
+let verifier_restart_pending v =
+  jbool "restart_pending" v || jstr "state" v = Some "restart_pending"
 
 let render (j : Yojson.Safe.t) =
   match j with
@@ -264,8 +396,6 @@ let tenant_literals (policy : Haltsql.Policy.t) sql =
           else None)
         (v.reasons @ v.shadow_reasons)
 
-let max_reverify = 500
-
 (* ---- inputs ---- *)
 
 type input = {
@@ -277,7 +407,72 @@ type input = {
   agents : Console_config.agent list;
   policies : (string * Haltsql.Policy.t) list;
   opa_error_delta : int option;  (** OPA errors counted by the fleet in the OPA window *)
+  by_caller : (string, Index.entry list) Hashtbl.t;
+      (** [recent] grouped by caller (oldest first), built once per pass *)
+  caller_first_seen : (string, float) Hashtbl.t;
+      (** earliest record per caller in the index, maintained by {!track_first_seen} *)
+  reverify_cache : (string, (string * string list) list) Hashtbl.t;
+      (** {!tenant_literals} results by request id and policy, kept across passes *)
 }
+
+let group_by_caller (recent : Index.entry list) =
+  let tbl = Hashtbl.create 64 in
+  List.iter
+    (fun (e : Index.entry) ->
+      let c = e.record.caller in
+      Hashtbl.replace tbl c (e :: Option.value (Hashtbl.find_opt tbl c) ~default:[]))
+    (List.rev recent);
+  tbl
+
+let make_input ?(caller_first_seen = Hashtbl.create 0)
+    ?(reverify_cache = Hashtbl.create 0) ~now ~recent ~index ~fleet ~chain_status ~agents
+    ~policies ~opa_error_delta () =
+  {
+    now;
+    recent;
+    index;
+    fleet;
+    chain_status;
+    agents;
+    policies;
+    opa_error_delta;
+    by_caller = group_by_caller recent;
+    caller_first_seen;
+    reverify_cache;
+  }
+
+let of_caller inp caller =
+  Option.value (Hashtbl.find_opt inp.by_caller caller) ~default:[]
+
+(** Updates [tbl] (caller -> earliest [ts]) from [entries]. *)
+let track_first_seen tbl entries =
+  List.iter
+    (fun (e : Index.entry) ->
+      match Hashtbl.find_opt tbl e.record.caller with
+      | Some t when t <= e.ts -> ()
+      | _ -> Hashtbl.replace tbl e.record.caller e.ts)
+    entries
+
+(** Cached {!tenant_literals} of one record (by request id, verifier and policy). *)
+let reverify inp (e : Index.entry) =
+  match (Index.raw_sql e, List.assoc_opt e.record.policy inp.policies) with
+  | Some sql, Some p -> (
+      let key =
+        String.concat "\000"
+          [
+            e.request_id;
+            e.verifier;
+            e.record.policy;
+            Option.value e.record.policy_version ~default:"";
+          ]
+      in
+      match Hashtbl.find_opt inp.reverify_cache key with
+      | Some r -> r
+      | None ->
+          let r = tenant_literals p sql in
+          Hashtbl.replace inp.reverify_cache key r;
+          r)
+  | _ -> []
 
 let base ~kind ~subject ~slug_of ~bucket ~severity ~title ~body ~first_seen ~last_seen
     ~link_kind ~link_target ~facts =
@@ -322,18 +517,13 @@ let cross_tenant s inp =
       else
         let first, last = span es in
         let name = who inp.agents caller in
-        let reverify (e : Index.entry) =
-          match (Index.raw_sql e, List.assoc_opt e.record.policy inp.policies) with
-          | Some sql, Some p -> tenant_literals p sql
-          | _ -> []
-        in
+        let reverify = reverify inp in
         let take n l = List.filteri (fun i _ -> i < n) l in
-        let foreign = List.concat_map reverify (take max_reverify es) in
+        let foreign = List.concat_map reverify (take s.max_reverify es) in
         let own =
           List.filter
-            (fun (e : Index.entry) ->
-              e.record.caller = caller && e.record.outcome = R.Allowed)
-            inp.recent
+            (fun (e : Index.entry) -> e.record.outcome = R.Allowed)
+            (of_caller inp caller)
           |> List.rev |> take 200 |> List.concat_map reverify |> List.concat_map snd
         in
         let column = Option.map fst (List.nth_opt foreign 0) in
@@ -379,8 +569,8 @@ let cross_tenant s inp =
           Option.map (fun (e : Index.entry) -> e.verifier) (List.nth_opt (List.rev es) 0)
         in
         let d =
-          base ~kind:"cross_tenant" ~subject:caller ~slug_of:name
-            ~bucket:(floor_to s.ct_window first) ~severity:"high"
+          base ~kind:Cross_tenant ~subject:caller ~slug_of:name
+            ~bucket:(floor_to s.ct_window first) ~severity:High
             ~title:(name ^ " is filtering on other tenants")
             ~body:(lead ^ tail) ~first_seen:first ~last_seen:last
             ~link_kind:"investigation" ~link_target:"" (* filled with the id by Signals *)
@@ -412,8 +602,8 @@ let deny_spike s inp =
       else
         let base_es =
           List.filter
-            (fun (e : Index.entry) -> e.record.caller = caller && e.ts >= b0 && e.ts < w0)
-            inp.recent
+            (fun (e : Index.entry) -> e.ts >= b0 && e.ts < w0)
+            (of_caller inp caller)
         in
         let b = List.length base_es in
         let bd = List.length (List.filter is_denied base_es) in
@@ -440,8 +630,8 @@ let deny_spike s inp =
           in
           let policy, policy_version = latest_policy ws in
           let d =
-            base ~kind:"deny_spike" ~subject:caller ~slug_of:name
-              ~bucket:(floor_to s.ds_window first) ~severity:"medium"
+            base ~kind:Deny_spike ~subject:caller ~slug_of:name
+              ~bucket:(floor_to s.ds_window first) ~severity:Medium
               ~title:(name ^ " is being denied far more than usual")
               ~body ~first_seen:first ~last_seen:last ~link_kind:"agent" ~link_target:name
               ~facts:
@@ -493,8 +683,8 @@ let opa_errors s inp =
     in
     let first, last = if hits = [] then (inp.now, inp.now) else span hits in
     [
-      base ~kind:"opa_errors" ~subject:"opa" ~slug_of:"opa"
-        ~bucket:(floor_to s.opa_window first) ~severity:"medium"
+      base ~kind:Opa_errors ~subject:"opa" ~slug_of:"opa"
+        ~bucket:(floor_to s.opa_window first) ~severity:Medium
         ~title:"The external policy engine is denying or failing queries"
         ~body:(String.concat " " parts) ~first_seen:first ~last_seen:last
         ~link_kind:"fleet" ~link_target:"opa"
@@ -542,8 +732,8 @@ let sink_buffering _s inp =
                 (match sinks with [] -> "one of its sinks" | l -> String.concat ", " l)
             in
             let d =
-              base ~kind:"sink_buffering" ~subject:name ~slug_of:name
-                ~bucket:(floor_to hour inp.now) ~severity:"medium"
+              base ~kind:Sink_buffering ~subject:name ~slug_of:name
+                ~bucket:(floor_to hour inp.now) ~severity:Medium
                 ~title:(name ^ " is buffering audit records")
                 ~body ~first_seen:inp.now ~last_seen:inp.now ~link_kind:"fleet"
                 ~link_target:name
@@ -556,11 +746,10 @@ let restart_pending _s inp =
   List.filter_map
     (fun v ->
       match jstr "name" v with
-      | Some name
-        when jbool "restart_pending" v || jstr "state" v = Some "restart_pending" ->
+      | Some name when verifier_restart_pending v ->
           let d =
-            base ~kind:"restart_pending" ~subject:name ~slug_of:name
-              ~bucket:(floor_to hour inp.now) ~severity:"medium"
+            base ~kind:Restart_pending ~subject:name ~slug_of:name
+              ~bucket:(floor_to hour inp.now) ~severity:Medium
               ~title:(name ^ " needs a restart to apply its audit settings")
               ~body:
                 (name
@@ -576,33 +765,29 @@ let restart_pending _s inp =
 
 let bundle_drift _s inp =
   let bundles = match inp.fleet with Some f -> jlist "bundles" f | None -> [] in
-  group_by (fun b -> Option.value (jstr "source" b) ~default:"(bundle)") bundles
-  |> List.filter_map (fun (source, bs) ->
-      let versions = List.sort_uniq compare (List.filter_map (jstr "version") bs) in
-      let out_of_sync = List.exists (fun b -> mem "in_sync" b = Some (`Bool false)) bs in
-      if List.length versions <= 1 && not out_of_sync then None
-      else
-        let per =
-          List.map
-            (fun b ->
-              Printf.sprintf "%s (%s)"
-                (Option.value (jstr "version" b) ~default:"unknown")
-                (plural
-                   (Option.value (jint "verifiers" b) ~default:0)
-                   "verifier" "verifiers"))
-            bs
-        in
-        Some
-          (base ~kind:"bundle_drift" ~subject:source ~slug_of:source
-             ~bucket:(floor_to hour inp.now) ~severity:"medium"
-             ~title:("Verifiers serve different versions of " ^ source)
-             ~body:
-               (Printf.sprintf
-                  "Verifiers loading %s do not agree on the bundle: %s. Some agents are \
-                   checked against a different policy than others."
-                  source (String.concat ", " per))
-             ~first_seen:inp.now ~last_seen:inp.now ~link_kind:"fleet" ~link_target:source
-             ~facts:(`Assoc [ ("versions", Api.strings versions) ])))
+  drifting_bundles bundles
+  |> List.map (fun (source, bs) ->
+      let versions = bundle_versions bs in
+      let per =
+        List.map
+          (fun b ->
+            Printf.sprintf "%s (%s)"
+              (Option.value (jstr "version" b) ~default:"unknown")
+              (plural
+                 (Option.value (jint "verifiers" b) ~default:0)
+                 "verifier" "verifiers"))
+          bs
+      in
+      base ~kind:Bundle_drift ~subject:source ~slug_of:source
+        ~bucket:(floor_to hour inp.now) ~severity:Medium
+        ~title:("Verifiers serve different versions of " ^ source)
+        ~body:
+          (Printf.sprintf
+             "Verifiers loading %s do not agree on the bundle: %s. Some agents are \
+              checked against a different policy than others."
+             source (String.concat ", " per))
+        ~first_seen:inp.now ~last_seen:inp.now ~link_kind:"fleet" ~link_target:source
+        ~facts:(`Assoc [ ("versions", Api.strings versions) ]))
 
 let chain_broken _s inp =
   let checked = Option.bind (jstr "checked_at" inp.chain_status) Api.parse_time in
@@ -614,8 +799,8 @@ let chain_broken _s inp =
           let brk = Option.map render (mem "first_break" c) in
           let records = jint "records" c in
           let d =
-            base ~kind:"chain_broken" ~subject:v ~slug_of:v ~bucket:(floor_to hour at)
-              ~severity:"high"
+            base ~kind:Chain_broken ~subject:v ~slug_of:v ~bucket:(floor_to hour at)
+              ~severity:High
               ~title:("The audit hash chain from " ^ v ^ " is broken")
               ~body:
                 (Printf.sprintf
@@ -642,34 +827,29 @@ let chain_broken _s inp =
 (* ---- new_caller ---- *)
 
 (* Only meaningful once the index reaches back further than the look-back: right after
-   start-up every caller would look new. *)
+   start-up every caller would look new. First-seen times come from
+   [inp.caller_first_seen], which Signals maintains incrementally instead of scanning the
+   whole index every pass. *)
 let new_caller s inp =
   let horizon = inp.now -. (s.new_caller_hours *. 3600.) in
   match Index.oldest inp.index with
   | Some o when o < horizon ->
-      let first_seen = Hashtbl.create 64 in
-      Index.iter inp.index (fun e ->
-          match Hashtbl.find_opt first_seen e.record.caller with
-          | Some t when t <= e.ts -> ()
-          | _ -> Hashtbl.replace first_seen e.record.caller e.ts);
       Hashtbl.fold
         (fun caller t acc ->
           if t >= horizon && agent_for inp.agents caller = None then (caller, t) :: acc
           else acc)
-        first_seen []
+        inp.caller_first_seen []
       |> List.sort compare
       |> List.map (fun (caller, t) ->
           let es =
-            List.filter
-              (fun (e : Index.entry) -> e.record.caller = caller && e.ts >= t)
-              inp.recent
+            List.filter (fun (e : Index.entry) -> e.ts >= t) (of_caller inp caller)
           in
           let n = List.length es and denied = List.length (List.filter is_denied es) in
           let _, last = if es = [] then (t, t) else span es in
           let policy, policy_version = latest_policy es in
           let d =
-            base ~kind:"new_caller" ~subject:caller ~slug_of:caller
-              ~bucket:(floor_to hour t) ~severity:"low" ~title:("New caller: " ^ caller)
+            base ~kind:New_caller ~subject:caller ~slug_of:caller
+              ~bucket:(floor_to hour t) ~severity:Low ~title:("New caller: " ^ caller)
               ~body:
                 (Printf.sprintf
                    "%s first appeared at %s and is not listed under agents in the \
@@ -705,8 +885,8 @@ let shadow_ready s inp =
         in
         let _, policy_version = latest_policy es in
         let d =
-          base ~kind:"shadow_ready" ~subject:policy ~slug_of:policy
-            ~bucket:(floor_to 86400. first) ~severity:"low"
+          base ~kind:Shadow_ready ~subject:policy ~slug_of:policy
+            ~bucket:(floor_to 86400. first) ~severity:Low
             ~title:
               (Printf.sprintf "%s: %s to review" policy
                  (plural n "shadow denial" "shadow denials"))
@@ -746,18 +926,31 @@ let detectors =
 
 let run s inp = List.concat_map (fun f -> f s inp) detectors
 
+(** {!run}, yielding to the Lwt loop before each detector so HTTP requests (and /healthz)
+    are served between them. *)
+let run_lwt s inp =
+  let open Lwt.Syntax in
+  let+ parts =
+    Lwt_list.map_s
+      (fun f ->
+        let+ () = Lwt.pause () in
+        f s inp)
+      detectors
+  in
+  List.concat parts
+
 let longest_window s =
   List.fold_left Float.max 0. [ s.ct_window; s.ds_window; s.opa_window ]
 
 (** Which records a signal of [kind] is about (for its investigation). *)
 let relevant kind (e : Index.entry) =
   match kind with
-  | "cross_tenant" -> has_code "E_TENANT_MISMATCH" e
-  | "deny_spike" -> is_denied e
-  | "opa_errors" -> is_denied e && has_code "E_EXTERNAL_POLICY" e
-  | "new_caller" -> true
-  | "shadow_ready" -> is_shadow e
-  | _ -> false
+  | Cross_tenant -> has_code "E_TENANT_MISMATCH" e
+  | Deny_spike -> is_denied e
+  | Opa_errors -> is_denied e && has_code "E_EXTERNAL_POLICY" e
+  | New_caller -> true
+  | Shadow_ready -> is_shadow e
+  | Sink_buffering | Restart_pending | Bundle_drift | Chain_broken -> false
 
 (** OPA errors and timeouts the fleet has counted so far: [opa.decisions.error_denied],
     else the sum of every verifier's [opa.timeouts]. *)

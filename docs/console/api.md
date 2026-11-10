@@ -170,7 +170,9 @@ role, for display only.
 
 `denied` counts every enforce denial (HaltSQL or OPA); `denied_by_opa` is the
 subset whose codes include `E_EXTERNAL_POLICY`. `p99_ms` comes from the
-records' `elapsed_us` (null when no record carries it).
+records' `elapsed_us` (null when no record carries it). `series` never has more
+than 2000 buckets: for a wide explicit range `bucket_seconds` grows to a
+multiple of the usual bucket.
 
 Posture checks: `bundle_in_sync` (every verifier serves the same signed bundle
 version), `audit_chains` (last chain verification result), `pii_exposure` (no
@@ -180,8 +182,9 @@ tagged column allowed without an approved exception), `in_process_agents`
 
 ### Signals
 
-`GET /api/v1/signals?status=open|all` returns `{ "signals": [Signal] }`, newest
-and most severe first.
+`GET /api/v1/signals?status=open|all&limit=&cursor=` returns
+`{ "signals": [Signal], "next_cursor": "..." | null }`, most severe and newest
+first (signals known only from their stored snapshot are included).
 
 ```json
 {
@@ -215,20 +218,32 @@ and most severe first.
 }
 ```
 
-`timeline.series` items also carry `shadow_denied`. `shapes` group the signal's
-records by fingerprint; `example_shape` is the raw SQL with literals replaced by
-`?` when the producer logged SQL, else the fingerprint. Viewing a signal's
-investigation is written to the activity log (`signal.view`).
+`timeline.series` items also carry `shadow_denied`; the investigation covers at
+most the 24 hours before the signal's `last_seen` (plus 15 minutes either side)
+and its timeline at most 2000 buckets. `shapes` group the signal's records by
+fingerprint; `example_shape` is the raw SQL with every literal (any quoting,
+including `$$...$$`, `E'...'` and `U&'...'`, and numbers) replaced by `?` and
+comments dropped, when the producer logged SQL and the shape can be derived
+safely (the statement parses and the shape keeps its libpg_query fingerprint);
+otherwise it is the fingerprint. Viewing a signal's investigation is written to
+the activity log (`signal.view`). A signal no longer in memory (after a restart,
+or a week after it cleared) is served from the snapshot stored with its
+workflow, in the same shape.
 
 `POST /api/v1/signals/{id}` with `{ "status": "investigating", "assignee": "dana.reyes@acme.com" }`
 (either field; `assignee: null` clears it) updates workflow state. Needs
-`write_cases`. `acknowledged` is for low signals (`400` otherwise). Returns the
-signal.
+`write_cases` (checked before the body is read, so a caller without it gets
+`403` even for a malformed body). `acknowledged` is for low signals (`400`
+otherwise). Returns the signal.
 
 A signal's id is its kind, subject and the start of the window bucket the
 episode began in; re-detections update the same signal. A signal whose
-condition has cleared for 30 minutes becomes `resolved` unless someone set its
-status.
+condition has cleared for 30 minutes (`signals.resolve_after_minutes`) becomes
+`resolved` unless someone set its status. If the condition comes back after
+that, it is a new signal (a new id, suffixed `_2`, `_3`, ... when the bucket is
+the same) and is notified again, even if the old one had an assignee or a case;
+a signal whose status a person set (other than `resolved`) keeps absorbing
+recurrences.
 
 The `cross_tenant` signal needs the tenant values a query compared against.
 Records only carry codes, so the detector counts `E_TENANT_MISMATCH` records
@@ -335,7 +350,7 @@ posture check and the `chain_broken` signal.
 
 | | |
 |---|---|
-| `GET /api/v1/cases?status=open\|all&assignee=me` | `{ "cases": [Case] }` |
+| `GET /api/v1/cases?status=open\|all&assignee=me&limit=&cursor=` | `{ "cases": [Case], "next_cursor" }`, newest first |
 | `POST /api/v1/cases` | `{ "title", "signal_id"?, "request_ids"?: [], "assignee"? }` → `201 Case` |
 | `GET /api/v1/cases/{id}` | `Case` |
 | `PATCH /api/v1/cases/{id}` | `{ "title"?, "status"?, "assignee"?, "note"? }` |
@@ -355,7 +370,11 @@ created with `signal_id` links both ways (the signal gets `case_id`), adds the
 signal's request ids, and for `cross_tenant` signals starts with default steps;
 an unknown signal is `400`, a signal already linked to a case `409`. `{n}` in
 `/steps/{n}` is the step's 0-based index. A resolved case only accepts
-`PATCH { "status": "open" }` (reopen); other changes are `409 CONFLICT`. When
+`PATCH { "status": "open" }` (reopen); other changes are `409 CONFLICT`.
+Limits (`400` when exceeded): 1000 request ids per request, 10000 per case,
+200 bytes per request id, 500 bytes per title, 320 per assignee, 10000 per note
+and 500 notes per case. Mutations check `write_cases` before reading the body.
+When
 `integrations.jira` is set the case also has `"jira": { "key", "url" }` (or
 `null` if the issue could not be created).
 
