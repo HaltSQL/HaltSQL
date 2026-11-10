@@ -421,7 +421,8 @@ jobs:
           ls -la npm-out
           tgz=(npm-out/*.tgz)
           [ "${#tgz[@]}" -eq 3 ] || { echo "expected 3 platform packages"; exit 1; }
-          for t in npm-out/*.tgz; do npm publish --dry-run --access public "$t"; done
+          # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
+          for t in ./npm-out/*.tgz; do npm publish --dry-run --access public "$t"; done
       - name: npm publish --dry-run (@haltsql/client)
         working-directory: clients/typescript
         run: |
@@ -505,7 +506,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for t in npm-out/*.tgz; do npm publish --provenance --access public "$t"; done
+          # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
+          for t in ./npm-out/*.tgz; do npm publish --provenance --access public "$t"; done
       - name: Publish @haltsql/client
         working-directory: clients/typescript
         env:
