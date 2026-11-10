@@ -1507,6 +1507,36 @@ let test_pg_pull () =
   let code, _, _ = haltsql [ "lint-policy"; policy ] in
   Alcotest.(check int) "lint" 0 code
 
+(* schema check against the live lab schema: the lab policy matches it; a policy naming
+   the same policy against a database without its tables does not. *)
+let test_pg_schema_check () =
+  require_pg ();
+  Lazy.force setup_db;
+  let field kvs k =
+    match List.assoc_opt k kvs with Some (`Int n) -> Some n | _ -> None
+  in
+  let policy = "../../lab/policies/saas_shared.yaml" in
+  let code, stdout, err =
+    cli [ "schema"; "check"; "-p"; policy; "--dsn"; db_dsn_s (); "--json" ]
+  in
+  Alcotest.(check int) ("matching policy; stderr: " ^ err) 0 code;
+  (match Yojson.Safe.from_string stdout with
+  | `Assoc kvs -> Alcotest.(check (option int)) "no errors" (Some 0) (field kvs "errors")
+  | _ -> Alcotest.fail "summary");
+  (* The same policy against a database that does not have its tables. *)
+  let code, stdout, _ =
+    cli [ "schema"; "check"; "-p"; policy; "--dsn"; admin_dsn_s; "--json" ]
+  in
+  Alcotest.(check int) "drifted policy exits 1" 1 code;
+  Alcotest.(check bool)
+    "names the missing tables" true
+    (let needle = "E_DRIFT_TABLE_MISSING" in
+     let n = String.length needle in
+     let rec go i =
+       i + n <= String.length stdout && (String.sub stdout i n = needle || go (i + 1))
+     in
+     go 0)
+
 let test_pg_cli_pull () =
   require_pg ();
   Lazy.force setup_db;
@@ -1680,6 +1710,7 @@ let () =
             ] );
           ( "postgres",
             [
+              tc "schema check" test_pg_schema_check;
               tc "pull" test_pg_pull;
               tc "cli pull" test_pg_cli_pull;
               tc "auth failures" test_pg_auth_failures;

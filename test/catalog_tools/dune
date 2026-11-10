@@ -38,7 +38,8 @@
  (libraries haltsql haltsql.catalog_tools alcotest lwt lwt.unix yojson unix)
  (deps
   (source_tree %{project_root}/examples/metadata)
-  %{project_root}/lab/schemas/saas_shared.sql)
+  %{project_root}/lab/schemas/saas_shared.sql
+  %{project_root}/lab/policies/saas_shared.yaml)
  (action
   (setenv
    SCHEMA_CLI
@@ -47,3 +48,9 @@
     HALTSQL_BIN
     %{dep:../../bin/haltsql/main.exe}
     (run %{test})))))
+
+(test
+ (name test_policy_drift)
+ (modules test_policy_drift)
+ (package haltsql)
+ (libraries haltsql haltsql.catalog_tools haltsql.load alcotest))

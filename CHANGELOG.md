@@ -29,6 +29,11 @@ even before 1.0.
   `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
   resolve to a different table than the one the policy lists. The TypeScript, Go and Java
   verdict types expose the field; their guards do not change session settings.
+- **`haltsql schema check`** compares a policy with the live database (or a
+  `schema pull` snapshot) and fails on drift: a `catalog:` entry that no longer
+  matches the table (a new column would be read by `SELECT *` unchecked),
+  missing tables or columns, a relation earlier in `search_path` that captures
+  an unqualified name, and policy tables that are views.
 - `haltsql lint-policy` warns (`W_NO_CATALOG`) when a policy has no catalog
   snapshot.
 - `haltsql-server` logs a warning at start and on reload for every static token
