@@ -86,11 +86,11 @@ These are not configured yet. Each is a setting only a maintainer can create.
 | What | Where | Settings |
 |---|---|---|
 | PyPI trusted publisher for `haltsql` | pypi.org, "Publishing" (pending publisher, the project does not exist yet) | Owner `HaltSQL`, repository `HaltSQL`, workflow `native-packages.yml`, environment `pypi` |
-| PyPI trusted publisher for `haltsql-mcp` | pypi.org, same | Same as above |
+| PyPI trusted publisher for `haltsql-mcp` | pypi.org, same | Same, but environment `pypi-mcp`. PyPI refuses two pending publishers with the same repository, workflow and environment, so each project has its own environment and publish job |
 | `NPM_TOKEN` secret | Repository or `npm` environment secret | An npm automation (or granular) token with publish rights to the `@haltsql` scope; the scope must exist on npm |
-| `pypi` and `npm` environments | Repository settings, Environments | Add required reviewers so a tag alone cannot publish |
+| `pypi`, `pypi-mcp` and `npm` environments | Repository settings, Environments | Add required reviewers so a tag alone cannot publish |
 | GHCR package visibility | Organisation packages, after the first real run | Make `haltsql`, `haltsql-mcp` and `charts/haltsql` public; new packages are created private |
-| Optional: TestPyPI | test.pypi.org trusted publishers for `haltsql` and `haltsql-mcp` (workflow `native-packages.yml`, environment `testpypi`), then repository variable `TESTPYPI_PUBLISH=true` | TestPyPI accepts each version once; rc runs re-uploading `X.Y.Z` are skipped |
+| Optional: TestPyPI | test.pypi.org trusted publishers for `haltsql` (workflow `native-packages.yml`, environment `testpypi`) and `haltsql-mcp` (environment `testpypi-mcp`), then repository variable `TESTPYPI_PUBLISH=true` | TestPyPI accepts each version once; rc runs re-uploading `X.Y.Z` are skipped |
 
 Not published by any workflow: the Java SDK (Maven Central needs a Sonatype
 account, a verified `com.haltsql` namespace and a GPG signing key) and the
@@ -102,6 +102,6 @@ Kubernetes operator image.
    the release notes are taken from that section.
 2. Run a dry run on the release commit and check `verify` is green.
 3. Push the signed tags `vX.Y.Z` and `clients/go/haltsql/vX.Y.Z`.
-4. Approve the `pypi` and `npm` environment deployments.
+4. Approve the `pypi`, `pypi-mcp` and `npm` environment deployments.
 5. Make new GHCR packages public, then run
    `scripts/verify-release.sh vX.Y.Z` from a clean machine.

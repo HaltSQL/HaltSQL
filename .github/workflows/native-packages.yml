@@ -5,11 +5,11 @@ name: Native packages (wheels, npm)
 # would install them, and publishes them on release tags.
 #
 # Publishing follows release.yml's real/dry-run split:
-#   vX.Y.Z tag          publish-pypi (haltsql + haltsql-mcp) and publish-npm
+#   vX.Y.Z tag          publish-pypi (haltsql), publish-pypi-mcp, publish-npm
 #   vX.Y.Z-rc.N tag,    publish-dry-run: twine check --strict and npm publish --dry-run
 #   or a manual run     on the exact files; plus publish-testpypi when the repository
-#   with dry_run=true   variable TESTPYPI_PUBLISH is "true" (needs a TestPyPI trusted
-#                       publisher, see docs/operations/releasing.md)
+#   with dry_run=true   variable TESTPYPI_PUBLISH is "true" (needs TestPyPI trusted
+#                       publishers, see docs/operations/releasing.md)
 #
 #   artifact            Linux (x86_64, aarch64)                 macOS arm64
 #   libhaltsql.so       manylinux_2_28 container (glibc 2.28)   macos-15, deployment target 11.0
@@ -431,11 +431,11 @@ jobs:
           npm publish --dry-run --access public
 
   # Real upload to TestPyPI, only when the maintainer has set it up: repository
-  # variable TESTPYPI_PUBLISH=true and a trusted publisher on test.pypi.org for
-  # haltsql and haltsql-mcp (workflow native-packages.yml, environment testpypi).
+  # variable TESTPYPI_PUBLISH=true and trusted publishers on test.pypi.org for
+  # haltsql (environment testpypi) and haltsql-mcp (environment testpypi-mcp).
   # TestPyPI never accepts the same version twice, so re-runs skip existing files.
   publish-testpypi:
-    name: Publish to TestPyPI
+    name: Publish haltsql to TestPyPI
     if: vars.TESTPYPI_PUBLISH == 'true' && ((startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run))
     needs: [publish-dry-run]
     runs-on: ubuntu-latest
@@ -448,7 +448,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
+          pattern: "{wheel-*,python-sdist}"
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
@@ -456,8 +456,30 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
 
+  publish-testpypi-mcp:
+    name: Publish haltsql-mcp to TestPyPI
+    needs: [publish-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: testpypi-mcp
+      url: https://test.pypi.org/project/haltsql-mcp/
+    permissions:
+      id-token: write # TestPyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-mcp-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  # One job and one environment per PyPI project: PyPI refuses two pending
+  # trusted publishers with the same repository, workflow and environment.
   publish-pypi:
-    name: Publish to PyPI
+    name: Publish haltsql to PyPI
     # A release-candidate tag is a dry run (publish-dry-run above).
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc.')
     needs: [package, wheel-pythons, sdist]
@@ -471,9 +493,28 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
+          pattern: "{wheel-*,python-sdist}"
           path: dist
           merge-multiple: true
+      - run: ls -la dist
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+
+  # After haltsql: haltsql-mcp requires haltsql>=<version>.
+  publish-pypi-mcp:
+    name: Publish haltsql-mcp to PyPI
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi-mcp
+      url: https://pypi.org/project/haltsql-mcp/
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-mcp-dist
+          path: dist
       - run: ls -la dist
       - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
 
