@@ -10,6 +10,15 @@ even before 1.0.
 
 ## [Unreleased]
 
+### Security
+- **haltsql-proxy pins the upstream `search_path`.** The upstream startup
+  packet sets `search_path` from the bound policy's `search_path` (quoted,
+  with `pg_temp` last), overriding `ALTER ROLE`/`ALTER DATABASE` defaults, and
+  the proxy confirms it with `SHOW search_path` before any client statement is
+  forwarded. A mismatch refuses the session (`FATAL 08006`); on PostgreSQL 18+
+  a later reported change ends it. Before, unqualified names could resolve
+  differently upstream than in the verifier.
+
 ## [0.0.2] - 2026-11-10
 
 Packaging fix release. No changes to the engine, the server, the proxy or the

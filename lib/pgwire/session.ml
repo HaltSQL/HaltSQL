@@ -324,6 +324,26 @@ let authenticate s =
                   log s Plog.Warn "certificate identity not authorized" [];
                   fatal "28000" "certificate identity is not authorized")))
 
+(* What the upstream session's search_path must be: derived from the policy this session
+   is bound to. The binding never changes during a session (a reload that changes it ends
+   the session instead), so the path pinned at connect time always belongs to the policy
+   that verifies the session's statements. *)
+let search_path s = Upstream.pinned_search_path (binding s).policy.search_path
+
+let search_path_mismatch s actual =
+  log s Plog.Error "upstream search_path does not match the policy; refusing the session"
+    [
+      ( "expected",
+        `String
+          (match Upstream.search_path_value (search_path s) with
+          | Ok v -> v
+          | Error e -> e) );
+      ("actual", `String actual);
+    ];
+  fatal "08006"
+    "haltsql-proxy: the upstream session's search_path does not match the policy; \
+     session refused"
+
 let check_parameter s payload =
   let c = Wire.cursor payload in
   let k = Wire.get_cstring c in
@@ -336,6 +356,9 @@ let check_parameter s payload =
   | "standard_conforming_strings" when v <> "on" ->
       log s Plog.Error "upstream standard_conforming_strings is off" [];
       fatal "08P01" "upstream standard_conforming_strings is not on; terminating session"
+  | "search_path" when not (Upstream.search_path_matches ~expected:(search_path s) v) ->
+      (* reported by PostgreSQL 18+, at startup and whenever it changes *)
+      search_path_mismatch s v
   | _ -> Lwt.return_unit
 
 let register_cancel s ~upid ~ukey =
@@ -349,6 +372,46 @@ let register_cancel s ~upid ~ukey =
   Hashtbl.replace tbl pid (key, upid, ukey, s.sh.cfg.upstream);
   s.proxy_pid <- Some pid;
   (pid, key)
+
+(* [SHOW search_path] round trip on the fresh upstream session. The startup packet asked
+   for the pinned path; a server, pooler or login hook that ignored or changed it must
+   not go unnoticed, because the verifier's name resolution would then be wrong. Returns
+   the payload of the ReadyForQuery that ends the probe. *)
+let confirm_search_path s up =
+  let* () = Io.write up (Wire.frame 'Q' "SHOW search_path\000") in
+  let rec loop value =
+    let* tag, payload = Io.read_message up ~max:max_upstream_message in
+    match tag with
+    | 'T' | 'C' -> loop value
+    | 'D' ->
+        let c = Wire.cursor payload in
+        let cols = Wire.get_int16 c in
+        let len = if cols = 1 then Wire.get_int32 c else -1 in
+        if cols <> 1 || len < 0 || value <> None then
+          fatal "08P01" "unexpected answer to SHOW search_path from upstream"
+        else
+          let v = Wire.get_bytes c len in
+          Wire.expect_end c;
+          loop (Some v)
+    | 'S' ->
+        let* () = check_parameter s payload in
+        let* () = Io.write s.client (Wire.frame tag payload) in
+        loop value
+    | 'N' | 'A' -> loop value
+    | 'Z' -> (
+        match value with
+        | Some v when Upstream.search_path_matches ~expected:(search_path s) v ->
+            Lwt.return payload
+        | Some v -> search_path_mismatch s v
+        | None -> fatal "08P01" "upstream did not answer SHOW search_path")
+    | 'E' ->
+        log s Plog.Error "upstream refused SHOW search_path" [];
+        fatal "08006" "haltsql-proxy: could not confirm the upstream search_path"
+    | c ->
+        fatal "08P01"
+          (Printf.sprintf "unexpected message %C from upstream during startup" c)
+  in
+  loop None
 
 let rec relay_startup s up =
   let* tag, payload = Io.read_message up ~max:max_upstream_message in
@@ -368,7 +431,11 @@ let rec relay_startup s up =
   | 'N' ->
       let* () = Io.write s.client (Wire.frame tag payload) in
       relay_startup s up
-  | 'Z' -> Io.write s.client (Wire.frame tag payload)
+  | 'Z' ->
+      (* Nothing from the client reaches the upstream before its search_path is
+         confirmed; only then does the client see ReadyForQuery. *)
+      let* ready = confirm_search_path s up in
+      Io.write s.client (Wire.frame 'Z' ready)
   | 'E' ->
       log s Plog.Error "upstream rejected the session" [];
       fatal "08006" "haltsql-proxy: the upstream database rejected the session"
@@ -688,7 +755,9 @@ let run s =
   | `Session app ->
       let* up =
         Lwt.catch
-          (fun () -> Upstream.connect cfg.upstream ~application_name:app)
+          (fun () ->
+            Upstream.connect ~search_path:(search_path s) cfg.upstream
+              ~application_name:app)
           (function
             | Upstream.Upstream_error m ->
                 log s Plog.Error "upstream connection failed" [ ("error", `String m) ];

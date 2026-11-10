@@ -148,13 +148,44 @@ terminates the session if the server ever reports a different
 `client_encoding` or `standard_conforming_strings` other than `on`, because the
 verified bytes must mean the same thing to the server as to the parser.
 
+**`search_path` is pinned.** The verifier resolves unqualified names against
+the policy's `search_path`, so the upstream session has to resolve them the
+same way. The proxy does not trust the role's or database's default:
+
+1. The upstream startup packet sets `search_path` to the `search_path` of the
+   policy the client is bound to, each schema double-quoted, followed by
+   `pg_temp` (unless the policy places `pg_temp` itself). A startup-packet
+   setting overrides `ALTER ROLE ... SET` and `ALTER DATABASE ... SET`.
+   `pg_temp` is listed last because PostgreSQL otherwise searches temporary
+   tables *first*, ahead of every schema the policy names. `pg_catalog`, when
+   the policy does not list it, is searched first by both PostgreSQL and the
+   verifier. For `search_path: [app]` the proxy sends `"app", "pg_temp"`.
+2. Once the upstream session is ready the proxy runs `SHOW search_path` and
+   compares the answer, parsed the way PostgreSQL parses it, with what it
+   asked for. Only then does the client see `ReadyForQuery`; no client
+   statement is forwarded before the check. On a mismatch (a pooler that drops
+   the parameter, a login trigger that changes it) the session is refused with
+   `FATAL 08006` and the log line `upstream search_path does not match the
+   policy` carries both values.
+3. PostgreSQL 18 and later report `search_path` changes as `ParameterStatus`.
+   A reported value that differs from the pinned one ends the session.
+
+A session is bound to one policy for its whole life, so the pinned path always
+belongs to the policy that verifies its statements. On PostgreSQL 17 and
+earlier a later change inside the session is not reported to the proxy:
+keep `SET` out of the policy's allowed statements (v1 policies cannot allow
+it). A connection pooler between the proxy and PostgreSQL must run in session
+mode and pass the `search_path` startup parameter through; PgBouncer rejects
+it unless it is tracked or listed in `ignore_startup_parameters`, and ignoring
+it makes the check fail, which is the intended outcome.
+
 ## Protocol handling
 
 | Message | Behaviour |
 |---|---|
 | `SSLRequest` | `S` + TLS handshake when `tls` is configured, else `N`. Bytes pipelined after the request are a protocol violation (CVE-2021-23214). |
 | `GSSENCRequest` | Always refused with `N`. |
-| `StartupMessage` | Protocol 3.x only; a newer minor version or `_pq_.*` options get `NegotiateProtocolVersion` (3.0). Needs `user`; `database` must equal `upstream.database`; any `replication` parameter is refused; only `application_name` is forwarded. `options` and every other parameter are ignored, so clients cannot set GUCs such as `search_path`. |
+| `StartupMessage` | Protocol 3.x only; a newer minor version or `_pq_.*` options get `NegotiateProtocolVersion` (3.0). Needs `user`; `database` must equal `upstream.database`; any `replication` parameter is refused; only `application_name` is forwarded. `options` and every other parameter are ignored, so clients cannot set GUCs such as `search_path` (the proxy sets it itself, from the policy). |
 | `CancelRequest` | Proxy-issued (pid, key) pairs are random and map to the upstream backend; the key is compared in constant time; the request is forwarded over a fresh upstream connection (TLS if configured). |
 | `Query` (simple) | Verified as a whole. Denied if the verdict denies, or if it needs bound tenancy parameters (they cannot be bound in the simple protocol: use prepared statements). |
 | `Parse` | Verified; the verdict is remembered per statement name. A named statement that already exists is refused (42P05). |
