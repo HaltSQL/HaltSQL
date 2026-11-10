@@ -121,7 +121,5 @@ MUTANTS = [
 ]
 
 # Mutants that change nothing a test can observe, with the reason.
-EQUIVALENT = {'server: internal error leaks exception text': 'needs an exception inside a handler; no injection '
-                                                'point without changing production code',
- 'server: read_body ignores declared content-length': 'redundant: Http.callback refuses an '
+EQUIVALENT = {'server: read_body ignores declared content-length': 'redundant: Http.callback refuses an '
                                                       'over-limit Content-Length before routing'}
