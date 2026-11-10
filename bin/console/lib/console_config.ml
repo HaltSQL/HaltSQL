@@ -5,9 +5,9 @@
    same shape as the server's. Unknown top-level keys are errors so typos are caught.
 
    Placeholders in the typed sections read at startup (auth, verifiers, fleet, audit,
-   policies, catalogs, data, agents, ...) are substituted at load. Placeholders in [opa],
-   [integrations] and [signals] are only checked (syntax, scheme, provider configured)
-   and stay unresolved in [t]; features call {!resolve} when they need the value, so the
+   policies, data, agents, ...) are substituted at load. Placeholders in [opa],
+   [integrations], [signals] and [catalogs] are only checked (syntax, scheme, provider
+   configured) and stay unresolved in [t]; features call {!resolve} when they need the value, so the
    secret is not kept in memory and rotation is picked up without a restart. *)
 
 type environment = { org : string; env_name : string; region : string option }
@@ -746,7 +746,7 @@ let check_placeholders ?(check = fun ~scheme:_ ~reference:_ -> Ok ()) ctx j =
 
 (** Top-level sections whose placeholders are resolved on demand ({!resolve}), not at
     load. [secrets] is read by the secrets provider itself. *)
-let lazy_sections = [ "opa"; "integrations"; "signals" ]
+let lazy_sections = [ "opa"; "integrations"; "signals"; "catalogs" ]
 
 let env_resolver ?(env = Sys.getenv_opt) () ~scheme ~reference =
   match scheme with

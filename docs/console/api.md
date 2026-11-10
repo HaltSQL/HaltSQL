@@ -599,7 +599,7 @@ Kubernetes API fails (the message carries the HTTP status and Status
 `GET /api/v1/data/columns?show=allowed|all&q=`:
 
 ```json
-{ "updated": "...", "loaded": "...",
+{ "updated": "...", "loaded": "...", "shadow_denials_counted": "...",
   "sources": [ { "kind": "dbt", "label": "dbt", "detail": "manifest.json from acme/analytics", "as_of": "...", "authoritative": true, "error": null } ],
   "totals": { "tagged": 312, "tables": 41, "blocked": 309, "exception": 2, "needs_review": 1 },
   "columns": [ { "column": "billing.invoices.tax_id", "tags": ["PII", "government id"], "sources": ["datahub"],
@@ -617,7 +617,10 @@ exception, with `expired`. Column `sources` are catalog labels (default: the kin
 
 A column allowed by a policy is `exception` when listed in
 `data.exceptions` (owner, ticket, expiry), otherwise `needs_review`.
-`POST /api/v1/data/refresh` re-reads every catalog (any role; rate-limited to
+`shadow_denials` comes from a background scan of the record index every minute
+(`shadow_denials_counted` is when it last finished, `null` before the first); `GET`
+never scans the index.
+`POST /api/v1/data/refresh` re-reads every catalog and recounts shadow denials (any role; rate-limited to
 once a minute, `429 RATE_LIMITED` otherwise; logged as `data.refresh`) and returns
 `{ "updated", "sources", "totals" }`. A live fetch (DataHub, OpenMetadata) only flags columns; it is
 never loaded as a policy catalog.
@@ -627,9 +630,10 @@ never loaded as a policy catalog.
 | | |
 |---|---|
 | `GET /api/v1/evidence/controls?framework=soc2\|iso27001\|gdpr\|hipaa` | Any role. Control mapping (default `soc2`): `{ framework, framework_name, disclaimer, controls: [ { id, name, what, evidence: [string] } ] }` |
-| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until"? }` (`until` defaults to now) → `202 { id: "pack_<n>", state: "building" }`. Logged as `evidence.build`. |
-| `GET /api/v1/evidence/packs` | `build_evidence`. `{ "packs": [ { id, framework, since, until, built_by, created, state: "building\|ready\|failed", records, chains: {verified, total}, manifest_sha256, bytes, gaps: [ { kind, name, detail } ], error } ] }`, newest first. |
-| `GET /api/v1/evidence/packs/{id}/download` | `build_evidence`. `application/gzip`: a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. `409 CONFLICT` while building or after a failure. Logged as `evidence.download`. |
+| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until"?, "include_sql"? }` (`until` defaults to now) → `202 { id: "pack_<n>", state: "building" }`. `include_sql: true` also needs `see_raw_sql` and its reason (`403 REASON_REQUIRED` without one). One build at a time per console: `409 BUILD_IN_PROGRESS` while another is building. A period holding more than 1,000,000 records is refused (`400`). Logged as `evidence.build` (detail `include_sql`; the reason when SQL is included). |
+| `GET /api/v1/evidence/packs` | `build_evidence`. `{ "packs": [ { id, framework, since, until, built_by, created, state: "building\|ready\|failed", records, chains: {verified, total}, manifest_sha256, bytes, include_sql, sql_redacted, gaps: [ { kind, name, detail } ], error } ] }`, newest first. |
+| `GET /api/v1/evidence/packs/{id}/download` | `build_evidence`. `application/gzip`, streamed from disk (with `content-length`): a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. `409 CONFLICT` while building or after a failure. Logged as `evidence.download`. |
+| `DELETE /api/v1/evidence/packs/{id}` | `build_evidence`. Deletes the pack's file and listing entry → `{ id, deleted: true }`. `409` while building, `404` when unknown. Logged as `evidence.delete`. |
 
 Control ids: `soc2` CC6.1, CC6.3, CC7.2, CC8.1, A1.2; `iso27001` A.5.15, A.8.2, A.8.15,
 A.8.16, A.8.32; `gdpr` Art. 5(1)(f), Art. 25, Art. 30, Art. 32; `hipaa`
@@ -639,18 +643,36 @@ A.8.16, A.8.32; `gdpr` Art. 5(1)(f), Art. 25, Art. 30, Art. 32; `hipaa`
 The archive has one top-level directory `pack_<n>/` with `README.md` (scope,
 disclaimer, gaps, file list), `manifest.json` (SHA-256 and size of every other file,
 record counts per verifier, chain results, builder, period, generator),
-`records/<verifier>.jsonl` (the raw audit lines in the period, as ingested),
-`chains.json` (per verifier: `state` `intact | broken | unknown`, `verified`, and
-`first_break` `{ line, problem, request_id, location }`; the first included record's
-`prev_hash` is accepted as is, since a period rarely starts at genesis),
+`records/<verifier>.jsonl` (the audit lines in the period, as ingested except that
+SQL text, `sql` and `statement`, is removed unless the pack was built with
+`include_sql`; `sql_sha256` stays. A verifier name that is not a safe file name gets a
+sanitised name plus a short hash, and each records file's `verifier` is in the manifest),
+`chains.json` (per verifier, with the same rules as the chain-of-custody page:
+`state` `intact | broken | unknown`, `verified` (chained records checked), `segments`
+(a genesis `prev_hash` starts a new segment, e.g. after a restart without a spool),
+`unchained` (records without a hash), and `first_break`
+`{ line, problem, request_id, location }`, `line` being the line of the records file;
+the first record of each segment may link to a record outside the period and is
+accepted as is. Verification runs on the records as ingested, so a line whose SQL was
+removed does not verify on its own from the pack; verify it against the audit store
+with `haltsql audit verify`),
 `policies.json` (`seen_in_records` versions and the `loaded` policies), `activity.jsonl`,
 `exceptions.json` and `controls.json`. `manifest_sha256` in the listing is the SHA-256 of
-`manifest.json`. The gzip stream uses uncompressed (stored) DEFLATE blocks; it is a
-standard gzip file. Gap kinds: `in_process_agent` (agents with `via: in_process`) and
-`source_error` (audit sources whose ingestion reports an error).
+`manifest.json`; `raw_sql` in the manifest is `{ included, reason, redacted_records }`.
+The gzip stream uses uncompressed (stored) DEFLATE blocks; it is a
+standard gzip file. Gap kinds: `in_process_agent` (agents with `via: in_process`),
+`source_error` (audit sources whose ingestion reports an error) and `retention` (the
+period starts before the index's retention window, `audit.retention_hours`, or records
+of the period were evicted by `audit.max_records`; the detail names the first covered
+time).
+
+Packs are built in a worker thread and written to a temporary file (fsynced, then
+renamed), so the console keeps serving requests during a build. The 20 most recent
+finished packs are kept: after each successful build, older ones and their files are
+deleted.
 
 The pack states plainly that HaltSQL holds no certification and lists gaps
-(in-process agents, sources that could not be read).
+(in-process agents, sources that could not be read, periods outside retention).
 
 ### Activity log: `GET /api/v1/activity?actor=&action=&since=&limit=&cursor=`
 
