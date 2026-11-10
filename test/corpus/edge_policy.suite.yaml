@@ -1,0 +1,29 @@
+# Cases found by mutation testing: properties no other suite exercised.
+# Policy: edge.yaml (a policy table named like a system relation; a type listed
+# in both casts and deny_casts).
+apiVersion: haltsql.dev/v1
+kind: TestSuite
+metadata: { name: edge_policy }
+policy: ../fixtures/policies/edge.yaml
+defaults:
+  context: { tenant_id: acme }
+cases:
+  - name: unqualified pg_ name resolves to pg_catalog, not to the policy table
+    sql: SELECT id FROM pg_stats LIMIT 10
+    expect: deny
+    codes: [E_TABLE_DENIED]
+    tags: [system_catalogs, search_path]
+  - name: schema-qualified policy table named like a system relation
+    sql: SELECT id, label FROM app.pg_stats LIMIT 10
+    expect: allow
+    tags: [system_catalogs, search_path]
+  - name: deny_casts wins over a casts entry
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'app.orders'::regclass::text LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts]
+  - name: a type added with casts.extend is allowed
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = '10.0.0.1'::inet::text LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts]

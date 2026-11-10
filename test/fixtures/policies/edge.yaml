@@ -1,0 +1,19 @@
+# Edge cases that the other fixtures do not reach: a policy table whose name
+# looks like a system relation, and a type listed in both casts and deny_casts.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata: { name: edge, owner: tests }
+search_path: [app]
+statements: { allow: [select] }
+require_limit: { max: 100 }
+tenancy:
+  mode: bound
+  keys: { tenant: "${ctx.tenant_id}" }
+tables:
+  app.pg_stats:
+    columns: [id, label]
+  app.orders:
+    columns: [id, tenant_id, status]
+    tenant_column: tenant_id
+casts:
+  extend: [inet, regclass]
