@@ -1916,9 +1916,69 @@ let test_loopback_http () =
       ("http://example.com/", false);
     ]
 
+(* ---- Audit_chain.verify_lines: what a verifier must refuse ---- *)
+
+let test_chain_verify_refusals () =
+  let module A = C.Audit_chain in
+  let seal prev n = A.seal ~prev [ ("n", `Int n) ] in
+  let l1, h1 = seal A.genesis 1 in
+  let l2, h2 = seal h1 2 in
+  let l3, _ = seal h2 3 in
+  let res = Alcotest.(result int (pair int string)) in
+  Alcotest.check res "intact" (Ok 3) (A.verify_lines [ l1; l2; l3 ]);
+  Alcotest.check res "blank lines are not records" (Ok 3)
+    (A.verify_lines [ l1; ""; l2; "  "; l3; "" ]);
+  let fields l =
+    match Yojson.Safe.from_string l with `Assoc kv -> kv | _ -> assert false
+  in
+  let without k l =
+    Yojson.Safe.to_string (`Assoc (List.filter (fun (k', _) -> k' <> k) (fields l)))
+  in
+  let refused name line_no problem lines =
+    Alcotest.check res name (Error (line_no, problem)) (A.verify_lines lines)
+  in
+  refused "record stripped of its hash" 2 "missing trailing \"hash\" field"
+    [ l1; without "hash" l2; l3 ];
+  (* the hash covers everything before it: a field appended after it is unprotected *)
+  refused "field after the hash" 2 "missing trailing \"hash\" field"
+    [ l1; Yojson.Safe.to_string (`Assoc (fields l2 @ [ ("allowed", `Bool true) ])); l3 ];
+  refused "record stripped of prev_hash" 2 "missing prev_hash"
+    [ l1; without "prev_hash" l2; l3 ];
+  refused "prev_hash of the wrong type" 2 "missing prev_hash"
+    [
+      l1;
+      Yojson.Safe.to_string
+        (`Assoc
+           (List.map
+              (fun (k, v) -> if k = "prev_hash" then (k, `Null) else (k, v))
+              (fields l2)));
+      l3;
+    ];
+  refused "a line that is not an object" 2 "record is not a JSON object"
+    [ l1; "[1,2]"; l2; l3 ];
+  refused "line numbers count blank lines" 3 "record is not a JSON object"
+    [ l1; ""; "\"x\""; l2 ];
+  (match A.verify_lines [ l1; l2; "{\"n\":3,\"prev_hash\":"; l3 ] with
+  | Error (3, m) ->
+      Alcotest.(check bool) "says invalid JSON" true (contains m "invalid JSON")
+  | Error (n, m) -> Alcotest.failf "garbage line: reported at line %d: %s" n m
+  | Ok n -> Alcotest.failf "a truncated line was skipped (%d records verified)" n);
+  (* a chain whose head was cut off verifies only when the caller says where it starts *)
+  refused "head truncated" 1 "prev_hash does not match the previous record's hash"
+    [ l2; l3 ];
+  Alcotest.check res "explicit start" (Ok 2)
+    (A.verify_lines ~initial_prev:(Some h1) [ l2; l3 ]);
+  Alcotest.check res "start unknown (rotated file)" (Ok 2)
+    (A.verify_lines ~initial_prev:None [ l2; l3 ])
+
 let () =
   Alcotest.run "cloud"
     [
+      ( "audit chain",
+        [
+          Alcotest.test_case "verify_lines refuses malformed records" `Quick
+            test_chain_verify_refusals;
+        ] );
       ( "sigv4",
         [
           Alcotest.test_case "get-vanilla" `Quick test_sigv4_get_vanilla;
