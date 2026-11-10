@@ -169,7 +169,10 @@ when raw SQL is logged it also extracts the distinct values by re-verifying.
 `GET /api/v1/queries?q=&caller=&policy=&outcome=allowed|denied|shadow_denied&code=&table=&fingerprint=&verifier=&since=&until=&limit=&cursor=`
 
 `q` matches a request id prefix, caller substring, fingerprint prefix, or table
-name. Records never include `sql`.
+name. Records never include `sql`. Without `since`, `until` or `range` the whole
+retention window is searched (so an old request id can still be found); `range`
+applies only when given. `table` matches `schema.table` or the bare table name.
+Permission `search_queries`.
 
 ```json
 { "records": [ {
@@ -189,28 +192,69 @@ name. Records never include `sql`.
   "record": { "...": "as above" },
   "trail": [ { "stage": "parse | tables | tenancy | limit | functions | opa | verdict",
                "state": "passed | denied | not_run | skipped", "detail": "..." } ],
+  "trail_source": "reverified | codes",
   "reasons": [ { "code": "E_TENANT_MISMATCH", "rule": "tenancy.mismatch", "message": "...", "hint": "..." } ],
-  "policy": { "name": "support-copilot", "version": "sha256:...", "bundle": "prod 1.4.0" },
+  "policy": { "name": "support-copilot", "version": "sha256:...", "bundle": "prod 1.4.0", "loaded_version": "sha256:..." },
   "custody": {
     "verifier": "haltsql-2", "seq": 8412096, "hash": "...", "prev_hash": "...",
-    "neighbours": [ { "seq": 8412095, "hash": "...", "prev_hash": "...", "outcome": "allowed" } ],
-    "location": "s3://acme-audit/haltsql/haltsql-2-20261107T1300Z-0412.jsonl#L412",
-    "chain_state": "intact | broken | unknown", "last_verified": "...",
-    "verify_command": "haltsql audit verify s3://acme-audit/haltsql/ --server haltsql-2"
+    "neighbours": [ { "seq": 8412095, "request_id": "...", "hash": "...", "prev_hash": "...", "outcome": "allowed" } ],
+    "location": "s3://acme-audit/haltsql/2026/11/07/13/haltsql-2-20261107T130000.000001Z.42-0000000412-<sha256>.jsonl#L412",
+    "chain_state": "intact | broken | unknown",
+    "first_break": { "seq": 8412001, "request_id": "...", "location": "...", "message": "hash mismatch (record was modified)" },
+    "last_verified": "...",
+    "verify_command": "haltsql audit verify s3://acme-audit/haltsql/ --host haltsql-2 --region us-east-1"
   }
 }
 ```
 
+`GET /records/{id}` needs `search_queries` and never includes SQL. `reasons` has one
+entry per recorded code; `rule` and `hint` are `null` when only the code is known.
+`policy.bundle` comes from the last fleet snapshot of the record's verifier and
+`policy.loaded_version` is the version of the policy the console loaded (both `null`
+when unknown); a re-derived trail uses the loaded policy, so compare the two versions.
+
+**Custody.** `seq` is the record's position in its verifier's stream as ingested
+(files in name order, objects in key order); `neighbours` are the records up to two
+positions before and after. The chain is checked locally over the records in the
+index: the stream is split into segments at every record whose `prev_hash` is the
+genesis hash (a new chain, as after a restart without a spool), the first record of a
+segment may link to a record that has left the retention window, and every other link
+and hash must verify. `chain_state` is that of the record's segment: `broken` (with
+`first_break`) when any record in it fails, `unknown` when the record has no `hash`.
+`verify_command` re-verifies the original records with the CLI: `haltsql audit verify
+<file>` for files, `haltsql audit verify s3://bucket/prefix/ --host <host>` (plus
+`--region`/`--endpoint` when configured) for S3, and, because the CLI does not read
+`gs://` directly, a `gcloud storage cp -r` of the prefix followed by `haltsql audit
+verify <dir> --host <host>` for GCS. `<host>` is the host in the object name.
+
 The trail is re-derived by re-verifying the SQL against the named policy when
-raw SQL and the policy are available; otherwise from the codes alone
-(`tenancy` stage from `E_TENANT_*`, `tables` from `E_TABLE_*`/`E_COLUMN_*`,
-`opa` from `E_EXTERNAL_POLICY`; OPA is `not_run` when HaltSQL denied, because
-OPA is only asked after an allow).
+raw SQL and the policy are available (`trail_source: "reverified"`, with the
+record's `context` if it has one, else a placeholder context); otherwise from the
+codes alone (`trail_source: "codes"`). Either way the record's own codes decide each
+stage's state; re-verification only adds the detailed messages, rules, hints and
+tables. Codes map to stages as follows: `parse` from `E_PARSE`, `E_EMPTY`, `E_LIMIT`,
+`E_MULTI_STATEMENT`, `E_STATEMENT_KIND`, `E_DATA_MODIFYING_CTE`, `E_LOCKING_CLAUSE`,
+`E_SELECT_INTO`, `E_UNSUPPORTED`, `E_INTERNAL`; `tables` from `E_TABLE_*`/`E_COLUMN_*`
+and `E_WRITE_DENIED`; `tenancy` from `E_TENANT_*`, `E_CONTEXT_MISSING`,
+`E_PARAM_UNBOUND`; `limit` from `E_LIMIT_REQUIRED`, `E_LIMIT_TOO_HIGH`,
+`E_JOIN_BUDGET`; `functions` from `E_FUNCTION_DENIED`, `E_OPERATOR_DENIED`,
+`E_CAST_DENIED`; `opa` from `E_EXTERNAL_POLICY`; unknown codes are named in the
+`verdict` stage. After a hard parse failure (`E_PARSE`, `E_EMPTY`, `E_LIMIT`,
+`E_MULTI_STATEMENT`, `E_UNSUPPORTED`, `E_INTERNAL`) the other analyzer stages are
+`not_run`. OPA is `not_run` when HaltSQL denied, because OPA is only asked after an
+allow. `tenancy` is `skipped` when the loaded policy has no tenancy keys. In shadow
+mode a stage that would deny is `denied` (detail says "Shadow mode") and the verdict
+is `passed`.
 
 | | |
 |---|---|
-| `GET /api/v1/records/{id}/sql` | `see_raw_sql` with reason. `{ "sql": "...", "logged": true }`, `404` when the producer didn't log it. |
-| `POST /api/v1/records/{id}/verify-chain` | Re-verifies the record's chain segment now; returns `custody`. |
+| `GET /api/v1/records/{id}/sql` | `see_raw_sql` with reason. `{ "sql": "...", "logged": true }`, `404` when the producer didn't log it. Logged as `record.view_sql` (the SQL itself is never logged). |
+| `POST /api/v1/records/{id}/verify-chain` | `search_queries`. Re-verifies the record's verifier chain now; returns `custody` and updates the chain status Overview reads. Logged as `record.verify_chain`. |
+
+The console also re-verifies every verifier's chain every 5 minutes; the result
+(`{ "checked_at", "chains": [ { "verifier", "state": "intact | broken | unknown",
+"records", "segments", "first_break", "checked_at" } ] }`) feeds the `audit_chains`
+posture check and the `chain_broken` signal.
 
 ### Cases
 
