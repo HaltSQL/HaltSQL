@@ -12,9 +12,18 @@ on:
   pull_request:
     # Only pull requests into main; PRs between feature branches run nothing.
     branches: [main]
+    # The oracle run matters when the verdict can change (the engine), when
+    # the proxy that the parity scenario drives changes, or when the lab does.
     paths:
       - "lab/**"
-      - "lib/**"
+      - "lib/analyzer/**"
+      - "lib/parse/**"
+      - "lib/core/**"
+      - "lib/haltsql/**"
+      - "lib/pgquery/**"
+      - "lib/load/policy*"
+      - "lib/pgwire/**"
+      - "vendor/libpg_query/**"
       - ".github/workflows/lab.yml"
 
 permissions:
@@ -25,8 +34,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The nightly skips itself when main has not changed since the last one.
+  gate:
+    name: Anything new since last night?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: g
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          run=true
+          if [ "$EVENT" = "schedule" ]; then
+            age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+            if [ "$age" -gt $(( 26 * 3600 )) ]; then run=false; fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   lab:
     name: haltlab scenarios
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:

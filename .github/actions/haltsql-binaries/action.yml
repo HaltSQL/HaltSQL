@@ -1,0 +1,62 @@
+name: HaltSQL binaries
+description: >-
+  Puts the haltsql binaries of this commit in _build/default (where every test
+  driver looks for them) without building them again when the OCaml sources
+  have not changed: they are cached by a hash of those sources. On a cache miss
+  it sets up OCaml and builds them.
+
+outputs:
+  cache-hit:
+    description: "'true' when the binaries came from the cache (no OCaml toolchain was installed)."
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # Everything that can change a binary: the OCaml and C sources, the build
+    # files and the dependency list. The runner image is part of the key
+    # because the binaries link the image's shared libraries.
+    - id: image
+      shell: bash
+      run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: |
+          _build/default/bin/haltsql/main.exe
+          _build/default/bin/server/main.exe
+          _build/default/bin/proxy/main.exe
+          _build/default/native/libhaltsql.so
+        key: haltsql-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.os }}-${{ hashFiles('lib/**', 'bin/**', 'native/**', 'vendor/**', 'dune-project', 'dune', '*.opam') }}
+
+    - name: Set up OCaml (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
+      with:
+        ocaml-compiler: "5.4"
+        dune-cache: true
+
+    - name: Build the binaries (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # The whole tree, tests included: this is also the OCaml 5.4 compile check
+        # of a pull request (its test run is the coverage job, on 5.2).
+        opam install . --deps-only --with-test --yes
+        opam exec -- dune build
+
+    - name: Check and export the binaries
+      shell: bash
+      run: |
+        for f in bin/haltsql/main.exe bin/server/main.exe bin/proxy/main.exe native/libhaltsql.so; do
+          test -s "_build/default/$f" || { echo "::error::missing _build/default/$f"; exit 1; }
+        done
+        chmod +x _build/default/bin/*/main.exe
+        _build/default/bin/haltsql/main.exe version
+        {
+          echo "HALTSQL_BIN=$PWD/_build/default/bin/haltsql/main.exe"
+          echo "HALTSQL_SERVER_BIN=$PWD/_build/default/bin/server/main.exe"
+          echo "HALTSQL_PROXY_BIN=$PWD/_build/default/bin/proxy/main.exe"
+          echo "HALTSQL_LIB=$PWD/_build/default/native/libhaltsql.so"
+        } >> "$GITHUB_ENV"
