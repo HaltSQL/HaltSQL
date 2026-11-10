@@ -363,7 +363,25 @@ bypasses the proxy.
   `${env:UPSTREAM_PASSWORD}`.
 - **Health checks.** Use a TCP health check on 6432. The proxy has no HTTP
   health or metrics endpoint.
-- **Audit.** One JSON line per statement on stdout, going to CloudWatch Logs.
+- **Client addresses.** `limits.max_unauthenticated_per_ip` (default 20)
+  counts connections that have not finished authenticating, per TCP peer
+  address. An NLB target group with IP targets (which Fargate uses) has
+  client IP preservation off for TCP by default, so the proxy sees the NLB's
+  addresses and all clients share that budget; a connection burst then gets
+  `FATAL 53300`. Turn on `preserve_client_ip.enabled` on the target group
+  (and admit the client CIDRs in the task security group), or raise the cap
+  to fit your connection pools. The PROXY protocol is not supported.
+- **Session lifetime.** After 0.0.2 the proxy ends every session
+  `limits.max_session_lifetime_seconds` (default 3600) after it
+  authenticated, at a transaction boundary, with `FATAL 57P01`; a reload
+  ends the sessions whose credentials or policy changed. Clients and
+  poolers must reconnect, as after a database restart.
+- **Upstream password type.** Without TLS the proxy refuses MD5 password
+  authentication. With `verify-full` as above this does not apply; do not
+  set `upstream.allow_insecure_auth`.
+- **Audit.** One JSON line per statement on stdout, going to CloudWatch
+  Logs, plus one `execute` record per extended-protocol `Execute`; filter on
+  `event` when you count statements.
 - **Clients** use prepared statements for tenant-scoped queries
   ([proxy.md](proxy.md)).
 

@@ -11,6 +11,29 @@ even before 1.0.
 ## [Unreleased]
 
 ### Added
+- **Deployment tooling can bind static tokens to a tenant.** Before, the Helm
+  chart's values schema rejected `tokens[].context`, the operator's CRD
+  dropped it and the Terraform `haltsql-kubernetes` module discarded it, so a
+  token deployed through any of them was always unbound.
+  - Helm chart `haltsql`: `tokens[].context` and
+    `tokens[].request_context_fields`; `server.requireBoundTokens` (refuse to
+    render an unbound token, default `false`); `server.verifyThreads`
+    (`HALTSQL_VERIFY_THREADS`). The install notes list unbound tokens and
+    warn when `server.allowUnauthenticated` is on.
+  - Operator: `HaltSQLServer` `spec.auth.tokens[].context` and
+    `requestContextFields` (regenerated CRD).
+  - Terraform `haltsql-kubernetes`: `tokens[*].context`,
+    `tokens[*].request_context_fields`, `server.require_bound_tokens`,
+    `server.verify_threads`. The plan fails when a local chart cannot render
+    them.
+  - Terraform, all four modules: plan-time warnings (`check` blocks) for a
+    token without a context on an inline policy with tenancy, and for
+    `allow_unauthenticated`.
+- `docs/operations/production-checklist.md` and `docs/security/hardening.md`
+  cover bound tokens, upstream `verify-full`, the proxy session lifetime and
+  per-address connection cap, the shadow opt-in, `haltsql schema check` in
+  the migration pipeline and catalog snapshots. `docs/deployment.md` lists
+  the proxy settings a deployment has to decide.
 - **Static tokens can be bound to a context.** `server.auth.tokens[]` takes
   `context` and `request_context_fields`, like mTLS identities. A bound token's
   tenant comes from the config; a request body that names another tenant gets
@@ -123,6 +146,15 @@ even before 1.0.
   `haltsql.rlsgen`.
 
 ### Fixed
+- `docs/terraform.md` said the chart lacked `extraEnv` and
+  `networkPolicy.egress`, so `secret_env` and `network_policy.egress` would
+  fail the plan. The chart has both.
+- The Helm chart's install notes warned that every request would get 401
+  when no static token was set, even with OIDC providers or mTLS identities
+  configured.
+- The GCP proxy bundle and `docs/deploy-gcp.md` did not say that the upstream
+  role behind the Cloud SQL Auth Proxy needs a SCRAM-SHA-256 password now
+  that the proxy refuses MD5 without TLS.
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
   is not hash-chained, that a failed audit write does not block the
   statement and that there is no hot reload. All three were wrong; the page

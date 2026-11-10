@@ -128,6 +128,30 @@ docker run --rm -p 127.0.0.1:6432:6432 \
 
 Mounted files must be readable by uid 65532.
 
+### Proxy settings every deployment has to decide
+
+None of the deployment tooling in `deploy/` templates the proxy config: it is
+a file you write ([proxy.md](proxy.md#config-reference)) and mount or bake
+into a derived image, as the `deploy/cloud/*/` proxy bundles do. These
+settings interact with the platform around the proxy:
+
+| Setting | Default | What to decide |
+|---|---|---|
+| `upstream.tls.mode` | `disable` | Use `verify-full` with the database's CA for every database that is not on loopback. `require` encrypts but does not authenticate the server. With `disable` to a non-loopback host the proxy logs `INSECURE UPSTREAM TRANSPORT` at start, on reload and in `haltsql-proxy validate`; treat that line as a failed deployment. |
+| `upstream.allow_insecure_auth` | `false` | Leave it off. Without TLS the proxy refuses MD5 password authentication (sessions fail with `FATAL 08006`), loopback included. That covers a local connector such as the Cloud SQL Auth Proxy: the upstream role needs a SCRAM-SHA-256 password. |
+| `limits.max_session_lifetime_seconds` | `3600` | Sessions end at a transaction boundary after this long, so clients and poolers must reconnect (as for a database restart). Keep it at or below the time you are willing to let a revoked credential or an old policy live; `0` disables it. |
+| `limits.termination_grace_seconds` | `30` | How long an open transaction may delay that end. |
+| `reload.terminate_changed_sessions` | `true` | A reload ends the sessions whose user, verifier, policy, context or upstream changed. Leave it on so a rotated credential takes effect. |
+| `limits.max_unauthenticated_per_ip` | `20` | Counted by TCP peer address; the PROXY protocol is not supported. Behind a load balancer that hides client addresses (an AWS NLB with client IP preservation off, a Kubernetes `LoadBalancer` Service with `externalTrafficPolicy: Cluster`, a connection pooler) all clients share one budget. Preserve client addresses, or raise the cap to fit the pool that connects through that address. |
+| `limits.worker_threads` | CPUs, 2 to 8 | Set it near the container's CPU allocation when the node has many more CPUs than the container may use. |
+| `shutdown_grace_seconds` | `10` | Keep the orchestrator's stop timeout (`terminationGracePeriodSeconds`, ECS `stopTimeout`) above it. |
+
+The proxy also sets the upstream `search_path` from the bound policy and
+checks it before the first statement; a mismatch refuses the session, so the
+upstream role must be able to connect with that search path. These keys need
+a release newer than 0.0.2: 0.0.2 and earlier refuse a config that names
+them.
+
 ### Building the image locally
 
 ```sh
@@ -225,6 +249,32 @@ settings the chart has no dedicated value for:
   `/var/cache/haltsql`, and `volume`, default an `emptyDir`). The root
   filesystem is read-only. Use a `persistentVolumeClaim` to keep the cache
   across rescheduling.
+
+Three values follow the server changes after 0.0.2:
+
+- `tokens[].context` and `tokens[].request_context_fields` bind a static
+  token to a tenant (`server.auth.tokens[].context`). A token with neither
+  is unbound: its holder names the tenant in the request body. The install
+  notes list unbound tokens, and `server.requireBoundTokens: true` makes the
+  chart refuse to render one. See
+  [authentication.md](authentication.md#static-tokens).
+- `server.verifyThreads` sets `HALTSQL_VERIFY_THREADS`, the size of the
+  thread pool that parses and analyses statements (1 to 256). Unset, the
+  server uses the CPU count it sees, between 2 and 32. The chart sets no CPU
+  limit, so on a large node that is the node's CPU count; set the value to
+  about the CPU request (at least 2).
+- `server.allowUnauthenticated: true` now prints a warning in the install
+  notes. It is for local development only.
+
+Outside the chart, set `HALTSQL_VERIFY_THREADS` as an ordinary environment
+variable (`spec.env` on a `HaltSQLServer`, `environment` on the Terraform AWS
+and GCP modules, `environment_variables` on the Azure one, the
+`EnvironmentFile` of the systemd unit).
+
+`HALTSQL_ALLOW_SHADOW` is a client-side switch, read by the Python SDK and
+the MCP server in the agent's container, not by haltsql-server. Leave it
+unset in production: when it is `1`, a policy switched to `mode: shadow`
+stops enforcing for that client.
 
 Secrets (registry passwords, API keys) belong in `${env:...}` or secret
 provider placeholders, never inline in these values. For CRD-driven
@@ -367,6 +417,13 @@ Notes:
 
 ## systemd
 
+`deploy/systemd/haltsql-server.service` is the unit to install: it runs
+under `DynamicUser` with an empty capability set, a system-call filter and
+loopback-only networking, and reads token hashes from
+`/etc/haltsql/token-hashes.env`. Read its header before you change it (OIDC,
+cloud sinks and bundle sources need `IPAddressAllow` widened). The shorter
+unit below shows the minimum for a dedicated `haltsql` user.
+
 For VMs or bare metal, install the static binary and run it as an unprivileged
 service:
 
@@ -424,7 +481,8 @@ journalctl -u haltsql -f
 ```
 
 Put secrets referenced with `${env:...}` in `/etc/haltsql/haltsql.env`
-(mode `0640`, group `haltsql`), or reference files with `${file:...}`.
+(mode `0640`, group `haltsql`), or reference files with `${file:...}`. The
+same file can set `HALTSQL_VERIFY_THREADS`.
 
 ## Rolling out a policy change
 
@@ -432,10 +490,23 @@ Put secrets referenced with `${env:...}` in `/etc/haltsql/haltsql.env`
    `haltsql test` in CI.
 2. For a stricter policy, deploy it first with `mode: shadow` and watch
    `shadow_reasons` in the audit log and `haltsql_verify_total{result="shadow_denied"}`.
+   The guarded executors of the SDKs and the MCP server refuse to run a
+   statement a shadow policy would deny unless the client opts in
+   (`HALTSQL_ALLOW_SHADOW=1` for Python and MCP; see
+   [tutorials/roll-out-a-policy-safely.md](tutorials/roll-out-a-policy-safely.md)).
+   Set the opt-in only on the clients that take part in the rollout and
+   remove it afterwards.
 3. Switch to `mode: enforce`.
 4. Reload (`SIGHUP`, file watch, or a rollout). Check `/readyz`, the
    `policy.version` in new verdicts, and the reload metrics. A failed reload
    keeps the previous policies active.
+
+A schema migration is a policy change too. Run `haltsql schema check` against
+the migrated database (or a `schema pull` snapshot of it) in the migration
+pipeline, before the migration reaches production: it fails when a policy's
+`catalog:` no longer matches the tables, for example after a new column that
+`SELECT *` would now return. See
+[schema-and-pii.md](schema-and-pii.md#haltsql-schema-check).
 
 ## Verifying release artifacts
 
