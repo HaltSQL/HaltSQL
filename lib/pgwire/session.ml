@@ -358,8 +358,7 @@ let authenticate s =
                 Scram.Server.start
                   ~verifier:(Option.map (fun u -> u.verifier) u)
                   ~mock_secret:s.sh.mock_secret ~user:s.user
-                  ~server_nonce:(Sec.b64_encode (Sec.random 18))
-                  first
+                  ~server_nonce:(Scram.new_nonce ()) first
               with
               | Error m ->
                   log s Plog.Warn "authentication failed" [ ("reason", `String m) ];

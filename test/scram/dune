@@ -1,0 +1,7 @@
+; haltsql.scram: RFC 7677 vector in both roles, SCRAM-SHA-512 against an independent
+; computation, and what the client and the server must refuse.
+
+(test
+ (name test_scram)
+ (package haltsql)
+ (libraries haltsql.scram alcotest digestif base64))

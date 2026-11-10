@@ -228,9 +228,7 @@ let authenticate (u : upstream) io =
                 (String.concat ", " mechs)
             else
               let* p = password () in
-              let st, first =
-                Scram.Client.first ~nonce:(Sec.b64_encode (Sec.random 18)) ()
-              in
+              let st, first = Scram.Client.first ~nonce:(Scram.new_nonce ()) () in
               let* () =
                 Io.write io (Wire.sasl_initial_response ~mechanism:Scram.mechanism first)
               in

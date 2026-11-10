@@ -102,6 +102,20 @@ even before 1.0.
   against: RFC 7515, 7520 and 8037 examples, tokens signed by
   pyca/cryptography for all seven algorithms, about 700 negative cases, and
   a mutation fuzzer (`test/fuzz/fuzz_jwt.ml`) that runs with `dune test`.
+- **One SCRAM implementation.** The proxy (both roles), the Kafka sink,
+  `haltsql rls` and `haltsql schema pull` now share `haltsql.scram` instead of
+  four copies, and all take the strictest behaviour of the four. As a client,
+  HaltSQL now refuses a server that asks for fewer than 4096 or more than
+  600000 PBKDF2 iterations (before, only the Kafka sink did; a PostgreSQL role
+  whose password was set with `scram_iterations` below 4096 must have it set
+  again), a salt or signature that is not canonical base64, an empty salt, an
+  iteration count that is not plain decimal digits, attributes out of order,
+  and SCRAM messages over 4096 bytes. Server error text is made printable
+  before it is reported. Nonces are 24 random bytes everywhere.
+- **One standard-base64 helper.** `haltsql.b64` (strict, canonical-only
+  decoding on the `base64` package) replaces the hand-written base64 in the
+  proxy and the console and the two copies in `haltsql.bundle` and
+  `haltsql.rlsgen`.
 
 ### Fixed
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log

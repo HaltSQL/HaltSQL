@@ -22,7 +22,8 @@
 ;    pgquery: no network or TLS dependencies), the `haltsql` CLI, and the
 ;    libraries the CLI links: haltsql.cloud (secret resolvers), haltsql.bundle
 ;    (signed bundles), haltsql.rlsgen and haltsql.catalog_tools (Postgres
-;    clients).
+;    clients), and haltsql.scram and haltsql.b64 (SCRAM and base64, also used
+;    by the server's Kafka sink and the proxy).
 ;  - haltsql-server: the HTTP sidecar plus its server-only libraries
 ;    haltsql-server.auth (OIDC/JWT/mTLS) and haltsql-server.telemetry (OTLP).
 ;  - haltsql-proxy: the wire-protocol firewall and haltsql-proxy.pgwire.

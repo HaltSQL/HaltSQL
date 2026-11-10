@@ -152,7 +152,8 @@ matches a `subject_cn` identity (fail closed).
 **Upstream.** The proxy authenticates to PostgreSQL with `trust`, cleartext
 (only over TLS), MD5 (only over TLS unless `upstream.allow_insecure_auth`) or
 SCRAM-SHA-256, and verifies the server's SCRAM signature (mutual
-authentication). It always sends `client_encoding=UTF8`, and
+authentication). It refuses a server that asks for fewer than 4096 or more
+than 600000 SCRAM iterations (PostgreSQL's default is 4096). It always sends `client_encoding=UTF8`, and
 terminates the session if the server ever reports a different
 `client_encoding` or `standard_conforming_strings` other than `on`, because the
 verified bytes must mean the same thing to the server as to the parser.

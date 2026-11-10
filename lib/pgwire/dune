@@ -9,7 +9,8 @@
   haltsql.cloud
   yojson
   digestif
-  kdf.pbkdf
+  haltsql.scram
+  haltsql.b64
   lwt
   lwt.unix
   threads.posix

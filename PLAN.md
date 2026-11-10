@@ -152,6 +152,8 @@ haltsql/
 │   ├── haltsql/     haltsql                # public facade: Haltsql.verify, Suite_runner
 │   ├── cloud/       haltsql.cloud          # audit hash chain, S3/GCS sinks, secret resolvers
 │   ├── bundle/      haltsql.bundle         # signed policy bundles (Ed25519)
+│   ├── b64/         haltsql.b64            # strict standard base64
+│   ├── scram/       haltsql.scram          # SCRAM-SHA-256/512, client and server, no IO
 │   ├── rlsgen/      haltsql.rlsgen         # RLS / grant DDL generation and drift checks
 │   ├── catalog_tools/ haltsql.catalog_tools # schema pull, PII importers, policy drafter
 │   ├── auth/        haltsql-server.auth    # JWT/OIDC/mTLS caller authentication
