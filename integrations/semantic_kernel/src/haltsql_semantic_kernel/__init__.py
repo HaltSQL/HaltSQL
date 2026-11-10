@@ -41,7 +41,7 @@ __all__ = [
     "context_from_app",
     "__version__",
 ]
-__version__ = "0.1.0"
+__version__ = "0.0.1"
 
 #: Suggested plugin name; with the function name ``query`` the model sees ``haltsql-query``.
 PLUGIN_NAME = "haltsql"

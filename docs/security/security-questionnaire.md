@@ -93,7 +93,7 @@ HaltSQL project.
 | Secure SDLC | Changes go through pull requests with maintainer approval; security-sensitive changes need allowed and denied tests; every fixed bypass adds an attack-corpus case ([GOVERNANCE.md](../../GOVERNANCE.md), [SECURITY.md](../../SECURITY.md)). |
 | Testing | About 3,300 OCaml test cases, an attack corpus, property tests, a mutation fuzzer, integration tests, and a lab that runs every allowed query against real PostgreSQL under independent oracles ([how-it-works/assurance.md](../how-it-works/assurance.md), [testing.md](../testing.md)). |
 | Static analysis (SAST) | No SAST tool runs on the OCaml code; CodeQL does not support OCaml. Trivy scans configuration and secrets weekly. |
-| Penetration testing / external audit | None. HaltSQL 0.1.0 has not had an external security audit ([threat-model.md](../threat-model.md#guarantees-goals)). |
+| Penetration testing / external audit | None. HaltSQL 0.0.1 has not had an external security audit ([threat-model.md](../threat-model.md#guarantees-goals)). |
 | Bug bounty | No bug bounty programme is described. [SECURITY.md](../../SECURITY.md#safe-harbor) offers safe harbor for good-faith research. |
 
 ## Vulnerability management

@@ -25,7 +25,7 @@ __all__ = [
     "to_dataframe",
     "__version__",
 ]
-__version__ = "0.1.0"
+__version__ = "0.0.1"
 
 try:  # Vanna 2.x
     from vanna.capabilities.sql_runner import SqlRunner as _SqlRunnerBase

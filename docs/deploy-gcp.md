@@ -281,7 +281,7 @@ first:
 
 ```sh
 deploy/cloud/gcp/iam/setup.sh image
-# image: $REGION-docker.pkg.dev/$PROJECT_ID/ghcr/haltsql/haltsql:0.1.0
+# image: $REGION-docker.pkg.dev/$PROJECT_ID/ghcr/haltsql/haltsql:0.0.1
 ```
 
 Settings that matter on Cloud Run, for both variants:

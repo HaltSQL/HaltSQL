@@ -9,29 +9,35 @@ workflows in `.github/workflows/`, the `Dockerfile` and
 
 ## What a release contains
 
-A release is triggered by pushing a `v*` tag (or by running the release
-workflow by hand for an existing tag). `.github/workflows/release.yml`
-produces:
+A release is triggered by pushing a `vX.Y.Z` tag (or by running the release
+workflow by hand for an existing tag). Release-candidate tags (`vX.Y.Z-rc.N`)
+and manual runs with `dry_run` are rehearsals: they run every build, signing
+and provenance step but publish only a draft release and packages under
+`ghcr.io/haltsql/dryrun/`; see
+[releasing.md](../operations/releasing.md#real-and-dry-run-mode).
+`.github/workflows/release.yml` produces:
 
 | Artifact | Where | Built by |
 |---|---|---|
 | `haltsql-<tag>-linux-amd64.tar.gz`, `haltsql-<tag>-linux-arm64.tar.gz` | GitHub release | The `dist` stage of the `Dockerfile`: static musl binaries `haltsql`, `haltsql-server`, `haltsql-proxy`, plus licences |
 | `haltsql-<tag>-darwin-arm64.tar.gz` | GitHub release | A `macos-15` runner with `ocaml/setup-ocaml`; links only system libraries |
 | `haltsql-<tag>.cdx.json` | GitHub release | CycloneDX SBOM (see [SBOMs](#sboms)) |
-| `SHA256SUMS` | GitHub release | SHA-256 of every tarball and the SBOM |
-| `*.sigstore.json` | GitHub release | Keyless cosign signature bundle for every tarball, the SBOM and `SHA256SUMS` |
+| `haltsql-<version>.tgz` | GitHub release | The Helm chart archive (`helm package deploy/helm/haltsql`) |
+| `haltsql-<tag>.oci.txt` | GitHub release | The digests of the two images and the chart as pushed to GHCR |
+| `SHA256SUMS` | GitHub release | SHA-256 of every tarball, the chart archive, the SBOM and `haltsql-<tag>.oci.txt` |
+| `*.sigstore.json` | GitHub release | Keyless cosign signature bundle for every file above and `SHA256SUMS` |
 | `ghcr.io/haltsql/haltsql:<version>` | GHCR | The `runtime` stage of the `Dockerfile`, `linux/amd64` and `linux/arm64` |
 | `ghcr.io/haltsql/haltsql-mcp:<version>` | GHCR | `clients/mcp/Dockerfile`, on top of the `haltsql` image by digest |
+| `oci://ghcr.io/haltsql/charts/haltsql`, version `<version>` | GHCR | The same chart archive, pushed with `helm push` |
 
 `.github/workflows/native-packages.yml` publishes, on `v*` tags:
 
 | Artifact | Where | Notes |
 |---|---|---|
-| `haltsql` wheels and sdist | PyPI | Trusted publishing (OIDC, no long-lived PyPI token), through the `pypi` environment |
-| `@haltsql/client` and `@haltsql/native-<platform>` | npm | Published with `npm publish --provenance`, through the `npm` environment, authenticated with an `NPM_TOKEN` secret |
+| `haltsql` wheels and sdist, `haltsql-mcp` wheel and sdist | PyPI | Trusted publishing (OIDC, no long-lived PyPI token), through the `pypi` and `pypi-mcp` environments |
+| `@haltsql/client` and `@haltsql/native-<platform>` | npm | Published with `npm publish --provenance`, through the `npm` environment, by npm trusted publishing (OIDC); the first publish only uses a short-lived `NPM_TOKEN` |
 
-Not published by these workflows: the Helm chart (use it from
-`deploy/helm/haltsql`), the Kubernetes operator image (you build it from
+Not published by these workflows: the Kubernetes operator image (you build it from
 `deploy/operator`, see [kubernetes-operator.md](../kubernetes-operator.md)),
 the Java SDK and the Go SDK (Go modules are fetched from the repository).
 
@@ -44,7 +50,7 @@ the Java SDK and the Go SDK (Go modules are fetched from the repository).
 | Pinned OCaml dependencies | The Linux release build resolves opam packages against a fixed opam-repository commit (`OPAM_REPOSITORY_COMMIT`), so tarballs and image ship the same dependency versions. The resolved list is written to `/usr/share/doc/haltsql/opam-packages.txt` in the image. | `Dockerfile` |
 | Vendored parser | `libpg_query` is vendored in `vendor/libpg_query` and compiled from source | `Dockerfile`, `vendor/` |
 | Static linking check | The build fails unless every binary is statically linked, runs, and runs on an empty (`scratch`) filesystem | `Dockerfile`, `release.yml` |
-| Smoke test before push | The amd64 image is built, run against PostgreSQL 17 by `scripts/docker-smoke.sh` (including the proxy), and only then pushed | `release.yml` |
+| Smoke test before push | Each architecture's image is built on a native runner (amd64 and arm64, no emulation), run against PostgreSQL 17 by `scripts/docker-smoke.sh` (including the proxy), and only then pushed by digest and merged into the multi-arch index | `release.yml` |
 | Least-privilege workflow tokens | Workflows default to `permissions: contents: read`; jobs that publish add only `packages: write`, `id-token: write`, `attestations: write` or `contents: write` as needed | `.github/workflows/*.yml` |
 | No persisted checkout credentials | `actions/checkout` runs with `persist-credentials: false` | `.github/workflows/*.yml` |
 | Workflow linting | `actionlint`, from a digest-pinned image, on every PR | `security.yml` |
@@ -67,7 +73,9 @@ Known gaps:
 | Artifact | Signature | Provenance |
 |---|---|---|
 | Release tarballs | Keyless cosign (`cosign sign-blob --bundle`) | GitHub build-provenance attestation (`actions/attest-build-provenance`) |
-| `SHA256SUMS`, SBOM | Keyless cosign | None |
+| Helm chart archive | Keyless cosign (`cosign sign-blob --bundle`) | GitHub build-provenance attestation |
+| `SHA256SUMS`, SBOM, `haltsql-<tag>.oci.txt` | Keyless cosign | None |
+| Helm chart in GHCR | Keyless cosign on the chart's OCI digest, verified in the same job | GitHub build-provenance attestation pushed to the registry |
 | `haltsql` and `haltsql-mcp` images | Keyless cosign on the image digest, verified in the same job | BuildKit SLSA provenance (`provenance: mode=max`) attached to the image index, plus a GitHub build-provenance attestation pushed to the registry |
 | PyPI files | Trusted publishing through `pypa/gh-action-pypi-publish` | See the PyPI file page |
 | npm packages | npm registry signatures | npm provenance (`--provenance`) |
@@ -75,7 +83,7 @@ Known gaps:
 Keyless signatures are issued by Sigstore to the identity of the GitHub
 Actions workflow that ran, so there is no long-lived signing key to protect or
 leak. The certificate identity is the workflow file and ref, for example
-`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.1.0`,
+`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.0.1`,
 and the OIDC issuer is `https://token.actions.githubusercontent.com`.
 
 > **Note:** a release rebuilt by hand (`workflow_dispatch`) runs from the
@@ -122,14 +130,19 @@ fixes while HaltSQL is pre-1.0.
 
 ## Verifying a release
 
-You need [cosign](https://github.com/sigstore/cosign) v2 or later and the
-[GitHub CLI](https://cli.github.com/). Replace `v0.1.0` with the release you
-are checking.
+You need [cosign](https://github.com/sigstore/cosign) v2.4 or later (v3 works
+too), the [GitHub CLI](https://cli.github.com/) 2.49 or later, and `jq`.
+Replace `v0.0.1` with the release you are checking.
+
+`scripts/verify-release.sh v0.0.1` runs every command below (and checks that
+every asset is present, listed in `SHA256SUMS` and signed) against a
+downloaded release; the release workflow runs it on every release before
+anyone else can. The steps by hand:
 
 ### Release tarballs
 
 ```sh
-TAG=v0.1.0
+TAG=v0.0.1
 gh release download "$TAG" --repo HaltSQL/HaltSQL --dir "haltsql-$TAG"
 cd "haltsql-$TAG"
 
@@ -156,7 +169,7 @@ gh attestation verify "haltsql-$TAG-linux-amd64.tar.gz" --repo HaltSQL/HaltSQL
 ### Container images
 
 ```sh
-IMAGE=ghcr.io/haltsql/haltsql:0.1.0
+IMAGE=ghcr.io/haltsql/haltsql:0.0.1
 ID='^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v'
 
 # Signature
@@ -173,9 +186,28 @@ docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}'
 ```
 
 Deploy by digest (`ghcr.io/haltsql/haltsql@sha256:...`), not by tag; the
-release notes print the digest. The same commands work for
+release notes print the digest, and `haltsql-<tag>.oci.txt` (covered by the
+signed `SHA256SUMS`) lists the digest of each image and the chart. The same commands work for
 `ghcr.io/haltsql/haltsql-mcp`. To enforce signatures at admission time, use
 Sigstore policy-controller or Kyverno with the identity and issuer above.
+
+### Helm chart
+
+```sh
+CHART=ghcr.io/haltsql/charts/haltsql
+DIGEST=$(awk '$1 == "helm-chart" {sub(/.*@/, "", $2); print $2}' haltsql-$TAG.oci.txt)
+
+cosign verify "$CHART@$DIGEST" \
+  --certificate-identity-regexp "$ID" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "oci://$CHART@$DIGEST" --repo HaltSQL/HaltSQL
+
+helm install haltsql "oci://$CHART" --version "${TAG#v}"   # or pull the verified release asset
+```
+
+The chart's content layer in the registry is byte-for-byte the
+`haltsql-<version>.tgz` release asset, so the asset's signature and
+attestation cover the registry copy too.
 
 ### npm packages
 

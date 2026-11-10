@@ -53,20 +53,20 @@ Read these before you plan an upgrade cadence:
   releases. Do not treat a version change seen only during a binary upgrade as
   proof that a policy changed; compare the policy files themselves.
 
-> **Note:** At the time of writing, the only tagged release is 0.1.0, and
-> many features documented on this site are listed under **Unreleased** in
-> the changelog. Check the release notes of the exact version you deploy.
+> **Note:** At the time of writing, no release has been tagged yet; the first
+> will be 0.0.1, and many features documented on this site are listed under
+> **Unreleased** in the changelog. Check the release notes of the exact version you deploy.
 
 ## Version numbers you will see
 
 | Where | How to read it |
 |---|---|
 | Release tags | `vX.Y.Z`. The release workflow marks `v0.*` tags and tags with a `-` as pre-releases on GitHub. |
-| Container image | `ghcr.io/haltsql/haltsql:<version>` (e.g. `0.1.0`) and `:<major.minor>` (e.g. `0.1`). Pin by digest in production. |
+| Container image | `ghcr.io/haltsql/haltsql:<version>` (e.g. `0.0.1`) and `:<major.minor>` (e.g. `0.0`). Pin by digest in production. |
 | Release archives | `haltsql-<tag>-linux-{amd64,arm64}.tar.gz`, `haltsql-<tag>-darwin-arm64.tar.gz`; each holds `haltsql`, `haltsql-server` and `haltsql-proxy`. |
 | Running CLI | `haltsql version` (or `--json`): HaltSQL, PostgreSQL grammar and OCaml versions. |
 | Running server | `haltsql_build_info{version,pg}` on `/metrics`; `version` in `GET /v1/admin/status`. |
-| Helm chart | Chart `version` and `appVersion` (the default image tag) in `deploy/helm/haltsql/Chart.yaml`. Chart 0.2.0 requires Kubernetes 1.27+. |
+| Helm chart | Chart `version` and `appVersion` (the default image tag) in `deploy/helm/haltsql/Chart.yaml`. The chart versions in lockstep with HaltSQL and requires Kubernetes 1.27+. |
 
 ## Verifying a release
 
@@ -80,12 +80,12 @@ provenance attestation and an SBOM.
 sha256sum -c SHA256SUMS --ignore-missing
 
 cosign verify-blob \
-  --bundle haltsql-v0.1.0-linux-amd64.tar.gz.sigstore.json \
+  --bundle haltsql-v0.0.1-linux-amd64.tar.gz.sigstore.json \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  haltsql-v0.1.0-linux-amd64.tar.gz
+  haltsql-v0.0.1-linux-amd64.tar.gz
 
-gh attestation verify haltsql-v0.1.0-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
+gh attestation verify haltsql-v0.0.1-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
 
 cosign verify ghcr.io/haltsql/haltsql@sha256:<digest> \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \

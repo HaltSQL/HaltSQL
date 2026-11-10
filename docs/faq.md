@@ -240,7 +240,7 @@ denied. See [Open Policy Agent](opa.md).
 
 ### Is HaltSQL production ready? What does pre-1.0 mean?
 
-HaltSQL is 0.1.0, a pre-1.0 preview. The verdict format within
+HaltSQL is 0.0.1, a pre-1.0 preview. The verdict format within
 `haltsql.dev/v1` and the reason codes are stable: reason codes are never
 renamed or reused. Other interfaces, including the policy schema and the HTTP
 API, may still change before 1.0. Before 1.0, a minor release may contain

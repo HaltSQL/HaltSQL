@@ -158,7 +158,7 @@ spec:
               readOnly: true
 
         - name: haltsql
-          image: ghcr.io/haltsql/haltsql:0.1.0      # pin by digest in production
+          image: ghcr.io/haltsql/haltsql:0.0.1      # pin by digest in production
           # All pod interfaces so kubelet probes and Managed Prometheus can reach
           # it; the NetworkPolicy below keeps other pods out and every /v1 call
           # needs the bearer token anyway.

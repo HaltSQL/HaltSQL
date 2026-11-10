@@ -57,7 +57,7 @@ that terminates TLS.
 Images are published for `linux/amd64` and `linux/arm64`:
 
 ```
-ghcr.io/haltsql/haltsql:<version>     # e.g. 0.1.0
+ghcr.io/haltsql/haltsql:<version>     # e.g. 0.0.1
 ghcr.io/haltsql/haltsql:<major.minor> # e.g. 0.1
 ```
 
@@ -68,7 +68,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$PWD/policies:/etc/haltsql/policies:ro" \
   -v "$PWD/config.yaml:/etc/haltsql/config.yaml:ro" \
   -e HALTSQL_ANALYTICS_TOKEN_HASH \
-  ghcr.io/haltsql/haltsql:0.1.0 \
+  ghcr.io/haltsql/haltsql:0.0.1 \
   --config /etc/haltsql/config.yaml --listen 0.0.0.0:8080
 ```
 
@@ -80,7 +80,7 @@ Run the CLI from the same image:
 
 ```sh
 docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql \
-  ghcr.io/haltsql/haltsql:0.1.0 validate policy.yaml
+  ghcr.io/haltsql/haltsql:0.0.1 validate policy.yaml
 ```
 
 Pin images by digest in production (`ghcr.io/haltsql/haltsql@sha256:...`)
@@ -110,7 +110,7 @@ Run the proxy from the same image:
 docker run --rm -p 127.0.0.1:6432:6432 \
   -v "$PWD/proxy:/etc/haltsql:ro" -e UPSTREAM_PASSWORD \
   --entrypoint /usr/local/bin/haltsql-proxy \
-  ghcr.io/haltsql/haltsql:0.1.0 run --config /etc/haltsql/proxy.yaml
+  ghcr.io/haltsql/haltsql:0.0.1 run --config /etc/haltsql/proxy.yaml
 ```
 
 Mounted files must be readable by uid 65532.
@@ -294,7 +294,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: analytics-agent-token, key: token }
         - name: haltsql
-          image: ghcr.io/haltsql/haltsql:0.1.0
+          image: ghcr.io/haltsql/haltsql:0.0.1
           args: ["--config", "/etc/haltsql/config.yaml"]
           ports:
             - { name: http, containerPort: 8080 }
@@ -426,12 +426,17 @@ Put secrets referenced with `${env:...}` in `/etc/haltsql/haltsql.env`
 
 ## Verifying release artifacts
 
-Each GitHub release has, for every archive:
+Each GitHub release has:
 
-- `SHA256SUMS`: checksums of all archives and the SBOM;
-- `*.sigstore.json`: a keyless cosign signature bundle;
-- a GitHub build-provenance attestation;
+- `SHA256SUMS`: checksums of all archives, the Helm chart archive, the SBOM
+  and `haltsql-<tag>.oci.txt` (the digests of the images and the chart in GHCR);
+- `*.sigstore.json`: a keyless cosign signature bundle for each of those files;
+- a GitHub build-provenance attestation for each archive and the chart;
 - `haltsql-<tag>.cdx.json`: a CycloneDX SBOM.
+
+`scripts/verify-release.sh <tag>` runs all of the checks below, plus the image
+SBOM, provenance and Helm chart checks in
+[supply-chain.md](security/supply-chain.md#verifying-a-release). By hand:
 
 ```sh
 # Checksums
@@ -439,16 +444,16 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 # Signature (keyless, issued to this repository's release workflow)
 cosign verify-blob \
-  --bundle haltsql-v0.1.0-linux-amd64.tar.gz.sigstore.json \
+  --bundle haltsql-v0.0.1-linux-amd64.tar.gz.sigstore.json \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  haltsql-v0.1.0-linux-amd64.tar.gz
+  haltsql-v0.0.1-linux-amd64.tar.gz
 
 # Provenance (GitHub CLI)
-gh attestation verify haltsql-v0.1.0-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
+gh attestation verify haltsql-v0.0.1-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
 
 # Container image signature
-cosign verify ghcr.io/haltsql/haltsql:0.1.0 \
+cosign verify ghcr.io/haltsql/haltsql:0.0.1 \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
