@@ -16,6 +16,12 @@ even before 1.0.
   tenant comes from the config; a request body that names another tenant gets
   `403 CONTEXT_NOT_ALLOWED`. Tokens without either key behave as before (the
   body supplies the context).
+- **Verdicts report the search path, and the Python guard pins it.** The
+  verdict's `policy` object gains `search_path`. `haltsql.guard` (and so the
+  MCP server and the Python integrations) sets it for the transaction that runs
+  the verified SQL, so a role or database default such as
+  `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
+  resolve to a different table than the one the policy lists.
 - **Audit records carry the context.** Server audit records gain `context`
   (the values the statement was verified under) and `context_source`
   (`authenticated` or `request`), so the log shows which tenant a caller acted

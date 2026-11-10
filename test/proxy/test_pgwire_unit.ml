@@ -730,6 +730,7 @@ let verdict_with params : Haltsql.Verdict.t =
     shadow_reasons = [];
     policy_name = "p";
     policy_version = "v";
+    search_path = [];
     statement_kind = Some "select";
     tables = [];
     columns = [];

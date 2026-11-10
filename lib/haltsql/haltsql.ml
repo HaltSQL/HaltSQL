@@ -67,6 +67,7 @@ let verify (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t =
     shadow_reasons;
     policy_name = policy.name;
     policy_version = policy.version;
+    search_path = policy.search_path;
     statement_kind = Option.map Policy.stmt_kind_to_string analysis.statement_kind;
     tables = analysis.tables;
     columns = analysis.columns;

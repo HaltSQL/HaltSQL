@@ -193,6 +193,22 @@ def _settings_list(
     return out
 
 
+def _pin_search_path(verdict: Verdict) -> List["tuple[str, str]"]:
+    """The transaction-local setting that pins the verdict's search path.
+
+    The verifier resolved unqualified names against the policy's
+    ``search_path``. Pinning it for the transaction keeps a role or database
+    default (``ALTER ROLE ... SET search_path``) from making the verified SQL
+    read a different relation. It is applied after the caller's ``settings``,
+    so it overrides a ``search_path`` passed there. Empty when the engine did
+    not report a search path.
+    """
+    sp = verdict.policy.search_path
+    if sp is None:
+        return []
+    return [("search_path", ", ".join('"' + x.replace('"', '""') + '"' for x in sp))]
+
+
 def _check_max_rows(max_rows: Optional[int]) -> None:
     if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 0):
         raise ValueError("max_rows must be a non-negative integer")
@@ -249,6 +265,7 @@ def _run_psycopg(
     read_only: bool,
     settings: List["tuple[str, str]"],
     max_rows: Optional[int],
+    pin: Sequence["tuple[str, str]"] = (),
 ) -> "tuple[List[Any], List[str], int, bool]":
     import psycopg
 
@@ -262,7 +279,7 @@ def _run_psycopg(
         with psycopg.RawCursor(conn) as cur:
             if read_only:
                 cur.execute("SET TRANSACTION READ ONLY")
-            for name, value in settings:
+            for name, value in [*settings, *pin]:
                 cur.execute("SELECT set_config($1, $2, true)", [name, value])
             cur.execute(sql, list(params))
             rows, cols, truncated = _fetch_psycopg(cur, max_rows)
@@ -277,6 +294,7 @@ async def _run_psycopg_async(
     read_only: bool,
     settings: List["tuple[str, str]"],
     max_rows: Optional[int],
+    pin: Sequence["tuple[str, str]"] = (),
 ) -> "tuple[List[Any], List[str], int, bool]":
     import psycopg
 
@@ -290,7 +308,7 @@ async def _run_psycopg_async(
         async with psycopg.AsyncRawCursor(conn) as cur:
             if read_only:
                 await cur.execute("SET TRANSACTION READ ONLY")
-            for name, value in settings:
+            for name, value in [*settings, *pin]:
                 await cur.execute("SELECT set_config($1, $2, true)", [name, value])
             await cur.execute(sql, list(params))
             if cur.description is None:
@@ -312,6 +330,7 @@ async def _run_asyncpg(
     settings: List["tuple[str, str]"],
     max_rows: Optional[int],
     statement_kind: Optional[str],
+    pin: Sequence["tuple[str, str]"] = (),
 ) -> "tuple[List[Any], List[str], int, bool]":
     if (read_only or settings) and conn.is_in_transaction():
         raise GuardError(
@@ -319,7 +338,7 @@ async def _run_asyncpg(
             "statement_timeout, or settings needs an idle connection"
         )
     async with conn.transaction(readonly=read_only):
-        for name, value in settings:
+        for name, value in [*settings, *pin]:
             await conn.execute("SELECT set_config($1, $2, true)", name, value)
         stmt = await conn.prepare(sql)
         cols = [a.name for a in stmt.get_attributes()]
@@ -395,7 +414,8 @@ def execute(
     verdict = _authorize(verdict, sql) if verdict is not None else _verify_sync(verifier, sql, context)
     params = verdict.bind_args()
     rows, cols, rowcount, truncated = _run_psycopg(
-        conn, sql, params, _read_only(read_only, verdict), setts, max_rows
+        conn, sql, params, _read_only(read_only, verdict), setts, max_rows,
+        pin=_pin_search_path(verdict),
     )
     return GuardedResult(rows=rows, columns=cols, rowcount=rowcount, truncated=truncated, verdict=verdict)
 
@@ -428,11 +448,12 @@ async def execute_async(
     ro = _read_only(read_only, verdict)
     if kind == "asyncpg":
         rows, cols, rowcount, truncated = await _run_asyncpg(
-            conn, sql, params, ro, setts, max_rows, verdict.statement_kind
+            conn, sql, params, ro, setts, max_rows, verdict.statement_kind,
+            pin=_pin_search_path(verdict),
         )
     else:
         rows, cols, rowcount, truncated = await _run_psycopg_async(
-            conn, sql, params, ro, setts, max_rows
+            conn, sql, params, ro, setts, max_rows, pin=_pin_search_path(verdict)
         )
     return GuardedResult(rows=rows, columns=cols, rowcount=rowcount, truncated=truncated, verdict=verdict)
 

@@ -5,7 +5,8 @@
   "shadow_reasons": [],
   "policy": {
     "name": "saas-literal",
-    "version": "sha256:c62411733171d75c146f35a7e68229d540951bdf10919bfbb0c48703b41ecb19"
+    "version": "sha256:c62411733171d75c146f35a7e68229d540951bdf10919bfbb0c48703b41ecb19",
+    "search_path": [ "app" ]
   },
   "statement_kind": "select",
   "tables": [ "app.orders" ],

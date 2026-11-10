@@ -5,7 +5,8 @@
   "shadow_reasons": [],
   "policy": {
     "name": "hierarchical",
-    "version": "sha256:9f95500d083a3db66c727d4d11d138237ff3c5967e0633d9744bcd533f7e6592"
+    "version": "sha256:9f95500d083a3db66c727d4d11d138237ff3c5967e0633d9744bcd533f7e6592",
+    "search_path": [ "app" ]
   },
   "statement_kind": "select",
   "tables": [ "app.accounts" ],

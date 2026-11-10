@@ -259,6 +259,7 @@ let verdict =
     shadow_reasons = [ reason Core.Reason.E_LIMIT_REQUIRED ];
     policy_name = "shop";
     policy_version = "v7";
+    search_path = [];
     statement_kind = Some "select";
     tables = [];
     columns = [];

@@ -292,3 +292,36 @@ def test_clean_shadow_verdict_runs_without_opt_in(monkeypatch):
     monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
     fv = FakeVerifier(lambda sql, ctx, p: make_verdict_dict(sql, allowed=True))
     assert guard.authorize(SQL_OK, {}, verifier=fv).allowed is True
+
+
+# ---- the guard pins the search path the verdict was computed under ----
+
+def test_search_path_pin_is_quoted_and_applied_last():
+    v = make_verdict(SQL_OK, allowed=True, bind=["acme"])
+    assert guard._pin_search_path(v) == []  # an engine that reports no search path
+    d = make_verdict_dict(SQL_OK, allowed=True, bind=["acme"])
+    d["policy"]["search_path"] = ["app", 'we"ird', "Mixed"]
+    from haltsql import Verdict
+
+    v = Verdict.from_dict(d)
+    assert guard._pin_search_path(v) == [("search_path", '"app", "we""ird", "Mixed"')]
+    assert v.to_dict()["policy"]["search_path"] == ["app", 'we"ird', "Mixed"]
+
+
+@pytest.mark.integration
+def test_psycopg_runs_under_the_policy_search_path(pg_dsn, haltsql_cli):
+    """A session default that points unqualified names elsewhere must not win."""
+    import psycopg
+
+    lv = LocalVerifier(os.path.join(POLICIES_DIR, "saas.yaml"), binary=haltsql_cli)
+    sql = "SELECT id, status FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 3"
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        conn.execute("CREATE TABLE public.orders (id int8, tenant_id text, status text)")
+        conn.execute("INSERT INTO public.orders VALUES (999, 'acme', 'decoy')")
+        conn.execute("SET search_path = public, app")
+        assert conn.execute("SELECT id FROM orders LIMIT 1").fetchone() == (999,)
+        r = guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=lv)
+        assert r.verdict.policy.search_path == ("app",)
+        assert r.rows == [(2, "open"), (4, "open"), (6, "open")]
+        # transaction-local: the session's own setting is back afterwards
+        assert conn.execute("SELECT id FROM orders LIMIT 1").fetchone() == (999,)

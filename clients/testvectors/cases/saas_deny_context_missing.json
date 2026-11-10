@@ -28,7 +28,10 @@
     "shadow_reasons": [],
     "policy": {
       "name": "saas",
-      "version": "sha256:c4c06274995646e98e35d8a540c8d5baf1af72371a373b67255b582ec1983579"
+      "version": "sha256:c4c06274995646e98e35d8a540c8d5baf1af72371a373b67255b582ec1983579",
+      "search_path": [
+        "app"
+      ]
     },
     "statement_kind": "select",
     "tables": [
@@ -41,7 +44,7 @@
     "bind_params": [],
     "fingerprint": "53a2755a1ded78c5",
     "sql_sha256": "372f83aa27535a0c27b16ce75e67d3986354da94c60b42f8f6533e5314f60db8",
-    "elapsed_us": 429
+    "elapsed_us": 457
   },
   "compare": [
     "allowed",

@@ -20,7 +20,8 @@
   "shadow_reasons": [],
   "policy": {
     "name": "writes",
-    "version": "sha256:6384de593655a2496224a045a86ba3300e310a59c94ccca6a7e4e9b68243f7dd"
+    "version": "sha256:6384de593655a2496224a045a86ba3300e310a59c94ccca6a7e4e9b68243f7dd",
+    "search_path": [ "app" ]
   },
   "statement_kind": "update",
   "tables": [ "app.tickets" ],

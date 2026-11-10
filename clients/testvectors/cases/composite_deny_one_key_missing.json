@@ -24,7 +24,10 @@
     "shadow_reasons": [],
     "policy": {
       "name": "composite",
-      "version": "sha256:d0706031c4a8b9d02e953fc25b7e9bb479688503587433d8a4d1c0e26e42e5cd"
+      "version": "sha256:d0706031c4a8b9d02e953fc25b7e9bb479688503587433d8a4d1c0e26e42e5cd",
+      "search_path": [
+        "app"
+      ]
     },
     "statement_kind": "select",
     "tables": [
@@ -38,7 +41,7 @@
     "bind_params": [],
     "fingerprint": "aba0e67693e0e2a0",
     "sql_sha256": "20ea9b81409ebcceb5e3365d844982e31e690b607e6b8c0dcb6ba129ccd9f3f0",
-    "elapsed_us": 369
+    "elapsed_us": 473
   },
   "compare": [
     "allowed",

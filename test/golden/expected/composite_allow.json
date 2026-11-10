@@ -5,7 +5,8 @@
   "shadow_reasons": [],
   "policy": {
     "name": "composite",
-    "version": "sha256:d0706031c4a8b9d02e953fc25b7e9bb479688503587433d8a4d1c0e26e42e5cd"
+    "version": "sha256:d0706031c4a8b9d02e953fc25b7e9bb479688503587433d8a4d1c0e26e42e5cd",
+    "search_path": [ "app" ]
   },
   "statement_kind": "select",
   "tables": [ "app.projects" ],

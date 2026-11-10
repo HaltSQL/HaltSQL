@@ -13,7 +13,8 @@
   ],
   "policy": {
     "name": "shadow",
-    "version": "sha256:a400ab567f6d38ca62b217c55384ab67c1636bc5b91bb7148a95ec0991a721bd"
+    "version": "sha256:a400ab567f6d38ca62b217c55384ab67c1636bc5b91bb7148a95ec0991a721bd",
+    "search_path": [ "app" ]
   },
   "statement_kind": "select",
   "tables": [ "app.orders" ],
