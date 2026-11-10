@@ -101,7 +101,7 @@ let rbac_tests =
         Alcotest.(check bool)
           "only admin restarts" true
           (List.for_all
-             (fun r -> grant r Restart_verifiers = Yes = (r = Admin))
+             (fun r -> grant r Restart_verifiers = With_reason = (r = Admin))
              all_roles) );
   ]
 

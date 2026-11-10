@@ -20,6 +20,7 @@ The machine-readable contract is [openapi.yaml](openapi.yaml).
 | 403 | `REASON_REQUIRED` | The permission is "with a reason" and none was given. |
 | 404 | `NOT_FOUND` | Unknown route or object. |
 | 409 | `CONFLICT` | State conflict (for example a case already resolved). |
+| 429 | `RATE_LIMITED` | Too soon to repeat the action (for example `POST /data/refresh`). |
 | 501 | `NOT_IMPLEMENTED` | The action needs verifier support that does not exist yet. |
 | 502 | `UPSTREAM` | A verifier, catalog, GitHub or Kubernetes call failed. Message has no secrets. |
 | 503 | `NOT_CONFIGURED` | The feature needs configuration that is missing (for example no GitHub integration). |
@@ -68,7 +69,7 @@ Groups map to roles through `auth.roles` (`admin` wins over `owner`, then
 | Approve a policy change | `approve_change` | no | no | yes | no | no |
 | Approve a PII exception | `approve_exception` | no | no | yes | no | no |
 | Build evidence packs | `build_evidence` | no | yes | yes | yes | no |
-| Restart verifiers | `restart_verifiers` | no | no | no | no | yes |
+| Restart verifiers | `restart_verifiers` | no | no | no | no | reason |
 | Manage roles and integrations | `manage_access` | no | no | no | no | yes |
 
 Every role can read Overview, Signals, Agents, Fleet, Data classification,
@@ -156,8 +157,20 @@ and most severe first.
 }
 ```
 
+`timeline.series` items also carry `shadow_denied`. `shapes` group the signal's
+records by fingerprint; `example_shape` is the raw SQL with literals replaced by
+`?` when the producer logged SQL, else the fingerprint. Viewing a signal's
+investigation is written to the activity log (`signal.view`).
+
 `POST /api/v1/signals/{id}` with `{ "status": "investigating", "assignee": "dana.reyes@acme.com" }`
-(either field) updates workflow state. `acknowledged` is for low signals.
+(either field; `assignee: null` clears it) updates workflow state. Needs
+`write_cases`. `acknowledged` is for low signals (`400` otherwise). Returns the
+signal.
+
+A signal's id is its kind, subject and the start of the window bucket the
+episode began in; re-detections update the same signal. A signal whose
+condition has cleared for 30 minutes becomes `resolved` unless someone set its
+status.
 
 The `cross_tenant` signal needs the tenant values a query compared against.
 Records only carry codes, so the detector counts `E_TENANT_MISMATCH` records
@@ -169,7 +182,10 @@ when raw SQL is logged it also extracts the distinct values by re-verifying.
 `GET /api/v1/queries?q=&caller=&policy=&outcome=allowed|denied|shadow_denied&code=&table=&fingerprint=&verifier=&since=&until=&limit=&cursor=`
 
 `q` matches a request id prefix, caller substring, fingerprint prefix, or table
-name. Records never include `sql`.
+name. Records never include `sql`. Without `since`, `until` or `range` the whole
+retention window is searched (so an old request id can still be found); `range`
+applies only when given. `table` matches `schema.table` or the bare table name.
+Permission `search_queries`.
 
 ```json
 { "records": [ {
@@ -189,28 +205,69 @@ name. Records never include `sql`.
   "record": { "...": "as above" },
   "trail": [ { "stage": "parse | tables | tenancy | limit | functions | opa | verdict",
                "state": "passed | denied | not_run | skipped", "detail": "..." } ],
+  "trail_source": "reverified | codes",
   "reasons": [ { "code": "E_TENANT_MISMATCH", "rule": "tenancy.mismatch", "message": "...", "hint": "..." } ],
-  "policy": { "name": "support-copilot", "version": "sha256:...", "bundle": "prod 1.4.0" },
+  "policy": { "name": "support-copilot", "version": "sha256:...", "bundle": "prod 1.4.0", "loaded_version": "sha256:..." },
   "custody": {
     "verifier": "haltsql-2", "seq": 8412096, "hash": "...", "prev_hash": "...",
-    "neighbours": [ { "seq": 8412095, "hash": "...", "prev_hash": "...", "outcome": "allowed" } ],
-    "location": "s3://acme-audit/haltsql/haltsql-2-20261107T1300Z-0412.jsonl#L412",
-    "chain_state": "intact | broken | unknown", "last_verified": "...",
-    "verify_command": "haltsql audit verify s3://acme-audit/haltsql/ --server haltsql-2"
+    "neighbours": [ { "seq": 8412095, "request_id": "...", "hash": "...", "prev_hash": "...", "outcome": "allowed" } ],
+    "location": "s3://acme-audit/haltsql/2026/11/07/13/haltsql-2-20261107T130000.000001Z.42-0000000412-<sha256>.jsonl#L412",
+    "chain_state": "intact | broken | unknown",
+    "first_break": { "seq": 8412001, "request_id": "...", "location": "...", "message": "hash mismatch (record was modified)" },
+    "last_verified": "...",
+    "verify_command": "haltsql audit verify s3://acme-audit/haltsql/ --host haltsql-2 --region us-east-1"
   }
 }
 ```
 
+`GET /records/{id}` needs `search_queries` and never includes SQL. `reasons` has one
+entry per recorded code; `rule` and `hint` are `null` when only the code is known.
+`policy.bundle` comes from the last fleet snapshot of the record's verifier and
+`policy.loaded_version` is the version of the policy the console loaded (both `null`
+when unknown); a re-derived trail uses the loaded policy, so compare the two versions.
+
+**Custody.** `seq` is the record's position in its verifier's stream as ingested
+(files in name order, objects in key order); `neighbours` are the records up to two
+positions before and after. The chain is checked locally over the records in the
+index: the stream is split into segments at every record whose `prev_hash` is the
+genesis hash (a new chain, as after a restart without a spool), the first record of a
+segment may link to a record that has left the retention window, and every other link
+and hash must verify. `chain_state` is that of the record's segment: `broken` (with
+`first_break`) when any record in it fails, `unknown` when the record has no `hash`.
+`verify_command` re-verifies the original records with the CLI: `haltsql audit verify
+<file>` for files, `haltsql audit verify s3://bucket/prefix/ --host <host>` (plus
+`--region`/`--endpoint` when configured) for S3, and, because the CLI does not read
+`gs://` directly, a `gcloud storage cp -r` of the prefix followed by `haltsql audit
+verify <dir> --host <host>` for GCS. `<host>` is the host in the object name.
+
 The trail is re-derived by re-verifying the SQL against the named policy when
-raw SQL and the policy are available; otherwise from the codes alone
-(`tenancy` stage from `E_TENANT_*`, `tables` from `E_TABLE_*`/`E_COLUMN_*`,
-`opa` from `E_EXTERNAL_POLICY`; OPA is `not_run` when HaltSQL denied, because
-OPA is only asked after an allow).
+raw SQL and the policy are available (`trail_source: "reverified"`, with the
+record's `context` if it has one, else a placeholder context); otherwise from the
+codes alone (`trail_source: "codes"`). Either way the record's own codes decide each
+stage's state; re-verification only adds the detailed messages, rules, hints and
+tables. Codes map to stages as follows: `parse` from `E_PARSE`, `E_EMPTY`, `E_LIMIT`,
+`E_MULTI_STATEMENT`, `E_STATEMENT_KIND`, `E_DATA_MODIFYING_CTE`, `E_LOCKING_CLAUSE`,
+`E_SELECT_INTO`, `E_UNSUPPORTED`, `E_INTERNAL`; `tables` from `E_TABLE_*`/`E_COLUMN_*`
+and `E_WRITE_DENIED`; `tenancy` from `E_TENANT_*`, `E_CONTEXT_MISSING`,
+`E_PARAM_UNBOUND`; `limit` from `E_LIMIT_REQUIRED`, `E_LIMIT_TOO_HIGH`,
+`E_JOIN_BUDGET`; `functions` from `E_FUNCTION_DENIED`, `E_OPERATOR_DENIED`,
+`E_CAST_DENIED`; `opa` from `E_EXTERNAL_POLICY`; unknown codes are named in the
+`verdict` stage. After a hard parse failure (`E_PARSE`, `E_EMPTY`, `E_LIMIT`,
+`E_MULTI_STATEMENT`, `E_UNSUPPORTED`, `E_INTERNAL`) the other analyzer stages are
+`not_run`. OPA is `not_run` when HaltSQL denied, because OPA is only asked after an
+allow. `tenancy` is `skipped` when the loaded policy has no tenancy keys. In shadow
+mode a stage that would deny is `denied` (detail says "Shadow mode") and the verdict
+is `passed`.
 
 | | |
 |---|---|
-| `GET /api/v1/records/{id}/sql` | `see_raw_sql` with reason. `{ "sql": "...", "logged": true }`, `404` when the producer didn't log it. |
-| `POST /api/v1/records/{id}/verify-chain` | Re-verifies the record's chain segment now; returns `custody`. |
+| `GET /api/v1/records/{id}/sql` | `see_raw_sql` with reason. `{ "sql": "...", "logged": true }`, `404` when the producer didn't log it. Logged as `record.view_sql` (the SQL itself is never logged). |
+| `POST /api/v1/records/{id}/verify-chain` | `search_queries`. Re-verifies the record's verifier chain now; returns `custody` and updates the chain status Overview reads. Logged as `record.verify_chain`. |
+
+The console also re-verifies every verifier's chain every 5 minutes; the result
+(`{ "checked_at", "chains": [ { "verifier", "state": "intact | broken | unknown",
+"records", "segments", "first_break", "checked_at" } ] }`) feeds the `audit_chains`
+posture check and the `chain_broken` signal.
 
 ### Cases
 
@@ -231,6 +288,14 @@ OPA is only asked after an allow).
 ```
 
 Case ids are `CASE-<n>` from a counter in the store, starting at 1000.
+`status=open` (the default) lists every case that is not resolved. A case
+created with `signal_id` links both ways (the signal gets `case_id`), adds the
+signal's request ids, and for `cross_tenant` signals starts with default steps;
+an unknown signal is `400`, a signal already linked to a case `409`. `{n}` in
+`/steps/{n}` is the step's 0-based index. A resolved case only accepts
+`PATCH { "status": "open" }` (reopen); other changes are `409 CONFLICT`. When
+`integrations.jira` is set the case also has `"jira": { "key", "url" }` (or
+`null` if the issue could not be created).
 
 ### Pause a caller: `POST /api/v1/callers/{caller}/pause`
 
@@ -261,8 +326,14 @@ a caller seen in records but not configured becomes its own agent with
 `via` guessed from the record (`proxy` source → `proxy`, verifier kind `mcp`
 → `mcp`, else `sidecar`). In-process agents have `queries: null`.
 
+Agents also carry `caller_types` and `configured` (listed in `agents:`), and
+the response has the `range` it covers. `sort` defaults to `denied`.
+
 `GET /api/v1/agents/{name}` adds `top_codes: [{code, count, top_object}]`
-and `policies: { enforced: {...}, shadow: [...] }`.
+and `policies: { enforced: {name, version, mode, origin, loaded}, shadow: [...] }`.
+`top_object` is the most frequent object denied with that code (column,
+function, table, `LIMIT n`), named from detailed reasons re-derived from raw
+SQL when it was logged, else the most frequent table of those records.
 
 ### Playground: `POST /api/v1/playground/check`
 
@@ -284,21 +355,36 @@ and `policies: { enforced: {...}, shadow: [...] }`.
     "allowed": false,
     "stages": [ { "stage": "parse", "state": "passed", "detail": "One SELECT." } ],
     "verdict": { "...": "verdict JSON exactly as haltsql-server returns it" },
-    "opa": { "asked": false, "allowed": null, "ms": null, "error": null }
+    "opa": { "asked": false, "allowed": null, "ms": null, "error": null, "outcome": "skipped", "reasons": [] }
   } ],
-  "columns": [ { "column": "app.orders.region", "tags": [], "sources": ["dbt"], "allowed_by": ["analytics v11"] } ],
-  "test_case": "- name: ...\n  policy: analytics\n  context: { tenant_id: acme }\n  sql: ...\n  expect: allow\n" }
+  "columns": [ { "column": "app.orders.region", "tags": [], "sources": ["dbt"], "allowed_by": ["analytics"] } ],
+  "test_case": "- name: ...\n  # policy: analytics\n  context: {\"tenant_id\":\"acme\"}\n  sql: ...\n  expect: allow\n",
+  "sql_sha256": "..." }
 ```
 
-OPA is consulted only when the HaltSQL verdict allows and `opa` is configured
-in the console (same `opa:` block as the server).
+Stages are `parse`, `tables`, `tenancy`, `functions`, `limit`, `opa`, each
+`passed | denied | not_run | skipped` with a detail (`not_run` after a parse
+failure, and for OPA when HaltSQL denied). `allowed` is true when the final
+verdict has neither reasons nor shadow reasons (a shadow policy that would deny
+reports `false`). An invalid `draft` returns `400` with
+`error.errors: ["<load error>", ...]`; an unknown live policy `404`.
+
+OPA is consulted only when the HaltSQL verdict allows, `opa` is configured
+in the console (same `opa:` block as the server) and the request does not set
+`"opa": false`. The input document is the server's (`caller.type` is
+`playground`); `timeout_ms` and `on_error` apply as on the server.
+
+`test_case` is one case in the `haltsql test` suite format, from the first
+result (`expect` and, for a denial, `codes`); suite cases have no per-case
+policy, so the policy is a comment. The activity log entry
+(`playground.check`) stores the SQL's SHA-256, never the SQL.
 
 ### Policies and rollouts
 
 | | |
 |---|---|
-| `GET /api/v1/policies` | `{ "policies": [ { "name", "version", "mode": "enforce|shadow", "origin", "bundle", "verifiers": ["haltsql-1"], "owner" } ] }` |
-| `GET /api/v1/policies/{name}` | Policy detail: YAML (no secrets), tables and columns allowed, shadow siblings. |
+| `GET /api/v1/policies` | `{ "policies": [ { "name", "version", "mode": "enforce|shadow", "origin": "config|bundle|file", "file", "bundle", "verifiers": ["haltsql-1"], "owner", "shadow": ["<sibling>"], "loaded": true } ], "loaded": "<last successful load>", "errors": [], "notes": [] }` |
+| `GET /api/v1/policies/{name}` | Policy detail: the list fields plus `description`, `format`, `yaml` (the source; normalized YAML for inline and bundle policies), `statements`, `require_limit`, `tenancy`, `tables` (`[{table, columns, tenant_columns, writes}]`), `functions`. |
 | `GET /api/v1/policies/{name}/report?since=&compare=<shadow policy>` | Shadow comparison and suggestions. |
 | `POST /api/v1/policies/{name}/pull-request` | `propose_changes`. `{ "suggestions": ["<id>"], "tests": ["<yaml>"], "title"? }` opens or updates a PR in `integrations.github.repo`. `503 NOT_CONFIGURED` without GitHub. |
 
@@ -319,6 +405,53 @@ Report response:
 
 Suggestions come from `Report.Suggest.compute`, so tenancy, writes, OPA
 denials and PII columns are never suggested.
+
+Details of the report:
+
+- Records are the index records of the policy since `since` (RFC 3339, a date
+  or a duration such as `7d`; default the whole retention window). Records
+  with raw SQL are re-verified to name the denied objects, like
+  `haltsql report`. The response also has `version`, `since`, `records` and
+  `missing_detail`.
+- `compare` defaults to the first shadow sibling (`<name>-*`, `<name>_*`,
+  `<name>.*` in shadow mode); `null` (and `comparison: null`) when there is
+  none. `days_in_shadow` counts from the oldest record logged under the
+  compare policy.
+- `comparison` re-verifies the raw SQL of the policy's records under the
+  compare policy (`compared` of `records` had SQL). Records do not carry
+  context values, so the re-verification uses placeholder tenancy values: in
+  `literal` tenancy mode, tenant literals then never match. `tenancy_relaxed`
+  counts records denied with an `E_TENANT_*` code that the compare policy
+  allows.
+- Suggestions also carry `code`, `applicable`, `notes` and
+  `evidence.denied`/`shadow_denied`; `review` is `{pull_request, url}` when the
+  stored PR includes the suggestion, else `null`.
+- `never` has one row per code that is never suggested, plus one per
+  sensitive column (`target`) and unsafe function. `E_TENANT_*` and
+  `E_CONTEXT_MISSING` are `tenancy`, `E_EXTERNAL_POLICY` is `external_policy`,
+  everything else (query fixes, writes, statement kinds) `query_fix`.
+- `pull_request` is `null` until a PR was opened from the console. Its live
+  state (`open | closed | merged | missing | unknown`), check runs and
+  approvals (each reviewer's latest decisive review) are read from GitHub and
+  cached for 30 seconds; a failed read gives `state: "unknown"` and `error`.
+
+`POST /api/v1/policies/{name}/pull-request` applies the chosen suggestions to
+the policy file in the repository with `Report.Patch` (validated before
+committing; `409` when the patched policy does not validate or nothing
+applies), appends `tests` (each one case or a list of cases in the
+`haltsql test` format; `400` when invalid) to `<tests_path>/<name>.yaml`,
+commits both in one commit on `<branch_prefix><name>` and opens a PR, or
+updates the open PR it opened before for this policy. Response `201` (opened)
+or `200` (updated):
+
+```json
+{ "number": 212, "url": "...", "branch": "haltsql-console/analytics", "head_sha": "...", "state": "open",
+  "created": true, "applied": ["analytics/column/app.orders.region"], "skipped": [ { "id", "reason" } ],
+  "files": ["policies/analytics.yaml", "tests/analytics.yaml"] }
+```
+
+The PR is stored (`number`, `url`, `branch`, `head_sha`, suggestions) and the
+action logged as `policy.pull_request`.
 
 ### Fleet
 
@@ -345,37 +478,95 @@ denials and PII columns are never suggested.
 `verifies_per_second` and OPA decisions come from `/metrics` when the verifier
 exposes it (deltas between polls); `null` otherwise.
 
-`POST /api/v1/fleet/{name}/restart`: `restart_verifiers` with a reason.
+Before the first poll the document is empty: `updated` and `config_generation`
+are `null` and the lists are empty. Details:
+
+- `state`: `unreachable` (no HTTP answer, or for a proxy no TCP connection;
+  `error` says why), `buffering` (an audit sink is unhealthy or has buffered
+  records), `not_ready` (`/readyz` is 503 for another reason: no policy,
+  draining), `restart_pending` (`audit_restart_pending`), else `ready`.
+  `note` is a human sentence about the state. `error` reports a failed probe
+  even when the state is known (e.g. a 403 on the admin status).
+- `config_generation` (top level) is the highest generation reported; each
+  verifier also carries its own `config_generation`.
+- Extra fields: verifier `sinks[].buffered_records`, `buffered_records` (total),
+  `opa.external_policy_denials`; bundle `versions: [ { version, revision,
+  signed_by, verifiers: [names] } ]` (majority first; the top-level version is
+  the majority's); sink `buffered_records`, `peak_buffered_records`,
+  `unhealthy_verifiers`; `opa.configured`, `opa.decisions.error_allowed` and
+  `opa.window_seconds`.
+- `opa.timeouts` (per verifier) counts OPA errors (`error_allowed` +
+  `error_denied`: timeouts and failures), and `opa.decisions` the decisions of
+  every verifier, both over the in-memory history (the last 120 polls,
+  `window_seconds`). Fields are `null` when the verifier has no `/metrics`.
+- `kind: mcp`/`proxy` verifiers without admin status get their state from
+  `/readyz` and `/metrics` (404s are not errors); a proxy with a non-HTTP `url`
+  from a TCP connect.
+
+`POST /api/v1/fleet/{name}/restart`: `restart_verifiers` and a reason (always
+required for restarts, even for roles granted the permission outright).
 Restarts the verifier's Kubernetes workload (`fleet.kubernetes`, a rollout
-restart patch on its Deployment or StatefulSet). `503 NOT_CONFIGURED`
-outside Kubernetes.
+restart patch on its Deployment or StatefulSet) and returns
+`{ "verifier", "workload": "deployment/haltsql-1", "restarted_at" }`. Logged as
+`fleet.restart`. `404` for an unknown verifier, `503 NOT_CONFIGURED` without
+`fleet.kubernetes` or the verifier's `workload`, `502 UPSTREAM` when the
+Kubernetes API fails (the message carries the HTTP status and Status
+`reason`, never the token).
 
 ### Data classification
 
 `GET /api/v1/data/columns?show=allowed|all&q=`:
 
 ```json
-{ "sources": [ { "kind": "dbt", "detail": "manifest.json from acme/analytics", "as_of": "...", "authoritative": true, "error": null } ],
+{ "updated": "...", "loaded": "...",
+  "sources": [ { "kind": "dbt", "label": "dbt", "detail": "manifest.json from acme/analytics", "as_of": "...", "authoritative": true, "error": null } ],
   "totals": { "tagged": 312, "tables": 41, "blocked": 309, "exception": 2, "needs_review": 1 },
   "columns": [ { "column": "billing.invoices.tax_id", "tags": ["PII", "government id"], "sources": ["datahub"],
+                 "authoritative": true,
                  "allowed_by": ["finance-agent"], "status": "needs_review | exception | blocked",
-                 "exception": { "owner", "ticket", "expires" }, "shadow_denials": 0 } ] }
+                 "exception": { "column", "policy", "owner", "ticket", "expires", "expired": false }, "shadow_denials": 0 } ] }
 ```
+
+`show` defaults to `allowed` (every status but `blocked`); `totals` always count every
+tagged column. `q` matches a substring of the column or of a tag. `exception` is `null`
+unless an exception matches; for `needs_review` it is the expired (or partial)
+exception, with `expired`. Column `sources` are catalog labels (default: the kind);
+`authoritative` is false when only live fetches tag the column. See
+[config.md](config.md#catalogs-and-data) for how the status is derived.
 
 A column allowed by a policy is `exception` when listed in
 `data.exceptions` (owner, ticket, expiry), otherwise `needs_review`.
 `POST /api/v1/data/refresh` re-reads every catalog (any role; rate-limited to
-once a minute). A live fetch (DataHub, OpenMetadata) only flags columns; it is
+once a minute, `429 RATE_LIMITED` otherwise; logged as `data.refresh`) and returns
+`{ "updated", "sources", "totals" }`. A live fetch (DataHub, OpenMetadata) only flags columns; it is
 never loaded as a policy catalog.
 
 ### Evidence and controls
 
 | | |
 |---|---|
-| `GET /api/v1/evidence/controls?framework=soc2\|iso27001\|gdpr\|hipaa` | Control mapping: `[ { id, name, what, evidence } ]` |
-| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until" }` → `202 { id, state: "building" }` |
-| `GET /api/v1/evidence/packs` | `[ { id, framework, since, until, built_by, created, state, records, chains: {verified, total}, manifest_sha256, gaps: [] } ]` |
-| `GET /api/v1/evidence/packs/{id}/download` | `application/gzip`: a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. |
+| `GET /api/v1/evidence/controls?framework=soc2\|iso27001\|gdpr\|hipaa` | Any role. Control mapping (default `soc2`): `{ framework, framework_name, disclaimer, controls: [ { id, name, what, evidence: [string] } ] }` |
+| `POST /api/v1/evidence/packs` | `build_evidence`. `{ "framework", "since", "until"? }` (`until` defaults to now) → `202 { id: "pack_<n>", state: "building" }`. Logged as `evidence.build`. |
+| `GET /api/v1/evidence/packs` | `build_evidence`. `{ "packs": [ { id, framework, since, until, built_by, created, state: "building\|ready\|failed", records, chains: {verified, total}, manifest_sha256, bytes, gaps: [ { kind, name, detail } ], error } ] }`, newest first. |
+| `GET /api/v1/evidence/packs/{id}/download` | `build_evidence`. `application/gzip`: a `.tar.gz` with `manifest.json`, audit records, chain reports, policy versions, activity log extract and `README.md`. `409 CONFLICT` while building or after a failure. Logged as `evidence.download`. |
+
+Control ids: `soc2` CC6.1, CC6.3, CC7.2, CC8.1, A1.2; `iso27001` A.5.15, A.8.2, A.8.15,
+A.8.16, A.8.32; `gdpr` Art. 5(1)(f), Art. 25, Art. 30, Art. 32; `hipaa`
+164.308(a)(1)(ii)(D), 164.312(a)(1), 164.312(b), 164.312(c)(1). Wording follows
+[security/compliance.md](../security/compliance.md).
+
+The archive has one top-level directory `pack_<n>/` with `README.md` (scope,
+disclaimer, gaps, file list), `manifest.json` (SHA-256 and size of every other file,
+record counts per verifier, chain results, builder, period, generator),
+`records/<verifier>.jsonl` (the raw audit lines in the period, as ingested),
+`chains.json` (per verifier: `state` `intact | broken | unknown`, `verified`, and
+`first_break` `{ line, problem, request_id, location }`; the first included record's
+`prev_hash` is accepted as is, since a period rarely starts at genesis),
+`policies.json` (`seen_in_records` versions and the `loaded` policies), `activity.jsonl`,
+`exceptions.json` and `controls.json`. `manifest_sha256` in the listing is the SHA-256 of
+`manifest.json`. The gzip stream uses uncompressed (stored) DEFLATE blocks; it is a
+standard gzip file. Gap kinds: `in_process_agent` (agents with `via: in_process`) and
+`source_error` (audit sources whose ingestion reports an error).
 
 The pack states plainly that HaltSQL holds no certification and lists gaps
 (in-process agents, sources that could not be read).
@@ -395,6 +586,9 @@ The pack states plainly that HaltSQL holds no certification and lists gaps
 | `GET /api/v1/integrations` | `{ "groups": [ { "name": "Caller identity", "items": [ { "id", "name", "detail", "state": "connected | degraded | not_set_up | error", "error" } ] } ] }` |
 
 Integrations are derived from configuration and live checks: OIDC providers
-(JWKS reachable), bundle sources (from fleet), OPA, catalogs, secrets
-providers, audit sinks (from fleet), Slack, PagerDuty, Jira, GitHub.
-Credentials are never returned.
+(JWKS reachable, checked at most every 5 minutes: `degraded` when the JWKS has no
+usable key, `error` when unreachable), bundle sources (from fleet; `degraded` when
+verifiers serve different versions), OPA, catalogs (`error` when the last load failed),
+audit sources (`error` when ingestion reports one), audit sinks (from fleet; `degraded`
+unless healthy), Slack, PagerDuty, Jira, GitHub. Credentials are never returned; URLs
+are shown without user info or query.

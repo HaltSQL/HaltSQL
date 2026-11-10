@@ -97,7 +97,7 @@ let row = function
   | Approve_change -> "nnynn"
   | Approve_exception -> "nnynn"
   | Build_evidence -> "nyyyn"
-  | Restart_verifiers -> "nnnny"
+  | Restart_verifiers -> "nnnnr"
   | Manage_access -> "nnnny"
   | Write_cases -> "nyyny"
 
