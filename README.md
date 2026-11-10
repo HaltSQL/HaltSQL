@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: pre-1.0](https://img.shields.io/badge/status-0.0.1%20preview-orange.svg)
+![Status: pre-1.0](https://img.shields.io/badge/status-0.0.2%20preview-orange.svg)
 
 **A policy firewall for LLM-generated PostgreSQL.**
 
@@ -192,7 +192,7 @@ When the query passes, `bind_params` tells you what to bind:
 
 ## Status
 
-HaltSQL is **0.0.1, a pre-1.0 preview**. Limits to know about:
+HaltSQL is **0.0.2, a pre-1.0 preview**. Limits to know about:
 
 - PostgreSQL only. HaltSQL vendors libpg_query 17 (the Postgres 17 grammar);
   `haltsql version` prints the exact version.
