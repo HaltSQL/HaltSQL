@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -177,11 +178,34 @@ func renderServer(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput, mo
 					sum := sha256.Sum256([]byte(fmt.Sprintf("operator-validation-token-%d", i)))
 					tokenSHA256 = hex.EncodeToString(sum[:])
 				}
-				tokens = append(tokens, map[string]any{
+				entry := map[string]any{
 					"name":         t.Name,
 					"token_sha256": tokenSHA256,
 					"policy":       t.Policy,
-				})
+				}
+				if len(t.Context) > 0 {
+					ctx, err := tokenContext(t.Context)
+					if err != nil {
+						return nil, fmt.Errorf("spec.auth.tokens[%d].context%w", i, err)
+					}
+					entry["context"] = ctx
+				}
+				// An empty list is kept: it binds the token and lets the
+				// body add nothing.
+				if t.RequestContextFields != nil {
+					fields := make([]any, 0, len(t.RequestContextFields))
+					for _, f := range t.RequestContextFields {
+						if !contextField.MatchString(f) {
+							return nil, fmt.Errorf("spec.auth.tokens[%d].requestContextFields: invalid context field %q", i, f)
+						}
+						if _, fixed := t.Context[f]; fixed {
+							return nil, fmt.Errorf("spec.auth.tokens[%d].requestContextFields: %q is already fixed by context", i, f)
+						}
+						fields = append(fields, f)
+					}
+					entry["request_context_fields"] = fields
+				}
+				tokens = append(tokens, entry)
 			}
 			auth["tokens"] = tokens
 		}
@@ -331,6 +355,56 @@ func renderServer(srv *haltsqlv1alpha1.HaltSQLServer, policies []PolicyInput, mo
 	out.Data = data
 	out.Secrets = dedupeRefs(secrets)
 	out.Checksum = checksum(out)
+	return out, nil
+}
+
+// contextField is a haltsql context field name.
+var contextField = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// tokenContext decodes a token's fixed context. haltsql accepts a string, an
+// integer or a non-empty list of them per field; anything else is refused
+// here so the error names the field. The returned error text starts with
+// the path below `context`.
+func tokenContext(raw map[string]apiextensionsv1.JSON) (map[string]any, error) {
+	scalar := func(v any) bool {
+		switch t := v.(type) {
+		case string:
+			return true
+		case json.Number:
+			_, err := strconv.ParseInt(t.String(), 10, 64)
+			return err == nil
+		default:
+			return false
+		}
+	}
+	out := make(map[string]any, len(raw))
+	for k, r := range raw {
+		if !contextField.MatchString(k) {
+			return nil, fmt.Errorf(": invalid context field %q", k)
+		}
+		dec := json.NewDecoder(bytes.NewReader(r.Raw))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return nil, fmt.Errorf(".%s: %v", k, err)
+		}
+		switch t := v.(type) {
+		case []any:
+			if len(t) == 0 {
+				return nil, fmt.Errorf(".%s: must not be empty", k)
+			}
+			for _, e := range t {
+				if !scalar(e) {
+					return nil, fmt.Errorf(".%s: list items must be strings or integers", k)
+				}
+			}
+		default:
+			if !scalar(v) {
+				return nil, fmt.Errorf(".%s: must be a string, an integer or a list of them", k)
+			}
+		}
+		out[k] = v
+	}
 	return out, nil
 }
 
