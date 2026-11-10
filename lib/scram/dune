@@ -1,0 +1,10 @@
+; haltsql.scram: the one SCRAM implementation (RFC 5802 / RFC 7677). Pure: no IO, no
+; randomness (callers supply nonces and salts). Used by the proxy (server side for its
+; clients, client side for the upstream), the Kafka sink and the Postgres clients.
+
+(library
+ (name haltsql_scram)
+ (public_name haltsql.scram)
+ (libraries digestif kdf.pbkdf eqaf base64)
+ (instrumentation
+  (backend bisect_ppx)))

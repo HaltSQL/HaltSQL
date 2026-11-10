@@ -11,7 +11,7 @@
   haltsql.load
   yojson
   digestif
-  kdf.pbkdf
+  haltsql.scram
   base64
   lwt
   lwt.unix

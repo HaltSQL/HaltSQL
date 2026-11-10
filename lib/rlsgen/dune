@@ -6,7 +6,7 @@
   yojson
   digestif
   base64
-  kdf.pbkdf
+  haltsql.scram
   lwt
   lwt.unix
   tls

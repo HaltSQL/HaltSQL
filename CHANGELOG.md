@@ -86,6 +86,16 @@ even before 1.0.
   session's large statement or a slow audit disk no longer stalls every other
   session. Per-session message order, the fail-closed audit policy and the
   order of the hash chain are unchanged.
+- **One SCRAM implementation.** The proxy (both roles), the Kafka sink,
+  `haltsql rls` and `haltsql schema pull` now share `haltsql.scram` instead of
+  four copies, and all take the strictest behaviour of the four. As a client,
+  HaltSQL now refuses a server that asks for fewer than 4096 or more than
+  600000 PBKDF2 iterations (before, only the Kafka sink did; a PostgreSQL role
+  whose password was set with `scram_iterations` below 4096 must have it set
+  again), a salt or signature that is not canonical base64, an empty salt, an
+  iteration count that is not plain decimal digits, attributes out of order,
+  and SCRAM messages over 4096 bytes. Server error text is made printable
+  before it is reported. Nonces are 24 random bytes everywhere.
 
 ### Fixed
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log

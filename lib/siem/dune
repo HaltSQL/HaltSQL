@@ -15,7 +15,7 @@
   lwt.unix
   yojson
   digestif
-  kdf.pbkdf
+  haltsql.scram
   base64
   eqaf
   tls
