@@ -36,6 +36,8 @@ vn.ask("How many open orders do we have?")
 ```
 
 Denials raise `haltsql.QueryDenied`; its message lists the reason codes and hints.
+A `context` callable (or a 2.x `context_from_user`) that returns `None` raises
+`haltsql.integration.ContextUnavailable`; nothing is verified or run.
 
 ## Tests
 

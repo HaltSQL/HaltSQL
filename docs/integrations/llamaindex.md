@@ -11,7 +11,7 @@ the model.
 
 | Name | Kind | What it does |
 |---|---|---|
-| `guard_sql_database(db, verifier, context, ...)` | Function | Returns a copy of a LlamaIndex `SQLDatabase` whose `run_sql` verifies, then runs the exact SQL with the bound parameters. The copy is still an `SQLDatabase`, so you can pass it anywhere the original went. |
+| `guard_sql_database(db, verifier, context, ...)` | Function | Returns a copy of a LlamaIndex `SQLDatabase` whose `run_sql` verifies, then runs the exact SQL with the bound parameters, and whose `insert_into_table` refuses. The copy is still an `SQLDatabase`, so you can pass it anywhere the original went. |
 | `guarded_sql_retriever(db, verifier, context, ...)` | Function | A `SQLRetriever` over a guarded copy of `db`. |
 | `guarded_nl_sql_query_engine(db, verifier, context, ...)` | Function | An `NLSQLTableQueryEngine` over a guarded copy of `db`, with denials turned into SQL errors the LLM can read. |
 | `HaltSQLSQLError` | Exception (a `NotImplementedError`) | Raised instead of the HaltSQL exception when `denials_as_sql_errors=True`. Its message lists the reason codes and hints; `__cause__` is the original error. |
@@ -82,6 +82,13 @@ retriever = guarded_sql_retriever(db, verifier, ctx)    # SQLRetriever: runs SQL
 
 The engine must use psycopg 3 (`postgresql+psycopg://`).
 
+The guarded copy never runs SQL on the engine outside HaltSQL: `run_sql` is
+verified, and `insert_into_table` (which `SQLStructStoreIndex` uses to load
+rows) raises `haltsql.GuardError` instead of inserting. Table descriptions
+(`get_single_table_info`) come from schema reflection and read no rows. The
+original `db` and the copy's `engine` property still give the raw engine, so
+give the agent only the guarded copy.
+
 ## Where the tenant comes from
 
 `context` is a mapping or a zero-argument callable. A callable is evaluated on
@@ -92,12 +99,12 @@ the usual pattern. The model only writes SQL; it never supplies the context.
 | `context` | Result |
 |---|---|
 | A mapping, or a callable that returns one | The query is verified with that context. |
-| A callable that returns `None`, or `{}` | Verified with an empty context. Tenant tables are then denied by the policy, typically with `E_CONTEXT_MISSING`. |
-| A callable that raises | Nothing is verified or run. The exception propagates, or becomes a `HaltSQLSQLError` with `denials_as_sql_errors=True`. |
+| A callable that returns `None` | Refused: nothing is verified or run. `run_sql` raises `haltsql.integration.ContextUnavailable`, or, with `denials_as_sql_errors=True`, a `HaltSQLSQLError` reading "No trusted HaltSQL context is configured for this request; the query was not executed." |
+| `{}`, or a callable that returns it | Verified with an empty context. Tenant tables are then denied by the policy, typically with `E_CONTEXT_MISSING`. |
+| A callable that raises | Nothing is verified or run. `run_sql` raises `haltsql.HaltSQLUnavailable` (the original exception is its `__cause__`), or a `HaltSQLSQLError` reading "SQL verification is unavailable" with `denials_as_sql_errors=True`. |
 
-Unlike the [agent-framework packages](../agent-frameworks.md), a missing
-context is not refused before verification here. Make sure the callable
-returns the context, or raises.
+As in the [agent-framework packages](../agent-frameworks.md), a missing
+context is refused before verification.
 
 ## What the model sees
 
@@ -148,7 +155,7 @@ agent, the agent sees the error text and can ask again. See
 | `max_rows` | `200` | Row cap. `None` means no cap. |
 | `statement_timeout_ms` | `5000` | `statement_timeout` for the query. `None` means none is set. |
 | `settings` | `None` | A mapping of transaction-local settings. Fixed for the guarded copy; it cannot depend on the context. |
-| `read_only` | `True` | Run in a `READ ONLY` transaction. With `False`, statements the policy allows, including writes, run in a read-write transaction. |
+| `read_only` | `True` | Run only statements whose verdict `statement_kind` is `select`, in a `READ ONLY` transaction. With `False`, see [Read-only and writes](#read-only-and-writes). |
 | `denials_as_sql_errors` | `False` | Raise `HaltSQLSQLError` with model-readable text instead of the original exception. |
 
 `guarded_sql_retriever(db, verifier, context, **kwargs)` passes `kwargs` to
@@ -159,17 +166,26 @@ agent, the agent sees the error text and can ask again. See
 | Argument | Default | Meaning |
 |---|---|---|
 | `guard_kwargs` | `None` | A dict of `guard_sql_database` options (`max_rows`, `statement_timeout_ms`, `settings`, `read_only`, `denials_as_sql_errors`). `denials_as_sql_errors` defaults to `True` here. |
-| `**engine_kwargs` | none | Passed to `NLSQLTableQueryEngine`, for example `tables=` and `llm=`. |
+| `**engine_kwargs` | none | Guard options given as keywords (for example `max_rows=50`) go to the guard; the rest go to `NLSQLTableQueryEngine`, for example `tables=` and `llm=`. |
 
-Guard options for the query engine must go in `guard_kwargs`, for example
-`guard_kwargs={"max_rows": 50}`. A bare `max_rows=50` is passed to
-`NLSQLTableQueryEngine`, which accepts extra keyword arguments, so it has no
-effect on the guard.
+Guard options work as keyword arguments (`max_rows=50`) or in `guard_kwargs`
+(`guard_kwargs={"max_rows": 50}`). Giving the same option both ways, or an
+unknown key in `guard_kwargs`, raises `TypeError`.
 
-> **Note:** this package does not check the statement kind itself. With the
-> default `read_only=True`, a write that the policy allows reaches Postgres
-> and fails there, in the read-only transaction. Keep `statements.allow` to
-> `select` in the policy for agent use.
+### Read-only and writes
+
+With the default `read_only=True`, a statement runs only when the verdict's
+`statement_kind` is `select`. Anything else is refused before a connection is
+taken, even when the policy allows it, with `GuardError: only SELECT statements
+run in read-only mode (this is UPDATE)` (a `HaltSQLSQLError` with
+`denials_as_sql_errors=True`).
+
+With `read_only=False`, the policy alone decides: a statement runs when HaltSQL
+allows it, whatever its kind. Writes run in a read-write transaction, and
+`SELECT` statements still run `READ ONLY`. A verdict without a
+`statement_kind` never runs. Allow writes in the policy (`statements.allow`)
+only for the agents and tables that need them. `insert_into_table` refuses
+either way.
 
 ## Async support
 
@@ -226,12 +242,15 @@ suites.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every query on a tenant table is denied with `E_CONTEXT_MISSING` | The context callable returned `None` or `{}`, or misses a key the policy needs. | Check the callable. It is evaluated on every query. |
+| Every query on a tenant table is denied with `E_CONTEXT_MISSING` | The context callable returned `{}`, or misses a key the policy needs. | Check the callable. It is evaluated on every query. |
+| `ContextUnavailable`, or "No trusted HaltSQL context is configured" | The context callable returned `None`. | Return the context for the current request, for example from a `ContextVar` your handler sets. |
+| `GuardError: only SELECT statements run in read-only mode` | The policy allowed a write, but `read_only=True`. | Ask for a `SELECT`, or pass `read_only=False` if the agent should write. |
+| `GuardError: insert_into_table is not available on a HaltSQL-guarded SQLDatabase` | `SQLStructStoreIndex` or your code tried to insert rows through the guarded copy. | Load data with the original `SQLDatabase` outside the agent, or with verified `INSERT` statements and `read_only=False`. |
 | Allowed SQL fails in Postgres with "relation does not exist" | Postgres resolves unqualified table names with the role's `search_path`, which differs from the policy's. With `SQLDatabase(schema=...)`, the guard does not add the schema prefix, because that would change the verified SQL. | Set the role's `search_path` to the policy's `search_path`, and drop `schema=`. |
 | `GuardError: could not find the SQLAlchemy engine of this SQLDatabase` | The object passed in has no `_engine` or `engine`. | Pass a LlamaIndex `SQLDatabase`. |
 | `GuardError: psycopg2 cannot send $n placeholders unchanged; use psycopg 3` | The engine uses psycopg2. | Use a `postgresql+psycopg://` URL. |
-| A guard option such as `max_rows` has no effect on the query engine | It was passed as a keyword to `guarded_nl_sql_query_engine`, which sends it to `NLSQLTableQueryEngine`. | Put it in `guard_kwargs`. |
-| `HaltSQLUnavailable`, or "SQL verification is unavailable" | The sidecar or CLI failed, timed out, or returned a verdict for a different string. | Check `HALTSQL_URL` and `HALTSQL_TOKEN`, or the `haltsql` binary. |
+| `TypeError: guard option 'max_rows' given both as a keyword and in guard_kwargs` | The same option was passed twice. | Pass it one way. |
+| `HaltSQLUnavailable`, or "SQL verification is unavailable" | The sidecar or CLI failed, timed out, or returned a verdict for a different string; or the context callable raised. | Check `HALTSQL_URL` and `HALTSQL_TOKEN`, or the `haltsql` binary, and test the callable on its own. |
 | `ImportError: no pq wrapper available` | psycopg cannot find `libpq`. | `pip install 'psycopg[binary]'`, or install `libpq`. |
 
 ## Limits
@@ -240,8 +259,8 @@ suites.
   no streaming or pagination.
 - `SQLDatabase(schema=...)` is not supported: the guarded `run_sql` does not
   prefix the schema. Use `search_path` instead.
-- Only `run_sql` is guarded. Other `SQLDatabase` methods, such as
-  `insert_into_table`, use the engine directly.
+- `run_sql` is verified and `insert_into_table` refuses. Schema reflection
+  (table and column names) and the `engine` property still use the raw engine.
 - The table descriptions LlamaIndex gives the model come from the database
   schema, not the policy, so they can name columns the policy denies. Limit
   them with `include_tables`.

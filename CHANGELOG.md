@@ -311,6 +311,11 @@ even before 1.0.
   reloads.
 
 ### Fixed
+- `haltsql_llamaindex.guarded_nl_sql_query_engine` accepts guard options
+  (`max_rows`, `statement_timeout_ms`, `settings`, `read_only`,
+  `denials_as_sql_errors`) as keyword arguments; they were passed on to
+  `NLSQLTableQueryEngine` and silently ignored. Conflicting or unknown guard
+  options raise `TypeError`.
 These were found while integrating the unreleased features above.
 
 - Server: two bundle sources updated while a reload waited on the secret
@@ -404,6 +409,27 @@ These were found while integrating the unreleased features above.
 - `haltsql-proxy` command-line errors exit `2` (a missing option exited 124).
 
 ### Security
+- **LangChain, LlamaIndex and Vanna integrations: no database access outside
+  HaltSQL.** The guarded LangChain `SQLDatabase` no longer reads sample rows
+  for `get_table_info` (they were read straight from the engine, unverified,
+  and could show other tenants' rows to the model): `sample_rows_in_table_info`
+  is forced to 0 and the internal `_execute` refuses. The guarded LlamaIndex
+  `SQLDatabase.insert_into_table` now raises `GuardError` instead of inserting
+  through the engine.
+- A context callable that returns `None` now refuses the query
+  (`haltsql.integration.ContextUnavailable`) in `haltsql-langchain`,
+  `haltsql-llamaindex` and `haltsql-vanna` (legacy and 2.x), as in the agent
+  packages; it was verified with an empty context. In LangChain an exception
+  from the context callable is reported to the model as "SQL verification is
+  unavailable" instead of "Database error: ...".
+- `read_only=True` (the default) in `haltsql-langchain` and
+  `haltsql-llamaindex` now also requires the verdict's `statement_kind` to be
+  `select`, refusing other statements before connecting. With
+  `read_only=False` the policy decides which kinds run; `SELECT` still runs
+  `READ ONLY`, and a verdict without a `statement_kind` never runs. New SDK
+  helpers `haltsql.integration.authorize_guarded` and `guard_read_only`;
+  `ContextUnavailable` moved to `haltsql.integration` (still exported by
+  `haltsql.agent_core`).
 - The catalog loader refuses a snapshot marked `metadata.authoritative:
   false` (written by `haltsql schema fetch --snapshot-out`) as a policy
   `catalog:`, file or inline: a data catalog can lag behind the database, and

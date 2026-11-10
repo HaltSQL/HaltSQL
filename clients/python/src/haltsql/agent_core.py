@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from . import guard
 from .errors import GuardError, HaltSQLError, HaltSQLRequestError, HaltSQLUnavailable, QueryDenied
-from .integration import feedback_for_model
+from .integration import ContextUnavailable, feedback_for_model
 from .models import validate_context
 
 __all__ = [
@@ -66,10 +66,6 @@ _MAX_QUERY_CHARS = 65536
 #: Transaction-local settings: a mapping, or a function of the verified context
 #: (e.g. ``lambda ctx: {"app.tenant_id": ctx["tenant_id"]}`` for row-level security).
 SettingsSource = Union[Mapping[str, str], Callable[[Mapping[str, Any]], Mapping[str, str]]]
-
-
-class ContextUnavailable(LookupError):
-    """No HaltSQL context could be read from the trusted application state."""
 
 
 def context_from_app(app_state: Any, key: str = DEFAULT_CONTEXT_KEY) -> Dict[str, Any]:
