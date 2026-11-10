@@ -48,6 +48,7 @@ auth:
 verifiers:                              # each verifier needs server.admin enabled
   - name: haltsql-1
     url: http://haltsql-1.haltsql.svc:8080
+    allow_insecure_http: true   # the admin token over plain HTTP: prefer https + ca_file
     kind: server                        # server | proxy | mcp
     location: shared service, zone a
     token: ${env:HALTSQL_ADMIN_TOKEN}   # listed in the verifier's server.admin.callers

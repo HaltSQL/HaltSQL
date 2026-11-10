@@ -63,6 +63,10 @@ type verifier = {
   v_kind : verifier_kind;
   v_location : string option;
   v_token : string option;  (** admin bearer token, resolved *)
+  v_token_ref : string option;
+      (** the token as written when it holds a secret placeholder: Fleet re-resolves it
+          with {!resolve} on every poll, so a rotated token is picked up *)
+  v_ca_file : string option;  (** PEM CA bundle that verifies an [https] [v_url] *)
   v_metrics_url : string option;  (** default [v_url ^ "/metrics"] *)
   v_workload : string option;  (** Kubernetes workload, e.g. [deployment/haltsql] *)
 }
@@ -133,6 +137,9 @@ type t = {
   auth : auth;
   verifiers : verifier list;
   fleet_poll_seconds : int;
+  fleet_probe_timeout : float;  (** seconds, per probe request *)
+  fleet_history_size : int;  (** metric samples kept per verifier *)
+  fleet_max_concurrent : int;  (** verifiers probed at the same time *)
   kubernetes : kubernetes option;
   audit : audit;
   policies : policies;
@@ -468,7 +475,17 @@ let auth j =
 let verifier i j =
   let ctx = Printf.sprintf "verifiers[%d]" i in
   check_keys ctx
-    [ "name"; "url"; "kind"; "location"; "token"; "metrics_url"; "workload" ]
+    [
+      "name";
+      "url";
+      "kind";
+      "location";
+      "token";
+      "metrics_url";
+      "workload";
+      "ca_file";
+      "allow_insecure_http";
+    ]
     j;
   let kind =
     match string_opt ctx "kind" j with
@@ -482,14 +499,47 @@ let verifier i j =
     if String.ends_with ~suffix:"/" url then String.sub url 0 (String.length url - 1)
     else url
   in
+  let token = string_opt ctx "token" j in
+  (* The admin token is a bearer credential: it only goes over https, or over http to a
+     loopback host (tests, a local sidecar), like every other credential the console
+     sends. *)
+  let secure_url u =
+    let u = Uri.of_string u in
+    match (Option.map String.lowercase_ascii (Uri.scheme u), Uri.host u) with
+    | Some "https", _ -> true
+    | Some "http", Some h -> is_loopback_host h
+    | _ -> false
+  in
+  let is_http u =
+    match Option.map String.lowercase_ascii (Uri.scheme (Uri.of_string u)) with
+    | Some ("http" | "https") -> true
+    | _ -> false
+  in
+  if
+    token <> None && is_http url
+    && (not (secure_url url))
+    && not (bool_opt ctx "allow_insecure_http" j ~default:false)
+  then
+    invalid
+      "%s.url must be https:// (or http:// on a loopback host) when token is set: the \
+       admin token would be sent in cleartext (use ca_file for a private CA, or set \
+       allow_insecure_http: true for a trusted in-cluster network)"
+      ctx;
+  let workload = string_opt ctx "workload" j in
+  (match workload with
+  | Some w when K8s_names.parse_workload w = None ->
+      invalid "%s.workload must be deployment/<name> or statefulset/<name> (got %S)" ctx w
+  | _ -> ());
   {
     v_name = string_req ctx "name" j;
     v_url = url;
     v_kind = kind;
     v_location = string_opt ctx "location" j;
-    v_token = string_opt ctx "token" j;
+    v_token = token;
+    v_token_ref = None;
+    v_ca_file = string_opt ctx "ca_file" j;
     v_metrics_url = string_opt ctx "metrics_url" j;
-    v_workload = string_opt ctx "workload" j;
+    v_workload = workload;
   }
 
 let audit_source i j =
@@ -563,21 +613,41 @@ let exception_entry i j =
 
 let kubernetes j =
   check_keys "fleet.kubernetes" [ "namespace"; "api"; "token_file"; "ca_file" ] j;
-  {
-    k_namespace = string_req "fleet.kubernetes" "namespace" j;
-    k_api =
-      Option.value
-        (string_opt "fleet.kubernetes" "api" j)
-        ~default:"https://kubernetes.default.svc";
-    k_token_file =
-      Option.value
-        (string_opt "fleet.kubernetes" "token_file" j)
-        ~default:"/var/run/secrets/kubernetes.io/serviceaccount/token";
-    k_ca_file =
-      Option.value
-        (string_opt "fleet.kubernetes" "ca_file" j)
-        ~default:"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
-  }
+  let k =
+    {
+      k_namespace = string_req "fleet.kubernetes" "namespace" j;
+      k_api =
+        Option.value
+          (string_opt "fleet.kubernetes" "api" j)
+          ~default:"https://kubernetes.default.svc";
+      k_token_file =
+        Option.value
+          (string_opt "fleet.kubernetes" "token_file" j)
+          ~default:"/var/run/secrets/kubernetes.io/serviceaccount/token";
+      k_ca_file =
+        Option.value
+          (string_opt "fleet.kubernetes" "ca_file" j)
+          ~default:"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+    }
+  in
+  (* Misconfiguration is reported now, not on the first restart during an incident. *)
+  if not (K8s_names.valid_dns_name k.k_namespace) then
+    invalid "fleet.kubernetes.namespace %S is not a valid namespace name" k.k_namespace;
+  let api = Uri.of_string k.k_api in
+  let https =
+    match (Option.map String.lowercase_ascii (Uri.scheme api), Uri.host api) with
+    | Some "https", Some h when h <> "" -> true
+    | Some "http", Some h when is_loopback_host h -> false
+    | _ ->
+        invalid
+          "fleet.kubernetes.api must be https:// (or http:// on a loopback host, e.g. \
+           kubectl proxy): the service-account token would be sent in cleartext"
+  in
+  if not (Sys.file_exists k.k_token_file) then
+    invalid "fleet.kubernetes.token_file %s does not exist" k.k_token_file;
+  if https && not (Sys.file_exists k.k_ca_file) then
+    invalid "fleet.kubernetes.ca_file %s does not exist" k.k_ca_file;
+  k
 
 let top_level_keys =
   [
@@ -803,7 +873,15 @@ let of_json ?file ?raw ?(resolver = env_only_resolver ()) (j : Yojson.Safe.t) : 
   let sub name = Option.value (field_opt name j) ~default:`Null in
   List.iter (fun k -> check_placeholders k (sub k)) lazy_sections;
   let fleet = sub "fleet" in
-  check_keys "fleet" [ "poll_seconds"; "kubernetes" ] fleet;
+  check_keys "fleet"
+    [
+      "poll_seconds";
+      "kubernetes";
+      "probe_timeout_seconds";
+      "history_size";
+      "max_concurrent_probes";
+    ]
+    fleet;
   let data = sub "data" in
   check_keys "data" [ "exceptions" ] data;
   let public_url = string_opt "config" "public_url" j in
@@ -827,8 +905,38 @@ let of_json ?file ?raw ?(resolver = env_only_resolver ()) (j : Yojson.Safe.t) : 
         Option.value (string_opt "config" "state_dir" j) ~default:"./console-state";
       frontend_dir = string_opt "config" "frontend_dir" j;
       auth = auth (sub "auth");
-      verifiers = List.mapi verifier (list_opt "config" "verifiers" j);
+      verifiers =
+        (* tokens written with a placeholder keep the template, re-resolved per poll *)
+        (let refs =
+           List.map
+             (fun v ->
+               match field_opt "token" v with
+               | Some (`String s) -> (
+                   match parse_template s with
+                   | Ok segs
+                     when List.exists (function Placeholder _ -> true | _ -> false) segs
+                     ->
+                       Some s
+                   | _ -> None)
+               | _ -> None)
+             (try list_opt "config" "verifiers" (Option.value raw ~default:j)
+              with Invalid _ -> [])
+         in
+         List.mapi
+           (fun i v ->
+             let v = verifier i v in
+             match List.nth_opt refs i with
+             | Some (Some r) when v.v_token <> None -> { v with v_token_ref = Some r }
+             | _ -> v)
+           (list_opt "config" "verifiers" j));
       fleet_poll_seconds = int_opt "fleet" "poll_seconds" fleet ~default:30;
+      fleet_probe_timeout =
+        float_of_int
+          (int_range "fleet" "probe_timeout_seconds" fleet ~default:5 ~min:1 ~max:60);
+      fleet_history_size =
+        int_range "fleet" "history_size" fleet ~default:120 ~min:2 ~max:10_000;
+      fleet_max_concurrent =
+        int_range "fleet" "max_concurrent_probes" fleet ~default:16 ~min:1 ~max:1024;
       kubernetes =
         (match field_opt "kubernetes" fleet with
         | None | Some `Null -> None

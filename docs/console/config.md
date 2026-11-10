@@ -114,15 +114,20 @@ header (curl, scripts) passes. A request with one passes when:
 | `url` | Base URL of the verifier's HTTP API (for `kind: proxy`, its PostgreSQL address; see [`fleet`](#fleet)). |
 | `kind` | `server` (default), `proxy`, `mcp`. |
 | `location` | Free text shown in Fleet. |
-| `token` | Admin bearer token; the verifier must list it in `server.admin.callers`. |
+| `token` | Admin bearer token; the verifier must list it in `server.admin.callers`. A secret placeholder (`${vault:...}`, `${aws-sm:...}`, ...) is resolved at load and again on every poll (provider values are cached for at most five minutes), so a rotated token is picked up without a restart; a resolve failure is shown as the verifier's `error`. |
+| `ca_file` | PEM CA bundle that verifies an `https://` `url` (and a same-origin `metrics_url`), e.g. a private CA. Default: the system trust store. |
+| `allow_insecure_http` | Default `false`. With a `token`, `url` must be `https://` or `http://` on a loopback host (`127.0.0.0/8`, `::1`, `localhost`); any other `http://` URL is refused at load, because the admin token would cross the network in cleartext. Set `true` only when the network path is trusted (for example plain HTTP inside one cluster); prefer `https://` with `ca_file`. |
 | `metrics_url` | Default `<url>/metrics`. |
-| `workload` | Kubernetes workload to restart, e.g. `deployment/haltsql-1`. |
+| `workload` | Kubernetes workload to restart, `deployment/<name>` or `statefulset/<name>` (`deploy/`, `sts/` also accepted). Checked at load. |
 
 ## `fleet`
 
 ```yaml
 fleet:
   poll_seconds: 30
+  # probe_timeout_seconds: 5
+  # history_size: 120
+  # max_concurrent_probes: 16
   kubernetes:                     # optional: enables POST /api/v1/fleet/{name}/restart
     namespace: haltsql
     # api: https://kubernetes.default.svc
@@ -132,11 +137,14 @@ fleet:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `poll_seconds` | `30` | How often every verifier is polled. Each poll reads `<url>/v1/admin/status` (with `token`), `<url>/readyz` and `metrics_url`, concurrently, with a 5 second timeout each. |
-| `kubernetes.namespace` | required | Namespace of the verifier workloads. |
-| `kubernetes.api` | `https://kubernetes.default.svc` | API server URL. `http://` is accepted (tests, `kubectl proxy`); with `https://` the server is verified against `ca_file`. |
-| `kubernetes.token_file` | in-cluster service-account token | Re-read on every restart, so projected tokens rotate. |
-| `kubernetes.ca_file` | in-cluster CA | Cluster CA bundle (PEM). |
+| `poll_seconds` | `30` | How often every verifier is polled (with +-10% jitter). Each poll reads `<url>/v1/admin/status` (with `token`), `<url>/readyz` (no token) and `metrics_url` (with `token` only on the same origin), concurrently per verifier, each with `probe_timeout_seconds`. |
+| `probe_timeout_seconds` | `5` | Timeout of each probe request (1 to 60). |
+| `history_size` | `120` | Metric samples kept per verifier (2 to 10000). The window in time is `history_size` x `poll_seconds`. |
+| `max_concurrent_probes` | `16` | Verifiers probed at the same time (1 to 1024); each uses up to three requests. A verifier that stays unreachable is probed less often: after `n` failed polls in a row it is skipped for `min(2^(n-1) - 1, 8)` polls (its `error` says so), and probed every poll again once it answers. |
+| `kubernetes.namespace` | required | Namespace of the verifier workloads. Must be a valid namespace name (checked at load). |
+| `kubernetes.api` | `https://kubernetes.default.svc` | API server URL. `https://` is verified against `ca_file`; `http://` is accepted only for a loopback host (tests, `kubectl proxy`), since the service-account token would otherwise be sent in cleartext. Checked at load. |
+| `kubernetes.token_file` | in-cluster service-account token | Must exist at load; re-read on every restart, so projected tokens rotate. |
+| `kubernetes.ca_file` | in-cluster CA | Cluster CA bundle (PEM). Must exist at load when `api` is `https://`. |
 
 What each verifier kind exposes:
 
@@ -152,8 +160,14 @@ The admin `token` is sent to `metrics_url` only when it has the same scheme, hos
 port as `url`.
 
 Rates (`verifies_per_second`), OPA decision counts, OPA errors (`timeouts`) and
-buffered-record peaks are computed from the last 120 polls kept in memory, so they
-restart from zero when the console restarts.
+buffered-record peaks are computed from the last `history_size` polls kept in memory,
+so they restart from zero when the console restarts. Each sample is timestamped when
+that verifier's `/metrics` answer arrives, so a slow verifier does not skew the rates of
+the others.
+
+Bundle source ids and `last_error` texts from the verifiers' admin status are shown to
+every role, so the console strips the query, fragment and userinfo from any URL in them
+(`https://bucket/b.tar.gz?<redacted>`) before they enter the fleet document.
 
 ### RBAC for restarts
 
@@ -180,8 +194,11 @@ subjects:
   - { kind: ServiceAccount, name: haltsql-console, namespace: haltsql }
 ```
 
-Restarts need the `restart_verifiers` permission (admin) **and** a reason, and are
-written to the activity log as `fleet.restart` (also when the Kubernetes call fails).
+Restarts need the `restart_verifiers` permission (admin) **and** a reason. The intent
+is written to the activity log as `fleet.restart_requested` (`result: pending`) before
+the Kubernetes call, and the restart is refused if that write fails; the outcome is
+then written as `fleet.restart` (`ok`, `no_rollout` or `error`, also when the
+Kubernetes call fails).
 
 ## `audit`
 

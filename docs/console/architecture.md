@@ -63,10 +63,16 @@ disagree about what a record means or what a policy allows:
    `Report.Record.of_line` and added to the `Index` with their request id,
    hash, previous hash, verifier name and location (file and line or object
    key). Records older than `audit.retention_hours` are dropped.
-2. **Fleet polling** (`Fleet`): every `fleet.poll_seconds` each configured
-   verifier's `/v1/admin/status` and `/readyz` are read with the verifier's
-   admin token. The last snapshot and its history feed Fleet, Posture and
-   Signals.
+2. **Fleet polling** (`Fleet`): every `fleet.poll_seconds` (with jitter)
+   each configured verifier's `/v1/admin/status` (with its admin token),
+   `/readyz` (no token) and `/metrics` (the token only when `metrics_url` has
+   the verifier's own origin) are read, at most
+   `fleet.max_concurrent_probes` verifiers at a time; unreachable verifiers
+   back off. A `kind: proxy` verifier with a non-HTTP url gets a TCP connect
+   check instead. The token goes only over https (verified with
+   `verifiers[].ca_file` or the system store) or loopback http, unless
+   `allow_insecure_http` is set. The last snapshot and its history feed
+   Fleet, Posture and Signals.
 3. **Signals** (`Signals`): detectors run over the index and the fleet
    snapshot every 30 seconds and open, update or close signals. Their
    workflow state (assignee, status, acknowledgement) is kept in `Store`.

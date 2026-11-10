@@ -4,38 +4,7 @@
    cluster CA. Error strings never contain the token or response bodies. *)
 
 open Lwt.Syntax
-
-type kind = Deployment | Statefulset
-type workload = { kind : kind; name : string }
-
-let resource = function Deployment -> "deployments" | Statefulset -> "statefulsets"
-
-let workload_to_string w =
-  (match w.kind with Deployment -> "deployment/" | Statefulset -> "statefulset/")
-  ^ w.name
-
-(* DNS-1123 subdomain: lowercase alphanumerics, '-' and '.', alphanumeric at both ends. *)
-let valid_dns_name s =
-  let n = String.length s in
-  let alnum c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') in
-  n > 0 && n <= 253
-  && String.for_all (fun c -> alnum c || c = '-' || c = '.') s
-  && alnum s.[0]
-  && alnum s.[n - 1]
-
-(** [deployment/x], [deploy/x], [statefulset/x] or [sts/x]. *)
-let parse_workload s =
-  match String.index_opt s '/' with
-  | None -> None
-  | Some i -> (
-      let k = String.lowercase_ascii (String.sub s 0 i)
-      and name = String.sub s (i + 1) (String.length s - i - 1) in
-      if not (valid_dns_name name) then None
-      else
-        match k with
-        | "deployment" | "deployments" | "deploy" -> Some { kind = Deployment; name }
-        | "statefulset" | "statefulsets" | "sts" -> Some { kind = Statefulset; name }
-        | _ -> None)
+include K8s_names
 
 let read_token file =
   match In_channel.with_open_bin file In_channel.input_all with
@@ -77,14 +46,54 @@ let status_reason body =
       | _ -> None)
   | _ | (exception _) -> None
 
-(** Patches the workload. [Ok ()] on a 2xx answer. *)
+type error =
+  | Config of string  (** the console's own setup is wrong (token file, CA, URL) *)
+  | Upstream of string  (** the Kubernetes API failed or refused *)
+
+type outcome =
+  | Rolled_out
+  | No_rollout of string
+      (** the patch was accepted but will not restart pods (paused Deployment, StatefulSet
+          with [updateStrategy: OnDelete]); the string says why *)
+
+(* What the PATCH response (the updated object) says about the rollout. *)
+let outcome_of_body (w : workload) body =
+  match Yojson.Safe.from_string body with
+  | exception _ -> Rolled_out
+  | j -> (
+      let field path =
+        List.fold_left
+          (fun j k ->
+            match j with
+            | `Assoc l -> Option.value (List.assoc_opt k l) ~default:`Null
+            | _ -> `Null)
+          j path
+      in
+      match w.kind with
+      | Deployment when field [ "spec"; "paused" ] = `Bool true ->
+          No_rollout "the Deployment is paused (spec.paused); no pods were restarted"
+      | Statefulset when field [ "spec"; "updateStrategy"; "type" ] = `String "OnDelete"
+        ->
+          No_rollout
+            "the StatefulSet uses updateStrategy OnDelete; pods restart only when deleted"
+      | _ -> Rolled_out)
+
+let api_is_allowed uri =
+  match (Option.map String.lowercase_ascii (Uri.scheme uri), Uri.host uri) with
+  | Some "https", Some h -> h <> ""
+  | Some "http", Some h -> Console_config.is_loopback_host h
+  | _ -> false
+
+(** Patches the workload. [Ok outcome] on a 2xx answer. Config errors are also rejected
+    when the config loads; they are re-checked here because the token file and CA are read
+    on every restart. *)
 let restart (k : Console_config.kubernetes) (w : workload) ~restarted_at :
-    (unit, string) result Lwt.t =
+    (outcome, error) result Lwt.t =
   if not (valid_dns_name k.k_namespace) then
-    Lwt.return (Error "fleet.kubernetes.namespace is not a valid namespace name")
+    Lwt.return (Error (Config "fleet.kubernetes.namespace is not a valid namespace name"))
   else
     match read_token k.k_token_file with
-    | Error e -> Lwt.return (Error e)
+    | Error e -> Lwt.return (Error (Config e))
     | Ok token -> (
         let api =
           if String.ends_with ~suffix:"/" k.k_api then
@@ -97,13 +106,21 @@ let restart (k : Console_config.kubernetes) (w : workload) ~restarted_at :
                (resource w.kind) w.name)
         in
         let* tls =
-          match Uri.scheme uri with
-          | Some "https" -> Haltsql_cloud.Http.ctx_of_ca_file k.k_ca_file
-          | Some "http" -> Lwt.return (Ok Haltsql_cloud.Http.default_ctx)
-          | _ -> Lwt.return (Error "fleet.kubernetes.api must be an http(s) URL")
+          if not (api_is_allowed uri) then
+            Lwt.return
+              (Error
+                 "fleet.kubernetes.api must be https:// (or http:// on a loopback host)")
+          else
+            match Uri.scheme uri with
+            | Some "https" -> (
+                let+ r = Haltsql_cloud.Http.ctx_of_ca_file k.k_ca_file in
+                match r with
+                | Ok c -> Ok c
+                | Error e -> Error ("fleet.kubernetes.ca_file: " ^ e))
+            | _ -> Lwt.return (Ok Haltsql_cloud.Http.default_ctx)
         in
         match tls with
-        | Error e -> Lwt.return (Error e)
+        | Error e -> Lwt.return (Error (Config e))
         | Ok ctx -> (
             let* r =
               Lwt.catch
@@ -120,12 +137,15 @@ let restart (k : Console_config.kubernetes) (w : workload) ~restarted_at :
                 (fun exn -> Lwt.return (Error (Printexc.to_string exn)))
             in
             match r with
-            | Error e -> Lwt.return (Error ("Kubernetes API unreachable: " ^ e))
-            | Ok resp when resp.status >= 200 && resp.status < 300 -> Lwt.return (Ok ())
+            | Error e ->
+                Lwt.return (Error (Upstream ("Kubernetes API unreachable: " ^ e)))
+            | Ok resp when resp.status >= 200 && resp.status < 300 ->
+                Lwt.return (Ok (outcome_of_body w resp.body))
             | Ok resp ->
                 Lwt.return
                   (Error
-                     (Printf.sprintf "Kubernetes API answered HTTP %d%s" resp.status
-                        (match status_reason resp.body with
-                        | Some r -> " (" ^ r ^ ")"
-                        | None -> "")))))
+                     (Upstream
+                        (Printf.sprintf "Kubernetes API answered HTTP %d%s" resp.status
+                           (match status_reason resp.body with
+                           | Some r -> " (" ^ r ^ ")"
+                           | None -> ""))))))
