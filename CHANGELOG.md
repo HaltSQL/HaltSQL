@@ -10,6 +10,25 @@ even before 1.0.
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-11-10
+
+Packaging fix release. No changes to the engine, the server, the proxy or the
+SDK APIs.
+
+### Fixed
+- **`@haltsql/client` is published to npm.** 0.0.1 published the three
+  `@haltsql/native-*` packages but not the client: the publish job's `npm ci`
+  (npm 11) refused the lockfile, which pinned the native packages without lock
+  entries. Their optional dependencies are no longer in the committed
+  `package.json`; `clients/typescript/scripts/set-native-deps.mjs` adds them at
+  pack time, at the client's version, so `npm ci` works before and after a
+  release. This also fixes `npm ci` in `clients/typescript` on `main`, which
+  failed once 0.0.1 of the native packages was on npm.
+- The npm publish job packs every package first and publishes tarballs,
+  skipping versions already on npm, so re-running it after a partial publish
+  finishes the job. The publish dry run runs the same steps with the same npm
+  version, so it catches what the real publish would hit.
+
 ## [0.0.1] - 2026-11-09
 
 First preview release. PostgreSQL only. Not yet recommended as the only
@@ -580,5 +599,6 @@ These were found while integrating the unreleased features above.
 - `INSERT` may only name columns listed in the table's `columns`.
 - `LIKE`, `ILIKE` and `SIMILAR TO` are checked against the operator allowlist.
 
-[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.0.1

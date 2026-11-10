@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haltsql-llamaindex"
-version = "0.0.1"
+version = "0.0.2"
 description = "HaltSQL guard for LlamaIndex SQLDatabase, SQL retrievers and NL-to-SQL query engines"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
-dependencies = ["haltsql[psycopg]>=0.0.1"]
+dependencies = ["haltsql[psycopg]>=0.0.2"]
 
 [project.optional-dependencies]
 llamaindex = ["llama-index-core>=0.10", "sqlalchemy>=2"]

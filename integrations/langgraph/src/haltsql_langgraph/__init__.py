@@ -39,7 +39,7 @@ __all__ = [
     "build_sql_agent_graph",
     "__version__",
 ]
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 #: Maps LangGraph's runtime context (``ToolRuntime.context``) to a HaltSQL context.
 ContextFrom = Callable[[Any], Mapping[str, Any]]

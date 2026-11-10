@@ -86,10 +86,8 @@ record clients/typescript/package.json "version" \
   "$(first_match clients/typescript/package.json 's/^  "version": "([^"]+)",?$/\1/p')"
 record clients/typescript/package-lock.json "version" \
   "$(first_match clients/typescript/package-lock.json 's/^  "version": "([^"]+)",?$/\1/p')"
-# The optional platform packages are pinned to the client's exact version.
-while IFS= read -r v; do
-  record clients/typescript/package.json "optionalDependencies @haltsql/native-*" "$v"
-done < <(sed -nE 's/^ *"@haltsql\/native-[a-z0-9-]+": "([^"]+)",?$/\1/p' clients/typescript/package.json)
+# The @haltsql/native-* optional dependencies are not in the repository; they are
+# added at pack time at the client's version (clients/typescript/scripts/set-native-deps.mjs).
 record clients/typescript/src/client.ts "VERSION" \
   "$(first_match clients/typescript/src/client.ts 's/^export const VERSION = "([^"]+)";$/\1/p')"
 
