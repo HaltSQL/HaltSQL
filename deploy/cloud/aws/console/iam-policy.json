@@ -1,0 +1,35 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListAuditPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::corp-haltsql-audit",
+      "Condition": {
+        "StringLike": { "s3:prefix": ["haltsql/audit/", "haltsql/audit/*"] }
+      }
+    },
+    {
+      "Sid": "ReadAuditObjects",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::corp-haltsql-audit/haltsql/audit/*"
+    },
+    {
+      "Sid": "DecryptAuditObjects",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:eu-west-1:111122223333:key/REPLACE_ME_AUDIT_KEY",
+      "Condition": {
+        "StringEquals": { "kms:ViaService": "s3.eu-west-1.amazonaws.com" }
+      }
+    },
+    {
+      "Sid": "ReadConsoleSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/*"
+    }
+  ]
+}

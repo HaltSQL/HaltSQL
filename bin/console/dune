@@ -6,7 +6,7 @@
  (name main)
  (public_name haltsql-console)
  (package haltsql-server)
- (libraries haltsql_console cmdliner lwt lwt.unix)
+ (libraries haltsql_console cmdliner lwt lwt.unix unix)
  (link_flags
   (:include link_flags.sexp)))
 

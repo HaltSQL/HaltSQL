@@ -1,0 +1,43 @@
+{{- if .Values.rbac.create }}
+{{- /* Restarts only: `patch` (the restartedAt annotation) on the named
+       workloads in the verifiers' namespace. No get/list/watch, no other
+       resources, no cluster scope. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "console.fullname" . }}-restart
+  namespace: {{ include "console.rbacNamespace" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+rules:
+  {{- with .Values.rbac.deployments }}
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames:
+      {{- toYaml . | nindent 6 }}
+    verbs: [patch]
+  {{- end }}
+  {{- with .Values.rbac.statefulsets }}
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames:
+      {{- toYaml . | nindent 6 }}
+    verbs: [patch]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "console.fullname" . }}-restart
+  namespace: {{ include "console.rbacNamespace" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "console.fullname" . }}-restart
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "console.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

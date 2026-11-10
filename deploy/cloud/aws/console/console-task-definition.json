@@ -1,0 +1,114 @@
+{
+  "family": "haltsql-console",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "cpu": "512",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::111122223333:role/haltsql-console-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::111122223333:role/haltsql-console-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "console",
+      "image": "111122223333.dkr.ecr.eu-west-1.amazonaws.com/haltsql-console-config@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "essential": true,
+      "user": "65532:65532",
+      "readonlyRootFilesystem": true,
+      "environment": [
+        { "name": "HALTSQL_CONSOLE_LISTEN", "value": "127.0.0.1:8090" }
+      ],
+      "secrets": [
+        {
+          "name": "HALTSQL_ADMIN_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/admin-token-AbCdEf"
+        }
+      ],
+      "mountPoints": [
+        { "sourceVolume": "state", "containerPath": "/var/lib/haltsql-console", "readOnly": false },
+        { "sourceVolume": "tmp", "containerPath": "/tmp", "readOnly": false }
+      ],
+      "healthCheck": {
+        "command": ["/usr/local/bin/haltsql-console", "--healthcheck"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql-console",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "console"
+        }
+      }
+    },
+    {
+      "name": "oauth2-proxy",
+      "image": "quay.io/oauth2-proxy/oauth2-proxy:v7.8.1",
+      "essential": true,
+      "user": "65532:65532",
+      "readonlyRootFilesystem": true,
+      "portMappings": [
+        { "name": "http", "containerPort": 4180, "protocol": "tcp" }
+      ],
+      "command": [
+        "--http-address=0.0.0.0:4180",
+        "--upstream=http://127.0.0.1:8090/",
+        "--provider=oidc",
+        "--oidc-issuer-url=https://acme.okta.com/oauth2/default",
+        "--redirect-url=https://haltsql-console.corp.internal/oauth2/callback",
+        "--email-domain=*",
+        "--scope=openid email profile groups",
+        "--pass-user-headers=true",
+        "--reverse-proxy=true",
+        "--cookie-secure=true",
+        "--skip-provider-button=true",
+        "--skip-auth-route=GET=^/(healthz|readyz)$"
+      ],
+      "secrets": [
+        {
+          "name": "OAUTH2_PROXY_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:client_id::"
+        },
+        {
+          "name": "OAUTH2_PROXY_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:client_secret::"
+        },
+        {
+          "name": "OAUTH2_PROXY_COOKIE_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/oauth2-GhIjKl:cookie_secret::"
+        }
+      ],
+      "dependsOn": [
+        { "containerName": "console", "condition": "HEALTHY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/haltsql-console",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "oauth2-proxy"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "state",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-0123456789abcdef0",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "fsap-0123456789abcdef0",
+          "iam": "ENABLED"
+        }
+      }
+    },
+    { "name": "tmp" }
+  ]
+}

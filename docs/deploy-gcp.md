@@ -644,6 +644,17 @@ The SQL text is never exported in spans. Join a span to its audit record on
 - `haltsql-proxy` has no `${gcp-sm:...}`, no GCS audit sink, no metrics and no
   HTTP health endpoint.
 
+## Console
+
+To run `haltsql-console` (the control plane) next to these deployments: on
+GKE with the `haltsql-console` chart, Workload Identity for GCS audit reads
+and Secret Manager, Identity-Aware Proxy in front and a Persistent Disk for
+its state; or on Cloud Run as a single always-on instance with a Filestore
+volume. See [console/deploy.md](console/deploy.md#google-cloud) and
+[`deploy/cloud/gcp/console/`](../deploy/cloud/gcp/console/). Each verifier
+needs `server.admin` enabled with the console's token in
+`server.admin.callers`.
+
 ## Regenerating the diagrams
 
 The architecture images on this page are drawn as code with

@@ -1,0 +1,28 @@
+# Local console demo: a support assistant rolled out in shadow mode, so the
+# console's shadow report has would-be denials to show.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: support-bot
+  owner: support-engineering
+  description: Customer lookups for the support assistant (shadow rollout)
+dialect: postgres-17
+search_path: [app]
+statements:
+  allow: [select]
+require_limit:
+  max: 50
+tenancy:
+  mode: literal
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  app.customers:
+    columns: [id, tenant_id, name, country, created_at]
+    tenant_column: tenant_id
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, created_at]
+    tenant_column: tenant_id
+functions:
+  presets: [aggregates, datetime]
+mode: shadow

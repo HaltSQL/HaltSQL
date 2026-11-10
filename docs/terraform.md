@@ -10,6 +10,12 @@ and one example for each:
 | `modules/haltsql-azure` | Azure Container Apps | `examples/azure` |
 | `modules/haltsql-gcp` | Google Cloud Run (v2 API) | `examples/gcp` |
 
+`examples/console-kubernetes` installs `haltsql-console`, the control plane,
+next to a `haltsql` release with a `helm_release` of
+`deploy/helm/haltsql-console`; cloud specifics come from the overlays in
+`deploy/cloud/<cloud>/console/`. It is validated by `test/static-checks.sh`
+but not applied by a test. See [console/deploy.md](console/deploy.md#terraform).
+
 All four modules share these rules:
 
 - **Fail closed.** Bad input is a plan error, raised by a `validation`

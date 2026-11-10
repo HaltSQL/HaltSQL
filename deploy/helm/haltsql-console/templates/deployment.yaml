@@ -1,0 +1,249 @@
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- fail "replicaCount must be 0 or 1: the console keeps its state on one volume (one replica per environment)" -}}
+{{- end -}}
+{{- if and .Values.rbac.create (not (or .Values.rbac.deployments .Values.rbac.statefulsets)) -}}
+{{- fail "rbac.create needs rbac.deployments or rbac.statefulsets (the verifier workloads the console may restart)" -}}
+{{- end -}}
+{{- $o2p := .Values.oauth2Proxy -}}
+{{- if $o2p.enabled -}}
+{{- if not $o2p.existingSecret -}}
+{{- fail "oauth2Proxy.existingSecret is required (OAUTH2_PROXY_CLIENT_ID, OAUTH2_PROXY_CLIENT_SECRET, OAUTH2_PROXY_COOKIE_SECRET)" -}}
+{{- end -}}
+{{- if and (eq $o2p.provider "oidc") (not $o2p.oidcIssuerUrl) -}}
+{{- fail "oauth2Proxy.oidcIssuerUrl is required with provider oidc" -}}
+{{- end -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "console.fullname" . }}
+  labels:
+    {{- include "console.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "console.selectorLabels" . | nindent 6 }}
+  # One replica on a ReadWriteOnce state volume: stop the old pod before the
+  # new one starts so two consoles never write the same state_dir.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include "console.config" . | sha256sum }}
+        checksum/secret-env: {{ toJson .Values.secretEnv | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "console.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "console.serviceAccountName" . }}
+      automountServiceAccountToken: {{ include "console.automountToken" . }}
+      enableServiceLinks: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: console
+          image: {{ include "console.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/haltsql-console/console.yaml
+            # The flag outranks the image's HALTSQL_CONSOLE_LISTEN and the config.
+            - --listen
+            - {{ include "console.listen" . | quote }}
+            {{- with .Values.console.devRole }}
+            - --dev
+            - {{ . | quote }}
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # `haltsql-console --healthcheck` (docker HEALTHCHECK) probes this address.
+            - name: HALTSQL_CONSOLE_LISTEN
+              value: {{ include "console.listen" . | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.existingSecret .Values.secretEnv .Values.extraEnvFrom }}
+          envFrom:
+            {{- if .Values.existingSecret }}
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+            {{- end }}
+            {{- if .Values.secretEnv }}
+            - secretRef:
+                name: {{ include "console.fullname" . }}-env
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- if not $o2p.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.console.port }}
+              protocol: TCP
+          {{- end }}
+          {{- /* Behind the sidecar the console listens on loopback, which kubelet
+                 cannot reach: probes go through oauth2-proxy (skip-auth routes). */}}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- include "console.probe" (dict "probe" .Values.startupProbe "root" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- include "console.probe" (dict "probe" .Values.livenessProbe "root" $) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- include "console.probe" (dict "probe" .Values.readinessProbe "root" $) | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/haltsql-console
+              readOnly: true
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.verifierConfig.configMap }}
+            - name: verifier-config
+              mountPath: /etc/haltsql/config
+              readOnly: true
+            {{- end }}
+            {{- if .Values.verifierConfig.policiesConfigMap }}
+            - name: verifier-policies
+              mountPath: /etc/haltsql/policies
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auditVolume.volume }}
+            - name: audit
+              mountPath: {{ .Values.auditVolume.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if $o2p.enabled }}
+        - name: oauth2-proxy
+          image: {{ include "console.oauth2ProxyImage" . | quote }}
+          imagePullPolicy: {{ $o2p.image.pullPolicy }}
+          args:
+            - --http-address=0.0.0.0:{{ $o2p.port }}
+            - --upstream=http://127.0.0.1:{{ .Values.console.port }}/
+            - --provider={{ $o2p.provider }}
+            {{- with $o2p.oidcIssuerUrl }}
+            - --oidc-issuer-url={{ . }}
+            {{- end }}
+            {{- with $o2p.redirectUrl }}
+            - --redirect-url={{ . }}
+            {{- end }}
+            {{- range $o2p.emailDomains }}
+            - --email-domain={{ . }}
+            {{- end }}
+            {{- range $o2p.allowedGroups }}
+            - --allowed-group={{ . }}
+            {{- end }}
+            - --scope={{ $o2p.scope }}
+            # X-Forwarded-User/Email/Groups/Preferred-Username are set from the
+            # session and replace any the client sent; auth.proxy trusts them.
+            - --pass-user-headers=true
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --skip-provider-button=true
+            - --silence-ping-logging=true
+            # Probes (and only probes) reach the console without a session.
+            - --skip-auth-route=GET=^/(healthz|readyz)$
+            {{- range $o2p.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ $o2p.existingSecret }}
+          ports:
+            - name: http
+              containerPort: {{ $o2p.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml $o2p.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with $o2p.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "console.configMapName" . }}
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "console.pvcName" . }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: 1Gi
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- with .Values.verifierConfig.configMap }}
+        - name: verifier-config
+          configMap:
+            name: {{ . }}
+        {{- end }}
+        {{- with .Values.verifierConfig.policiesConfigMap }}
+        - name: verifier-policies
+          configMap:
+            name: {{ . }}
+        {{- end }}
+        {{- if .Values.auditVolume.volume }}
+        - name: audit
+          {{- include "console.volumeSource" (dict "v" .Values.auditVolume.volume "key" "auditVolume.volume") | nindent 10 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

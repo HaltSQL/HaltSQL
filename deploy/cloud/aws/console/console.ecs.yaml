@@ -1,0 +1,34 @@
+# haltsql-console config for ECS Fargate (deploy/cloud/aws/console/Dockerfile.ecs).
+# state_dir is an EFS access point (uid/gid 65532) mounted by the task definition.
+# Replace the names, bucket and IdP before use. Reference: docs/console/config.md.
+environment: { org: Acme Corp, name: Production, region: eu-west-1 }
+state_dir: /var/lib/haltsql-console
+
+auth:
+  # An internal ALB in front runs oauth2-proxy as a second container in the
+  # task (see console-task-definition.json); the console listens on loopback.
+  proxy:
+    user_header: X-Forwarded-Email
+    name_header: X-Forwarded-Preferred-Username
+    groups_header: X-Forwarded-Groups
+    label: oauth2-proxy
+  tokens: []
+  roles:
+    admin: [haltsql-admins]
+    analyst: [security]
+    audit: [compliance]
+
+verifiers:
+  # The verifier service through ECS Service Connect (or its internal ALB).
+  - name: haltsql
+    url: https://haltsql.internal:8443
+    kind: server
+    location: ECS eu-west-1
+    token: ${env:HALTSQL_ADMIN_TOKEN}     # injected from Secrets Manager by ECS
+
+audit:
+  sources:
+    - { verifier: auto, s3: "s3://corp-haltsql-audit/haltsql/audit/", region: eu-west-1 }
+
+policies:
+  server_config: /etc/haltsql/config.yaml

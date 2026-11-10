@@ -617,6 +617,16 @@ Alarms, as AMP alerting rules or CloudWatch alarms
 - [ ] Chain verification is scheduled (for example a daily job that
       downloads yesterday's objects and runs the verifier).
 
+## Console
+
+To run `haltsql-console` (the control plane) next to these deployments: on
+EKS with the `haltsql-console` chart, IRSA for S3 audit reads and Secrets
+Manager, an internal ALB and an EBS volume for its state; or on ECS Fargate
+with EFS for its state. See [console/deploy.md](console/deploy.md#aws) and
+[`deploy/cloud/aws/console/`](../deploy/cloud/aws/console/). Each verifier
+needs `server.admin` enabled with the console's token in
+`server.admin.callers`.
+
 ## Regenerating the diagrams
 
 The architecture images on this page are drawn as code with

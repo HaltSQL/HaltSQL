@@ -13,6 +13,9 @@ sinks and OTLP export. Every replica loads the same policies and answers
 | `operator/` | Kubernetes operator (Go, API `haltsql.dev/v1alpha1`): `HaltSQLPolicy` and `HaltSQLServer` CRDs reconciled into policy ConfigMaps and a haltsql-server Deployment. See [docs/kubernetes-operator.md](../docs/kubernetes-operator.md). |
 | `k8s/sidecar-example.yaml` | haltsql as a sidecar next to an agent, reached over `127.0.0.1`. |
 | `systemd/haltsql-server.service` | Hardened unit for VMs and bare metal. |
+| `helm/haltsql-console/` | Helm chart for `haltsql-console`, the control plane (one replica, state PVC, restart-only RBAC, NetworkPolicy, optional oauth2-proxy sidecar). Guide: [docs/console/deploy.md](../docs/console/deploy.md). |
+| `console/` | Console example config, the local Docker Compose stack (Postgres, haltsql-server, haltsql-console) and `demo-traffic.sh`. |
+| `cloud/*/console/` | Console values overlays, IAM, ECS / Cloud Run / Container Apps definitions. |
 | `cloud/aws/`, `cloud/gcp/`, `cloud/azure/` | Reference manifests and IAM for each cloud. Guides: [AWS](../docs/deploy-aws.md), [Google Cloud](../docs/deploy-gcp.md), [Azure](../docs/deploy-azure.md). |
 | `diagrams/` | Cloud architecture diagrams as code ([mingrammer/diagrams](https://github.com/mingrammer/diagrams)); `make diagrams` regenerates `docs/assets/cloud/`. |
 

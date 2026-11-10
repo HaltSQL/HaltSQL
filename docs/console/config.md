@@ -15,7 +15,7 @@ the API.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `listen` | `127.0.0.1:8090` | `host:port` to serve on. `--listen` overrides. |
+| `listen` | `127.0.0.1:8090` | `host:port` to serve on. `--listen`, then `HALTSQL_CONSOLE_LISTEN`, override it (the container image sets `HALTSQL_CONSOLE_LISTEN=0.0.0.0:8090`). |
 | `environment.org`, `.name`, `.region` | `HaltSQL`, `Default`, none | Shown in the environment switcher. |
 | `state_dir` | `./console-state` | Durable state (cases, activity log, signal workflow, evidence packs). Must be writable; `/readyz` is 503 otherwise. Put it on a persistent volume. |
 | `frontend_dir` | none | Directory with the built web frontend, served at `/`. |

@@ -1,0 +1,277 @@
+# Default values for the haltsql-console chart. Every key is validated by
+# values.schema.json; see README.md in this directory for the full reference.
+# Guide: docs/console/deploy.md. Config reference: docs/console/config.md.
+
+# The console keeps human input (cases, activity log, signal workflow, evidence
+# packs) in state_dir on one volume: exactly one replica per environment (0
+# scales it down). The Deployment uses the Recreate strategy so two pods never
+# share the volume.
+replicaCount: 1
+revisionHistoryLimit: 5
+
+image:
+  repository: ghcr.io/haltsql/haltsql-console
+  tag: ""            # defaults to .Chart.AppVersion
+  # Pin an exact, signed image. When set it wins over `tag`. Verify first:
+  #   cosign verify ghcr.io/haltsql/haltsql-console@sha256:... \
+  #     --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  digest: ""         # e.g. sha256:3f1c...
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # IRSA (eks.amazonaws.com/role-arn), GKE Workload Identity
+  # (iam.gke.io/gcp-service-account) or AKS Workload Identity
+  # (azure.workload.identity/client-id) for S3/GCS audit reads and secrets.
+  annotations: {}
+  # The token is mounted when rbac.create is true (verifier restarts through
+  # the Kubernetes API) or when this is true (e.g. Vault's kubernetes auth).
+  automountServiceAccountToken: false
+
+# Verifier restarts (fleet.kubernetes): a namespaced Role that allows only
+# `patch` on the named Deployments/StatefulSets, bound to the ServiceAccount.
+# When enabled the chart sets fleet.kubernetes.namespace in the config and
+# mounts the service account token.
+rbac:
+  create: false
+  namespace: ""        # namespace of the verifiers; defaults to the release namespace
+  deployments: []      # e.g. [haltsql]
+  statefulsets: []
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+runtimeClassName: ""
+
+console:
+  port: 8090
+  # --dev ROLE: every request is authenticated as a local user with ROLE
+  # (dev, analyst, owner, audit or admin). Development only. Never in production.
+  devRole: ""
+  # Served at / when set. The image reserves /usr/share/haltsql-console/web.
+  frontendDir: ""
+  # The console configuration (docs/console/config.md), rendered into a
+  # ConfigMap. The chart sets `listen` and `state_dir` (do not set them here)
+  # and, with oauth2Proxy.enabled, `auth.proxy`; with rbac.create,
+  # `fleet.kubernetes.namespace`. Secrets belong in ${env:NAME} placeholders
+  # backed by `existingSecret` (or ${vault:...}, ${aws-sm:...}, ${gcp-sm:...}).
+  config:
+    environment: { org: HaltSQL, name: Production }
+    auth: {}
+    #  oidc:
+    #    - { name: okta, issuer: https://acme.okta.com/oauth2/default, audience: haltsql-console }
+    #  roles: { admin: [okta:haltsql-admins], analyst: [okta:security], audit: [okta:compliance] }
+    verifiers: []
+    #  - name: haltsql
+    #    url: http://haltsql.haltsql.svc:8080
+    #    token: ${env:HALTSQL_ADMIN_TOKEN}     # its name is listed in server.admin.callers
+    #    workload: deployment/haltsql
+    audit:
+      sources: []
+      #  - { verifier: auto, s3: "s3://acme-audit/haltsql/", region: us-east-1 }
+  # Use your own ConfigMap (key console.yaml) instead of rendering `config`.
+  # The chart still passes --listen; set state_dir to persistence.mountPath.
+  existingConfigMap: ""
+
+# Secret holding the values referenced as ${env:NAME} in the config (verifier
+# admin tokens, GitHub token, webhook URLs). Every key becomes an environment
+# variable (envFrom). Create it with External Secrets, the Secrets Store CSI
+# driver, Sealed Secrets or kubectl. Pods do not roll when it changes: bump
+# podAnnotations or use a reloader.
+existingSecret: ""
+# For quick tests only: key/value pairs rendered into a chart-managed Secret
+# (envFrom). Values end up in the Helm release. Prefer existingSecret.
+secretEnv: {}
+
+# The verifiers' own config and policies, mounted read-only so the Playground,
+# decision trails and exposure use the same policies. With the haltsql chart
+# (release "haltsql"): configMap haltsql-config, policiesConfigMap
+# haltsql-policies, and console.config.policies.server_config:
+# /etc/haltsql/config/config.yaml.
+verifierConfig:
+  configMap: ""          # mounted at /etc/haltsql/config
+  policiesConfigMap: ""  # mounted at /etc/haltsql/policies
+
+# A shared volume holding the verifiers' audit files (file audit sources): a
+# single pod volume source mounted read-only at mountPath, e.g.
+#   volume: { persistentVolumeClaim: { claimName: haltsql-audit, readOnly: true } }
+# Leave empty when the audit trail is read from S3 or GCS.
+auditVolume:
+  mountPath: /var/log/haltsql
+  volume: {}
+
+# state_dir. A PersistentVolumeClaim (ReadWriteOnce is enough: one replica,
+# Recreate strategy). Without persistence an emptyDir is used and cases, the
+# activity log and evidence packs are lost when the pod is rescheduled.
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""       # "" = cluster default; "-" = no storage class
+  accessModes: [ReadWriteOnce]
+  size: 10Gi
+  annotations: {}        # e.g. helm.sh/resource-policy: keep
+  mountPath: /var/lib/haltsql-console
+
+# Optional oauth2-proxy sidecar. The console then listens on 127.0.0.1 only,
+# the Service points at the sidecar, and the chart sets auth.proxy to trust
+# the X-Forwarded-* headers oauth2-proxy sets (it overwrites any the client
+# sends). /healthz and /readyz pass through unauthenticated for the probes.
+oauth2Proxy:
+  enabled: false
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: v7.8.1
+    digest: ""
+    pullPolicy: IfNotPresent
+  port: 4180
+  # Secret with OAUTH2_PROXY_CLIENT_ID, OAUTH2_PROXY_CLIENT_SECRET and
+  # OAUTH2_PROXY_COOKIE_SECRET (32 random bytes, base64). Required.
+  existingSecret: ""
+  provider: oidc
+  oidcIssuerUrl: ""      # e.g. https://login.microsoftonline.com/<tenant>/v2.0
+  redirectUrl: ""        # e.g. https://console.example.com/oauth2/callback
+  emailDomains: ["*"]
+  allowedGroups: []      # only these IdP groups may sign in
+  scope: "openid email profile"
+  extraArgs: []
+  extraVolumeMounts: []  # e.g. a Google service-account key from extraVolumes
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+# Extra container settings.
+extraArgs: []          # appended to the haltsql-console command line
+extraEnv: []           # [{name: AWS_REGION, value: eu-west-1}, {name: X, valueFrom: {...}}]
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+initContainers: []
+extraContainers: []
+
+service:
+  type: ClusterIP        # keep the console private; reach it through an ingress with an IdP in front
+  port: 8090
+  annotations: {}
+  labels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  # AWS ALB with OIDC, GKE IAP (BackendConfig), App Gateway, nginx + oauth2-proxy.
+  # Never expose the console without authentication in front or in the config.
+  annotations: {}
+  hosts: []
+  #  - host: console.example.internal
+  #    paths: [{ path: /, pathType: Prefix }]
+  tls: []
+  #  - secretName: console-tls
+  #    hosts: [console.example.internal]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    # The in-memory record index grows with audit.max_records; size the
+    # memory limit for your retention window.
+    memory: 1Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  privileged: false
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+# The first start rebuilds the record index from the audit sources; the
+# startup probe allows failureThreshold * periodSeconds for it.
+startupProbe:
+  enabled: true
+  httpGet: { path: /healthz, port: http }
+  periodSeconds: 2
+  timeoutSeconds: 2
+  failureThreshold: 60
+livenessProbe:
+  enabled: true
+  httpGet: { path: /healthz, port: http }
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+readinessProbe:
+  enabled: true
+  httpGet: { path: /readyz, port: http }   # 503 while state_dir is not writable
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 2
+
+terminationGracePeriodSeconds: 30
+
+# Off by default: with a single replica a PDB either blocks node drains or
+# allows the eviction anyway. Enable it to make the budget explicit.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: null
+  maxUnavailable: 1      # wins over minAvailable when set
+  unhealthyPodEvictionPolicy: ""
+
+networkPolicy:
+  enabled: true
+  # Who may reach the console: the ingress controller or your identity-aware
+  # proxy. Empty = any pod in the release namespace.
+  ingressFrom: []
+  #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+  extraIngress: []
+  egress:
+    allowDNS: true
+    # The verifiers' HTTP API (admin status and report, /readyz, /metrics).
+    # Defaults to the pods of the haltsql chart in any namespace, port 8080.
+    verifiers:
+      - to:
+          - namespaceSelector: {}
+            podSelector: { matchLabels: { app.kubernetes.io/name: haltsql } }
+        ports: [{ port: 8080, protocol: TCP }]
+    # TCP 443 to any destination: the IdP (OIDC discovery and JWKS), GitHub,
+    # Slack, PagerDuty, data catalogs, S3/GCS, cloud secret managers, and the
+    # Kubernetes API when it listens on 443. Prefer false plus extraRules with
+    # known CIDRs where you can.
+    allowHTTPS: true
+    # The Kubernetes API server for verifier restarts (rbac.create) when it is
+    # not on 443, e.g. to: [{ ipBlock: { cidr: 10.0.0.1/32 } }], port: 6443.
+    kubernetesAPI:
+      to: []
+      port: 6443
+    extraRules: []
+
+# The console does not serve Prometheus metrics yet. Reserved for when it
+# does; the probes cover liveness and readiness today.
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  path: /metrics
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

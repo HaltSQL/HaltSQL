@@ -1,0 +1,35 @@
+# Local console demo: the analytics agent. Read-only, tenant-scoped (literal
+# predicates must equal the verify request's context tenant), LIMIT required.
+apiVersion: haltsql.dev/v1
+kind: Policy
+metadata:
+  name: saas-analytics
+  owner: data-platform
+  description: Read-only analytics over orders, customers and invoices
+dialect: postgres-17
+search_path: [app]
+statements:
+  allow: [select]
+require_limit:
+  max: 1000
+tenancy:
+  mode: literal
+  keys:
+    tenant: ${ctx.tenant_id}
+tables:
+  app.orders:
+    columns: [id, tenant_id, customer_id, status, total_cents, currency, created_at]
+    tenant_column: tenant_id
+  app.customers:
+    # email and phone are intentionally absent
+    columns: [id, tenant_id, name, country, created_at]
+    tenant_column: tenant_id
+  app.invoices:
+    columns: [id, tenant_id, order_id, amount_cents, currency, issued_at, paid_at]
+    tenant_column: tenant_id
+  app.currencies:
+    columns: "*"
+functions:
+  presets: [aggregates, math, datetime]
+  allow: [lower, upper, initcap]
+mode: enforce
