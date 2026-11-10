@@ -41,9 +41,11 @@ checkable without a database.
    needs its own predicate.
 7. **Sets of tenant values** (context value is a list) allow hierarchical
    tenancy without weakening the proof.
-8. **No equality propagation** through joins in 0.x: every occurrence needs a
-   direct predicate. Propagation via union-find over equality conjuncts may be
-   added later under a new ADR.
+8. **Equality propagation within one scope only.** An occurrence may be proven
+   by a top-level `a.tenant_col = b.tenant_col` conjunct in one of its own
+   locations when `b` is proven in the same `SELECT` and both columns carry the
+   same tenancy key (added after 0.0.2; originally every occurrence needed a
+   direct predicate). It does not cross subquery boundaries.
 
 ## Alternatives considered
 
@@ -60,8 +62,9 @@ checkable without a database.
 
 ## Consequences
 
-- Some safe queries are denied (for example tenant equality propagated through
-  a join). Agents get a precise hint and can add the direct predicate.
+- Some safe queries are denied (for example a tenant equality that reaches
+  into a correlated subquery). Agents get a precise hint and can add the direct
+  predicate.
 - The rules are short enough to document completely and test exhaustively.
 - The enterprise lab uses Postgres RLS as an independent oracle: any allowed
   query that returns a row RLS would hide is an escape and a release blocker.
@@ -71,4 +74,5 @@ checkable without a database.
 
 - Attack-corpus cases for each rule and each bypass shape.
 - Property tests applying evasion transforms to allowed queries.
-- Revisit equality propagation once the corpus and lab are mature.
+- Equality propagation within one scope is done (decision 8); propagation into
+  correlated subqueries and `USING` joins is still open.

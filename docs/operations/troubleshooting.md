@@ -95,7 +95,7 @@ hint naming the alias. Then compare the query with this table:
 | `WHERE tenant_id = $1 OR status = 'open'` | Only top-level `AND` conjuncts count. `OR`, `NOT`, `CASE`, `COALESCE` and function arguments prove nothing. | Make the tenant predicate a top-level `AND`. |
 | Filter only in the outer query of a subquery or CTE | Each scope must prove its own occurrences. | Add the predicate inside the subquery or CTE body. |
 | A `UNION` with a filter in one branch | Each branch is a scope. | Filter every branch. |
-| `JOIN customers c ON c.tenant_id = o.tenant_id` with `WHERE o.tenant_id = $1` | Equality is not propagated through joins. | Add `AND c.tenant_id = $1`. |
+| `EXISTS (SELECT 1 FROM customers c WHERE c.tenant_id = o.tenant_id)` with `WHERE o.tenant_id = $1` outside | Equality is propagated only within one `SELECT`, not into a subquery. | Add `AND c.tenant_id = $1` inside the subquery. |
 | Filter in the `ON` of a `LEFT JOIN` for the preserved side | The preserved side's rows are not filtered by `ON`. | Move it to `WHERE`. |
 | Filter in `HAVING` | Rows are already grouped. Only `WHERE` and `ON` count. | Move it to `WHERE`. |
 | A composite tenancy (`org_id` and `workspace_id`) with one predicate | Every tenant column needs its own predicate. Row-value comparisons such as `(a, b) = ($1, $2)` are not recognized. | One conjunct per tenant column. |

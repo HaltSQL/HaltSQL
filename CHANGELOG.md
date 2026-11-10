@@ -16,6 +16,12 @@ even before 1.0.
   tenant comes from the config; a request body that names another tenant gets
   `403 CONTEXT_NOT_ALLOWED`. Tokens without either key behave as before (the
   body supplies the context).
+- **Tenant equality propagates through joins in the same `SELECT`.**
+  `JOIN customers c ON c.tenant_id = o.tenant_id` with `WHERE o.tenant_id = $1`
+  is now allowed: `c` is proven through the equality to the proven `o`. The
+  equality must be a top-level `AND` condition in a location that filters the
+  occurrence, on bare columns with the same tenancy key; it does not cross
+  subquery boundaries ([tenancy.md](docs/tenancy.md#equality-propagation)).
 - **Verdicts report the search path, and the Python guard pins it.** The
   verdict's `policy` object gains `search_path`. `haltsql.guard` (and so the
   MCP server and the Python integrations) sets it for the transaction that runs

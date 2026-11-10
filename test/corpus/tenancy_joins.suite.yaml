@@ -1,7 +1,10 @@
 # Threat class: tenant bypass through joins (PLAN.md §6.3). Proof may live in
 # the scope's WHERE, an INNER JOIN ON, or the ON of a LEFT JOIN where the
 # relation is the nullable side. LEFT JOIN ON never filters the preserved side.
-# Equality propagation (a.tenant_id = b.tenant_id) is NOT supported in v1.
+# Equality propagation: a.tenant_id = b.tenant_id is a proof for a when it is a
+# top-level conjunct in one of a's own locations, b is proven in the same SELECT
+# and both columns carry the same tenancy key. It does not cross subquery
+# boundaries (LATERAL, EXISTS), USING or NATURAL.
 # Policy: saas.yaml (bound mode, max_joins 6).
 apiVersion: haltsql.dev/v1
 kind: TestSuite
@@ -39,20 +42,87 @@ cases:
     expect: deny
     codes: [E_TENANT_MISSING]
     tags: [tenancy_joins]
-  - name: equality propagation not supported
+  - name: equality propagation in an inner join ON
     sql: |-
       SELECT o.id, c.name FROM orders o JOIN customers c
         ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
       WHERE o.tenant_id = $1 LIMIT 50
-    expect: deny
-    codes: [E_TENANT_MISSING]
+    expect: allow
+    bind: [{ param: 1, value: acme }]
     tags: [tenancy_joins, propagation]
-  - name: equality propagation in WHERE not supported
+  - name: equality propagation in WHERE
     sql: |-
       SELECT o.id FROM orders o, invoices i
       WHERE i.order_id = o.id AND o.tenant_id = i.tenant_id AND i.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation to the nullable side of a LEFT JOIN
+    sql: |-
+      SELECT o.id, c.name FROM orders o LEFT JOIN customers c
+        ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation through a chain
+    sql: |-
+      SELECT o.id FROM orders o
+        JOIN customers c ON c.tenant_id = o.tenant_id
+        JOIN invoices i ON i.tenant_id = c.tenant_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation with no proven relation
+    sql: |-
+      SELECT o.id, c.name FROM orders o JOIN customers c
+        ON c.id = o.customer_id AND c.tenant_id = o.tenant_id LIMIT 50
     expect: deny
     codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation cannot filter the preserved side of a LEFT JOIN
+    sql: |-
+      SELECT c.name FROM customers c LEFT JOIN orders o
+        ON c.tenant_id = o.tenant_id AND o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation under OR is not a proof
+    sql: |-
+      SELECT c.name FROM orders o JOIN customers c
+        ON c.tenant_id = o.tenant_id OR c.id = o.customer_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: equality propagation with a cast is not a proof
+    sql: |-
+      SELECT c.name FROM orders o JOIN customers c ON c.tenant_id::text = o.tenant_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: equality to a non-tenant column is not a proof
+    sql: |-
+      SELECT c.name FROM orders o JOIN customers c ON c.tenant_id = o.status
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: inequality on the tenant columns is not a proof
+    sql: |-
+      SELECT c.name FROM orders o JOIN customers c ON c.tenant_id <> o.tenant_id
+      WHERE o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING]
+    tags: [tenancy_joins, propagation]
+  - name: FULL JOIN equality propagation is not a proof
+    sql: |-
+      SELECT c.name FROM orders o FULL JOIN customers c
+        ON c.tenant_id = o.tenant_id AND o.tenant_id = $1 LIMIT 50
+    expect: deny
+    codes: [E_TENANT_MISSING, E_PARAM_UNBOUND]
     tags: [tenancy_joins, propagation]
   - name: USING tenant_id is not a proof
     sql: |-
