@@ -11,6 +11,28 @@ even before 1.0.
 ## [Unreleased]
 
 ### Added
+- **Release dry runs.** A `vX.Y.Z-rc.N` tag, or a manual run of
+  `release.yml` / `native-packages.yml` with `dry_run`, runs every build,
+  smoke test, SBOM, cosign signing and provenance step but publishes only a
+  draft GitHub release and packages under `ghcr.io/haltsql/dryrun/` (images
+  tagged `dryrun-<run id>`), checks the PyPI files with `twine check --strict`
+  and runs `npm publish --dry-run`. A TestPyPI upload runs when the
+  `TESTPYPI_PUBLISH` repository variable is set. See
+  [releasing.md](docs/operations/releasing.md).
+- **Helm chart as a signed OCI artifact.** Releases push the chart to
+  `oci://ghcr.io/haltsql/charts/haltsql`, sign its digest with cosign, attest
+  its provenance, and attach the chart archive to the GitHub release.
+- `scripts/verify-release.sh <tag>` runs the verification that
+  [supply-chain.md](docs/security/supply-chain.md#verifying-a-release)
+  documents: checksums, every cosign bundle, `gh attestation verify`, image
+  signatures, SBOM and SLSA provenance, and the chart. `release.yml` runs it
+  as its last job.
+- Releases attach `haltsql-<tag>.oci.txt`, the signed list of image and chart
+  digests.
+- `scripts/check-versions.sh` fails CI when the version in the opam files,
+  SDKs, MCP server and Helm chart drift apart, and fails a release whose tag
+  does not match them.
+- `haltsql-mcp` is built and published to PyPI with `haltsql`.
 - **`haltsql schema fetch`**: PII labels from a live data catalog API over
   HTTPS (new `haltsql.catalog_fetch` library: bearer auth with the token from
   `--token-env`/`--token-file`, never the command line; bounded pagination;
@@ -256,6 +278,8 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- The Helm chart now versions in lockstep with HaltSQL: chart `version` is
+  `0.1.0` (it was `0.2.0`, never published).
 - CI on pull requests runs only the jobs whose files changed: a `changes`
   job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
   `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test

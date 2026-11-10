@@ -426,12 +426,17 @@ Put secrets referenced with `${env:...}` in `/etc/haltsql/haltsql.env`
 
 ## Verifying release artifacts
 
-Each GitHub release has, for every archive:
+Each GitHub release has:
 
-- `SHA256SUMS`: checksums of all archives and the SBOM;
-- `*.sigstore.json`: a keyless cosign signature bundle;
-- a GitHub build-provenance attestation;
+- `SHA256SUMS`: checksums of all archives, the Helm chart archive, the SBOM
+  and `haltsql-<tag>.oci.txt` (the digests of the images and the chart in GHCR);
+- `*.sigstore.json`: a keyless cosign signature bundle for each of those files;
+- a GitHub build-provenance attestation for each archive and the chart;
 - `haltsql-<tag>.cdx.json`: a CycloneDX SBOM.
+
+`scripts/verify-release.sh <tag>` runs all of the checks below, plus the image
+SBOM, provenance and Helm chart checks in
+[supply-chain.md](security/supply-chain.md#verifying-a-release). By hand:
 
 ```sh
 # Checksums
