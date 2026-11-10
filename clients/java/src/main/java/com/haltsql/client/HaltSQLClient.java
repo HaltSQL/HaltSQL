@@ -44,7 +44,7 @@ import javax.net.ssl.SSLParameters;
  */
 public final class HaltSQLClient {
   /** SDK version, sent in the User-Agent header. */
-  public static final String VERSION = "0.0.2";
+  public static final String VERSION = "0.0.3";
 
   private final URI base;
   private final String token;

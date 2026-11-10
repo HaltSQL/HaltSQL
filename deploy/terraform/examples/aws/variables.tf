@@ -28,7 +28,7 @@ variable "caller_cidr_blocks" {
 variable "image" {
   description = "haltsql image (pin a digest in production)."
   type        = string
-  default     = "ghcr.io/haltsql/haltsql:0.0.1"
+  default     = "ghcr.io/haltsql/haltsql:0.0.3"
 }
 
 variable "agent_token_sha256" {

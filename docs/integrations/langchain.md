@@ -25,12 +25,11 @@ format are described on this page. It is a thin layer over the
 
 The package needs Python 3.9 or newer. The `langchain` extra installs
 `langchain-core` 0.3 or newer, `langchain-community` 0.3 or newer and
-SQLAlchemy 2. The package is not on PyPI yet, so install it and the Python SDK
-from a checkout of the repository:
+SQLAlchemy 2. Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e 'integrations/langchain[langchain]'
+pip install 'haltsql-langchain[langchain]'
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do
@@ -259,7 +258,7 @@ suites.
 | `GuardError: caller-supplied parameters are not allowed` | Code called the guarded `run` with `parameters=`. | HaltSQL binds the parameters; pass the SQL alone. |
 | `GuardError: fetch='cursor' is not supported` | Code called `run(fetch="cursor")`. | Use `fetch="all"` or `"one"`. |
 | `GuardError: could not find the SQLAlchemy engine of this SQLDatabase` | The object passed to `guard_sql_database` has no `_engine` or `engine`. | Pass a `langchain_community` `SQLDatabase`. |
-| `ImportError: HaltSQLQueryTool needs langchain-core` | The `langchain` extra is not installed. | `pip install -e 'integrations/langchain[langchain]'`. |
+| `ImportError: HaltSQLQueryTool needs langchain-core` | The `langchain` extra is not installed. | `pip install 'haltsql-langchain[langchain]'`. |
 | `ImportError: no pq wrapper available` | psycopg cannot find `libpq`. | `pip install 'psycopg[binary]'`, or install `libpq`. |
 
 ## Limits

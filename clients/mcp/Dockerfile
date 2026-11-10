@@ -18,7 +18,7 @@
 
 # Image that provides /usr/local/bin/haltsql (static, so it runs on any libc).
 # The release workflow passes the digest of the image it just built.
-ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.1
+ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.3
 
 FROM ${HALTSQL_IMAGE} AS haltsql
 

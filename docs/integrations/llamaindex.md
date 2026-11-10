@@ -24,12 +24,11 @@ It does not use `HaltSQLToolRunner` from the
 ## Install
 
 The package needs Python 3.9 or newer. The `llamaindex` extra installs
-`llama-index-core` 0.10 or newer and SQLAlchemy 2. The package is not on PyPI
-yet, so install it and the Python SDK from a checkout of the repository:
+`llama-index-core` 0.10 or newer and SQLAlchemy 2. Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e 'integrations/llamaindex[llamaindex]'
+pip install 'haltsql-llamaindex[llamaindex]'
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do

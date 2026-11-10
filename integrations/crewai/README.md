@@ -7,7 +7,7 @@ parameters, in a `READ ONLY` transaction with a statement timeout and a row
 cap. It returns JSON: the rows, or the reason codes and hints.
 
 ```sh
-pip install -e clients/python -e integrations/crewai   # from the repository root
+pip install haltsql-crewai
 ```
 
 ```python

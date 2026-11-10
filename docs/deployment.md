@@ -70,7 +70,7 @@ that terminates TLS.
 Images are published for `linux/amd64` and `linux/arm64`:
 
 ```
-ghcr.io/haltsql/haltsql:<version>     # e.g. 0.0.1
+ghcr.io/haltsql/haltsql:<version>     # e.g. 0.0.3
 ghcr.io/haltsql/haltsql:<major.minor> # e.g. 0.1
 ```
 
@@ -81,7 +81,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$PWD/policies:/etc/haltsql/policies:ro" \
   -v "$PWD/config.yaml:/etc/haltsql/config.yaml:ro" \
   -e HALTSQL_ANALYTICS_TOKEN_HASH \
-  ghcr.io/haltsql/haltsql:0.0.1 \
+  ghcr.io/haltsql/haltsql:0.0.3 \
   --config /etc/haltsql/config.yaml --listen 0.0.0.0:8080
 ```
 
@@ -93,7 +93,7 @@ Run the CLI from the same image:
 
 ```sh
 docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql \
-  ghcr.io/haltsql/haltsql:0.0.1 validate policy.yaml
+  ghcr.io/haltsql/haltsql:0.0.3 validate policy.yaml
 ```
 
 Pin images by digest in production (`ghcr.io/haltsql/haltsql@sha256:...`)
@@ -123,7 +123,7 @@ Run the proxy from the same image:
 docker run --rm -p 127.0.0.1:6432:6432 \
   -v "$PWD/proxy:/etc/haltsql:ro" -e UPSTREAM_PASSWORD \
   --entrypoint /usr/local/bin/haltsql-proxy \
-  ghcr.io/haltsql/haltsql:0.0.1 run --config /etc/haltsql/proxy.yaml
+  ghcr.io/haltsql/haltsql:0.0.3 run --config /etc/haltsql/proxy.yaml
 ```
 
 Mounted files must be readable by uid 65532.
@@ -205,7 +205,14 @@ Unix stubs are compiled from source.
 
 ## Kubernetes: Helm chart
 
-`deploy/helm/haltsql` deploys haltsql-server as its own Deployment and
+```sh
+helm install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 \
+  -n haltsql --create-namespace -f my-values.yaml
+```
+
+The chart is signed with cosign like the images; verify it before installing
+([supply-chain.md](security/supply-chain.md#helm-chart)). Its source is
+[`deploy/helm/haltsql`](../deploy/helm/haltsql). It deploys haltsql-server as its own Deployment and
 Service, with the Config and policies in ConfigMaps, token hashes in a
 Secret, and an optional PodDisruptionBudget, HorizontalPodAutoscaler,
 NetworkPolicy and ServiceMonitor. `values.yaml` documents every value. For
@@ -307,7 +314,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: analytics-agent-token, key: token }
         - name: haltsql
-          image: ghcr.io/haltsql/haltsql:0.0.1
+          image: ghcr.io/haltsql/haltsql:0.0.3
           args: ["--config", "/etc/haltsql/config.yaml"]
           ports:
             - { name: http, containerPort: 8080 }
@@ -457,16 +464,16 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 # Signature (keyless, issued to this repository's release workflow)
 cosign verify-blob \
-  --bundle haltsql-v0.0.1-linux-amd64.tar.gz.sigstore.json \
+  --bundle haltsql-v0.0.3-linux-amd64.tar.gz.sigstore.json \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  haltsql-v0.0.1-linux-amd64.tar.gz
+  haltsql-v0.0.3-linux-amd64.tar.gz
 
 # Provenance (GitHub CLI)
-gh attestation verify haltsql-v0.0.1-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
+gh attestation verify haltsql-v0.0.3-linux-amd64.tar.gz --repo HaltSQL/HaltSQL
 
 # Container image signature
-cosign verify ghcr.io/haltsql/haltsql:0.0.1 \
+cosign verify ghcr.io/haltsql/haltsql:0.0.3 \
   --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

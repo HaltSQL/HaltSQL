@@ -37,7 +37,7 @@ __all__ = [
     "context_from_app",
     "__version__",
 ]
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 ContextSource = Union[Mapping[str, Any], Callable[[], Optional[Mapping[str, Any]]]]
 

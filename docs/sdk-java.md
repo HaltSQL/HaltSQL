@@ -8,11 +8,19 @@ Source: [`clients/java`](../clients/java).
 
 ## Install
 
+The Java SDK is not on Maven Central yet. Build it from the repository and
+install it into your local Maven repository, then depend on it as usual:
+
+```sh
+git clone --branch v0.0.3 https://github.com/HaltSQL/HaltSQL
+mvn -f HaltSQL/clients/java/pom.xml install -DskipTests
+```
+
 ```xml
 <dependency>
   <groupId>com.haltsql</groupId>
   <artifactId>haltsql-client</artifactId>
-  <version>0.0.1</version>
+  <version>0.0.3</version>
 </dependency>
 ```
 

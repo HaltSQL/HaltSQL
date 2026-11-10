@@ -3,7 +3,7 @@
 #
 #   kubectl create namespace haltsql
 #   kubectl apply -f networkpolicy-shared.yaml
-#   helm upgrade --install haltsql deploy/helm/haltsql -n haltsql \
+#   helm upgrade --install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 -n haltsql \
 #     -f deploy/cloud/azure/aks/values-aks.yaml
 #
 # Replace every REPLACE_* value. For the sidecar pattern use
@@ -13,7 +13,7 @@ replicaCount: 3
 
 image:
   repository: ghcr.io/haltsql/haltsql
-  tag: "0.0.1"
+  tag: "0.0.3"
   # digest: sha256:...          # pin the signed image digest in production
 
 # haltsql calls no Azure API, so its pods need no Workload Identity: leave the

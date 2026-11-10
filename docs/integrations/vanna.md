@@ -23,12 +23,11 @@ the [agent frameworks](../agent-frameworks.md) packages.
 ## Install
 
 The package needs Python 3.9 or newer. The `vanna` extra installs `vanna` 0.7
-or newer and pandas 1.5 or newer. The package is not on PyPI yet, so install
-it and the Python SDK from a checkout of the repository:
+or newer and pandas 1.5 or newer. Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e 'integrations/vanna[vanna]'
+pip install 'haltsql-vanna[vanna]'
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do

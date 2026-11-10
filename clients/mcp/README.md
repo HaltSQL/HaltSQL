@@ -11,7 +11,7 @@ haltsql-mcp --local-policy policy.yaml postgresql://agent_ro@localhost/mydb
 Or with Docker (includes the `haltsql` CLI; no central server needed):
 
 ```sh
-docker run -i --rm --read-only -v "$PWD:/config:ro" ghcr.io/haltsql/haltsql-mcp \
+docker run -i --rm --read-only -v "$PWD:/config:ro" ghcr.io/haltsql/haltsql-mcp:0.0.3 \
   postgresql://agent_ro@host.docker.internal/mydb      # /config/policy.yaml is picked up
 ```
 
