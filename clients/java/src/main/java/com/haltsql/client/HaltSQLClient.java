@@ -18,7 +18,11 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 
@@ -51,6 +55,22 @@ public final class HaltSQLClient {
   private final long maxDelayMs;
   private final int maxResponseBytes;
   private final boolean checkSqlHash;
+
+  /** Enforces the per-attempt timeout while a response body is read. */
+  private static final ScheduledThreadPoolExecutor WATCHDOG = newWatchdog();
+
+  private static ScheduledThreadPoolExecutor newWatchdog() {
+    ScheduledThreadPoolExecutor ex =
+        new ScheduledThreadPoolExecutor(
+            1,
+            r -> {
+              Thread t = new Thread(r, "haltsql-client-timeout");
+              t.setDaemon(true);
+              return t;
+            });
+    ex.setRemoveOnCancelPolicy(true);
+    return ex;
+  }
 
   private HaltSQLClient(Builder b) {
     this.base = b.base;
@@ -237,6 +257,9 @@ public final class HaltSQLClient {
       throws HaltSQLException {
     if (sql == null) throw usage("sql must not be null");
     if (opts == null) opts = VerifyOptions.NONE;
+    if (opts.requestId() != null && !validRequestId(opts.requestId())) {
+      throw usage("requestId must be 1-200 printable ASCII characters");
+    }
     ObjectNode body = Wire.MAPPER.createObjectNode();
     body.put("sql", sql);
     body.set("context", Wire.context(context));
@@ -356,6 +379,7 @@ public final class HaltSQLClient {
 
   private Raw once(String method, String path, byte[] body, boolean auth, String requestId)
       throws HaltSQLException {
+    long deadline = System.nanoTime() + timeout.toNanos();
     HttpRequest.Builder rb =
         HttpRequest.newBuilder(URI.create(base + path))
             .timeout(timeout)
@@ -390,14 +414,39 @@ public final class HaltSQLClient {
     }
     String rid = resp.headers().firstValue("x-request-id").orElse(null);
     byte[] data;
-    try (InputStream in = resp.body()) {
+    // HttpRequest.timeout() ends when the response headers arrive. The body is read under the
+    // rest of the same per-attempt deadline: closing the stream unblocks a stalled read.
+    InputStream in = resp.body();
+    AtomicBoolean timedOut = new AtomicBoolean();
+    ScheduledFuture<?> watchdog =
+        WATCHDOG.schedule(
+            () -> {
+              timedOut.set(true);
+              try {
+                in.close();
+              } catch (IOException ignored) {
+                // the read below reports the timeout
+              }
+            },
+            Math.max(1, deadline - System.nanoTime()),
+            TimeUnit.NANOSECONDS);
+    try (in) {
       long declared = resp.headers().firstValueAsLong("content-length").orElse(-1);
       if (declared > maxResponseBytes) throw protocol("response larger than " + maxResponseBytes + " bytes", rid);
       data = in.readNBytes(maxResponseBytes + 1);
     } catch (HttpTimeoutException e) {
       throw new HaltSQLException(HaltSQLException.Kind.TIMEOUT, "request timed out after " + timeout, rid, e);
     } catch (IOException e) {
+      if (timedOut.get()) {
+        throw new HaltSQLException(HaltSQLException.Kind.TIMEOUT, "request timed out after " + timeout, rid, e);
+      }
       throw new HaltSQLException(HaltSQLException.Kind.TRANSPORT, "reading response: " + e.getMessage(), rid, e);
+    } finally {
+      watchdog.cancel(false);
+    }
+    // A stream closed by the watchdog can also end the read without an exception.
+    if (timedOut.get()) {
+      throw new HaltSQLException(HaltSQLException.Kind.TIMEOUT, "request timed out after " + timeout, rid, null);
     }
     if (data.length > maxResponseBytes) throw protocol("response larger than " + maxResponseBytes + " bytes", rid);
     long ra = -1;
@@ -421,6 +470,15 @@ public final class HaltSQLClient {
       // non-JSON error body: keep the generic code
     }
     return new HaltSQLHttpException(r.status, code, msg, r.requestId);
+  }
+
+  private static boolean validRequestId(String id) {
+    if (id.isEmpty() || id.length() > 200) return false;
+    for (int i = 0; i < id.length(); i++) {
+      char c = id.charAt(i);
+      if (c < 0x20 || c > 0x7e) return false;
+    }
+    return true;
   }
 
   private static byte[] sha256(String s) {

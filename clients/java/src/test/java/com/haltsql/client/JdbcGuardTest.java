@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -288,6 +290,158 @@ class JdbcGuardTest {
                       .prepare(fakeConnection(JdbcGuard.PGJDBC_DRIVER_NAME, prepares), "SELECT 1 WHERE a = $2 AND b = $1", Map.of()));
       assertEquals(HaltSQLException.Kind.USAGE, e.kind());
       assertEquals(0, srv.count());
+    }
+  }
+
+  /** What a recording connection saw: the prepared SQL and every setObject call. */
+  static final class Recorded {
+    final List<String> prepared = new ArrayList<>();
+    final List<List<Object>> sets = new ArrayList<>();
+  }
+
+  /** A Connection proxy that reports PgJDBC and records prepareStatement / setObject. */
+  static Connection recordingConnection(Recorded rec) {
+    DatabaseMetaData md =
+        (DatabaseMetaData)
+            Proxy.newProxyInstance(
+                JdbcGuardTest.class.getClassLoader(),
+                new Class<?>[] {DatabaseMetaData.class},
+                (p, m, a) -> m.getName().equals("getDriverName") ? JdbcGuard.PGJDBC_DRIVER_NAME : null);
+    PreparedStatement ps =
+        (PreparedStatement)
+            Proxy.newProxyInstance(
+                JdbcGuardTest.class.getClassLoader(),
+                new Class<?>[] {PreparedStatement.class},
+                (p, m, a) -> {
+                  if (m.getName().equals("setObject")) rec.sets.add(List.of(a));
+                  return null;
+                });
+    return (Connection)
+        Proxy.newProxyInstance(
+            JdbcGuardTest.class.getClassLoader(),
+            new Class<?>[] {Connection.class},
+            (p, m, a) -> {
+              switch (m.getName()) {
+                case "getMetaData":
+                  return md;
+                case "prepareStatement":
+                  rec.prepared.add((String) a[0]);
+                  return ps;
+                default:
+                  return null;
+              }
+            });
+  }
+
+  /** An allow verdict for {@code sql} (valid hash) binding the given values as $1..$n. */
+  static String allowBody(String sql, Object... values) throws Exception {
+    ObjectNode resp = FakeServer.vector("allowed_bound_single_tenant").get("response").deepCopy();
+    resp.put("sql_sha256", HaltSQLClientTest.sha(sql));
+    ArrayNode bps = resp.putArray("bind_params");
+    for (int i = 0; i < values.length; i++) {
+      ObjectNode bp = bps.addObject().put("param", i + 1);
+      if (values[i] instanceof List<?> l) {
+        ArrayNode arr = bp.putArray("value");
+        l.forEach(x -> arr.add((String) x));
+      } else {
+        bp.put("value", (String) values[i]);
+      }
+    }
+    return resp.toString();
+  }
+
+  /** Each ? gets the value of the placeholder number it replaced, not the value at its position. */
+  @Test
+  void valuesAreBoundByPlaceholderNumberAndTheSqlIsNotAltered() throws Exception {
+    String sql =
+        "  SELECT o.id FROM orders o JOIN customers c ON c.tenant_id = $2"
+            + " WHERE o.tenant_id = $1 AND o.org = ANY($3) OR o.x = $1 \n";
+    String body = allowBody(sql, "acme", "globex", List.of("a", "b\"c"));
+    Recorded rec = new Recorded();
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body))) {
+      HaltSQLClient hc = HaltSQLClient.builder(srv.url()).build();
+      new JdbcGuard(hc).prepare(recordingConnection(rec), sql, Map.of("tenant_id", "acme"));
+    }
+    // Only the placeholders change; leading and trailing whitespace is part of the verified string.
+    assertEquals(List.of(sql.replace("$2", "?").replace("$1", "?").replace("$3", "?")), rec.prepared);
+    assertEquals(
+        List.of(
+            List.of(1, "globex", java.sql.Types.OTHER),
+            List.of(2, "acme", java.sql.Types.OTHER),
+            List.of(3, "{\"a\",\"b\\\"c\"}", java.sql.Types.OTHER),
+            List.of(4, "acme", java.sql.Types.OTHER)),
+        rec.sets);
+  }
+
+  /** The SQL's placeholders and the verdict's bind params must match exactly, else nothing is prepared. */
+  @Test
+  void placeholderAndBindParamMismatchNeverPrepares() throws Exception {
+    String sql = "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5";
+    for (String body : List.of(allowBody(sql, "acme", "extra"), allowBody(sql))) {
+      Recorded rec = new Recorded();
+      try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body))) {
+        HaltSQLClient hc = HaltSQLClient.builder(srv.url()).build();
+        HaltSQLException e =
+            assertThrows(
+                HaltSQLException.class,
+                () -> new JdbcGuard(hc).prepare(recordingConnection(rec), sql, Map.of("tenant_id", "acme")));
+        assertEquals(HaltSQLException.Kind.USAGE, e.kind());
+      }
+      assertEquals(List.of(), rec.prepared);
+    }
+  }
+
+  /** Shadow would-deny stays refused on every derived guard; only allowShadow() opts in. */
+  @Test
+  void onlyAllowShadowOptsIntoShadowVerdicts() throws Exception {
+    String sql = "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 5";
+    ObjectNode resp = (ObjectNode) FakeServer.JSON.readTree(allowBody(sql, "acme"));
+    resp.putArray("shadow_reasons").addObject().put("code", "E_TENANT_MISSING").put("message", "m").put("rule", "r");
+    String body = resp.toString();
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body))) {
+      HaltSQLClient hc = HaltSQLClient.builder(srv.url()).build();
+      List<JdbcGuard> refusing =
+          List.of(
+              new JdbcGuard(hc),
+              new JdbcGuard(hc).onVerdict(v -> {}),
+              new JdbcGuard(hc).requireByteIdenticalSql(),
+              new JdbcGuard(hc).requireByteIdenticalSql().onVerdict(v -> {}));
+      for (JdbcGuard g : refusing) {
+        Recorded rec = new Recorded();
+        assertThrows(
+            HaltSQLDeniedException.class,
+            () -> g.prepare(recordingConnection(rec), sql, Map.of("tenant_id", "acme")));
+        assertEquals(List.of(), rec.prepared);
+      }
+      Recorded rec = new Recorded();
+      new JdbcGuard(hc)
+          .allowShadow()
+          .onVerdict(v -> {})
+          .prepare(recordingConnection(rec), sql, Map.of("tenant_id", "acme"));
+      assertEquals(1, rec.prepared.size());
+    }
+  }
+
+  /** Through the guard, PgJDBC sends the verified string byte for byte (whitespace included). */
+  @Test
+  void guardSendsTheVerifiedStringToPostgres() throws Exception {
+    Assumptions.assumeTrue(pgAvailable, "Postgres not reachable");
+    String sql = "  SELECT current_query(), $1::text, $2::text -- tenant $1\n ";
+    String body = allowBody(sql, "acme", "globex");
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body));
+        Connection c = conn("app")) {
+      HaltSQLClient hc = HaltSQLClient.builder(srv.url()).build();
+      List<String> row =
+          new JdbcGuard(hc)
+              .query(
+                  c,
+                  sql,
+                  Map.of("tenant_id", "acme"),
+                  rs -> {
+                    assertTrue(rs.next());
+                    return List.of(rs.getString(1), rs.getString(2), rs.getString(3));
+                  });
+      assertEquals(List.of(sql, "acme", "globex"), row);
     }
   }
 }

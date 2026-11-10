@@ -141,13 +141,16 @@ set it for you; so does `haltsql-proxy`.)
 | `withoutSqlHashCheck()` | check on | Disable the `sql_sha256` check. |
 
 Per call: `verify(sql, context, VerifyOptions.policy("name").withRequestId(id))`.
+The request id is sent as `X-Request-Id` (1-200 printable ASCII characters,
+else a `USAGE` error before anything is sent).
 Context values may be `String`, `Integer`, `Long`, `Short`, `Byte`, `BigInteger`
 (within ±2^53), or collections of those.
 
 Other endpoints: `health()`, `ready()` (a 503 returns `ready() == false` and is
 not retried), `policies()`.
 
-Every request has a timeout and carries
+Every request has a timeout (it covers the connect, the headers and the
+response body) and carries
 `User-Agent: haltsql-client-java/<VERSION>`. The worst case for one `verify`
 is about `(retries + 1) * timeout` plus the backoff delays. Only 503,
 connection errors and timeouts are retried; `POST /v1/verify` has no side
