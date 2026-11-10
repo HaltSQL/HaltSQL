@@ -123,6 +123,12 @@ let of_json (j : Yojson.Safe.t) =
       | _ -> Error "not a HaltSQL audit record")
   | _ -> Error "not a JSON object"
 
+(** A proxy [execute] record: one per forwarded Execute. It carries no verdict (the
+    statement's verdict is in its [parse] record), so reports leave it out. *)
+let is_execution = function
+  | `Assoc kv -> List.assoc_opt "event" kv = Some (`String "execute")
+  | _ -> false
+
 let of_line line =
   match Yojson.Safe.from_string line with
   | j -> of_json j

@@ -79,7 +79,16 @@ let read_input name =
         if String.trim l = "" then (rs, sk)
         else if String.length l > max_line_bytes then (rs, sk + 1)
         else
-          match R.Record.of_line l with Ok r -> (r :: rs, sk) | Error _ -> (rs, sk + 1))
+          match R.Record.of_line l with
+          | Ok r -> (r :: rs, sk)
+          | Error _ ->
+              (* Proxy execution records carry no verdict: not a skipped line. *)
+              let execution =
+                match Yojson.Safe.from_string l with
+                | j -> R.Record.is_execution j
+                | exception Yojson.Json_error _ -> false
+              in
+              (rs, if execution then sk else sk + 1))
       ([], 0) lines
   in
   {
