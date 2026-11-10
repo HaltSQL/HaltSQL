@@ -47,7 +47,12 @@ export interface Verdict {
   reasons: Reason[];
   /** Shadow mode only: reasons the statement would have been denied. */
   shadow_reasons: Reason[];
-  policy: { name: string; version: string };
+  /**
+   * The policy that produced the verdict. `search_path` (absent from older
+   * engines) lists the schemas unqualified names were resolved against: the
+   * verdict holds only if the session that runs the SQL uses it.
+   */
+  policy: { name: string; version: string; search_path?: string[] };
   /** `null` if the SQL did not parse or is another kind of statement. */
   statement_kind: StatementKind | (string & {}) | null;
   tables: string[];

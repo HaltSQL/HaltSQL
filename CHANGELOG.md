@@ -27,7 +27,8 @@ even before 1.0.
   MCP server and the Python integrations) sets it for the transaction that runs
   the verified SQL, so a role or database default such as
   `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
-  resolve to a different table than the one the policy lists.
+  resolve to a different table than the one the policy lists. The TypeScript, Go and Java
+  verdict types expose the field; their guards do not change session settings.
 - `haltsql-server` logs a warning at start and on reload for every static token
   that has no `context` and is pinned to a policy with tenancy.
 - **Audit records carry the context.** Server audit records gain `context`
