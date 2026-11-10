@@ -33,3 +33,16 @@ val callback :
 (** The cohttp request handler. With [~health_only:true] only [/healthz] and [/readyz] are
     served (404 elsewhere), for the plain-HTTP probe listener. Responses carry
     [connection: close] while the server drains or when the request body was refused. *)
+
+val callback_with :
+  before_route:(unit -> unit Lwt.t) ->
+  ?health_only:bool ->
+  State.t ->
+  Conn.t * 'conn_id ->
+  Cohttp.Request.t ->
+  Cohttp_lwt.Body.t ->
+  (Cohttp.Response.t * Cohttp_lwt.Body.t) Lwt.t
+(** {!callback} with a step run just before routing, inside the handler that turns an
+    unexpected exception into a 500. Exists so tests can make a request fail internally
+    and check what the client is told; [callback] is
+    [callback_with ~before_route:Lwt.return]. *)

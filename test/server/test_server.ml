@@ -188,6 +188,58 @@ let request_id_echo () =
      Alcotest.(check char) "v4" '4' id.[14];
      Lwt.return_unit)
 
+(* A handler that raises must answer 500 INTERNAL with a fixed message: the
+   exception text (which can carry file paths, connection strings or SQL) goes
+   to the log, never to the client. No request reaches that path in a correct
+   build, so the failure is injected. *)
+let internal_error_is_opaque () =
+  let secret = "postgres://admin:hunter2@db.internal:5432/prod" in
+  let call before_route =
+    let* resp, body =
+      Http.callback_with ~before_route st_a
+        (Conn.plain "test", ())
+        (Cohttp.Request.make
+           ~headers:(Cohttp.Header.of_list [ ("x-request-id", "rid-500") ])
+           (Uri.of_string "/healthz"))
+        Cohttp_lwt.Body.empty
+    in
+    let* body = Cohttp_lwt.Body.to_string body in
+    Lwt.return (resp, body)
+  in
+  let check name before_route =
+    let* resp, body = call before_route in
+    Alcotest.(check int)
+      (name ^ ": status") 500
+      (Cohttp.Code.code_of_status (Cohttp.Response.status resp));
+    Alcotest.(check bool) (name ^ ": code") true (contains body "\"INTERNAL\"");
+    Alcotest.(check bool)
+      (name ^ ": fixed message") true
+      (contains body "internal server error");
+    Alcotest.(check (option string))
+      (name ^ ": request id") (Some "rid-500")
+      (Cohttp.Header.get (Cohttp.Response.headers resp) "x-request-id");
+    List.iter
+      (fun leak ->
+        Alcotest.(check bool) (name ^ ": no " ^ leak) false (contains body leak))
+      [ secret; "hunter2"; "db.internal"; "Failure"; "Not_found"; "Unix" ];
+    Lwt.return_unit
+  in
+  run
+    (let* () = check "raise" (fun () -> failwith secret) in
+     let* () = check "rejected promise" (fun () -> Lwt.fail (Failure secret)) in
+     let* () = check "Not_found" (fun () -> raise Not_found) in
+     let* () =
+       check "unix error" (fun () ->
+           raise (Unix.Unix_error (Unix.ECONNREFUSED, "connect", secret)))
+     in
+     (* The same request without the fault is served normally: the seam itself
+        changes nothing. *)
+     let* resp, _ = call Lwt.return in
+     Alcotest.(check int)
+       "no fault: 200" 200
+       (Cohttp.Code.code_of_status (Cohttp.Response.status resp));
+     Lwt.return_unit)
+
 let audit_lines_of path =
   List.filter
     (fun l -> String.trim l <> "")
@@ -1165,6 +1217,7 @@ let () =
         [
           tc "health + readiness" health;
           tc "request id" request_id_echo;
+          tc "internal error is opaque" internal_error_is_opaque;
           tc "verify with token" verify_with_token;
           tc "token bound to a context" token_bound_context;
           tc "auth failures" auth_failures;

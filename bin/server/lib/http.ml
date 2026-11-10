@@ -751,7 +751,7 @@ let with_connection_close (resp : Cohttp.Response.t) =
   in
   { resp with Cohttp.Response.headers }
 
-let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
+let callback_with ~before_route ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
     (req : Cohttp.Request.t) body =
   let t0 = Unix.gettimeofday () in
   (* One consistent view of the reloadable settings for the whole request,
@@ -774,7 +774,9 @@ let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
                is read. *)
             Conn.discard_input conn;
             too_large ~rid ~max
-        | _ -> route st snap ~health_only ~conn ~rid ~meth ~path req body)
+        | _ ->
+            let* () = before_route () in
+            route st snap ~health_only ~conn ~rid ~meth ~path req body)
       (fun e ->
         Log.error "internal error handling request"
           ~fields:
@@ -803,3 +805,6 @@ let callback ?(health_only = false) (st : State.t) ((conn : Conn.t), _)
           `Float (Float.round ((Unix.gettimeofday () -. t0) *. 1e6) /. 1000.) );
       ];
   Lwt.return (resp, rbody)
+
+let callback ?health_only st conn req body =
+  callback_with ~before_route:Lwt.return ?health_only st conn req body
