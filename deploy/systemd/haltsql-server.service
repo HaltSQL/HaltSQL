@@ -8,6 +8,10 @@
 #   systemctl daemon-reload && systemctl enable --now haltsql-server
 #   systemctl reload haltsql-server                    # SIGHUP: atomic policy reload
 #
+# The same env file may set HALTSQL_VERIFY_THREADS (1-256), the number of
+# threads that parse and analyse statements; the default is the CPU count
+# (2 to 32). Keep TasksMax (below) well above it.
+#
 # Audit files: point audit.sinks at /var/log/haltsql/audit.jsonl (created
 # below via LogsDirectory, owned by the dynamic user).
 

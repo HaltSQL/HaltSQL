@@ -17,6 +17,11 @@ server:
     min_version: "1.2"
   auth:
     allow_unauthenticated: false
+    # These tokens are unbound: each caller names the tenant in the request
+    # body. That is right only for a backend that takes the tenant from its
+    # own authenticated session. For an agent that serves one tenant, add
+    # `context: { tenant_id: ... }` to its token (haltsql newer than 0.0.2),
+    # or use OIDC with context_claims (docs/authentication.md).
     tokens:
       - name: analytics-agent
         token_sha256: ${env:HALTSQL_TOKEN_ANALYTICS_AGENT_SHA256}

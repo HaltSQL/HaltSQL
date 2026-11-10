@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package render
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -213,6 +214,82 @@ func TestServerRendersTokensAndSecrets(t *testing.T) {
 	}
 	if len(r.Applied) != 1 || r.Applied[0].Name != "orders" {
 		t.Fatalf("applied: %v", r.Applied)
+	}
+}
+
+func TestServerRendersTokenContext(t *testing.T) {
+	ref := haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "k"}
+	render := func(tok haltsqlv1alpha1.TokenSpec) (map[string]any, error) {
+		tok.Name, tok.Policy, tok.SHA256SecretRef = "agent", "orders-agent", ref
+		srv := server(func(s *haltsqlv1alpha1.HaltSQLServer) {
+			s.Spec.Auth = &haltsqlv1alpha1.ServerAuth{Tokens: []haltsqlv1alpha1.TokenSpec{tok}}
+		})
+		r, err := Server(srv, []PolicyInput{inline("orders", ordersPolicy)})
+		if err != nil {
+			return nil, err
+		}
+		return configDoc(t, r)["server"].(map[string]any)["auth"].(map[string]any)["tokens"].([]any)[0].(map[string]any), nil
+	}
+	asJSON := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	// Unbound: neither key is rendered, so the config also loads in a
+	// haltsql that predates token contexts.
+	tok, err := render(haltsqlv1alpha1.TokenSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tok["context"]; ok {
+		t.Fatalf("unbound token has a context: %v", tok)
+	}
+	if _, ok := tok["request_context_fields"]; ok {
+		t.Fatalf("unbound token has request_context_fields: %v", tok)
+	}
+
+	tok, err = render(haltsqlv1alpha1.TokenSpec{
+		Context:              map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "acme"), "org": raw(t, "42"), "regions": raw(t, "[eu, 7]")},
+		RequestContextFields: []string{"user_id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"org":42,"regions":["eu",7],"tenant_id":"acme"}`
+	if got := asJSON(tok["context"]); got != want {
+		t.Fatalf("context: %s, want %s", got, want)
+	}
+	if got := asJSON(tok["request_context_fields"]); got != `["user_id"]` {
+		t.Fatalf("request_context_fields: %s", got)
+	}
+
+	// An empty list binds the token and lets the body add nothing.
+	tok, err = render(haltsqlv1alpha1.TokenSpec{RequestContextFields: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asJSON(tok["request_context_fields"]); got != `[]` {
+		t.Fatalf("empty request_context_fields: %s", got)
+	}
+
+	for name, bad := range map[string]haltsqlv1alpha1.TokenSpec{
+		"spec.auth.tokens[0].context: invalid context field":                {Context: map[string]apiextensionsv1.JSON{"tenant-id": raw(t, "acme")}},
+		"spec.auth.tokens[0].context.tenant_id: must be a string":           {Context: map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "{a: b}")}},
+		"spec.auth.tokens[0].context.tenant_id: must not be empty":          {Context: map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "[]")}},
+		"spec.auth.tokens[0].context.tenant_id: list items must be strings": {Context: map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "[true]")}},
+		"spec.auth.tokens[0].context.n: must be a string":                   {Context: map[string]apiextensionsv1.JSON{"n": raw(t, "1.5")}},
+		"spec.auth.tokens[0].requestContextFields: invalid context field":   {RequestContextFields: []string{"1x"}},
+		"is already fixed by context": {
+			Context:              map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "acme")},
+			RequestContextFields: []string{"tenant_id"},
+		},
+	} {
+		if _, err := render(bad); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("want an error containing %q, got %v", name, err)
+		}
 	}
 }
 

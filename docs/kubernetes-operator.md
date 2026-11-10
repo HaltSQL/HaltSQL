@@ -225,13 +225,13 @@ configuration. It also works before any server exists.
 | `config.logLevel`, `config.logFormat` | haltsql defaults | `logging`. |
 | `config.maxRequestBytes` | haltsql default | `limits.max_request_bytes`. |
 | `config.telemetry`, `config.opa`, `config.admin`, `config.secrets` | none | Rendered as is into `telemetry`, `opa`, `server.admin` and `secrets` (see [config-reference.md](config-reference.md)). |
-| `auth.tokens[]` | none | `{name, policy, sha256SecretRef: {name, key}}`. The Secret key holds the lower-case hex SHA-256 of the token. A trailing newline is ignored. |
+| `auth.tokens[]` | none | `{name, policy, sha256SecretRef: {name, key}, context, requestContextFields}`. The Secret key holds the lower-case hex SHA-256 of the token. A trailing newline is ignored. `context` (a map of field to string, integer or list of them) fixes the token's context and `requestContextFields` lists what the request body may still add; they render as the token's `context` and `request_context_fields`. A token with neither is unbound: its holder names the tenant in the request body (see [authentication.md](authentication.md#static-tokens)). Both need a haltsql image newer than 0.0.2. |
 | `auth.oidc[]` | none | `server.auth.oidc` entries, rendered as is. |
 | `auth.mtls.identities[]` | none | `server.auth.mtls.identities` entries. These need `tls` with `clientAuth: optional` or `required`. |
 | `tls.secretName`, `tls.clientAuth`, `tls.minVersion` | none | Built-in TLS from a `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, and `ca.crt` for client certificates). Probes then use a plain-HTTP health port (8081) that serves only `/healthz` and `/readyz`. |
 | `audit.sinks[]` | `[{type: stdout}]` | `audit.sinks` entries, rendered as is (stdout, file, s3, gcs, elasticsearch, kafka; see [audit-sinks.md](audit-sinks.md)). |
 | `audit.logRawSQL` | `false` | `audit.log_raw_sql`. |
-| `env` | none | Extra container environment, for example `AWS_*` from a Secret, used by `${env:...}` placeholders. |
+| `env` | none | Extra container environment, for example `AWS_*` from a Secret, used by `${env:...}` placeholders, or `HALTSQL_VERIFY_THREADS` (the verify thread pool; by default the CPU count the process sees, which without a CPU limit is the node's). |
 | `resources` | 100m CPU and 64Mi requested, 256Mi limit | Container resources. |
 | `serviceAccountName`, `automountServiceAccountToken` | namespace default, `false` | Set `automountServiceAccountToken: true` for Vault Kubernetes auth or IRSA. |
 | `podAnnotations`, `podLabels`, `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints` | none | Pod scheduling and metadata. |
@@ -378,6 +378,13 @@ the ClusterRoleBinding with RoleBindings in those namespaces.
   for large policy sets.
 - There is no admission webhook. Problems the CRD schema cannot express are
   reported in status, not rejected at `kubectl apply` time.
+- The operator deploys haltsql-server only. It has no resource for
+  haltsql-proxy.
+- An unbound token on a policy with tenancy is not reported in status;
+  haltsql-server logs the warning. A `HaltSQLServer` creates no
+  PodDisruptionBudget or NetworkPolicy unless `podDisruptionBudget.enabled`
+  or `networkPolicy.enabled` is set (the Helm chart creates both by
+  default), and its NetworkPolicy restricts ingress only.
 - Persistent `spool_dir` storage for S3/GCS audit sinks is not provisioned.
   Without it, each pod starts a new audit hash chain (see
   [audit-sinks.md](audit-sinks.md#restarts-and-chain-continuity)).

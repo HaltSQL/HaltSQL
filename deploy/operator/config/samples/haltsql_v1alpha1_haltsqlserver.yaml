@@ -14,6 +14,11 @@ spec:
       - name: analytics-agent
         policy: analytics-agent
         sha256SecretRef: { name: haltsql-tokens, key: analytics-agent.sha256 }
+        # Bind the token to its tenant (needs a haltsql image newer than
+        # 0.0.2). Without context or requestContextFields the caller names
+        # the tenant in the request body.
+        # context: { tenant_id: acme }
+        # requestContextFields: [user_id]
   audit:
     sinks:
       - type: stdout

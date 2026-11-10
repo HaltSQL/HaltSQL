@@ -36,6 +36,7 @@ that skips the check is contained only by the database's own controls
 | `tables.*.columns` | Explicit column lists; avoid `"*"` on tables with sensitive columns | `"*"` allows every current and future column | [schema-and-pii.md](../schema-and-pii.md) |
 | `allow_explain` | `false` (the default) | Plans expose planner estimates (row counts) that the agent does not need; `EXPLAIN ANALYZE` is always denied | [policy-reference.md](../policy-reference.md#allow_explain) |
 | Policy tests | Run `haltsql validate`, `haltsql lint-policy` and `haltsql test` in CI on every policy change | Catches policies that allow more than intended before they ship | [policy-ci.md](../policy-ci.md) |
+| `catalog` | A `haltsql schema pull` snapshot in every policy **(not default)**; `haltsql schema check` in the migration pipeline | Without a catalog `SELECT *` and column checks rely on the policy's own lists (`lint-policy` reports `W_NO_CATALOG`); with a stale one, a new column is read unchecked | [schema-and-pii.md](../schema-and-pii.md#haltsql-schema-check) |
 
 ## Policy delivery
 
@@ -59,7 +60,8 @@ that skips the check is contained only by the database's own controls
 | `server.tls` | Enabled **(not default)** whenever traffic leaves the pod or host; `min_version: "1.3"` if all clients support it | Without it, tokens and SQL cross the network in clear text | [Built-in TLS](../authentication.md#built-in-tls) |
 | `server.listen` | `127.0.0.1:8080` (the default) when TLS is terminated elsewhere or the agent is in the same pod | Keeps the plaintext listener off the network. The container image sets `HALTSQL_LISTEN=0.0.0.0:8080`, which overrides the config file. | [config-reference.md](../config-reference.md#server) |
 | `server.tls.client_auth` | `required` with `server.auth.mtls` identities, for service-to-service callers | Strong workload identity; the context comes from config, not the request | [mTLS identities](../authentication.md#mtls-identities) |
-| Caller authentication | OIDC or mTLS rather than static tokens when the tenant or user must come from an authenticated identity | With static tokens the request body supplies the whole context | [authentication.md](../authentication.md#static-tokens) |
+| Caller authentication | OIDC or mTLS when the tenant or user must come from an authenticated identity and tenants are many | The tenant comes from a signed token or a certificate, not from the request body | [authentication.md](../authentication.md#static-tokens) |
+| `server.auth.tokens[].context` | Set it **(not default)** on every static token whose policy has tenancy, one token per tenant | A token without `context` or `request_context_fields` is unbound: its holder can ask for a verdict for any tenant. The server logs a warning for each such token at start and on reload; the Helm chart refuses to render one with `server.requireBoundTokens: true` | [authentication.md](../authentication.md#static-tokens) |
 | `server.auth.oidc[].context_claims` | Map the tenant (and user) fields to claims | The tenant comes from the signed token; the body cannot override it (`403 CONTEXT_NOT_ALLOWED`) | [OIDC](../authentication.md#oidc--jwt-bearer-tokens) |
 | `request_context_fields` | `[]` (the default), or the smallest list that works | Every listed field is supplied by the caller, not the identity | [authentication.md](../authentication.md#context-rules) |
 | `server.auth.oidc[].required_claims` | A scope or audience-specific claim, for example `scope: sql.verify` | Rejects tokens the IdP issued for other purposes | [OIDC](../authentication.md#oidc--jwt-bearer-tokens) |
@@ -104,9 +106,13 @@ this.
 | `tls` | Configured **(not default)**; `required: true` (the default once `tls` is set) | Without a `tls` section the proxy accepts plaintext clients | [proxy.md](../proxy.md#config-reference) |
 | `auth.method` | `cert` with `tls.client_auth: require`, or `scram` with long random passwords | The identity selects the policy and the context | [proxy.md](../proxy.md#authentication) |
 | `upstream.tls.mode` | `verify-full` with `upstream.tls.ca` **(not default; the default is `disable`)** | `require` encrypts without verifying the server | [proxy.md](../proxy.md#config-reference) |
+| `upstream.allow_insecure_auth` | `false` (the default) | With it on, the proxy answers an MD5 password request on an unencrypted connection. Move the role to SCRAM-SHA-256 or enable `upstream.tls` instead | [proxy.md](../proxy.md#upstream-transport-security) |
 | `upstream.user` | A least-privilege, read-only role, as in [Database](#database) | The proxy's credentials are the only ones clients use | [proxy.md](../proxy.md#operations) |
 | `upstream.password` | A `${env:...}` or `${file:...}` placeholder | Never in the file | [proxy.md](../proxy.md#config-reference) |
 | `limits` | Set `max_connections`, `max_message_bytes`, `idle_timeout_seconds` for your load | Bounds what one client can consume | [proxy.md](../proxy.md#config-reference) |
+| `limits.max_session_lifetime_seconds` | `3600` (the default) or lower; never `0` | A session keeps the identity, policy and upstream connection it started with; the lifetime bounds how long a revoked credential stays usable | [proxy.md](../proxy.md#session-lifetime) |
+| `reload.terminate_changed_sessions` | `true` (the default) | A reload ends the sessions whose credentials, policy, context or upstream it changed | [proxy.md](../proxy.md#hot-reload) |
+| `limits.max_unauthenticated_per_ip` | `20` (the default) when the proxy sees client addresses; sized to the pool when a load balancer or pooler hides them; never `0` on a reachable listener | One address cannot hold every connection slot with sessions that never authenticate. The cap counts TCP peers, so clients behind one address share it | [proxy.md](../proxy.md#connection-limits) |
 | `audit` | A sink with `on_error: fail_closed` (the default) | No statement reaches the database without its audit record | [proxy.md](../proxy.md#failure-policy-on_error) |
 | Network | Only the proxy can reach the database (security groups, NetworkPolicy, `pg_hba.conf`) | A client that reaches PostgreSQL directly bypasses the proxy | [deploy-aws.md](../deploy-aws.md) |
 
@@ -132,6 +138,7 @@ this.
 | `statement_timeout_ms`, `max_rows` (Python SDK) | Set both | HaltSQL does not limit run time | [sdk-python.md](../sdk-python.md) |
 | `haltsql-mcp` row cap and timeout | Keep `--row-cap` (default 200) and `--statement-timeout-ms` (default 5000) | Bounds what one tool call can return and how long it runs | [mcp.md](../mcp.md) |
 | `haltsql-mcp` HTTP transport | A tokens file, and a TLS proxy in front | The MCP server has no built-in TLS | [mcp.md](../mcp.md) |
+| Shadow opt-in (`HALTSQL_ALLOW_SHADOW`, `set_allow_shadow`, `allowShadow`, `AllowShadow()`) | Unset (the default) in production; set only on the clients of a shadow rollout, and removed after it | With the opt-in, a policy switched to `mode: shadow` on the server stops enforcing for that client | [tutorials/roll-out-a-policy-safely.md](../tutorials/roll-out-a-policy-safely.md) |
 
 ## Checking a deployment
 
@@ -140,7 +147,10 @@ this.
 - `GET /v1/admin/status` shows loaded policies, their origin and mode,
   bundle signer key ids, audit sink health and the OPA settings.
 - `haltsql-proxy validate -c FILE --json` prints the proxy's effective
-  config with secrets redacted.
+  config with secrets redacted, and warns (`INSECURE UPSTREAM TRANSPORT`)
+  when `upstream.tls.mode` is `disable` for a host that is not loopback.
+- The server log at start has no `token is not bound to a context` warning,
+  or only for tokens of trusted backends.
 
 ## Related
 

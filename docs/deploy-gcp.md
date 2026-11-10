@@ -403,6 +403,21 @@ gRPC and WebSockets.
   (in the same pod), which connects to the instance's private IP over mTLS,
   authorized by IAM (`roles/cloudsql.client`). Give the instance no public IP
   and no authorized networks, so only this path exists.
+- That loopback hop is the one place where `upstream.tls.mode: disable` is
+  right. The proxy refuses MD5 password authentication without TLS, loopback
+  included, so the upstream role needs a SCRAM-SHA-256 password
+  (`password_encryption = scram-sha-256` on the instance, then set the
+  password again); otherwise sessions fail with `FATAL 08006`. Do not set
+  `upstream.allow_insecure_auth` for a database that is not on loopback.
+- `limits.max_unauthenticated_per_ip` (default 20) counts connections that
+  have not finished authenticating, per TCP peer address. With the Service's
+  default `externalTrafficPolicy: Cluster`, clients that reach a pod through
+  another node appear with that node's address and share its budget; use
+  `externalTrafficPolicy: Local`, or raise the cap to fit your pools.
+- After 0.0.2 the proxy ends every session `limits.max_session_lifetime_seconds` (default 3600) after it
+  authenticated, at a transaction boundary, with `FATAL 57P01`; a reload
+  ends the sessions whose credentials or policy changed. Clients and
+  poolers must reconnect, as after a database restart.
 - Secrets (upstream password, TLS key and certificate, SCRAM verifiers) come
   from Secret Manager through the GKE Secret Manager add-on and are read with
   `${file:...}` or as file paths. `haltsql-proxy` does not resolve

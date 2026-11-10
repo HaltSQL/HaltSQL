@@ -430,6 +430,17 @@ az postgres flexible-server parameter set -g "$RG" -s "$PG" \
 - On the NSG of the Flexible Server subnet, allow 5432 only from the subnet
   the proxy runs in. On AKS, also give agent pods a NetworkPolicy that blocks
   egress to 5432. Otherwise an agent can bypass the proxy.
+- `limits.max_unauthenticated_per_ip` (default 20) counts connections that
+  have not finished authenticating, per TCP peer address. A `LoadBalancer`
+  Service with `externalTrafficPolicy: Cluster` rewrites the source to a
+  node address, so clients share that budget; use
+  `externalTrafficPolicy: Local`, or raise the cap to fit your pools.
+- After 0.0.2 the proxy ends every session `limits.max_session_lifetime_seconds` (default 3600) after it
+  authenticated, at a transaction boundary, with `FATAL 57P01`; a reload
+  ends the sessions whose credentials or policy changed. Clients and
+  poolers must reconnect, as after a database restart.
+- Keep `upstream.tls.mode: verify-full`. Without TLS the proxy refuses MD5
+  password authentication; do not set `upstream.allow_insecure_auth`.
 
 ## Identity and least privilege
 

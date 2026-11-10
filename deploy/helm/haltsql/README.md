@@ -86,7 +86,9 @@ The chart renders a `kind: Config` document into a ConfigMap. See
 |---|---|---|
 | `server.port` | `8080` | Listen port (all interfaces inside the pod). |
 | `server.maxRequestBytes` | `1048576` | `limits.max_request_bytes`. |
-| `server.allowUnauthenticated` | `false` | Never enable outside development. |
+| `server.verifyThreads` | `null` | `HALTSQL_VERIFY_THREADS` (1-256): threads that parse and analyse statements. `null` lets the server use the CPU count it sees (2 to 32); without a CPU limit that is the node's, so set it on large nodes. |
+| `server.allowUnauthenticated` | `false` | Never enable outside development. The install notes print a warning when it is on. |
+| `server.requireBoundTokens` | `false` | Fail the render when a token has neither `context` nor `request_context_fields`. Turn it on when every policy isolates tenants. |
 | `server.defaultPolicy` | `""` | Policy for callers without one. |
 | `server.reloadWatch` | `true` | Hot-reload policies, auth and TLS files on change. |
 | `server.logLevel` | `info` | `debug`, `info`, `warn` or `error`. |
@@ -107,7 +109,7 @@ The chart renders a `kind: Config` document into a ConfigMap. See
 
 | Key | Default | Description |
 |---|---|---|
-| `tokens` | `[]` | `[{name, sha256, policy}]`. `sha256` must be a 64-hex digest (`printf '%s' "$TOKEN" \| sha256sum`); the chart refuses anything else. |
+| `tokens` | `[]` | `[{name, sha256, policy, context, request_context_fields}]`. `sha256` must be a 64-hex digest (`printf '%s' "$TOKEN" \| sha256sum`); the chart refuses anything else. `context` fixes the token's tenant and `request_context_fields` lists what the request body may still add (see below). |
 | `existingTokenSecret` | `""` | Use an existing Secret (External Secrets, Sealed Secrets, Vault Agent) with keys `HALTSQL_TOKEN_<INDEX>_SHA256`, 0-based in `tokens` order. `tokens` still supplies names and policies. Pods do not roll when an external Secret changes; use a reloader or bump `podAnnotations`. |
 | `oidc` | `[]` | `server.auth.oidc` providers, rendered verbatim. |
 | `mtlsIdentities` | `[]` | `server.auth.mtls.identities`; needs `tls.enabled` and `tls.clientAuth` `optional`/`required`. |
@@ -116,6 +118,31 @@ The chart renders a `kind: Config` document into a ConfigMap. See
 | `tls.clientAuth` | `none` | `none`, `optional` or `required`. |
 | `tls.minVersion` | `"1.2"` | `"1.2"` or `"1.3"`. |
 | `tls.healthPort` | `8081` | Plain-HTTP port for `/healthz` and `/readyz` with TLS on. |
+
+#### Bind tokens to a tenant
+
+A token with neither `context` nor `request_context_fields` is unbound: its
+holder names the tenant in the request body and can get a verdict (with its
+`bind_params`) for any tenant. Bind each token instead:
+
+```yaml
+tokens:
+  - name: acme-agent
+    sha256: 3f7c...e9
+    policy: analytics-agent
+    context: { tenant_id: acme }          # fixed; a body naming another tenant gets 403
+    request_context_fields: [user_id]     # the body may still add these
+server:
+  requireBoundTokens: true                # refuse to render an unbound token
+```
+
+Context values are strings, integers or non-empty lists of them; write ids as
+strings. With many tenants use `oidc` (`context_claims`) or `mtlsIdentities`
+rather than one token per tenant. The install notes list unbound tokens, and
+haltsql-server logs a warning for each one whose policy has tenancy. Leave a
+token unbound only when the caller is your own backend that takes the tenant
+from its authenticated session, or when the policy has no tenancy. Both keys
+need a haltsql image newer than 0.0.2 (0.0.2 and earlier refuse the config).
 
 ### Container extension points
 

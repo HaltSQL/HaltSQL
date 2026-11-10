@@ -13,6 +13,12 @@ server:
       - name: example-agent
         token_sha256: ${env:HALTSQL_AGENT_TOKEN_SHA256}
         policy: tf-analytics
+        # This token is unbound: its holder names the tenant in the request
+        # body, which is only right for a trusted backend (the module's plan
+        # and the server both warn about it). With an image newer than 0.0.2,
+        # bind it to its tenant instead:
+        # context: { tenant_id: acme }
+        # request_context_fields: [user_id]
 policies:
   - inline:
       apiVersion: haltsql.dev/v1

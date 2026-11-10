@@ -24,6 +24,9 @@ locals {
     extraEnv      = local.use_repository || can(regex("(?m)^extraEnv:", local.chart_values_text))
     egress        = local.use_repository || can(regex("(?m)^networkPolicy:(\\n[ #].*)*\\n  egress:", local.chart_values_text))
     proxy         = local.use_repository || can(regex("(?m)^proxy:", local.chart_values_text))
+    # Token binding (tokens[].context, server.requireBoundTokens) and
+    # server.verifyThreads arrived together.
+    tokenContext = local.use_repository || can(regex("(?m)^  requireBoundTokens:", local.chart_values_text))
   }
 
   # ---- Workload identity ---------------------------------------------------
@@ -67,6 +70,24 @@ locals {
   oidc = [for o in var.oidc_providers : { for k, v in o : k => v if v != null }]
   mtls = [for m in var.mtls_identities : { for k, v in m : k => v if v != null }]
 
+  # context / request_context_fields are only sent when set, so a chart that
+  # predates them still accepts unbound tokens.
+  tokens = [for t in var.tokens : { for k, v in t : k => v if v != null }]
+
+  tokens_bound = [
+    for t in var.tokens : t.name if t.context != null || t.request_context_fields != null
+  ]
+
+  # Inline policies that isolate tenants, by policy name.
+  tenancy_policies = toset(compact([
+    for _, doc in var.policies : try(yamldecode(doc).tenancy != null ? yamldecode(doc).metadata.name : "", "")
+  ]))
+
+  unbound_tenant_tokens = [
+    for t in var.tokens : t.name
+    if t.context == null && t.request_context_fields == null && contains(local.tenancy_policies, t.policy)
+  ]
+
   network_policy = merge(
     {
       enabled     = var.network_policy.enabled
@@ -101,7 +122,7 @@ locals {
     }
     podAnnotations = var.pod_annotations
     podLabels      = merge(var.pod_labels, local.wi_pod_labels)
-    server = {
+    server = merge(local.server_extension_values, {
       port                 = var.server.port
       maxRequestBytes      = var.server.max_request_bytes
       allowUnauthenticated = var.server.allow_unauthenticated
@@ -114,8 +135,8 @@ locals {
         sinks     = var.server.audit_sinks
         logRawSql = var.server.log_raw_sql
       }
-    }
-    tokens              = var.tokens
+    })
+    tokens              = local.tokens
     existingTokenSecret = var.existing_token_secret == null ? "" : var.existing_token_secret
     tls = {
       enabled    = var.tls.enabled
@@ -159,6 +180,13 @@ locals {
     tolerations               = var.tolerations
     topologySpreadConstraints = var.topology_spread_constraints
   }
+
+  # Merged into the chart's `server` value; only sent when set, so a chart
+  # that predates these keys (and has a strict values schema) still installs.
+  server_extension_values = merge(
+    var.server.require_bound_tokens ? { requireBoundTokens = true } : {},
+    var.server.verify_threads == null ? {} : { verifyThreads = var.server.verify_threads },
+  )
 
   extension_values = merge(
     length(keys(local.extra_config)) > 0 ? { extraConfig = local.extra_config } : {},
@@ -234,6 +262,10 @@ resource "helm_release" "haltsql" {
       error_message = "network_policy.egress needs chart value networkPolicy.egress, which the chart at ${local.chart_local_path} does not have. See docs/terraform.md (chart extensions)."
     }
     precondition {
+      condition     = (length(local.tokens_bound) == 0 && length(keys(local.server_extension_values)) == 0) || local.chart_supports.tokenContext
+      error_message = "tokens[*].context, tokens[*].request_context_fields, server.require_bound_tokens and server.verify_threads need a chart with server.requireBoundTokens, which the chart at ${local.chart_local_path} does not have. See docs/terraform.md (chart extensions)."
+    }
+    precondition {
       condition     = !var.proxy.enabled || local.chart_supports.proxy
       error_message = "proxy.enabled needs chart value proxy, which the chart at ${local.chart_local_path} does not have. See docs/terraform.md (chart extensions)."
     }
@@ -252,6 +284,20 @@ check "egress_for_outbound_features" {
   assert {
     condition     = !(var.network_policy.enabled && local.needs_egress && length(var.network_policy.egress) == 0)
     error_message = "The NetworkPolicy denies all egress, but OIDC, bundle_sources, a cloud audit sink or a secret provider is configured: haltsql-server will fail closed on those calls. Set network_policy.egress (or disable network_policy)."
+  }
+}
+
+check "tokens_bound_to_a_tenant" {
+  assert {
+    condition     = length(local.unbound_tenant_tokens) == 0
+    error_message = "These tokens are pinned to a policy with tenancy but have neither context nor request_context_fields, so their holders can name any tenant in the request body: ${join(", ", local.unbound_tenant_tokens)}. Set tokens[*].context (or use oidc_providers / mtls_identities); leave a token unbound only for a trusted backend that takes the tenant from its own session."
+  }
+}
+
+check "unauthenticated_access" {
+  assert {
+    condition     = !var.server.allow_unauthenticated
+    error_message = "server.allow_unauthenticated is set: haltsql-server accepts every caller without credentials. This is for local development only."
   }
 }
 

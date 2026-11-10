@@ -45,6 +45,53 @@ run "rejects_duplicate_token_names" {
   expect_failures = [var.tokens]
 }
 
+run "rejects_bad_token_context_key" {
+  command = plan
+  variables {
+    tokens = [{
+      name    = "agent"
+      sha256  = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+      policy  = "p"
+      context = { "tenant-id" = "acme" }
+    }]
+  }
+  expect_failures = [var.tokens]
+}
+
+run "rejects_token_context_that_is_not_a_map" {
+  command = plan
+  variables {
+    tokens = [{
+      name    = "agent"
+      sha256  = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+      policy  = "p"
+      context = "acme"
+    }]
+  }
+  expect_failures = [var.tokens]
+}
+
+run "rejects_bad_request_context_field" {
+  command = plan
+  variables {
+    tokens = [{
+      name                   = "agent"
+      sha256                 = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+      policy                 = "p"
+      request_context_fields = ["1x"]
+    }]
+  }
+  expect_failures = [var.tokens]
+}
+
+run "rejects_verify_threads_out_of_range" {
+  command = plan
+  variables {
+    server = { verify_threads = 0 }
+  }
+  expect_failures = [var.server]
+}
+
 run "rejects_bad_release_name" {
   command = plan
   variables {
@@ -286,6 +333,20 @@ run "refuses_bundle_sources_without_chart_support" {
     chart_path     = "./tests/fixtures/chart-without-extensions"
     bundle_sources = [{ oci = "ghcr.io/corp/policies:prod", public_keys = ["k"] }]
     network_policy = { enabled = false }
+  }
+  expect_failures = [helm_release.haltsql]
+}
+
+run "refuses_token_context_without_chart_support" {
+  command = plan
+  variables {
+    chart_path = "./tests/fixtures/chart-without-extensions"
+    tokens = [{
+      name    = "agent"
+      sha256  = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+      policy  = "p"
+      context = { tenant_id = "acme" }
+    }]
   }
   expect_failures = [helm_release.haltsql]
 }

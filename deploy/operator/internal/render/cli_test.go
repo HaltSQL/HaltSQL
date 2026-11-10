@@ -32,7 +32,9 @@ func TestRenderedConfigLoadsInHaltSQL(t *testing.T) {
 		s.Spec.Policies = []haltsqlv1alpha1.PolicyReference{{Name: "orders"}, {Name: "prod"}}
 		s.Spec.Config = haltsqlv1alpha1.ServerConfig{LogLevel: "warn", LogFormat: "text", DefaultPolicy: "orders-agent"}
 		s.Spec.Auth = &haltsqlv1alpha1.ServerAuth{Tokens: []haltsqlv1alpha1.TokenSpec{
-			{Name: "agent", Policy: "orders-agent", SHA256SecretRef: haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "agent.sha256"}},
+			{Name: "agent", Policy: "orders-agent", SHA256SecretRef: haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "agent.sha256"},
+				Context:              map[string]apiextensionsv1.JSON{"tenant_id": raw(t, "acme"), "region_ids": raw(t, "[1, eu]")},
+				RequestContextFields: []string{"user_id"}},
 			{Name: "bundle-agent", Policy: "prod.analytics", SHA256SecretRef: haltsqlv1alpha1.SecretKeyRef{Name: "tok", Key: "bundle.sha256"}},
 		}}
 		s.Spec.Audit = &haltsqlv1alpha1.ServerAudit{Sinks: []apiextensionsv1.JSON{

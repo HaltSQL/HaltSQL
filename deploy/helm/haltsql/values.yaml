@@ -35,7 +35,16 @@ runtimeClassName: ""
 server:
   port: 8080
   maxRequestBytes: 1048576
-  allowUnauthenticated: false
+  # Threads that parse and analyse statements (HALTSQL_VERIFY_THREADS, 1-256).
+  # null: the server uses the CPU count it sees (2 to 32). Without a CPU limit
+  # that is the node's CPU count; set this to about the CPU request (minimum
+  # 2) on large nodes.
+  verifyThreads: null
+  allowUnauthenticated: false   # development only: every caller is accepted
+  # Refuse to render when a token below has neither `context` nor
+  # `request_context_fields`. Off by default (an unbound token is correct for
+  # a policy without tenancy); turn it on when every policy isolates tenants.
+  requireBoundTokens: false
   defaultPolicy: ""
   reloadWatch: true          # policies are mounted from a ConfigMap; kubelet updates trigger a reload
   logLevel: info             # debug | info | warn | error
@@ -60,10 +69,18 @@ server:
 # Bearer tokens. Only SHA-256 hashes are stored (in a Secret, injected into the
 # config through ${env:...} placeholders). Each token is pinned to one policy.
 #   printf '%s' "$TOKEN" | sha256sum
+# Bind each token to its tenant with `context`: the request body can then no
+# longer name another tenant (403 CONTEXT_NOT_ALLOWED), and may add only the
+# fields in `request_context_fields`. A token with neither key is unbound: its
+# holder names the tenant in the body, which is only right for a trusted
+# backend or a policy without tenancy (the server logs a warning otherwise).
+# Both keys need a haltsql image newer than 0.0.2.
 tokens: []
-#  - name: analytics-agent
+#  - name: acme-agent
 #    sha256: 3f7c...e9
 #    policy: analytics-agent
+#    context: { tenant_id: acme }            # fixed for this token
+#    request_context_fields: [user_id]       # the body may still add these
 
 # Use an existing Secret (e.g. from External Secrets / Sealed Secrets / Vault
 # Agent) instead of rendering one. It must contain one key per token named

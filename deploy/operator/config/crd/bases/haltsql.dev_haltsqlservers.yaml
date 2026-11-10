@@ -1020,6 +1020,18 @@ spec:
                     items:
                       description: TokenSpec is one static token.
                       properties:
+                        context:
+                          additionalProperties:
+                            x-kubernetes-preserve-unknown-fields: true
+                          description: |-
+                            Context binds the token to a fixed context (rendered as the token's
+                            `context`), for example {tenant_id: acme}: a request body that names
+                            another value is refused with 403 CONTEXT_NOT_ALLOWED. Each value is a
+                            string, an integer or a non-empty list of them. A token with neither
+                            context nor requestContextFields is unbound: its holder names the
+                            tenant in the request body.
+                          maxProperties: 64
+                          type: object
                         name:
                           description: Name labels the token in logs and audit records.
                           maxLength: 128
@@ -1031,6 +1043,18 @@ spec:
                             token is pinned to.
                           minLength: 1
                           type: string
+                        requestContextFields:
+                          description: |-
+                            RequestContextFields are the context fields the request body may
+                            still supply for this token (rendered as `request_context_fields`).
+                            They must not repeat a key of context.
+                          items:
+                            maxLength: 128
+                            pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                            type: string
+                          maxItems: 64
+                          type: array
+                          x-kubernetes-list-type: set
                         sha256SecretRef:
                           description: |-
                             SHA256SecretRef selects a Secret key holding the lower-case hex

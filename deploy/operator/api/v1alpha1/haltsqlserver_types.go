@@ -197,6 +197,24 @@ type TokenSpec struct {
 	// SHA256SecretRef selects a Secret key holding the lower-case hex
 	// SHA-256 of the token (a trailing newline is ignored).
 	SHA256SecretRef SecretKeyRef `json:"sha256SecretRef"`
+	// Context binds the token to a fixed context (rendered as the token's
+	// `context`), for example {tenant_id: acme}: a request body that names
+	// another value is refused with 403 CONTEXT_NOT_ALLOWED. Each value is a
+	// string, an integer or a non-empty list of them. A token with neither
+	// context nor requestContextFields is unbound: its holder names the
+	// tenant in the request body.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=64
+	Context map[string]apiextensionsv1.JSON `json:"context,omitempty"`
+	// RequestContextFields are the context fields the request body may
+	// still supply for this token (rendered as `request_context_fields`).
+	// They must not repeat a key of context.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=128
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	RequestContextFields []string `json:"requestContextFields,omitempty"`
 }
 
 // SecretKeyRef selects one key of a Secret in the same namespace.
