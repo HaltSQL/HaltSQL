@@ -72,30 +72,17 @@ jobs:
       - uses: ./.github/actions/haltsql-binaries
 
   ocaml-docker:
-    name: OCaml integration (${{ matrix.suite.name }})
+    name: OCaml integration (Docker suites)
     needs: changes
     # On a pull request: only when the server, the proxy or a library that talks
     # to an outside service changed (area `services`). Main and the nightly: all.
     if: needs.changes.outputs.services == 'true'
     # Pinned: the Docker-based suites are tuned on Ubuntu 24.04 runners.
     runs-on: ubuntu-24.04
+    # One job for all the suites: setting up the OCaml toolchain takes about six
+    # minutes and the suites themselves between thirty seconds and three
+    # minutes each, so five parallel jobs paid the set-up five times.
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        suite:
-          - name: Kafka, Elasticsearch, OpenSearch sinks
-            dirs: test/siem
-          - name: OPA and server wiring
-            dirs: test/opa test/wiring
-          - name: Keycloak policy_from_groups
-            dirs: test/auth
-          - name: OCI, S3 and HTTPS bundle sources
-            dirs: test/bundle_source test/bundle
-          - name: audit verify, proxy audit and reload, shadow reports
-            dirs: test/audit test/proxy test/report
-            # test/proxy drives the proxy with the lab's psycopg client.
-            lab_venv: true
     services:
       postgres:
         image: postgres:17
@@ -124,25 +111,44 @@ jobs:
       - name: Pull the MinIO server image
         run: docker pull pgsty/minio:latest
 
-      - if: matrix.suite.lab_venv
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      # test/proxy drives the proxy with the lab's psycopg client.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Lab virtualenv
-        if: matrix.suite.lab_venv
         working-directory: lab
         run: make venv
 
-      - name: Run (Docker tests must not skip)
+      - name: Build
+        run: opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
+
+      # Every suite runs even when an earlier one fails, each in its own log
+      # group; the step fails at the end if any suite failed or skipped a test.
+      - name: Run the suites (Docker tests must not skip)
         env:
           HALTSQL_MINIO_IMAGE: pgsty/minio:latest
         run: |
           set -o pipefail
-          opam exec -- dune build ./bin/haltsql/main.exe ./bin/server/main.exe ./bin/proxy/main.exe
-          opam exec -- dune test ${{ matrix.suite.dirs }} --force 2>&1 | tee "$RUNNER_TEMP/test.log"
-          if grep -E 'SKIP(PED)? ?\(|SKIP: |\[SKIP\]' "$RUNNER_TEMP/test.log" | grep -viE 'HALTSQL_REQUIRE|not registered'; then
-            echo "::error::a Docker-based test skipped in the integration job"
+          failed=""
+          suite() {
+            local name="$1"; shift
+            echo "::group::$name ($*)"
+            local log="$RUNNER_TEMP/test-${name// /-}.log"
+            if ! opam exec -- dune test "$@" --force 2>&1 | tee "$log"; then
+              failed="$failed|$name (failed)"
+            elif grep -E 'SKIP(PED)? ?\(|SKIP: |\[SKIP\]' "$log" | grep -viE 'HALTSQL_REQUIRE|not registered'; then
+              failed="$failed|$name (a Docker-based test skipped)"
+            fi
+            echo "::endgroup::"
+          }
+          suite "Kafka, Elasticsearch, OpenSearch sinks" test/siem
+          suite "OPA and server wiring" test/opa test/wiring
+          suite "Keycloak policy_from_groups" test/auth
+          suite "OCI, S3 and HTTPS bundle sources" test/bundle_source test/bundle
+          suite "audit verify, proxy audit and reload, shadow reports" test/audit test/proxy test/report
+          if [ -n "$failed" ]; then
+            echo "$failed" | tr '|' '\n' | sed '/^$/d; s/^/::error::/'
             exit 1
           fi
 
