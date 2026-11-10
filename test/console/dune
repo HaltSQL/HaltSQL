@@ -21,8 +21,8 @@
   unix))
 
 (tests
- (names test_console)
- (modules test_console)
+ (names test_console test_fleet)
+ (modules test_console test_fleet)
  (package haltsql-server)
  (deps
   (glob_files fixtures/*)
