@@ -21,6 +21,7 @@ each mutant.
 |---|---|
 | `engine.py` | the analyzer, the tenancy prover, the parser bridge and its limits, the facade |
 | `python.py` | the Python guard, the verdict model, the HTTP client, the MCP tool core |
+| `services/server.py`, `auth.py`, `load.py`, `chain.py`, `proxy.py` | the HTTP sidecar's request path, caller authentication (JWT, JWKS, OIDC, mTLS), the policy and config loaders' security defaults, the audit chain verifier, and the proxy's enforcement and session handling (the proxy list needs the lab Postgres and `lab/.venv`) |
 | `sdks/typescript.py`, `sdks/go.py`, `sdks/java.py` | the TypeScript, Go and Java SDKs: response validation, fail-closed paths, retries, bind parameters, guarded execution (need Node, Go, or Java with Maven, the built binaries and the lab Postgres) |
 
 ## Rules for the lists

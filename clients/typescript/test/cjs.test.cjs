@@ -6,6 +6,9 @@ test("CommonJS build", () => {
   const m = require("../dist/cjs/index.js");
   assert.equal(typeof m.HaltSQLClient, "function");
   assert.equal(typeof m.guardedQuery, "function");
+  assert.equal(typeof m.guardedTransaction, "function");
+  assert.equal(typeof m.guardedTransactionOnClient, "function");
+  assert.equal(typeof m.searchPathSetting, "function");
   assert.equal(typeof m.bindParamsToPositional, "function");
   assert.equal(m.VERSION, "0.0.3");
   const e = new m.HaltSQLTimeoutError(5);

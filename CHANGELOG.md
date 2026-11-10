@@ -18,6 +18,31 @@ even before 1.0.
   `haltsql-google-adk`, `haltsql-crewai`, `haltsql-semantic-kernel` and
   `haltsql-vanna`, published by trusted publishing after `haltsql`, which they
   require. The release dry run builds and `twine check`s them.
+- **The TypeScript, Go and Java guards can pin the search path.** Each SDK
+  has a guarded execution path that owns a transaction and sets the verdict's
+  `policy.search_path` for it, as the Python guard does: `BEGIN` (`READ ONLY`
+  when the verdict is for a `SELECT`), caller-supplied transaction settings,
+  a transaction-local `set_config('search_path', ...)` with every schema
+  quoted, the verified SQL byte for byte, `COMMIT`; `ROLLBACK` on any error.
+  - TypeScript: `guardedTransaction(haltsql, pool, sql, ctx, { settings })`
+    for a `pg.Pool`, `guardedTransactionOnClient` for a client you hold, and
+    `searchPathSetting(verdict)`.
+  - Go: `GuardedQueryTx(ctx, hc, db, sql, vctx, func(*sql.Rows) error, ...)`
+    and `GuardedExecTx` for a `*sql.DB` or `*sql.Conn`, the `TxSettings`
+    option, and `Verdict.SearchPathSetting()`.
+  - Java: `JdbcGuard.queryInTransaction` / `updateInTransaction` (autocommit
+    is restored), `transactionSettings(...)`, and
+    `JdbcGuard.searchPathSetting(verdict)`.
+
+  A verdict without `search_path` (an older engine) runs without the pin.
+  The existing single-statement functions (`guardedQuery`; `GuardedQuery`,
+  `GuardedExec`; `JdbcGuard.prepare`, `query`, `update`) are unchanged: they
+  do not pin, and their documentation now says when that is acceptable (the
+  session already uses the policy's search path, or the SQL is
+  schema-qualified).
+- **`HALTSQL_REQUIRE_POSTGRES=1`** makes the Postgres-backed tests of the
+  TypeScript, Go and Java SDKs fail instead of skip when Postgres is not
+  reachable. CI sets it.
 - **Static tokens can be bound to a context.** `server.auth.tokens[]` takes
   `context` and `request_context_fields`, like mTLS identities. A bound token's
   tenant comes from the config; a request body that names another tenant gets
@@ -35,7 +60,8 @@ even before 1.0.
   the verified SQL, so a role or database default such as
   `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
   resolve to a different table than the one the policy lists. The TypeScript, Go and Java
-  verdict types expose the field; their guards do not change session settings.
+  verdict types expose the field; their single-statement guards do not change
+  session settings (their transaction-owning guards, above, do).
 - **`haltsql schema check`** compares a policy with the live database (or a
   `schema pull` snapshot) and fails on drift: a `catalog:` entry that no longer
   matches the table (a new column would be read by `SELECT *` unchecked),
@@ -138,6 +164,15 @@ even before 1.0.
   `haltsql.rlsgen`.
 
 ### Fixed
+- **haltsql-proxy: TLS clients now receive the error that ends their
+  session.** When the proxy ended a session from outside the client's own
+  message loop (a reload that changed it or `limits.max_session_lifetime_seconds`,
+  both `FATAL 57P01`; an upstream that entered COPY mode or changed
+  `client_encoding`, `standard_conforming_strings` or `search_path`; the
+  authentication timeout), a client connected over TLS got no error at all:
+  the connection was dropped without a TLS close, and drivers reported an
+  unexpected EOF instead of the documented SQLSTATE. Plaintext connections
+  were not affected. The session was always ended; only the message was lost.
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
   is not hash-chained, that a failed audit write does not block the
   statement and that there is no hot reload. All three were wrong; the page

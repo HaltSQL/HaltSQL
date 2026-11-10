@@ -83,9 +83,9 @@ JdbcGuard guard = new JdbcGuard(haltsql)
     .onVerdict(v -> audit.log(v.policy().version(), v.fingerprint(), v.allowed()));
 
 try (Connection conn = dataSource.getConnection()) {
-  List<Long> ids = guard.query(conn, sqlFromModel,
+  List<Long> ids = guard.queryInTransaction(conn, sqlFromModel,
       Map.of("tenant_id", session.tenantId()),
-      rs -> {
+      rs -> {                             // called inside the transaction
         List<Long> out = new ArrayList<>();
         while (rs.next()) out.add(rs.getLong(1));
         return out;
@@ -95,9 +95,53 @@ try (Connection conn = dataSource.getConnection()) {
 }
 ```
 
-Also available: `guard.prepare(conn, sql, context)` returns the verified,
-bound `PreparedStatement` (you execute and close it), and
-`guard.update(conn, sql, context, opts)` for writes allowed by a write policy.
+`queryInTransaction` (and `updateInTransaction` for writes allowed by a write
+policy) runs the verified SQL in a transaction on the connection you pass,
+pinned to the policy's search path:
+
+1. autocommit is turned off if it was on (PgJDBC then sends `BEGIN`);
+2. `SET TRANSACTION READ ONLY` when the verdict's statement kind is `select`;
+3. `SELECT set_config(name, value, true)` for each entry of
+   `guard.transactionSettings(Map.of("app.tenant_id", tenantId))` (row-level
+   security, `statement_timeout`, ...);
+4. `SELECT set_config('search_path', ..., true)` with
+   `verdict.policy().searchPath()`, each schema quoted as an identifier. This
+   is the pin: the verified `orders` is the policy's `orders` whatever the
+   role's or the database's default search path is. It is applied last, so a
+   `search_path` in the settings does not override it, and it is
+   transaction-local, so the session's own search path is back afterwards;
+5. the verified statement; your handler reads the `ResultSet`;
+6. `commit()`, or `rollback()` on any error, including one your handler
+   throws;
+7. autocommit is turned back on if it was on.
+
+A denial, a shadow would-deny or a HaltSQL error is thrown before any of this.
+A verdict without a search path (an engine older than the field) still runs,
+without step 4. The connection must have no transaction in progress: with
+autocommit off, the guard's transaction is the connection's next one, it is
+committed or rolled back as above, and autocommit stays off. A connection
+that PgJDBC reports as inside a transaction is refused (`USAGE`), because the
+guard's commit would also commit your earlier statements.
+
+### `prepare`, `query`, `update`: one statement, no pin
+
+`guard.prepare(conn, sql, context)` returns the verified, bound
+`PreparedStatement` (you execute and close it); `guard.query(conn, sql,
+context, handler)` and `guard.update(conn, sql, context, opts)` execute it as
+one statement on the connection as it is. **These low-level forms do not pin
+the search path** and do not touch the transaction. Use them only when one of
+these holds:
+
+- the session already uses the policy's search path: you set it on the
+  connection (`currentSchema=app` in the JDBC URL), the role or the database;
+  or
+- the SQL names every table with its schema (`app.orders`).
+
+Otherwise a default such as `ALTER ROLE ... SET search_path = public, app` can
+make a verified `orders` read `public.orders`. They are also the forms to use
+inside a transaction you manage yourself; pin the search path there with
+`SELECT set_config('search_path', ?, true)` and
+`JdbcGuard.searchPathSetting(verdict)`.
 
 Keep PgJDBC's default extended query protocol. With
 `preferQueryMode=simple`, PgJDBC substitutes parameters into the SQL text on
@@ -129,11 +173,14 @@ reason codes are kept as strings.
 policy would deny, unless you use `new JdbcGuard(client).allowShadow()` (for a
 [shadow rollout](tutorials/roll-out-a-policy-safely.md)).
 
-**Search path.** The guard runs one statement on your connection and does not
-change session settings. The verdict holds only under the policy's search path
-(`verdict.policy().searchPath()`): configure the connection or role with that `search_path`, or have
-the model write schema-qualified names. (The Python guard and the MCP server
-set it for you; so does `haltsql-proxy`.)
+**Search path.** The verdict holds only under the policy's search path
+(`verdict.policy().searchPath()`). `queryInTransaction` and
+`updateInTransaction` set it for the transaction that runs the SQL, as the
+Python guard, the MCP server and `haltsql-proxy` do. `prepare`, `query` and
+`update` run one statement on your connection and do not change session
+settings: with them, configure the connection or role with that
+`search_path`, or have the model write schema-qualified names
+([when that is acceptable](#prepare-query-update-one-statement-no-pin)).
 
 ## Options
 
@@ -209,5 +256,7 @@ mvn test
 Tests use a `com.sun.net.httpserver` fake that replays real `haltsql-server`
 responses from `src/test/resources/vectors.json`. The PgJDBC tests need
 Postgres (`make -C lab up`; `HALTSQL_PG*` variables override the defaults),
-create and drop the database `haltsql_polyglot_java`, and are skipped (JUnit
-assumptions) when Postgres is unreachable.
+create and drop the databases `haltsql_polyglot_java` and
+`haltsql_polyglot_java_tx`, and are skipped (JUnit assumptions) when Postgres
+is unreachable. With `HALTSQL_REQUIRE_POSTGRES=1` (set in CI) unreachable is a
+failure instead.

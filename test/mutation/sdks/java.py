@@ -5,8 +5,9 @@ G = D + "JdbcGuard.java"
 S = D + "JdbcSql.java"
 B = D + "BindParams.java"
 X = D + "HaltSQLException.java"
-BUILD = "cd clients/java && mvn -q -o compile"
-TEST = "cd clients/java && mvn -q -o test"
+# Each command runs in a subshell: the harness joins BUILD and TEST with "&&".
+BUILD = "(cd clients/java && mvn -q -o compile)"
+TEST = "(cd clients/java && HALTSQL_REQUIRE_POSTGRES=1 mvn -q -o test)"
 MUTANTS = [
     # ---- HaltSQLClient.java
     ("client: sql_sha256 check skipped", C, "if (checkSqlHash) {", "if (false) {"),
@@ -106,9 +107,11 @@ MUTANTS = [
      "if (!allowShadow && !v.shadowReasons().isEmpty()) {"),
     ("guard: shadow would-deny runs without opt-in", G,
      "if (!v.allowed() || (!allowShadow && !v.shadowReasons().isEmpty())) {", "if (!v.allowed()) {"),
-    ("guard: allowShadow on by default", G, "this(client, v -> {}, false, false);", "this(client, v -> {}, false, true);"),
+    ("guard: allowShadow on by default", G,
+     "this(client, v -> {}, false, false, Map.of());", "this(client, v -> {}, false, true, Map.of());"),
     ("guard: onVerdict() silently enables allowShadow", G,
-     "return new JdbcGuard(client, c, requireByteIdentical, allowShadow);", "return new JdbcGuard(client, c, requireByteIdentical, true);"),
+     "return new JdbcGuard(client, c, requireByteIdentical, allowShadow, settings);",
+     "return new JdbcGuard(client, c, requireByteIdentical, true, settings);"),
     ("guard: non-PgJDBC drivers accepted", G, "if (!PGJDBC_DRIVER_NAME.equals(driver)) {", "if (false) {"),
     ("guard: requireByteIdenticalSql ignored", G, "if (requireByteIdentical && !jsql.byteIdentical()) {", "if (false) {"),
     ("guard: placeholder coverage check skipped", G, "jsql.checkCovers(params.length);", ""),
@@ -116,6 +119,32 @@ MUTANTS = [
     ("guard: values bound by position, not placeholder number", G, "BindParam bp = params[p - 1];", "BindParam bp = params[idx - 1];"),
     ("guard: set bound as a comma-joined string", G,
      "BindParams.pgArrayLiteral(bp.values())", 'String.join(",", bp.values())'),
+    # queryInTransaction / updateInTransaction
+    ("guard tx: search path pin dropped", G,
+     'if (pin != null) all.add(Map.entry("search_path", pin));',
+     'if (pin != null && false) all.add(Map.entry("search_path", pin));'),
+    ("guard tx: pin not transaction-local", G,
+     'conn.prepareStatement("SELECT set_config(?, ?, true)")', 'conn.prepareStatement("SELECT set_config(?, ?, false)")'),
+    ("guard tx: schema names not quoted", G,
+     """quoted.add('"' + schema.replace("\\"", "\\"\\"") + '"');""", "quoted.add(schema);"),
+    ("guard tx: quotes inside schema names not doubled", G, 'schema.replace("\\"", "\\"\\"")', "schema"),
+    ("guard tx: pin applied before caller settings", G,
+     'if (pin != null) all.add(Map.entry("search_path", pin));',
+     'if (pin != null) all.add(0, Map.entry("search_path", pin));'),
+    ("guard tx: no rollback on error", G, "conn.rollback();", "if (false) conn.rollback();"),
+    ("guard tx: no commit", G, "conn.commit();", ""),
+    ("guard tx: read-only dropped for select", G,
+     'if ("select".equals(a.verdict().statementKind())) {', "if (false) {"),
+    ("guard tx: writes forced read-only", G,
+     'if ("select".equals(a.verdict().statementKind())) {', "if (true) {"),
+    ("guard tx: autocommit not restored", G, "if (autoCommit) {\n        try {", "if (false) {\n        try {"),
+    ("guard tx: a connection inside a transaction accepted", G,
+     'if (state != null && !state.equals("IDLE")) {', "if (false) {"),
+    ("guard tx: setting names not validated", G,
+     "if (e.getKey() == null || !SETTING_NAME.matcher(e.getKey()).matches()) {", "if (false) {"),
+    ("guard tx: a derived guard drops the transaction settings", G,
+     "return new JdbcGuard(client, onVerdict, true, allowShadow, settings);",
+     "return new JdbcGuard(client, onVerdict, true, allowShadow, Map.of());"),
     # ---- JdbcSql.java
     ("jdbcsql: '?' in SQL accepted", S, "if (c == '?' || c == '{' || c == '}') {", "if (c == '{' || c == '}') {"),
     ("jdbcsql: JDBC escape braces accepted", S, "if (c == '?' || c == '{' || c == '}') {", "if (c == '?') {"),

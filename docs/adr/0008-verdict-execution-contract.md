@@ -40,9 +40,11 @@ unchanged (`E_CAST_DENIED`); the rule name `casts.allowlist` is new.
 that own the transaction set it: the Python guard (and so the MCP server and
 the Python integrations) with a transaction-local `set_config`, applied after
 caller settings; the proxy at upstream startup, verified with `SHOW
-search_path` before the first client statement. The TypeScript, Go and Java
-guards run one statement on the caller's connection and do not change session
-settings; they expose the field and document the requirement.
+search_path` before the first client statement. The single-statement guards
+of the TypeScript, Go and Java SDKs run one statement on the caller's
+connection and do not change session settings; they expose the field and
+document the requirement. Their transaction-owning forms, added afterwards
+(see Follow-up), pin it the way the Python guard does.
 
 **Shadow mode.** The verdict is unchanged: `allowed: true` with
 `shadow_reasons`. The guarded executors of all four SDKs and the MCP server
@@ -95,6 +97,12 @@ Audit records carry `context` and `context_source` (`authenticated` or
 
 - Decide before 1.0 whether an unbound static token should be refused for a
   policy that isolates tenants.
-- Give the TypeScript, Go and Java guards a transaction-owning mode so they
-  can pin the search path too.
+- Done: the TypeScript, Go and Java guards have a transaction-owning mode
+  that pins the search path (`guardedTransaction` /
+  `guardedTransactionOnClient`; `GuardedQueryTx` / `GuardedExecTx`;
+  `JdbcGuard.queryInTransaction` / `updateInTransaction`). It follows the
+  Python guard: `READ ONLY` for a `select` verdict, caller settings, then a
+  transaction-local `set_config('search_path', ...)`, then the verified SQL.
+  The single-statement functions keep their behaviour and are documented as
+  not pinning. Still open: decide before 1.0 whether to deprecate them.
 - Function allowlist entries are still by name; an entry allows every overload.

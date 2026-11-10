@@ -62,6 +62,7 @@ func loadVector(t *testing.T, name string) vector {
 }
 
 // setup creates the test database, or skips when Postgres is unreachable.
+// With HALTSQL_REQUIRE_POSTGRES=1 (set in CI) unreachable is a failure.
 func setup(t *testing.T) *sql.DB {
 	t.Helper()
 	admin, err := sql.Open("pgx", dsn("postgres"))
@@ -72,6 +73,9 @@ func setup(t *testing.T) *sql.DB {
 	defer cancel()
 	if err := admin.PingContext(ctx); err != nil {
 		admin.Close()
+		if os.Getenv("HALTSQL_REQUIRE_POSTGRES") == "1" {
+			t.Fatalf("HALTSQL_REQUIRE_POSTGRES=1 but Postgres is not reachable: %v", err)
+		}
 		t.Skipf("skipping: Postgres not reachable (%v); run: make -C lab up", err)
 	}
 	mustExec(t, admin, "DROP DATABASE IF EXISTS "+dbName)

@@ -304,6 +304,19 @@ let auth_failures () =
          ~body port_a "/v1/verify"
      in
      check_status "wrong scheme" 401 r;
+     (* a valid token under another scheme is still not a bearer token *)
+     let* r =
+       request ~meth:`POST
+         ~headers:[ ("authorization", "Digest " ^ token_a) ]
+         ~body port_a "/v1/verify"
+     in
+     check_status "valid token, wrong scheme" 401 r;
+     let* r =
+       request ~meth:`POST
+         ~headers:[ ("authorization", "Digest " ^ token_a) ]
+         ~body port_b "/v1/verify"
+     in
+     check_status "valid token, wrong scheme, anonymous allowed" 401 r;
      let* r =
        request ~meth:`POST ~token:token_a
          ~body:(verify_body ~policy:"other" "SELECT 1")
@@ -417,6 +430,14 @@ let policies () =
      let* r = request port_b "/v1/policies" in
      check_status "anon lists all" 200 r;
      Alcotest.(check int) "two" 2 (List.length (names (json r)));
+     Alcotest.(check bool)
+       "anon sees the default" true
+       (member "default" (json r) = `String "shop");
+     (* a pinned caller learns neither the other policies nor the default *)
+     let* r = request ~token:token_b port_b "/v1/policies" in
+     check_status "pinned on B" 200 r;
+     Alcotest.(check bool) "only its own" true (names (json r) = [ `String "other" ]);
+     Alcotest.(check bool) "no default" true (member "default" (json r) = `Null);
      Lwt.return_unit)
 
 let metrics () =
@@ -437,6 +458,78 @@ let metrics () =
          "# TYPE haltsql_verify_duration_seconds histogram";
          "haltsql_policies_loaded 2";
        ];
+     Lwt.return_unit)
+
+let metrics_disabled () =
+  let st, port, stopper =
+    start ~policy_files:[ shop_path ] ~overrides:(fun c ->
+        {
+          c with
+          allow_unauthenticated = true;
+          metrics = false;
+          audit_sinks = [];
+          sinks = [];
+          reload_watch = false;
+        })
+  in
+  Alcotest.(check bool) "metrics off" false st.cfg.metrics;
+  run
+    (let* r = request port "/metrics" in
+     check_status "no metrics route" 404 r;
+     Alcotest.(check bool) "nothing exposed" false (contains r.body "haltsql_");
+     let* r = request port "/healthz" in
+     check_status "still serving" 200 r;
+     Lwt.wakeup_later stopper ();
+     Lwt.return_unit)
+
+(* A caller pinned to a policy that is not loaded (a bundle that has not arrived, or was
+   withdrawn) is told the service is unavailable, never served by another policy; a
+   caller that merely names an unknown policy gets 404. *)
+let pinned_policy_unavailable () =
+  let ghost = "token-pinned-to-a-missing-policy" in
+  let st, port, stopper =
+    start ~policy_files:[ shop_path ] ~overrides:(fun c ->
+        {
+          c with
+          allow_unauthenticated = true;
+          default_policy = Some "shop";
+          audit_sinks = [];
+          sinks = [];
+          reload_watch = false;
+        })
+  in
+  st.snap <-
+    {
+      st.snap with
+      tokens =
+        [
+          {
+            token_name = "ghost";
+            token_sha256 = sha ghost;
+            token_policy = "withdrawn";
+            token_context = None;
+          };
+        ];
+    };
+  run
+    (let* r =
+       request ~meth:`POST ~token:ghost ~body:(verify_body good_sql) port "/v1/verify"
+     in
+     check_status "pinned policy missing" 503 r;
+     Alcotest.(check bool) "code" true (error_code r = `String "POLICY_UNAVAILABLE");
+     let* r =
+       request ~meth:`POST
+         ~body:(verify_body ~policy:"withdrawn" good_sql)
+         port "/v1/verify"
+     in
+     check_status "unknown policy named by an unpinned caller" 404 r;
+     Alcotest.(check bool) "code" true (error_code r = `String "POLICY_NOT_FOUND");
+     let* r = request ~token:ghost port "/v1/policies" in
+     check_status "policies" 200 r;
+     Alcotest.(check bool)
+       "the pinned caller is shown no other policy" true
+       (member "policies" (json r) = `List []);
+     Lwt.wakeup_later stopper ();
      Lwt.return_unit)
 
 (* ---- audit ---- *)
@@ -512,6 +605,28 @@ let audit_chain () =
   (match Audit.verify_lines deleted with
   | Ok _ -> Alcotest.fail "deleted line was not detected"
   | Error e -> Alcotest.(check int) "detected after deletion" (mid + 1) e.line_no);
+  (* cutting off the head is detected unless the caller opts out (rotated file) *)
+  (match Audit.verify_lines (List.tl lines) with
+  | Ok _ -> Alcotest.fail "truncated head was not detected"
+  | Error e -> Alcotest.(check int) "detected at the new first line" 1 e.line_no);
+  (match Audit.verify_lines ~initial_prev:None (List.tl lines) with
+  | Ok n -> Alcotest.(check int) "rotated file verifies" (List.length lines - 1) n
+  | Error e -> Alcotest.failf "rotated file: %s" e.problem);
+  (* a record stripped of its hash is an error, not a record to skip *)
+  let stripped =
+    List.mapi
+      (fun i l ->
+        if i <> mid then l
+        else
+          match Yojson.Safe.from_string l with
+          | `Assoc kv ->
+              Yojson.Safe.to_string (`Assoc (List.filter (fun (k, _) -> k <> "hash") kv))
+          | _ -> l)
+      lines
+  in
+  (match Audit.verify_lines stripped with
+  | Ok _ -> Alcotest.fail "record without a hash was accepted"
+  | Error e -> Alcotest.(check int) "detected at the stripped line" (mid + 1) e.line_no);
   (* recomputing the edited line's own hash still breaks the next link *)
   let j = Yojson.Safe.from_string tampered.(mid) in
   match j with
@@ -566,6 +681,22 @@ let audit_buffer_mode () =
     (List.map
        (fun l -> Yojson.Safe.to_string (member "n" (Yojson.Safe.from_string l)))
        written);
+  (* a full buffer fails closed instead of growing without bound *)
+  let down =
+    Audit.custom ~on_error:Haltsql.Config.Buffer ~name:"down"
+      ~write:(fun _ -> failwith "down")
+      ~close:ignore ()
+  in
+  for i = 1 to Audit.max_pending do
+    if Audit.deliver down [ ("n", `Int i) ] <> Audit.Buffered then
+      Alcotest.failf "record %d not buffered" i
+  done;
+  Alcotest.(check bool) "full buffer is unhealthy" false (Audit.healthy down);
+  (match Audit.deliver down [ ("n", `Int 0) ] with
+  | Audit.Failed e ->
+      Alcotest.(check bool) "says why" true (contains e "audit buffer is full")
+  | Audit.Buffered -> Alcotest.fail "buffered past max_pending"
+  | Audit.Written -> Alcotest.fail "written by a failing sink");
   (* fail_closed reports failure immediately *)
   let fc = Audit.custom ~name:"fc" ~write:(fun _ -> failwith "down") ~close:ignore () in
   match Audit.deliver fc [ ("n", `Int 1) ] with
@@ -874,6 +1005,37 @@ let oversized_declared_body () =
      Alcotest.(check bool) "JSON error" true (contains data "PAYLOAD_TOO_LARGE");
      Lwt.return_unit)
 
+(* A chunked body has no declared length: the handler stops reading at the cap. *)
+let oversized_chunked_body () =
+  run
+    (let* fd = raw_connect port_a in
+     let fill = String.make 3000 'a' in
+     let c1 = "{\"sql\":\"" ^ fill and c2 = fill ^ "\"}" in
+     let* () =
+       send fd
+         (Printf.sprintf
+            "POST /v1/verify HTTP/1.1\r\n\
+             Host: x\r\n\
+             Authorization: Bearer %s\r\n\
+             Content-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\n\
+             \r\n\
+             %x\r\n\
+             %s\r\n\
+             %x\r\n\
+             %s\r\n\
+             0\r\n\
+             \r\n"
+            token_a (String.length c1) c1 (String.length c2) c2)
+     in
+     let* r, data = read_until_close fd in
+     let* () = close_fd fd in
+     Alcotest.(check string)
+       "413" "HTTP/1.1 413 Request Entity Too Large" (status_line data);
+     Alcotest.(check bool) "JSON error" true (contains data "PAYLOAD_TOO_LARGE");
+     Alcotest.(check bool) "connection closed" true (r = `Eof);
+     Lwt.return_unit)
+
 (* A body the handler does not read (404 here) is drained only up to the cap;
    a larger chunked body closes the connection instead of being read to the
    end. *)
@@ -1143,7 +1305,13 @@ let unit_auth () =
   Alcotest.(check bool)
     "empty token" true
     (Auth.authenticate tokens (Some "Bearer ") = Auth.Invalid);
-  Alcotest.(check bool) "missing" true (Auth.authenticate tokens None = Auth.Missing)
+  Alcotest.(check bool) "missing" true (Auth.authenticate tokens None = Auth.Missing);
+  Alcotest.(check bool)
+    "valid token under another scheme" true
+    (Auth.authenticate tokens (Some ("Digest " ^ token_a)) = Auth.Invalid);
+  Alcotest.(check bool)
+    "scheme without a separating space" true
+    (Auth.authenticate tokens (Some ("Bearer:" ^ token_a)) = Auth.Invalid)
 
 let unit_listen () =
   Alcotest.(check bool)
@@ -1172,7 +1340,11 @@ let () =
           tc "bad requests" bad_requests;
           tc "413" too_large;
           tc "413 before reading a huge declared body" oversized_declared_body;
+          tc "413 for a chunked body over the cap" oversized_chunked_body;
           tc "unread chunked body is not drained" unread_chunked_body;
+          tc "metrics disabled: no /metrics route" metrics_disabled;
+          tc "pinned policy not loaded: 503, never another policy"
+            pinned_policy_unavailable;
           tc "routing" routing;
           tc "policies" policies;
           tc "metrics" metrics;

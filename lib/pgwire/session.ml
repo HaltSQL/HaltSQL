@@ -765,7 +765,11 @@ let lifetime_timer s =
 
 let rec client_loop s =
   let* tag, payload = read_client s in
-  if s.ending <> None && at_boundary s then (
+  if s.finished then
+    (* the session ended while this read was pending (a read on a TLS connection is
+       not cancelled, see Io): the message is neither verified nor forwarded *)
+    never ()
+  else if s.ending <> None && at_boundary s then (
     (* the session is ending: this message is neither verified nor forwarded *)
     wake s.boundary;
     never ())
@@ -778,6 +782,9 @@ let rec upstream_loop s up =
   let raw () = Io.write s.client (Wire.frame tag payload) in
   let* () =
     match tag with
+    | _ when s.finished ->
+        (* as in [client_loop]: nothing is relayed once the session has ended *)
+        never ()
     | '1' -> (
         match Stmt_state.on_parse_complete s.st with
         | Ok () -> raw ()
@@ -1034,6 +1041,8 @@ let handle ?(on_authenticated = fun (_ : live) -> ()) sh ~id fd =
       Lwt.catch
         (fun () -> run s)
         (fun e ->
+          (* whatever the loops of this session still read is acted on no more *)
+          s.finished <- true;
           match e with
           | Done | Io.Closed -> Lwt.return_unit
           | Fatal (code, msg) ->

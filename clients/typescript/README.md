@@ -5,11 +5,15 @@ verify LLM-generated PostgreSQL against a policy before running it.
 Zero runtime dependencies, ESM + CommonJS, Node.js >= 18.
 
 ```ts
-import { HaltSQLClient, guardedQuery } from "@haltsql/client";
+import { HaltSQLClient, guardedTransaction } from "@haltsql/client";
 
 const haltsql = new HaltSQLClient({ baseUrl: "http://127.0.0.1:8080", token: process.env.HALTSQL_TOKEN });
-const { result } = await guardedQuery(haltsql, pool, sql, { tenant_id: session.tenantId });
+const { result } = await guardedTransaction(haltsql, pool, sql, { tenant_id: session.tenantId });
 ```
+
+`guardedTransaction` runs the verified SQL in a transaction pinned to the
+policy's search path (`READ ONLY` for a `SELECT`). `guardedQuery` is the
+low-level single-statement form; it does not pin the search path.
 
 Every failure rejects with a `HaltSQLError` (never an allow). Every call has a
 timeout (5 s per attempt by default) and bounded retries; TLS verification is

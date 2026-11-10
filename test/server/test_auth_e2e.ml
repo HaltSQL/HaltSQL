@@ -182,18 +182,22 @@ let oidc_provider : Config.oidc_provider =
 let jwt ?(kid = "k1") ?(key = Jwt.Sign_rsa rsa_priv) ?(alg = "RS256") ?(exp_in = 600.)
     ?(aud = "haltsql") ?(tenant = `String "acme") ?(policy = "shop") ?(extra = []) () =
   let now = Unix.gettimeofday () in
+  (* a claim in [extra] replaces the default: a duplicate member would make the token
+     malformed, whatever the test meant to exercise *)
   Jwt.sign ~alg ~kid key
     (`Assoc
-       ([
-          ("iss", `String issuer);
-          ("aud", `String aud);
-          ("sub", `String "user-17");
-          ("exp", `Int (int_of_float (now +. exp_in)));
-          ("iat", `Int (int_of_float now));
-          ("scope", `String "openid sql.verify");
-          ("haltsql_policy", `String policy);
-          ("https://corp.example/tenant", tenant);
-        ]
+       (List.filter
+          (fun (k, _) -> not (List.mem_assoc k extra))
+          [
+            ("iss", `String issuer);
+            ("aud", `String aud);
+            ("sub", `String "user-17");
+            ("exp", `Int (int_of_float (now +. exp_in)));
+            ("iat", `Int (int_of_float now));
+            ("scope", `String "openid sql.verify");
+            ("haltsql_policy", `String policy);
+            ("https://corp.example/tenant", tenant);
+          ]
        @ extra))
 
 (* ---- servers under test ---- *)
@@ -217,7 +221,8 @@ let mtls_ids : Config.mtls_identity list =
     };
   ]
 
-let start ?health ~tls () =
+let start ?health ?(allow_unauthenticated = false) ?(admin = Config.default_admin) ~tls ()
+    =
   let sources =
     {
       State.config_file = None;
@@ -227,6 +232,8 @@ let start ?health ~tls () =
           {
             c with
             tls = Some tls;
+            allow_unauthenticated;
+            admin;
             tokens =
               [
                 {
@@ -267,6 +274,21 @@ let st_y, port_y, health_y =
   start ~health:()
     ~tls:(tls_cfg ~client_auth:Config.Client_auth_required ~min_version:Config.Tls_1_3 ())
     ()
+
+(* Z: like X, but anonymous callers are allowed, and the admin API is on for one OIDC
+   subject and one mTLS identity. *)
+let admin_subject = "ops-admin"
+
+let _st_z, port_z, _ =
+  start ~allow_unauthenticated:true
+    ~admin:
+      {
+        Config.default_admin with
+        admin_enabled = true;
+        admin_callers =
+          [ Admin_oidc ("fake-idp:" ^ admin_subject); Admin_mtls (Spiffe_id spiffe_id) ];
+      }
+    ~tls:(tls_cfg ()) ()
 
 (* ---- raw HTTPS client ---- *)
 
@@ -533,6 +555,61 @@ let mtls_cn () =
   | Error _ -> ()
   | Ok r -> Alcotest.failf "serverAuth-only client cert accepted (%d)" r.status
 
+(* Where anonymous access is allowed, a client that presents a certificate matching no
+   configured identity is still refused: a certificate is a claim of identity, and a
+   failed claim must not fall back to "nobody". *)
+let mtls_unmapped_not_anonymous () =
+  let r = check_status "anonymous, no certificate" 200 (post ~policy:"shop" port_z) in
+  Alcotest.(check bool)
+    "anonymous caller" true
+    (member "caller_type" (last_audit ()) = `String "anonymous");
+  Alcotest.(check bool) "verdict" true (member "allowed" (json r) <> `Null);
+  let r =
+    check_status "unmapped certificate, no token" 401
+      (post ~client:client_unmapped ~policy:"shop" port_z)
+  in
+  Alcotest.(check bool) "UNAUTHORIZED" true (error_code r = `String "UNAUTHORIZED");
+  let _ =
+    check_status "unmapped certificate + token" 200
+      (post ~client:client_unmapped ~token:static_token port_z)
+  in
+  Alcotest.(check bool)
+    "authenticated by the token" true
+    (member "caller_type" (last_audit ()) = `String "token")
+
+(* server.admin.callers matches the identity that authenticated the caller: an OIDC
+   entry qualified with a subject admits that subject only, an mTLS entry that identity
+   only, and nobody else, however validly authenticated. *)
+let admin_callers () =
+  let status ?client ?token msg expected =
+    check_status msg expected (run (tls_request ?client ?token port_z "/v1/admin/status"))
+  in
+  let r = status "anonymous" 401 in
+  Alcotest.(check bool) "UNAUTHORIZED" true (error_code r = `String "UNAUTHORIZED");
+  let r = status ~token:(jwt ()) "another subject of the admin's provider" 403 in
+  Alcotest.(check bool) "FORBIDDEN" true (error_code r = `String "FORBIDDEN");
+  let r =
+    status
+      ~token:(jwt ~extra:[ ("sub", `String admin_subject) ] ())
+      "the admin subject" 200
+  in
+  Alcotest.(check bool) "status document" true (member "version" (json r) <> `Null);
+  let _ =
+    status
+      ~token:(jwt ~extra:[ ("sub", `String (admin_subject ^ "x")) ] ())
+      "a subject that merely starts like the admin's" 403
+  in
+  let _ = status ~token:static_token "a static token" 403 in
+  let _ = status ~client:client_spiffe "the admin mTLS identity" 200 in
+  let _ = status ~client:client_cn "another mTLS identity" 403 in
+  let _ = status ~client:client_unmapped "a certificate with no identity" 401 in
+  (* the admin API does not exist where it is not enabled *)
+  let r =
+    check_status "disabled" 404
+      (run (tls_request ~client:client_spiffe port_x "/v1/admin/status"))
+  in
+  Alcotest.(check bool) "NOT_FOUND" true (error_code r = `String "NOT_FOUND")
+
 let required_client_certs () =
   (match run (tls_request port_y "/healthz") with
   | Error _ -> ()
@@ -765,8 +842,12 @@ let () =
           tc "key rotation refresh" oidc_key_rotation;
         ] );
       ( "mtls",
-        [ tc "SPIFFE mapping" mtls_spiffe; tc "subject CN, unmapped, rogue CA" mtls_cn ]
-      );
+        [
+          tc "SPIFFE mapping" mtls_spiffe;
+          tc "subject CN, unmapped, rogue CA" mtls_cn;
+          tc "unmapped certificate is not anonymous" mtls_unmapped_not_anonymous;
+          tc "admin API: OIDC subject and mTLS identity" admin_callers;
+        ] );
       ( "required",
         [
           tc "client certs required, TLS 1.3 only" required_client_certs;

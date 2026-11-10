@@ -5,9 +5,11 @@ G = "clients/typescript/src/pg.ts"
 L = "clients/typescript/src/local.ts"
 E = "clients/typescript/src/errors.ts"
 ENV = ("HALTSQL_BIN=$OLDPWD/_build/default/bin/haltsql/main.exe "
-       "HALTSQL_SERVER_BIN=$OLDPWD/_build/default/bin/server/main.exe HALTSQL_REQUIRE_NATIVE=1 ")
-BUILD = "cd clients/typescript && npx tsc -p tsconfig.esm.json --noEmit"
-TEST = "cd clients/typescript && " + ENV + "npm test"
+       "HALTSQL_SERVER_BIN=$OLDPWD/_build/default/bin/server/main.exe HALTSQL_REQUIRE_NATIVE=1 "
+       "HALTSQL_REQUIRE_POSTGRES=1 ")
+# Each command runs in a subshell: the harness joins BUILD and TEST with "&&".
+BUILD = "(cd clients/typescript && npx tsc -p tsconfig.esm.json --noEmit)"
+TEST = "(cd clients/typescript && " + ENV + "npm test)"
 MUTANTS = [
     # ---- client.ts
     ("client: sql_sha256 check skipped", C,
@@ -110,6 +112,33 @@ MUTANTS = [
     ("guard: bind params dropped", G, "await db.query(sql, values);", "await db.query(sql);"),
     ("guard: bind params built before the allow check, ignoring order", G,
      "const values = bindParamsToPositional(verdict);", "const values = verdict.bind_params.map((b) => b.value);"),
+    # guardedTransaction / guardedTransactionOnClient
+    ("guard tx: search path pin dropped", G,
+     'pin === undefined ? settings : [...settings, ["search_path", pin]];',
+     'pin === undefined || settings.length >= 0 ? settings : [...settings, ["search_path", pin]];'),
+    ("guard tx: pin not transaction-local", G,
+     'await client.query("SELECT set_config($1, $2, true)", [name, value]);',
+     'await client.query("SELECT set_config($1, $2, false)", [name, value]);'),
+    ("guard tx: schema names not quoted", G,
+     """sp.map((schema) => '"' + schema.replace(/"/g, '""') + '"').join(", ")""", 'sp.join(", ")'),
+    ("guard tx: quotes inside schema names not doubled", G, """schema.replace(/"/g, '""')""", "schema"),
+    ("guard tx: pin applied before caller settings", G,
+     '[...settings, ["search_path", pin]];', '[["search_path", pin], ...settings];'),
+    ("guard tx: no rollback on error", G, 'await client.query("ROLLBACK");', ""),
+    ("guard tx: no commit", G, 'await client.query("COMMIT");', ""),
+    ("guard tx: SQL trimmed before running", G,
+     "await client.query(sql, values);", "await client.query(sql.trim(), values);"),
+    ("guard tx: bind params dropped", G, "await client.query(sql, values);", "await client.query(sql);"),
+    ("guard tx: read-only dropped for select", G,
+     'verdict.statement_kind === "select" ? "BEGIN READ ONLY" : "BEGIN"', '"BEGIN"'),
+    ("guard tx: writes forced read-only", G,
+     'verdict.statement_kind === "select" ? "BEGIN READ ONLY" : "BEGIN"', '"BEGIN READ ONLY"'),
+    ("guard tx: a pool accepted as a single client", G,
+     'if (typeof poolLike.totalCount === "number" || typeof poolLike.idleCount === "number") {', "if (false) {"),
+    ("guard tx: setting names not validated", G, "if (!SETTING_NAME.test(name)) {", "if (false) {"),
+    ("guard tx: client with a failed rollback returned to the pool", G,
+     "client.release(broken === undefined ? undefined : broken instanceof Error ? broken : true);",
+     "client.release();"),
     # ---- local.ts
     ("local: sql_sha256 check skipped", L,
      'if (this.checkHash) {\n      const expected = createHash("sha256").update(head.sql',
