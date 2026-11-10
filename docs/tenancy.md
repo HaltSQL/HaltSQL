@@ -290,7 +290,7 @@ both sides need `WHERE` predicates.
 
 ## Equality propagation
 
-HaltSQL 0.1.0 does **not** propagate equality through joins. This query is
+HaltSQL 0.0.1 does **not** propagate equality through joins. This query is
 denied, even though it is safe:
 
 ```sql

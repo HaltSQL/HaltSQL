@@ -52,7 +52,7 @@ const SCENARIOS = [
 function stepsFor(s) {
   return [
     { at: 'start', ms: 1500, caption: 'The agent writes a query for the user’s question.' },
-    { at: 0, ms: 1400, caption: 'HaltSQL parses the exact string with the real PostgreSQL grammar.' },
+    { at: 0, ms: 1400, caption: 'HaltSQL parses the exact string with the database’s real grammar.' },
     { at: 1, ms: 1100, caption: 'Every name is resolved: tables, aliases, CTEs, subquery scopes.' },
     { at: 2, ms: 2200, checks: true, caption: 'Each column, function and tenant predicate is checked against the policy.' },
     {
@@ -64,7 +64,7 @@ function stepsFor(s) {
         : 'Denied, with stable reason codes and a hint the model can follow.',
     },
     s.allowed
-      ? { at: 'end', ms: 2600, caption: 'Only then does the query reach Postgres, scoped to the caller’s tenant.' }
+      ? { at: 'end', ms: 2600, caption: 'Only then does the query reach the database, scoped to the caller’s tenant.' }
       : { at: 'return', ms: 2600, caption: 'The reasons go back to the agent, which rewrites its query.' },
   ];
 }
@@ -121,7 +121,7 @@ export default function FlowAnimation() {
   return (
     <figure
       className={clsx(styles.wrap, reduced && styles.reduced)}
-      aria-label="Animated diagram: how HaltSQL checks a query before it reaches PostgreSQL">
+      aria-label="Animated diagram: how HaltSQL checks a query before it reaches the database">
       <div className={styles.bar}>
         <div className={styles.tabs} role="tablist">
           {SCENARIOS.map((x, i) => (
@@ -208,7 +208,7 @@ export default function FlowAnimation() {
         </g>
         <g className={clsx(styles.endpoint, cur.at === 'end' && styles.endpointOn, cur.at === 'end' && styles.endpointAllow)}>
           <rect x="820" y="114" width="170" height="72" rx="12" />
-          <text x="905" y="145" textAnchor="middle" className={styles.endTitle}>PostgreSQL</text>
+          <text x="905" y="145" textAnchor="middle" className={styles.endTitle}>Database</text>
           <text x="905" y="166" textAnchor="middle" className={styles.endSub}>
             {cur.at === 'end' ? 'tenant bound' : 'never sees a denied query'}
           </text>

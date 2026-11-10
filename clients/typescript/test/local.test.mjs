@@ -130,7 +130,7 @@ describe("binary resolution", () => {
   const proj = join(root, "proj");
   const pkgDir = join(proj, "node_modules/@haltsql/native-linux-arm64");
   mkdirSync(pkgDir, { recursive: true });
-  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@haltsql/native-linux-arm64", version: "0.1.0" }));
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@haltsql/native-linux-arm64", version: "0.0.1" }));
   const pkgBin = exe(join(pkgDir, "bin/haltsql"));
   const empty = join(root, "empty");
   mkdirSync(empty, { recursive: true });

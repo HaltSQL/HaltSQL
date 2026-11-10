@@ -17,7 +17,7 @@ module Analyzer = Haltsql_analyzer.Analyzer
 module Test_suite = Haltsql_load.Test_suite
 module Suite_runner = Suite_runner
 
-let version = "0.1.0"
+let version = "0.0.1"
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
 
 let multi_statement n =

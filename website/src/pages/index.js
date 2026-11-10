@@ -55,7 +55,7 @@ const httpExample = `curl -s http://127.0.0.1:8080/v1/verify \\
   "bind_params": [ { "param": 1, "value": "acme" } ],
   "policy": { "name": "analytics-agent", "version": "sha256:4f1c..." }, ... }`;
 
-const proxyExample = `# Point any Postgres driver at the proxy instead of the database.
+const proxyExample = `# Point any database driver at the proxy instead of the database.
 haltsql-proxy run -c proxy.yaml --listen 0.0.0.0:6432
 
 psql "host=localhost port=6432 user=analytics dbname=app"
@@ -66,7 +66,7 @@ DETAIL: HaltSQL reasons: E_COLUMN_DENIED, E_TENANT_MISSING`;
 const modes = [
   ['Library', 'Haltsql.verify / haltsql CLI', 'Call verify in-process, or shell out to the static CLI from scripts and CI.', '/docs/how-it-works/deployment-modes'],
   ['Sidecar', 'POST /v1/verify', 'haltsql-server next to your agent, with TLS, OIDC, audit and metrics, for any language.', '/docs/http-api'],
-  ['Proxy', 'Postgres wire protocol', 'haltsql-proxy in front of the database, so unmodified drivers cannot skip the check.', '/docs/proxy'],
+  ['Proxy', 'Native wire protocol', 'haltsql-proxy in front of the database, so unmodified drivers cannot skip the check.', '/docs/proxy'],
 ];
 
 const controls = [
@@ -83,15 +83,15 @@ function Hero() {
     <header className={styles.hero}>
       <div className="container">
         <Heading as="h1" className={styles.title}>
-          Stop bad SQL before it runs.
+          Your data, your rules, any agent.
         </Heading>
         <div className={styles.heroRow}>
           <div>
             <p className={styles.lede}>
-              HaltSQL is a policy firewall for LLM-generated PostgreSQL. It parses every statement
-              your agents write with the real Postgres parser, checks tenants, columns and functions
-              against your policy, and returns reasons the model can act on. It never rewrites SQL
-              and never connects to your database.
+              HaltSQL is a policy firewall for LLM-generated SQL. It parses every statement
+              your agents write with the database's real parser, checks tenants, columns and functions
+              against your policy, and returns reasons the model can act on. It never rewrites SQL,
+              and the check itself needs no database credentials.
             </p>
             <p className={styles.mcpCallout}>
               Using <code>@modelcontextprotocol/server-postgres</code> with Claude Desktop or Cursor?{' '}
@@ -126,8 +126,8 @@ function SectionHead({ title, children }) {
 export default function Home() {
   return (
     <Layout
-      title="Policy firewall for LLM-generated PostgreSQL"
-      description="HaltSQL checks LLM-generated PostgreSQL against a declarative policy and tenant isolation rules before it runs. Integrates with MCP, LangChain, LangGraph, OpenAI Agents, Google ADK, OpenMetadata, dbt and more.">
+      title="Policy firewall for LLM-generated SQL"
+      description="HaltSQL checks LLM-generated SQL against a declarative policy and tenant isolation rules before it runs. Integrates with MCP, LangChain, LangGraph, OpenAI Agents, Google ADK, OpenMetadata, dbt and more.">
       <Hero />
       <main>
         <IntegrationWall />
@@ -136,7 +136,7 @@ export default function Home() {
           <div className="container">
             <SectionHead title="Where HaltSQL sits.">
               The agent writes SQL. HaltSQL decides whether that exact string may run for this
-              caller. Only an allowed query reaches Postgres, bound with tenant values the model
+              caller. Only an allowed query reaches the database, bound with tenant values the model
               never saw. A denied query goes back to the agent with codes and hints.
             </SectionHead>
             <FlowAnimation />

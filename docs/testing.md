@@ -66,7 +66,7 @@ sensitive column you left out.
 
 ## Test layers
 
-| Layer | What it checks | Tooling | Status in 0.1.0 |
+| Layer | What it checks | Tooling | Status in 0.0.1 |
 |---|---|---|---|
 | Unit | Each module and rule in isolation, with positive and negative cases | Alcotest | Runs on every PR |
 | Golden | Verdict JSON, `explain` output, and error messages stay stable | Snapshot files reviewed in PRs | Runs on every PR |

@@ -7,7 +7,7 @@
     { "apiVersion": "haltsql.dev/v1",
       "kind": "PolicyBundle",
       "metadata": { "name": "prod-policies", "version": "2026.11.07",
-                    "created_by": "haltsql/0.1.0",
+                    "created_by": "haltsql/0.0.1",
                     "source": { "url": "https://github.com/acme/policies",
                                 "commit": "4f0c..." } },
       "policies": [ { "name": "saas-analytics", "document": { <Policy_load.to_json> } } ],

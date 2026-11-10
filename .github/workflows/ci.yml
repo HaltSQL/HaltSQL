@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Only pull requests into main; PRs between feature branches run nothing.
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Superseded PR pushes and main merges cancel; tags (releases), schedules and
+  # manual runs always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 env:
   # Password of the per-run Postgres service containers below. It is derived
@@ -42,6 +46,18 @@ jobs:
           fetch-depth: 2
       - id: areas
         run: .github/scripts/changes.sh ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+
+  # Every manifest (opam, SDKs, MCP server, Helm chart) carries one version.
+  # Cheap, so it runs on every change.
+  versions:
+    name: Version strings agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: scripts/check-versions.sh
 
   lint:
     name: Formatting (ocamlformat)
@@ -504,6 +520,7 @@ jobs:
     if: always()
     needs:
       - changes
+      - versions
       - lint
       - build-test
       - coverage

@@ -154,7 +154,7 @@ identity the client certificate matched. Anonymous callers never match.
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.0.1",
   "started": "2026-11-07T09:12:03.120Z",
   "uptime_seconds": 5400,
   "config_generation": 3,

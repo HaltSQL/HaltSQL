@@ -223,7 +223,7 @@ Verdict verdict = haltsql.verify(
         id: 'proxy', name: 'Wire proxy', logo: 'proxy.svg', to: '/docs/proxy', lang: 'bash',
         keywords: 'psql jdbc pgx driver postgres protocol',
         blurb: 'Speaks the Postgres wire protocol. Point psql, JDBC or pgx at it with no code changes.',
-        install: 'docker pull ghcr.io/haltsql/haltsql:0.1.0',
+        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.1',
         code: `# Point any Postgres driver at the proxy instead of the database.
 haltsql-proxy run -c proxy.yaml --listen 0.0.0.0:6432
 
@@ -236,7 +236,7 @@ DETAIL: HaltSQL reasons: E_COLUMN_DENIED, E_TENANT_MISSING`,
         id: 'http', name: 'HTTP API', logo: 'http.svg', to: '/docs/http-api', lang: 'bash',
         keywords: 'rest sidecar curl any language',
         blurb: 'One POST /v1/verify call per query, from any language, through the haltsql-server sidecar.',
-        install: 'docker pull ghcr.io/haltsql/haltsql:0.1.0',
+        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.1',
         code: `curl -s http://127.0.0.1:8080/v1/verify \\
   -H "Authorization: Bearer $HALTSQL_TOKEN" \\
   -d '{"sql": "SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 50",
