@@ -194,7 +194,8 @@ it makes the check fail, which is the intended outcome.
 | `Query` (simple) | Verified as a whole. Denied if the verdict denies, or if it needs bound tenancy parameters (they cannot be bound in the simple protocol: use prepared statements). |
 | `Parse` | Verified; the verdict is remembered per statement name. A named statement that already exists is refused (42P05). |
 | `Bind` | The statement's verdict is looked up. Every `$n` in `verdict.bind_params` is **replaced** with the session's context value (text format), whatever the client sent; binary format for those parameters is refused. Unknown statements are refused (26000). |
-| `Describe`, `Execute`, `Close`, `Flush`, `Sync`, `Terminate` | Validated and relayed. |
+| `Execute` | Audited (one `execute` record per message, see [Audit](#audit-and-logs)), then relayed. If the record cannot be written under `fail_closed`, the Execute is refused (58030) and does not reach the database. |
+| `Describe`, `Close`, `Flush`, `Sync`, `Terminate` | Validated and relayed. |
 | `FunctionCall` | Refused in-band (`deny_sqlstate`, `PROXY_FUNCTION_CALL`). |
 | `CopyData`/`CopyDone`/`CopyFail`, unknown types, malformed or oversized messages | FATAL 08P01 and the connection is closed. `COPY` statements are already denied by the policy (`E_STATEMENT_KIND`); a server that enters COPY mode anyway ends the session. |
 
@@ -240,8 +241,9 @@ the proxy apply one statement's tenancy positions to another statement.
 
 ## Audit and logs
 
-One JSON object per verified statement, per sink, **hash-chained exactly like
-the server's audit log** (same `Audit_chain` code, same sink implementations):
+One JSON object per verified statement and per execution, per sink,
+**hash-chained exactly like the server's audit log** (same `Audit_chain` code,
+same sink implementations):
 
 ```json
 {"ts":"2026-11-07T22:45:17.297Z","event":"statement","session":"49fd05aacd53",
@@ -257,6 +259,33 @@ record without `hash`; the first record of a chain has `prev_hash` = 64 zeros.
 `bind_params` lists parameter numbers only, never values. Proxy-level denials
 (`bind`, `parse`, `function_call` events) carry `reasons` and `message`.
 Verify any of these outputs with [`haltsql audit verify`](audit-verify.md).
+
+**What is recorded when.**
+
+| Event | Written | Meaning |
+|---|---|---|
+| `statement`, `protocol: simple` | per `Query` | The verdict, and (when allowed) the one execution of that statement. |
+| `statement`, `protocol: extended` | per `Parse` | The verdict of a prepared statement. Preparing is not executing. |
+| `execute` | per `Execute` the proxy forwards | One execution of a prepared statement. A statement prepared once and run 1000 times leaves one `statement` record and 1000 `execute` records. |
+| `bind`, `parse`, `function_call` | per proxy-level denial | See above. |
+
+```json
+{"ts":"2026-11-07T22:45:17.301Z","event":"execute","session":"49fd05aacd53",
+ "user":"agent","policy":"proxy-test","policy_version":"sha256:...",
+ "protocol":"extended","portal":"","statement":"s1","sql_sha256":"...",
+ "fingerprint":"...","max_rows":0,"prev_hash":"<64 hex>","hash":"<64 hex>"}
+```
+
+`statement`, `sql_sha256` and `fingerprint` are those of the `statement`
+record of the same `session` that prepared it (join on `session` and
+`sql_sha256`). `portal` is the portal name (`""` for the unnamed portal) and
+`max_rows` the row limit of the Execute message (0: all rows). Parameter
+values are never recorded, and there is no option to record them. `statement`,
+`sql_sha256` and `fingerprint` are `null` for a portal the proxy did not see
+being bound, which is a cursor opened with SQL `DECLARE`. An `execute` record
+means the Execute was forwarded: like a `statement` record, it does not say
+whether the database then raised an error. Messages the proxy discards after
+a denial (up to `Sync`) leave no `execute` record.
 
 ### Sinks
 

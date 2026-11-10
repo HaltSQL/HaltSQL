@@ -36,6 +36,12 @@ exception Fatal of string * string
 exception Done
 (** Orderly end of the session (Terminate, or upstream ended it). *)
 
+type portal = { p_stmt : string; p_verdict : Haltsql.Verdict.t; p_seg : int }
+(** What a forwarded Bind created: the statement behind a portal, and the segment the Bind
+    was sent in. Only used to describe Execute in the audit log. *)
+
+let max_portals = 10_000
+
 type s = {
   sh : shared;
   id : string;
@@ -46,6 +52,7 @@ type s = {
   mutable binding : binding option;
   mutable upstream : Io.t option;
   st : Stmt_state.t;
+  portals : (string, portal) Hashtbl.t;
   mutable discarding : bool;
       (** after an injected extended-protocol denial, until Sync *)
   changed : unit Lwt_condition.t;
@@ -167,6 +174,37 @@ let audit_local s ~event ?stmt (d : Enforce.deny) =
         ("message", `String d.message);
       ]
     @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+
+(* One record per forwarded Execute: a statement prepared once and run N times leaves
+   one "statement" record (its verdict, at Parse) and N of these. Parameter values are
+   never recorded. A portal the proxy did not see being bound (a cursor opened by SQL)
+   has no statement to name. *)
+let audit_execute s ~portal ~max_rows =
+  let b = binding s in
+  let known = Hashtbl.find_opt s.portals portal in
+  let str = function Some x -> `String x | None -> `Null in
+  let of_portal f = Option.map f known in
+  audited s
+    (audit_base s ~event:"execute"
+    @ [
+        ( "policy_version",
+          `String
+            (match known with
+            | Some p -> p.p_verdict.policy_version
+            | None -> b.policy.version) );
+        ("protocol", `String "extended");
+        ("portal", `String portal);
+        ("statement", str (of_portal (fun p -> p.p_stmt)));
+        ("sql_sha256", str (of_portal (fun p -> p.p_verdict.sql_sha256)));
+        ("fingerprint", str (Option.bind known (fun p -> p.p_verdict.fingerprint)));
+        ("max_rows", `Int max_rows);
+      ])
+
+let note_portal s ~portal ~stmt v =
+  if Hashtbl.length s.portals >= max_portals && not (Hashtbl.mem s.portals portal) then
+    Hashtbl.reset s.portals;
+  Hashtbl.replace s.portals portal
+    { p_stmt = stmt; p_verdict = v; p_seg = Stmt_state.current_segment s.st }
 
 (* A proxy-level denial, replaced by the audit refusal if it cannot be audited. *)
 let local_denial s ~event ?stmt d =
@@ -590,6 +628,7 @@ let handle_client_message s tag payload =
             match Enforce.bind ~sqlstate:(sqlstate s) v b with
             | Ok b' ->
                 Stmt_state.touch s.st;
+                note_portal s ~portal:b.portal ~stmt:b.bstmt v;
                 forward s
                   (if v.bind_params = [] then Wire.frame 'B' payload
                    else Wire.encode_bind b')
@@ -609,18 +648,29 @@ let handle_client_message s tag payload =
         ignore (Wire.decode_describe_or_close payload);
         Stmt_state.touch s.st;
         forward s (Wire.frame tag payload))
-  | 'E' ->
+  | 'E' -> (
       if s.discarding then Lwt.return_unit
-      else (
-        ignore (Wire.decode_execute payload);
-        Stmt_state.touch s.st;
-        forward s (Wire.frame tag payload))
+      else
+        let portal, max_rows = Wire.decode_execute payload in
+        let* a = audit_execute s ~portal ~max_rows in
+        match a with
+        | Error refusal -> deny_extended s refusal
+        | Ok () ->
+            Stmt_state.touch s.st;
+            forward s (Wire.frame tag payload))
   | 'C' ->
       if s.discarding then Lwt.return_unit
       else (
         (match Wire.decode_describe_or_close payload with
-        | 'S', name -> Stmt_state.note_close_statement s.st name
-        | _ -> Stmt_state.note_close_portal s.st);
+        | 'S', name ->
+            Stmt_state.note_close_statement s.st name;
+            (* closing a statement closes the portals made from it *)
+            Hashtbl.filter_map_inplace
+              (fun _ p -> if p.p_stmt = name then None else Some p)
+              s.portals
+        | _, name ->
+            Stmt_state.note_close_portal s.st;
+            Hashtbl.remove s.portals name);
         forward s (Wire.frame tag payload))
   | 'H' ->
       if payload <> "" then Lwt.fail (Wire.Malformed "Flush has a body")
@@ -751,8 +801,17 @@ let rec upstream_loop s up =
         | Some ("FATAL" | "PANIC") -> Lwt.fail Done
         | _ -> Lwt.return_unit)
     | 'Z' ->
+        let segment = Stmt_state.head_segment s.st in
         Stmt_state.on_ready s.st;
         if String.length payload = 1 then s.tx_status <- payload.[0];
+        (* No portal outlives its transaction: outside one, forget those bound up to
+           the segment that just finished (later ones may already be pipelined). *)
+        (match segment with
+        | Some id when s.tx_status = 'I' && Hashtbl.length s.portals > 0 ->
+            Hashtbl.filter_map_inplace
+              (fun _ p -> if p.p_seg <= id then None else Some p)
+              s.portals
+        | _ -> ());
         let* () = raw () in
         if s.ending <> None && at_boundary s then wake s.boundary;
         Lwt.return_unit
@@ -958,6 +1017,7 @@ let handle ?(on_authenticated = fun (_ : live) -> ()) sh ~id fd =
       binding = None;
       upstream = None;
       st = Stmt_state.create ();
+      portals = Hashtbl.create 8;
       discarding = false;
       changed = Lwt_condition.create ();
       finished = false;

@@ -60,6 +60,14 @@ val touch : t -> unit
 val in_flight : t -> int
 (** Segments awaiting ReadyForQuery. *)
 
+val current_segment : t -> int
+(** Id of the open segment (opened if needed, so this can raise {!Overflow}). Ids grow in
+    the order segments are sent. *)
+
+val head_segment : t -> int option
+(** Id of the oldest segment still awaiting ReadyForQuery: the one the upstream's next
+    responses belong to. *)
+
 (** {1 Server side (called as responses arrive)} *)
 
 val on_parse_complete : t -> (unit, string) result

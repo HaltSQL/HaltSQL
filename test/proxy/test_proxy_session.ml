@@ -24,6 +24,7 @@ let verifier =
 
 let q_ok = "SELECT code FROM app.currencies ORDER BY code LIMIT 10"
 let q_denied = "SELECT email FROM app.users LIMIT 1"
+let q_tenant = "SELECT id FROM app.orders WHERE tenant_id = $1 ORDER BY id LIMIT 10"
 
 let user_json ?(name = "agent") ?(policy = "proxy-test") ?(tenant = "acme")
     ?(verifier = Lazy.force verifier) () : Yojson.Safe.t =
@@ -151,7 +152,12 @@ let bind ?(portal = "") ?(stmt = "") params =
       result_formats = [];
     }
 
-let execute ?(portal = "") () = Wire.frame 'E' (portal ^ "\000\000\000\000\000")
+let execute ?(portal = "") ?(max_rows = 0) () =
+  let b = Buffer.create 16 in
+  Wire.add_cstring b portal;
+  Wire.add_int32 b max_rows;
+  Wire.frame 'E' (Buffer.contents b)
+
 let sync = Wire.frame 'S' ""
 
 (* ---------------------------------------------------------------- env *)
@@ -497,6 +503,114 @@ let test_audit_fail_closed () =
                   (Fake_pg.received e.pg)));
           Io.close io))
 
+(* ------------------------------------------------------ execute audit *)
+
+let execute_records e =
+  List.map
+    (fun r ->
+      Printf.sprintf "%s|%s|%s" (jstr "portal" r) (jstr "statement" r) (jstr "max_rows" r))
+    (events e "execute")
+
+(* Prepared once, executed five times: one statement record, five execute records. The
+   parameter the client sent is in none of them. *)
+let test_execute_audited () =
+  with_env (fun e ->
+      let* io = login_ok e.port in
+      let* () = Io.write io (parse ~name:"s1" q_tenant ^ sync) in
+      let* ms = read_until_ready io in
+      check_str "prepared" "1Z" (tags ms);
+      let secret = "CLIENT-SUPPLIED-PARAMETER-9c1f" in
+      let rec run i =
+        if i = 5 then Lwt.return_unit
+        else
+          let* () = Io.write io (bind ~stmt:"s1" [ secret ] ^ execute () ^ sync) in
+          let* ms = read_until_ready io in
+          check_str "executed" "2CZ" (tags ms);
+          run (i + 1)
+      in
+      let* () = run 0 in
+      let stmts = events e "statement" and execs = events e "execute" in
+      check_int "one statement record" 1 (List.length stmts);
+      check_int "one execute record per Execute" 5 (List.length execs);
+      check_int "and five Execute messages upstream" 5 (Fake_pg.count_tag e.pg 'E');
+      let stmt = List.hd stmts in
+      List.iter
+        (fun r ->
+          check_str "names the statement" "s1" (jstr "statement" r);
+          check_str "same SQL hash as its statement record" (jstr "sql_sha256" stmt)
+            (jstr "sql_sha256" r);
+          check_str "same fingerprint" (jstr "fingerprint" stmt) (jstr "fingerprint" r);
+          check_str "policy version" (jstr "policy_version" stmt)
+            (jstr "policy_version" r);
+          check_str "session" (jstr "session" stmt) (jstr "session" r);
+          check_str "user" "agent" (jstr "user" r);
+          check_bool "no values field" true (jfield "params" r = None))
+        execs;
+      let raw = String.concat "\n" (audit_lines e) in
+      check_bool "the client's parameter is not in the audit log" false
+        (contains raw secret);
+      check_bool "nor the bound tenant value" false (contains raw "acme");
+      chain_ok e 6;
+      Io.close io)
+
+(* Named portals, row limits, several Executes of one portal, a portal that was closed,
+   and a portal the proxy never saw being bound. *)
+let test_execute_portals () =
+  with_env (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io "BEGIN" in
+      check_str "BEGIN" "CZ" (tags ms);
+      let close_portal name = Wire.frame 'C' ("P" ^ name ^ "\000") in
+      let* () =
+        Io.write io
+          (parse ~name:"a" q_ok ^ parse ~name:"b" q_ok
+          ^ bind ~portal:"pa" ~stmt:"a" []
+          ^ bind ~portal:"pb" ~stmt:"b" []
+          ^ execute ~portal:"pa" ~max_rows:2 ()
+          ^ execute ~portal:"pb" ()
+          ^ execute ~portal:"pa" ~max_rows:2 ()
+          ^ close_portal "pb"
+          ^ execute ~portal:"cursor_from_sql" ()
+          ^ sync)
+      in
+      let* ms = read_until_ready io in
+      check_str "relayed" "1122CCC3CZ" (tags ms);
+      Alcotest.(check (list string))
+        "records, in order"
+        [ "pa|a|2"; "pb|b|0"; "pa|a|2"; "cursor_from_sql|null|0" ]
+        (execute_records e);
+      (* the transaction ends: its portals are gone, a reused name is not mislabelled *)
+      let* ms = simple io "COMMIT" in
+      check_str "COMMIT" "CZ" (tags ms);
+      let* () = Io.write io (execute ~portal:"pa" () ^ sync) in
+      let* _ = read_until_ready io in
+      Alcotest.(check (list string))
+        "a portal does not outlive its transaction" [ "pa|null|0" ]
+        (List.filteri (fun i _ -> i >= 4) (execute_records e));
+      Io.close io)
+
+(* No audit record, no Execute: the refusal reaches the client and the Execute never
+   reaches the database. *)
+let test_execute_fail_closed () =
+  let fifo = fresh_audit_file () in
+  Unix.mkfifo fifo 0o600;
+  let reader = Unix.openfile fifo [ Unix.O_RDONLY; Unix.O_NONBLOCK ] 0 in
+  Fun.protect
+    ~finally:(fun () -> try Unix.close reader with _ -> ())
+    (fun () ->
+      with_env ~audit_file:fifo (fun e ->
+          let* io = login_ok e.port in
+          let* () = Io.write io (parse ~name:"s1" q_ok ^ sync) in
+          let* ms = read_until_ready io in
+          check_str "prepared while the sink works" "1Z" (tags ms);
+          Unix.close reader;
+          let* () = Io.write io (bind ~stmt:"s1" [] ^ execute () ^ sync) in
+          let* ms = read_until_ready io in
+          check_str "Bind passes, Execute is refused" "2EZ" (tags ms);
+          check_str "io_error" "58030" (sqlstate ms);
+          check_int "no Execute reached the upstream" 0 (Fake_pg.count_tag e.pg 'E');
+          Io.close io))
+
 (* ------------------------------------------------- lifetime and reload *)
 
 let limits kvs ~up_port ~audit_file = config ~up_port ~audit_file ~limits:kvs ()
@@ -747,6 +861,14 @@ let () =
             test_concurrent_sessions;
           Alcotest.test_case "audit failure still refuses the statement" `Quick
             test_audit_fail_closed;
+        ] );
+      ( "execute audit",
+        [
+          Alcotest.test_case "prepared once, run N times: N records, no values" `Quick
+            test_execute_audited;
+          Alcotest.test_case "portals" `Quick test_execute_portals;
+          Alcotest.test_case "unaudited Execute is refused" `Quick
+            test_execute_fail_closed;
         ] );
       ( "lifetime",
         [

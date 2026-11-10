@@ -10,6 +10,15 @@ even before 1.0.
 
 ## [Unreleased]
 
+### Added
+- **haltsql-proxy audits executions, not only verdicts.** Every forwarded
+  extended-protocol `Execute` writes an `execute` audit record (session,
+  portal, statement name, `sql_sha256`, fingerprint, policy version, row
+  limit; never parameter values), so a statement prepared once and run N
+  times shows N records. Under `fail_closed` an Execute whose record cannot be
+  written is refused (58030). Audit consumers that count records per
+  statement should filter on `event`.
+
 ### Changed
 - **haltsql-proxy: policy and credential changes reach live sessions.** After
   a reload, sessions whose user, SCRAM verifier, client CA, policy, context or
