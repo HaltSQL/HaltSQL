@@ -61,7 +61,7 @@ let cases =
       "SELECT id FROM orders WHERE $1::float8 IS NOT NULL AND tenant_id = $1 LIMIT 10"
       [ E_PARAM_UNBOUND ];
     t "saas.yaml" "tenant placeholder compared to another value"
-      "SELECT id FROM orders WHERE $1 = 'x'::name AND tenant_id = $1 LIMIT 10"
+      "SELECT id FROM orders WHERE $1 = 'x'::text AND tenant_id = $1 LIMIT 10"
       [ E_PARAM_UNBOUND ];
     t "saas.yaml" "tenant placeholder in the select list"
       "SELECT id, $1::float8 AS x FROM orders WHERE tenant_id = $1 LIMIT 10"

@@ -89,6 +89,8 @@ let end_segment t =
 
 let in_flight t = Queue.length t.segs
 let head_id t = match Queue.peek_opt t.segs with Some s -> Some s.id | None -> None
+let current_segment t = (current t).id
+let head_segment = head_id
 
 let pop_op t =
   match (Queue.peek_opt t.ops, head_id t) with

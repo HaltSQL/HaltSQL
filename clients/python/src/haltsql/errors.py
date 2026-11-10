@@ -73,15 +73,22 @@ class QueryDenied(HaltSQLError):
 
     def __init__(self, verdict: "Verdict") -> None:
         self.verdict = verdict
-        parts = [
-            f"{r.code}: {r.hint or r.message}" for r in verdict.reasons
-        ] or ["query denied"]
-        super().__init__("; ".join(parts))
+        parts = [f"{r.code}: {r.hint or r.message}" for r in verdict.reasons]
+        if not parts:
+            # A shadow-mode verdict: allowed by the server, refused by the guard.
+            parts = [
+                f"{r.code}: {r.hint or r.message}"
+                for r in getattr(verdict, "shadow_reasons", ())
+            ]
+            if parts:
+                parts.insert(0, "the policy is in shadow mode and would deny this query")
+        super().__init__("; ".join(parts or ["query denied"]))
 
     @property
     def reasons(self):  # type: ignore[no-untyped-def]
-        """Shortcut for ``verdict.reasons``."""
-        return self.verdict.reasons
+        """The reasons for the denial: ``verdict.reasons``, or for a shadow-mode
+        verdict the guard refused to run, ``verdict.shadow_reasons``."""
+        return self.verdict.reasons or getattr(self.verdict, "shadow_reasons", ())
 
 
 class GuardError(HaltSQLError):

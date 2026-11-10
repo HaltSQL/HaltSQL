@@ -3,7 +3,13 @@
 
 open Haltsql_core
 
-type token = { token_name : string; token_sha256 : string; token_policy : string }
+type token = {
+  token_name : string;
+  token_sha256 : string;
+  token_policy : string;
+  token_context : (Context.t * string list) option;
+}
+
 type audit_sink = Audit_stdout | Audit_file of string
 type pem = Pem_path of string | Pem_inline of string
 type client_auth = Client_auth_none | Client_auth_optional | Client_auth_required
@@ -778,27 +784,6 @@ let listen_j ctx path j =
       None
   | None -> None
 
-let token_j ctx path j =
-  match Dec.obj ctx path ~keys:[ "name"; "token_sha256"; "policy" ] j with
-  | None -> None
-  | Some kvs -> (
-      let name = Dec.req ctx kvs path "name" (Dec.non_empty_string ctx) in
-      let hash =
-        Dec.req ctx kvs path "token_sha256" (fun p v ->
-            match Dec.string ctx p v with
-            | Some h when is_sha256_hex h -> Some h
-            | Some _ ->
-                Dec.error ctx p
-                  "must be the SHA-256 of the token as 64 lower-case hex characters";
-                None
-            | None -> None)
-      in
-      let policy = Dec.req ctx kvs path "policy" (Dec.non_empty_string ctx) in
-      match (name, hash, policy) with
-      | Some token_name, Some token_sha256, Some token_policy ->
-          Some { token_name; token_sha256; token_policy }
-      | _ -> None)
-
 (* server.tls -> (legacy cert, legacy key, typed tls) *)
 let tls_j ctx ~base_dir p v =
   match
@@ -1227,6 +1212,59 @@ let mtls_identity_j ctx p v =
               mtls_context = Context.make context;
               mtls_request_context_fields = rcf;
             }
+      | _ -> None)
+
+(* server.auth.tokens[]. [context] / [request_context_fields] bind the token to an
+   authenticated context, exactly as for an mTLS identity; without either key the request
+   body supplies the whole context (the token then authenticates the caller, not a
+   tenant). *)
+let token_j ctx path j =
+  match
+    Dec.obj ctx path
+      ~keys:[ "name"; "token_sha256"; "policy"; "context"; "request_context_fields" ]
+      j
+  with
+  | None -> None
+  | Some kvs -> (
+      let name = Dec.req ctx kvs path "name" (Dec.non_empty_string ctx) in
+      let hash =
+        Dec.req ctx kvs path "token_sha256" (fun p v ->
+            match Dec.string ctx p v with
+            | Some h when is_sha256_hex h -> Some h
+            | Some _ ->
+                Dec.error ctx p
+                  "must be the SHA-256 of the token as 64 lower-case hex characters";
+                None
+            | None -> None)
+      in
+      let policy = Dec.req ctx kvs path "policy" (Dec.non_empty_string ctx) in
+      let context =
+        Dec.opt kvs path "context" (fun p v ->
+            Option.map
+              (List.filter_map (fun (k, cv) ->
+                   if check_ident_key ctx p k then
+                     Option.map (fun x -> (k, x)) (context_value_j ctx (Lpath.key p k) cv)
+                   else None))
+              (Dec.map ctx p v))
+      in
+      let rcf =
+        Dec.opt kvs path "request_context_fields"
+          (unique_list ctx ~what:"context field" (ident_j ctx))
+      in
+      let token_context =
+        match (context, rcf) with
+        | None, None -> None
+        | _ ->
+            let context = Option.value ~default:[] context in
+            let rcf = Option.value ~default:[] rcf in
+            check_collisions ctx
+              (Lpath.key path "request_context_fields")
+              ~what:"the static context" rcf (List.map fst context);
+            Some (Context.make context, rcf)
+      in
+      match (name, hash, policy) with
+      | Some token_name, Some token_sha256, Some token_policy ->
+          Some { token_name; token_sha256; token_policy; token_context }
       | _ -> None)
 
 (* RFC 7230 token characters for header names. *)
@@ -3614,11 +3652,19 @@ let to_json_redacted (c : t) : Yojson.Safe.t =
                       (List.map
                          (fun t ->
                            `Assoc
-                             [
-                               ("name", `String t.token_name);
-                               ("token_sha256", redacted);
-                               ("policy", `String t.token_policy);
-                             ])
+                             ([
+                                ("name", `String t.token_name);
+                                ("token_sha256", redacted);
+                                ("policy", `String t.token_policy);
+                              ]
+                             @
+                             match t.token_context with
+                             | None -> []
+                             | Some (c, rcf) ->
+                                 [
+                                   ("context", Context.to_json c);
+                                   ("request_context_fields", strs rcf);
+                                 ]))
                          c.tokens) );
                   ("allow_unauthenticated", `Bool c.allow_unauthenticated);
                   ( "oidc",

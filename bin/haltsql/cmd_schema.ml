@@ -282,4 +282,124 @@ let import_cmd =
       $ output_arg ~doc:"Write the manifest to FILE (default: stdout)."
       $ tags $ terms $ json_arg)
 
-let cmds = [ pull_cmd; import_cmd ]
+(* --------------------------------------------------------------- check *)
+
+let check ~policy ~dsn ~snapshot ~timeout ~strict ~json =
+  Common.run (fun () ->
+      let p = Common.load_policy policy in
+      let schemas =
+        List.sort_uniq String.compare
+          (List.map (fun (t : Haltsql.Policy.table) -> t.schema) p.tables
+          @ List.filter (fun s -> s <> "pg_catalog") p.search_path)
+      in
+      let snap, source =
+        match (snapshot, dsn) with
+        | Some _, Some _ -> Common.usage "--snapshot and --dsn are mutually exclusive"
+        | Some file, None -> (
+            match Ct.Snapshot.of_file file with
+            | Ok s -> (s, file)
+            | Error e -> Common.usage "cannot load snapshot %s: %s" file e)
+        | None, Some d -> (
+            let dsn =
+              match Ct.Pg_dsn.parse d with
+              | Ok d -> d
+              | Error e -> Common.usage "invalid DSN: %s" e
+            in
+            if timeout <= 0. || timeout > 3600. then
+              Common.usage "--timeout must be in (0, 3600]";
+            match Ct.Schema_pull.pull ~timeout ~schemas dsn with
+            | Ok (s, _) -> (s, Ct.Pg_dsn.redacted dsn)
+            | Error e ->
+                Common.usage "schema pull from %s failed: %s" (Ct.Pg_dsn.redacted dsn) e)
+        | None, None ->
+            Common.usage "one of --dsn (or HALTSQL_DSN) and --snapshot is required"
+      in
+      let findings = Ct.Policy_drift.check p snap in
+      let count sev =
+        List.length
+          (List.filter (fun (f : Ct.Policy_drift.finding) -> f.severity = sev) findings)
+      in
+      let errors = count Ct.Policy_drift.Error
+      and warnings = count Ct.Policy_drift.Warning in
+      if json then
+        Common.print_json
+          (`Assoc
+             [
+               ("policy", `String p.name);
+               ("policy_version", `String p.version);
+               ("source", `String source);
+               ("errors", `Int errors);
+               ("warnings", `Int warnings);
+               ("findings", Ct.Policy_drift.to_json findings);
+             ])
+      else begin
+        Printf.printf "policy %s (%s) against %s\n" p.name p.version source;
+        List.iter
+          (fun (f : Ct.Policy_drift.finding) ->
+            Printf.printf "%s: %s: %s\n"
+              (Ct.Policy_drift.severity_to_string f.severity)
+              f.code f.message)
+          findings;
+        Printf.printf "%d error(s), %d warning(s)\n" errors warnings
+      end;
+      if errors > 0 || (strict && warnings > 0) then Common.exit_denied else 0)
+
+let check_cmd =
+  let policy =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "p"; "policy" ] ~docv:"FILE" ~doc:"The policy to check.")
+  in
+  let dsn =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "dsn" ] ~docv:"DSN" ~env:(Cmd.Env.info "HALTSQL_DSN")
+          ~doc:"PostgreSQL connection string (see $(b,haltsql schema pull)).")
+  in
+  let snapshot =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "snapshot" ] ~docv:"FILE"
+          ~doc:
+            "Compare against a snapshot written by $(b,haltsql schema pull) instead of \
+             connecting.")
+  in
+  let timeout =
+    Arg.(
+      value & opt float 10.
+      & info [ "timeout" ] ~docv:"SECONDS" ~doc:"Connection timeout in seconds.")
+  in
+  let strict =
+    Arg.(value & flag & info [ "strict" ] ~doc:"Exit 1 on warnings as well as errors.")
+  in
+  let doc = "Check that a policy still describes the database." in
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "HaltSQL verifies SQL against the schema the policy describes, never against the \
+         database. This command finds where the two disagree: policy tables or columns \
+         that do not exist, a $(b,catalog:) snapshot that is out of date (a new column \
+         would be read by $(b,SELECT *) unchecked), a relation in an earlier search_path \
+         schema that captures an unqualified table name, and policy tables that are \
+         views (their definition is invisible to HaltSQL). Run it in CI after every \
+         migration and before every policy release. Exit status 1 when there are errors.";
+    ]
+    @ man_examples
+        [
+          "  PGPASSWORD=... haltsql schema check -p policy.yaml --dsn \
+           postgres://ro@db:5432/app";
+          "  haltsql schema check -p policy.yaml --snapshot catalog.json --strict --json";
+        ]
+  in
+  Cmd.v
+    (Cmd.info "check" ~doc ~man ~exits)
+    Term.(
+      const (fun policy dsn snapshot timeout strict json ->
+          check ~policy ~dsn ~snapshot ~timeout ~strict ~json)
+      $ policy $ dsn $ snapshot $ timeout $ strict $ json_arg)
+
+let cmds = [ pull_cmd; check_cmd; import_cmd ]

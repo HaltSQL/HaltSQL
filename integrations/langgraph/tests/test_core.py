@@ -3,6 +3,7 @@ haltsql-server, real lab Postgres."""
 
 from __future__ import annotations
 
+import re
 import json
 import os
 
@@ -121,12 +122,25 @@ def test_row_cap_timeout_and_settings(local_verifier, connections):
 def test_database_error_is_reported_after_verification(local_verifier, pg_dsn):
     import psycopg
 
-    def broken_search_path():
-        return psycopg.connect(pg_dsn.replace("options=-csearch_path=app", "options=-csearch_path=public"))
+    def database_without_the_tables():
+        # The lab's own "postgres" database has no app schema.
+        return psycopg.connect(re.sub(r"dbname=\S+", "dbname=postgres", pg_dsn))
 
-    r = core.HaltSQLToolRunner(local_verifier, broken_search_path).run(OK_SQL, ACME)
+    r = core.HaltSQLToolRunner(local_verifier, database_without_the_tables).run(OK_SQL, ACME)
     assert r["status"] == "error" and r["executed"] is True
     assert r["message"].startswith("Database error: UndefinedTable")
+
+
+@pytest.mark.integration
+def test_session_search_path_cannot_redirect_the_query(local_verifier, pg_dsn):
+    """The guard pins the policy's search_path, whatever the session default is."""
+    import psycopg
+
+    def other_search_path():
+        return psycopg.connect(pg_dsn.replace("options=-csearch_path=app", "options=-csearch_path=public"))
+
+    r = core.HaltSQLToolRunner(local_verifier, other_search_path).run(OK_SQL, ACME)
+    assert r["status"] == "ok" and r["executed"] is True
 
 
 @pytest.mark.integration

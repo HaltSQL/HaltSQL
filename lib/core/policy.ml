@@ -104,7 +104,12 @@ type t = {
   functions : string list;
       (** allowed function names (lower-case, unqualified or ["schema.fn"]) *)
   operators : string list;  (** allowed operator symbols *)
-  deny_casts : string list;  (** denied cast target types (lower-case, unqualified) *)
+  casts : string list;
+      (** allowed cast target types (lower-case; unqualified built-in name or
+          ["schema.type"]). A cast to any other type is denied. *)
+  deny_casts : string list;
+      (** cast target types denied even when [casts] lists them (lower-case, unqualified)
+      *)
   allow_explain : bool;  (** plain EXPLAIN (never ANALYZE) of an allowed statement *)
   mode : mode;
   catalog : Catalog.t;

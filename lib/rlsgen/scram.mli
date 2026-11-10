@@ -1,7 +1,8 @@
 (** SCRAM-SHA-256 client (RFC 5802 / RFC 7677) as used by PostgreSQL authentication,
     without channel binding (gs2 header ["n,,"]).
 
-    Pure: the caller supplies the client nonce and drives the message exchange. *)
+    Pure: the caller supplies the client nonce and drives the message exchange. The
+    protocol is {!Haltsql_scram}. *)
 
 type state
 
@@ -12,8 +13,8 @@ val client_first : user:string -> nonce:string -> state * string
 
 val client_final :
   state -> password:string -> server_first:string -> (state * string, string) result
-(** Validates server-first-message (the server nonce must extend ours, iteration count
-    sane) and returns client-final-message with the proof. *)
+(** Validates server-first-message (the server nonce must extend ours, the iteration count
+    must be within 4096..600000) and returns client-final-message with the proof. *)
 
 val verify_server_final : state -> string -> (unit, string) result
 (** Checks the server signature in server-final-message ([v=...]) in constant time. Must

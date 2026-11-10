@@ -20,14 +20,22 @@ type t = {
 val min_rsa_bits : int
 (** 2048. *)
 
+val max_rsa_bits : int
+(** 8192: larger moduli are refused, so a JWKS cannot make every verification arbitrarily
+    slow. *)
+
 val of_json : Yojson.Safe.t -> (t, string) result
 (** Parses one public JWK. Rejects symmetric keys, keys carrying private members ([d],
-    [p], [q], ...), unsupported key types or curves and malformed coordinates. *)
+    [p], [q], ...), unsupported key types or curves, malformed coordinates, objects with
+    duplicate members, a [key_ops] that is not an array of strings containing ["verify"],
+    RSA moduli outside {!min_rsa_bits}..{!max_rsa_bits}, RSA public exponents that are
+    even or below 3, and Ed25519 points of small order. Never raises. *)
 
 val set_of_json : Yojson.Safe.t -> (t list * string list, string) result
 (** Parses a JWK Set ([{"keys":[...]}]). Unusable entries are skipped; their problems are
     returned as the second component (no key material in the messages). [Error] only when
-    the document is not a JWK Set. *)
+    the document is not a JWK Set (not an object, duplicate members, no ["keys"] array).
+    Entries keep the order of the document. *)
 
 val set_of_string : string -> (t list * string list, string) result
 (** [set_of_json] on JSON text. *)

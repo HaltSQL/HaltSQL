@@ -4,7 +4,13 @@
 
 (test
  (name test_golden)
+ (modules test_golden)
  (libraries haltsql alcotest yojson)
  (deps
   (source_tree ../fixtures)
   (source_tree expected)))
+
+(test
+ (name test_fail_closed)
+ (modules test_fail_closed)
+ (libraries haltsql alcotest))

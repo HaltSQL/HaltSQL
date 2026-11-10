@@ -259,8 +259,10 @@ Alert on any increase of `haltsql_reasons_total{code="E_INTERNAL"}`,
 - **Audit:** each request produces an audit event with the caller (token
   name, `oidc:<provider>` or `mtls:<subject>`), `caller_type` (`token`,
   `oidc`, `mtls`, `anonymous`), `subject` (OIDC `sub`, SPIFFE ID or
-  certificate CN; `null` for static tokens), policy version, fingerprint, SQL
-  hash, verdict, and reason codes. Raw tokens are never logged. Raw SQL is
+  certificate CN; `null` for static tokens), the `context` the statement was
+  verified under and its `context_source` (`authenticated` when the caller's
+  identity supplied it, `request` when the body did), policy version,
+  fingerprint, SQL hash, verdict, and reason codes. Raw tokens are never logged. Raw SQL is
   logged only if `audit.log_raw_sql` is enabled.
 - **Audit is fail-closed:** if an audit sink cannot be written, `/v1/verify`
   returns `503 AUDIT_UNAVAILABLE` instead of a verdict.

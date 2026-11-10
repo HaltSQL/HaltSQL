@@ -22,6 +22,7 @@ type upstream = {
   tls_mode : upstream_tls_mode;
   tls_ca : X509.Certificate.t list;
   connect_timeout : float;
+  allow_insecure_auth : bool;
 }
 
 type binding = { policy_name : string; policy : Policy.t; context : Context.t }
@@ -35,6 +36,10 @@ type limits = {
   max_message_bytes : int;
   idle_timeout : float;
   auth_timeout : float;
+  worker_threads : int;
+  max_session_lifetime : float;
+  termination_grace : float;
+  max_unauthenticated_per_ip : int;
 }
 
 type audit_sink = Audit_stdout | Audit_file of string | Audit_none
@@ -46,7 +51,7 @@ type audit_sink_spec = {
   max_buffer_records : int;
 }
 
-type reload = { watch : bool; poll_interval : float }
+type reload = { watch : bool; poll_interval : float; terminate_changed_sessions : bool }
 
 type t = {
   listen_host : string;
@@ -423,7 +428,14 @@ let upstream_j ctx path j =
     obj ctx path
       ~keys:
         [
-          "host"; "port"; "database"; "user"; "password"; "tls"; "connect_timeout_seconds";
+          "host";
+          "port";
+          "database";
+          "user";
+          "password";
+          "tls";
+          "connect_timeout_seconds";
+          "allow_insecure_auth";
         ]
       j
   with
@@ -455,6 +467,10 @@ let upstream_j ctx path j =
       let connect_timeout =
         optional kvs "connect_timeout_seconds" ~default:(Some 10.) path (fun p j ->
             number ctx p ~min:0.1 ~max:300. j)
+      in
+      let allow_insecure_auth =
+        optional kvs "allow_insecure_auth" ~default:(Some false) path (fun p j ->
+            bool ctx p j)
       in
       let verify_full = ref false in
       let tls =
@@ -500,15 +516,29 @@ let upstream_j ctx path j =
                 a valid DNS host name (letters, digits, '-' and '.')"
                h)
       | _ -> ());
-      match (host, port, database, user, password, connect_timeout, tls) with
+      match
+        (host, port, database, user, password, connect_timeout, tls, allow_insecure_auth)
+      with
       | ( Some host,
           Some port,
           Some database,
           Some user,
           Some password,
           Some connect_timeout,
-          Some (tls_mode, tls_ca) ) ->
-          Some { host; port; database; user; password; tls_mode; tls_ca; connect_timeout }
+          Some (tls_mode, tls_ca),
+          Some allow_insecure_auth ) ->
+          Some
+            {
+              host;
+              port;
+              database;
+              user;
+              password;
+              tls_mode;
+              tls_ca;
+              connect_timeout;
+              allow_insecure_auth;
+            }
       | _ -> None)
 
 let policies_j ctx path j =
@@ -1055,6 +1085,10 @@ let decode ctx (j : Yojson.Safe.t) =
                  max_message_bytes = 1_048_576;
                  idle_timeout = 0.;
                  auth_timeout = 30.;
+                 worker_threads = Offload.default_threads ();
+                 max_session_lifetime = 3600.;
+                 termination_grace = 30.;
+                 max_unauthenticated_per_ip = 20;
                })
           ""
           (fun p j ->
@@ -1066,6 +1100,10 @@ let decode ctx (j : Yojson.Safe.t) =
                     "max_message_bytes";
                     "idle_timeout_seconds";
                     "auth_timeout_seconds";
+                    "worker_threads";
+                    "max_session_lifetime_seconds";
+                    "termination_grace_seconds";
+                    "max_unauthenticated_per_ip";
                   ]
                 j
             with
@@ -1087,13 +1125,44 @@ let decode ctx (j : Yojson.Safe.t) =
                   optional lk "auth_timeout_seconds" ~default:(Some 30.) p (fun p j ->
                       number ctx p ~min:1. ~max:600. j)
                 in
-                match (mc, mm, it, at) with
+                let wt =
+                  optional lk "worker_threads"
+                    ~default:(Some (Offload.default_threads ()))
+                    p
+                    (fun p j -> int ctx p ~min:1 ~max:64 j)
+                in
+                let ml =
+                  optional lk "max_session_lifetime_seconds" ~default:(Some 3600.) p
+                    (fun p j -> number ctx p ~min:0. ~max:2_592_000. j)
+                in
+                let tg =
+                  optional lk "termination_grace_seconds" ~default:(Some 30.) p
+                    (fun p j -> number ctx p ~min:0. ~max:3600. j)
+                in
+                let mu =
+                  optional lk "max_unauthenticated_per_ip" ~default:(Some 20) p
+                    (fun p j -> int ctx p ~min:0 ~max:100_000 j)
+                in
+                match (mc, mm, it, at, wt, ml, tg, mu) with
                 | ( Some max_connections,
                     Some max_message_bytes,
                     Some idle_timeout,
-                    Some auth_timeout ) ->
+                    Some auth_timeout,
+                    Some worker_threads,
+                    Some max_session_lifetime,
+                    Some termination_grace,
+                    Some max_unauthenticated_per_ip ) ->
                     Some
-                      { max_connections; max_message_bytes; idle_timeout; auth_timeout }
+                      {
+                        max_connections;
+                        max_message_bytes;
+                        idle_timeout;
+                        auth_timeout;
+                        worker_threads;
+                        max_session_lifetime;
+                        termination_grace;
+                        max_unauthenticated_per_ip;
+                      }
                 | _ -> None))
       in
       let deny_sqlstate =
@@ -1125,10 +1194,15 @@ let decode ctx (j : Yojson.Safe.t) =
       in
       let reload =
         optional kvs "reload"
-          ~default:(Some { watch = false; poll_interval = 2. })
+          ~default:
+            (Some { watch = false; poll_interval = 2.; terminate_changed_sessions = true })
           ""
           (fun p j ->
-            match obj ctx p ~keys:[ "watch"; "poll_interval_seconds" ] j with
+            match
+              obj ctx p
+                ~keys:[ "watch"; "poll_interval_seconds"; "terminate_changed_sessions" ]
+                j
+            with
             | None -> None
             | Some rk -> (
                 let watch =
@@ -1138,8 +1212,13 @@ let decode ctx (j : Yojson.Safe.t) =
                   optional rk "poll_interval_seconds" ~default:(Some 2.) p (fun p j ->
                       number ctx p ~min:0.1 ~max:3600. j)
                 in
-                match (watch, poll) with
-                | Some watch, Some poll_interval -> Some { watch; poll_interval }
+                let term =
+                  optional rk "terminate_changed_sessions" ~default:(Some true) p
+                    (fun p j -> bool ctx p j)
+                in
+                match (watch, poll, term) with
+                | Some watch, Some poll_interval, Some terminate_changed_sessions ->
+                    Some { watch; poll_interval; terminate_changed_sessions }
                 | _ -> None))
       in
       let log_level =
@@ -1241,6 +1320,57 @@ let of_file ?env path =
           { c with source_files = abs :: List.filter (fun f -> f <> abs) c.source_files })
         (of_json ~file:path ~base_dir ?env j)
 
+(* ------------------------------------------------------------------ *)
+(* Transport warnings                                                   *)
+
+let is_loopback host =
+  String.lowercase_ascii host = "localhost"
+  ||
+  match Ipaddr.of_string host with
+  | Ok (Ipaddr.V4 a) -> Ipaddr.V4.Prefix.mem a Ipaddr.V4.Prefix.loopback
+  | Ok (Ipaddr.V6 a) -> (
+      Ipaddr.V6.compare a Ipaddr.V6.localhost = 0
+      ||
+      match Ipaddr.v4_of_v6 a with
+      | Some a4 -> Ipaddr.V4.Prefix.mem a4 Ipaddr.V4.Prefix.loopback
+      | None -> false)
+  | Error _ -> false
+
+type transport_note = Transport_warning of string | Transport_info of string
+
+let transport_notes c =
+  let u = c.upstream in
+  let remote = not (is_loopback u.host) in
+  (match u.tls_mode with
+    | Tls_disable when remote ->
+        [
+          Transport_warning
+            (Printf.sprintf
+               "upstream.tls.mode is disable and upstream.host %s is not a loopback \
+                address: every statement, every result row and the upstream login cross \
+                the network unencrypted and unauthenticated. Set upstream.tls.mode: \
+                verify-full with upstream.tls.ca."
+               u.host);
+        ]
+    | Tls_require when remote ->
+        [
+          Transport_info
+            (Printf.sprintf
+               "upstream.tls.mode is require: the connection to %s is encrypted but the \
+                server certificate is not verified, so an attacker on the network path \
+                can impersonate the database. Use verify-full with upstream.tls.ca."
+               u.host);
+        ]
+    | Tls_disable | Tls_require | Tls_verify_full -> [])
+  @
+  if u.allow_insecure_auth && u.tls_mode = Tls_disable then
+    [
+      Transport_warning
+        "upstream.allow_insecure_auth is set and upstream TLS is disabled: if the server \
+         asks for MD5 authentication, a replayable password hash is sent in the clear.";
+    ]
+  else []
+
 let on_error_name = function
   | Audit_fail_closed -> "fail_closed"
   | Audit_buffer -> "buffer"
@@ -1337,6 +1467,7 @@ let to_json_redacted c : Yojson.Safe.t =
                       | Tls_verify_full -> "verify-full") );
                 ] );
             ("connect_timeout_seconds", `Float c.upstream.connect_timeout);
+            ("allow_insecure_auth", `Bool c.upstream.allow_insecure_auth);
           ] );
       ( "policies",
         `List
@@ -1381,6 +1512,10 @@ let to_json_redacted c : Yojson.Safe.t =
             ("max_message_bytes", `Int c.limits.max_message_bytes);
             ("idle_timeout_seconds", `Float c.limits.idle_timeout);
             ("auth_timeout_seconds", `Float c.limits.auth_timeout);
+            ("worker_threads", `Int c.limits.worker_threads);
+            ("max_session_lifetime_seconds", `Float c.limits.max_session_lifetime);
+            ("termination_grace_seconds", `Float c.limits.termination_grace);
+            ("max_unauthenticated_per_ip", `Int c.limits.max_unauthenticated_per_ip);
           ] );
       ("deny_sqlstate", `String c.deny_sqlstate);
       ("allow_transaction_control", `Bool c.allow_transaction_control);
@@ -1401,6 +1536,7 @@ let to_json_redacted c : Yojson.Safe.t =
           [
             ("watch", `Bool c.reload.watch);
             ("poll_interval_seconds", `Float c.reload.poll_interval);
+            ("terminate_changed_sessions", `Bool c.reload.terminate_changed_sessions);
           ] );
       ("logging", `Assoc [ ("level", `String c.log_level) ]);
       ("shutdown_grace_seconds", `Float c.shutdown_grace);

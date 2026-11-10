@@ -107,11 +107,13 @@ record "$chart" "appVersion" "$(first_match "$chart" 's/^appVersion: "?([^"]+)"?
 record "$chart" "artifacthub.io/images" \
   "$(first_match "$chart" 's/^ *image: ghcr\.io\/haltsql\/haltsql:([^ ]+)$/\1/p')"
 
-# HaltSQL Console versions with the release too (test/console/test_deploy.ml).
-console=deploy/helm/haltsql-console/Chart.yaml
-record "$console" "version" "$(first_match "$console" 's/^version: "?([^"]+)"?$/\1/p')"
-record "$console" "appVersion" "$(first_match "$console" 's/^appVersion: "?([^"]+)"?$/\1/p')"
-for f in "$console" deploy/cloud/aws/console/Dockerfile.ecs deploy/cloud/gcp/console/cloudrun-service.yaml \
+console_chart=deploy/helm/haltsql-console/Chart.yaml
+record "$console_chart" "version" "$(first_match "$console_chart" 's/^version: "?([^"]+)"?$/\1/p')"
+record "$console_chart" "appVersion" "$(first_match "$console_chart" 's/^appVersion: "?([^"]+)"?$/\1/p')"
+record "$console_chart" "artifacthub.io/images" \
+  "$(first_match "$console_chart" 's/^ *image: ghcr\.io\/haltsql\/haltsql-console:([^ ]+)$/\1/p')"
+# Its deployment manifests pin the same release (test/console/test_deploy.ml).
+for f in deploy/cloud/aws/console/Dockerfile.ecs deploy/cloud/gcp/console/cloudrun-service.yaml \
          deploy/cloud/azure/console/containerapp.yaml; do
   record "$f" "haltsql-console image" "$(first_match "$f" 's/.*ghcr\.io\/haltsql\/haltsql-console:([0-9][^ @"]*).*/\1/p')"
 done

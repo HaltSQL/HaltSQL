@@ -126,8 +126,9 @@ let catalog : Catalog.t =
 let policy ?(statements = [ Policy.Select ]) ?require_limit ?(mode = Policy.Bound)
     ?(keys = [ ("tenant", "tenant_id"); ("org", "org_id"); ("user", "user_id") ])
     ?(functions = default_functions) ?(operators = default_operators)
-    ?(deny_casts = default_deny_casts) ?(allow_explain = false) ?(catalog = catalog)
-    ?(max_joins = 8) ?(search_path = [ "app" ])
+    ?(casts = Haltsql_load.Policy_load.default_casts) ?(deny_casts = default_deny_casts)
+    ?(allow_explain = false) ?(catalog = catalog) ?(max_joins = 8)
+    ?(search_path = [ "app" ])
     ?(tables =
       [
         orders;
@@ -153,6 +154,7 @@ let policy ?(statements = [ Policy.Select ]) ?require_limit ?(mode = Policy.Boun
     tables;
     functions;
     operators;
+    casts;
     deny_casts;
     allow_explain;
     mode = Policy.Enforce;

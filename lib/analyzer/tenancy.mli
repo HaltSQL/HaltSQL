@@ -22,6 +22,12 @@
     Inside a location only top-level AND chains are flattened; OR, NOT, CASE and
     everything else are opaque (a conjunct that is an OR proves nothing).
 
+    An occurrence is also proven {e transitively}: by a conjunct [col = other.col'] in one
+    of its own locations, where [other] is a different occurrence of the same level that
+    is itself proven (directly, or transitively starting from a direct proof), both sides
+    are bare column references, and both columns carry the same tenancy key. It binds no
+    parameter. It never crosses a level (subqueries, LATERAL, CTEs).
+
     A conjunct proves [col] for the occurrence when it has one of the shapes (operands may
     be reversed for [=]):
     - [col = <value>]

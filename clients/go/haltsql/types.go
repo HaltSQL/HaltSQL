@@ -52,14 +52,14 @@ func (b *BindParam) UnmarshalJSON(data []byte) error {
 		b.Value, b.IsSet = s, false
 		return nil
 	}
-	var arr []string
+	var arr []*string
 	if len(raw.Value) > 0 && raw.Value[0] == '[' {
 		if err := json.Unmarshal(raw.Value, &arr); err == nil {
-			if arr == nil {
-				arr = []string{}
+			// A JSON null element must not be bound as an empty string.
+			if vals, ok := nonNullStrings(arr); ok {
+				b.Values, b.IsSet = vals, true
+				return nil
 			}
-			b.Values, b.IsSet = arr, true
-			return nil
 		}
 	}
 	return fmt.Errorf("bind_params[$%d].value must be a string or an array of strings", b.Param)
@@ -83,6 +83,10 @@ func (b BindParam) MarshalJSON() ([]byte, error) {
 type PolicyRef struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// SearchPath lists the schemas unqualified names were resolved against
+	// (nil from an engine that does not report it). The verdict holds only if
+	// the session that runs the SQL uses this search path.
+	SearchPath []string `json:"search_path,omitempty"`
 }
 
 // Verdict is the result of verifying one SQL string.
@@ -144,12 +148,13 @@ type wireVerdict struct {
 	Reasons       *[]wireReason `json:"reasons"`
 	ShadowReasons *[]wireReason `json:"shadow_reasons"`
 	Policy        *struct {
-		Name    *string `json:"name"`
-		Version *string `json:"version"`
+		Name       *string   `json:"name"`
+		Version    *string   `json:"version"`
+		SearchPath []*string `json:"search_path"`
 	} `json:"policy"`
 	StatementKind json.RawMessage `json:"statement_kind"`
-	Tables        *[]string       `json:"tables"`
-	Columns       *[]string       `json:"columns"`
+	Tables        *[]*string      `json:"tables"`
+	Columns       *[]*string      `json:"columns"`
 	BindParams    *[]BindParam    `json:"bind_params"`
 	Fingerprint   json.RawMessage `json:"fingerprint"`
 	SQLSHA256     *string         `json:"sql_sha256"`
@@ -162,6 +167,19 @@ type wireReason struct {
 	Rule    *string `json:"rule"`
 	Loc     *int    `json:"loc"`
 	Hint    *string `json:"hint"`
+}
+
+// nonNullStrings converts a decoded JSON array of strings, refusing null
+// elements (encoding/json would otherwise turn them into "").
+func nonNullStrings(in []*string) ([]string, bool) {
+	out := make([]string, len(in))
+	for i, p := range in {
+		if p == nil {
+			return nil, false
+		}
+		out[i] = *p
+	}
+	return out, true
 }
 
 func nullableString(raw json.RawMessage, field string) (string, error) {
@@ -235,6 +253,19 @@ func ParseVerdict(body []byte) (*Verdict, error) {
 	if w.Tables == nil || w.Columns == nil || w.BindParams == nil {
 		return nil, errors.New("tables, columns and bind_params are required")
 	}
+	tables, ok1 := nonNullStrings(*w.Tables)
+	columns, ok2 := nonNullStrings(*w.Columns)
+	if !ok1 || !ok2 {
+		return nil, errors.New("tables and columns must be arrays of strings")
+	}
+	var searchPath []string
+	if w.Policy.SearchPath != nil {
+		sp, ok := nonNullStrings(w.Policy.SearchPath)
+		if !ok {
+			return nil, errors.New("policy.search_path must be an array of strings")
+		}
+		searchPath = sp
+	}
 	if w.SQLSHA256 == nil || !hex64RE.MatchString(*w.SQLSHA256) {
 		return nil, errors.New("sql_sha256 must be 64 lower-case hex digits")
 	}
@@ -248,10 +279,10 @@ func ParseVerdict(body []byte) (*Verdict, error) {
 		Allowed:       *w.Allowed,
 		Reasons:       reasons,
 		ShadowReasons: shadow,
-		Policy:        PolicyRef{Name: *w.Policy.Name, Version: *w.Policy.Version},
+		Policy:        PolicyRef{Name: *w.Policy.Name, Version: *w.Policy.Version, SearchPath: searchPath},
 		StatementKind: kind,
-		Tables:        *w.Tables,
-		Columns:       *w.Columns,
+		Tables:        tables,
+		Columns:       columns,
 		BindParams:    *w.BindParams,
 		Fingerprint:   fp,
 		SQLSHA256:     *w.SQLSHA256,

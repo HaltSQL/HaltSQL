@@ -17,6 +17,7 @@ depends: [
   "cmdliner" {>= "1.1"}
   "yojson" {>= "2.0"}
   "digestif" {>= "1.0"}
+  "kdf" {>= "1.0"}
   "lwt" {>= "5.6"}
   "tls" {>= "2.0.4"}
   "tls-lwt" {>= "2.0.4"}

@@ -286,24 +286,48 @@ no foreign honeytoken appears. See
 ```mermaid
 flowchart LR
     PR["pull request or push to main"] --> FMT["lint: ocamlformat"]
-    FMT --> BT["build-test: dune test<br/>ubuntu and macOS,<br/>OCaml 5.2 and 5.4"]
-    FMT --> COV["coverage: bisect_ppx"]
-    FMT --> PGI["postgres-integration:<br/>rlsgen and catalog_tools<br/>against Postgres 17"]
-    FMT --> SDK["Python, TypeScript,<br/>Go and Java SDK jobs"]
-    FMT --> ACT["policy-ci-action:<br/>action and GitLab tests,<br/>shellcheck, dogfood"]
-    PR --> LABPR["lab.yml, on PRs touching lib/ or lab/:<br/>unit tests, oracle self-test,<br/>pr-smoke, proxy parity"]
+    FMT --> COV["coverage: the whole dune test suite<br/>with bisect_ppx, Postgres 17 and Helm<br/>(OCaml 5.2)"]
+    FMT --> BIN["binaries: OCaml 5.4 build of the tree,<br/>cached by a hash of the sources"]
+    FMT --> BT["build-test: on main the OS x OCaml grid;<br/>on a PR macOS only, for native changes"]
+    BIN --> SDK["Python and TypeScript SDK jobs,<br/>policy-ci-action (no OCaml toolchain)"]
+    PR --> GJ["Go and Java SDK jobs"]
+    PR --> LABPR["lab.yml, on PRs touching the engine,<br/>the proxy or lab/: unit tests, oracle<br/>self-test, pr-smoke, proxy parity"]
     NIGHT["nightly 03:17 UTC"] --> LABN["lab.yml: nightly saas, composite,<br/>hierarchical, erp, PG 13 to 17 matrix"]
     WEEK["weekly and on PRs"] --> SEC["security.yml: dependency review,<br/>Trivy image and config scans"]
 ```
 
 | Workflow | When | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | Pushes to `main`, every PR, and on demand | Formatting first; the OCaml jobs wait for it: build and `dune test` (OCaml 5.4 on Ubuntu and macOS on PRs, the 2 x 2 OS and OCaml matrix on `main`), coverage, Postgres integration, SDK jobs, policy-CI action self-test. On a PR each job runs only when the files it covers changed (`.github/scripts/changes.sh`); the `CI ok` check sums up the run |
-| `.github/workflows/integration.yml` | Pushes to `main`, every PR, nightly, and on demand | Docker-based OCaml suites, the end-to-end suite, the operator and Terraform checks; the kind and Postgres-flavour jobs nightly. On a PR each job runs only when the files it covers changed; the `Integration ok` check sums up the run |
-| `.github/workflows/lab.yml` | Nightly, on PRs touching `lab/`, `lib/` or the workflow, and on demand | Lab unit tests, the oracle self-test, scenarios (`pr-smoke` on PRs, the nightly set and the version matrix on schedule), proxy parity and proxy integration tests; reports uploaded as artifacts |
+| `.github/workflows/ci.yml` | Pushes to `main`, every PR, and on demand | Formatting first. One test run of the whole suite with coverage, Postgres 17 and Helm (OCaml 5.2); one OCaml 5.4 build of the tree whose binaries the Python, TypeScript and action jobs reuse; the OS and OCaml grid on `main` (on a PR, macOS only, and only for changes to C stubs, the vendored parser, the native library or build files); Go and Java SDK jobs. On a PR each job runs only when the files it covers changed (`.github/scripts/changes.sh`); the `CI ok` check sums up the run |
+| `.github/workflows/integration.yml` | Pushes to `main`, every PR, nightly, and on demand | Docker-based OCaml suites and the end-to-end suite (on a PR: only when the server, the proxy, a library that talks to an outside service, or the suite itself changed), the operator and Terraform checks; the kind and Postgres-flavour jobs nightly. The nightly skips itself when `main` has not changed since the last one; the `Integration ok` check sums up the run |
+| `.github/workflows/lab.yml` | Nightly (skipped when `main` has not changed), on PRs touching the engine, the proxy, `lab/` or the workflow, and on demand | Lab unit tests, the oracle self-test, scenarios (`pr-smoke` on PRs, the nightly set and the version matrix on schedule), proxy parity and proxy integration tests; reports uploaded as artifacts |
+| `.github/workflows/build-images.yml`, `native-packages.yml` | PRs that change how images, wheels or npm packages are built; every push to `main` (packages); on demand | Multi-architecture image builds with smoke tests and the benchmark gate; wheels and npm packages for every platform |
 | `.github/workflows/security.yml` | Every PR, weekly (Mondays), and on demand | Dependency review, Trivy image and configuration scans |
 | `.github/workflows/pages.yml` | Pushes to `main` and PRs touching `docs/` or `website/`, and on demand | Builds this docs site; from `main`, publishes the build to the public `HaltSQL/haltsql.github.io` repository, which GitHub Pages serves |
 | `.github/workflows/release.yml` | `v*` tags, and on demand for an existing tag | Release build and artifacts |
+
+### How CI avoids repeated work
+
+- **Binaries are built once per state of the OCaml sources.**
+  `.github/actions/haltsql-binaries` caches `haltsql`, `haltsql-server`,
+  `haltsql-proxy` and `libhaltsql.so` under a hash of `lib/`, `bin/`, `native/`,
+  `vendor/` and the build files. Every job that only *uses* the binaries (SDKs,
+  the action self-test, the end-to-end suite, the operator tests) restores them
+  and installs no OCaml toolchain. A pull request that touches only an SDK
+  builds no OCaml at all.
+- **One test run per pull request.** The coverage job is the test run: the
+  whole suite, with Postgres and Helm so nothing skips. The OS and compiler
+  grid runs on `main`.
+- **Expensive jobs follow the files.** macOS, the Docker-based suites, the
+  end-to-end suite, image builds and native packaging each run on a pull
+  request only when the change can affect them (`changes.sh` lists the areas).
+  Everything runs on `main` and in the nightly, so a wrong guess is caught
+  within a day, not shipped.
+- **Nothing runs twice for nothing.** Superseded runs are cancelled, and the
+  nightlies skip themselves when `main` has not moved.
+
+When you add a job that needs a binary, use the action instead of setting up
+OCaml; when you add an expensive job, give it an area in `changes.sh`.
 
 ## Where to go next
 

@@ -253,3 +253,177 @@ async def test_authorize_async_with_async_verifier():
 
     v = await guard.authorize_async(SQL_OK, {"tenant_id": "z"}, verifier=AsyncV())
     assert v.bind_args() == ["z"]
+
+
+# ---- shadow mode: executing a "would deny" verdict needs an explicit opt-in ----
+
+def _shadow(sql, ctx, _policy):
+    return make_verdict_dict(sql, allowed=True, shadow_codes=["E_TENANT_MISSING"])
+
+
+def test_shadow_would_deny_is_refused_by_default(monkeypatch):
+    monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
+    guard.set_allow_shadow(None)
+    fv = FakeVerifier(_shadow)
+    with pytest.raises(QueryDenied) as ei:
+        guard.execute(Untouchable(), SQL_BAD, {"tenant_id": "acme"}, verifier=fv)
+    assert [r.code for r in ei.value.reasons] == ["E_TENANT_MISSING"]
+    assert "shadow mode" in str(ei.value)
+    with pytest.raises(QueryDenied):
+        guard.authorize(SQL_BAD, {"tenant_id": "acme"}, verifier=fv)
+
+
+def test_shadow_opt_in_by_call_and_by_environment(monkeypatch):
+    fv = FakeVerifier(_shadow)
+    try:
+        guard.set_allow_shadow(True)
+        assert guard.authorize(SQL_BAD, {}, verifier=fv).allowed is True
+        guard.set_allow_shadow(False)
+        monkeypatch.setenv("HALTSQL_ALLOW_SHADOW", "1")  # an explicit False wins
+        with pytest.raises(QueryDenied):
+            guard.authorize(SQL_BAD, {}, verifier=fv)
+        guard.set_allow_shadow(None)
+        assert guard.authorize(SQL_BAD, {}, verifier=fv).allowed is True
+    finally:
+        guard.set_allow_shadow(None)
+
+
+def test_clean_shadow_verdict_runs_without_opt_in(monkeypatch):
+    monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
+    fv = FakeVerifier(lambda sql, ctx, p: make_verdict_dict(sql, allowed=True))
+    assert guard.authorize(SQL_OK, {}, verifier=fv).allowed is True
+
+
+# ---- the guard pins the search path the verdict was computed under ----
+
+def test_search_path_pin_is_quoted_and_applied_last():
+    v = make_verdict(SQL_OK, allowed=True, bind=["acme"])
+    assert guard._pin_search_path(v) == []  # an engine that reports no search path
+    d = make_verdict_dict(SQL_OK, allowed=True, bind=["acme"])
+    d["policy"]["search_path"] = ["app", 'we"ird', "Mixed"]
+    from haltsql import Verdict
+
+    v = Verdict.from_dict(d)
+    assert guard._pin_search_path(v) == [("search_path", '"app", "we""ird", "Mixed"')]
+    assert v.to_dict()["policy"]["search_path"] == ["app", 'we"ird', "Mixed"]
+
+
+@pytest.mark.integration
+def test_psycopg_runs_under_the_policy_search_path(pg_dsn, haltsql_cli):
+    """A session default that points unqualified names elsewhere must not win."""
+    import psycopg
+
+    lv = LocalVerifier(os.path.join(POLICIES_DIR, "saas.yaml"), binary=haltsql_cli)
+    sql = "SELECT id, status FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 3"
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        conn.execute("CREATE TABLE public.orders (id int8, tenant_id text, status text)")
+        conn.execute("INSERT INTO public.orders VALUES (999, 'acme', 'decoy')")
+        conn.execute("SET search_path = public, app")
+        assert conn.execute("SELECT id FROM orders LIMIT 1").fetchone() == (999,)
+        r = guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=lv)
+        assert r.verdict.policy.search_path == ("app",)
+        assert r.rows == [(2, "open"), (4, "open"), (6, "open")]
+        # transaction-local: the session's own setting is back afterwards
+        assert conn.execute("SELECT id FROM orders LIMIT 1").fetchone() == (999,)
+
+
+# ---- tests added after mutation testing: each fails if the named property is removed ----
+
+def _pinned_verdict(sql, ctx, _policy):
+    d = make_verdict_dict(sql, allowed=True, bind=[ctx["tenant_id"]])
+    d["policy"]["search_path"] = ["app"]
+    return d
+
+
+def _decoy(conn_execute):
+    return [
+        "CREATE TABLE IF NOT EXISTS public.orders (id int8, tenant_id text, status text)",
+        "TRUNCATE public.orders",
+        "INSERT INTO public.orders VALUES (999, 'acme', 'decoy')",
+    ]
+
+
+@pytest.mark.integration
+def test_psycopg_sends_the_verified_string_byte_for_byte(pg_dsn):
+    """Leading/trailing whitespace and comments are part of the verified string."""
+    import psycopg
+
+    sql = "  SELECT current_query() AS q FROM orders WHERE tenant_id = $1 LIMIT 1 /* x */  \n"
+    with psycopg.connect(pg_dsn) as conn:
+        r = guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+    assert r.rows == [(sql,)]
+
+
+@pytest.mark.integration
+async def test_async_drivers_send_the_verified_string_byte_for_byte(pg_dsn):
+    import psycopg
+
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "  SELECT current_query() AS q FROM orders WHERE tenant_id = $1 LIMIT 1 /* x */  \n"
+    async with await psycopg.AsyncConnection.connect(pg_dsn) as conn:
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+        assert r.rows == [(sql,)]
+    conn = await asyncpg.connect(f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+    try:
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+        assert r.rows == [(sql,)]
+    finally:
+        await conn.close()
+
+
+@pytest.mark.integration
+async def test_asyncpg_runs_under_the_policy_search_path(pg_dsn):
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 2"
+    conn = await asyncpg.connect(f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+    try:
+        for stmt in _decoy(None):
+            await conn.execute(stmt)
+        await conn.execute("SET search_path = public, app")
+        assert await conn.fetchval("SELECT id FROM orders LIMIT 1") == 999
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(_pinned_verdict))
+        assert r.rows == [(2,), (4,)]
+    finally:
+        await conn.execute("DROP TABLE public.orders")
+        await conn.close()
+
+
+@pytest.mark.integration
+async def test_pin_overrides_a_search_path_passed_in_settings(pg_dsn):
+    """On every driver: a caller-supplied search_path setting cannot redirect the query."""
+    import psycopg
+
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 2"
+    fv = FakeVerifier(_pinned_verdict)
+    bad = {"search_path": "public, app"}
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        for stmt in _decoy(None):
+            conn.execute(stmt)
+        try:
+            assert guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad).rows == [(2,), (4,)]
+            async with await psycopg.AsyncConnection.connect(pg_dsn) as aconn:
+                r = await guard.execute_async(aconn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad)
+                assert r.rows == [(2,), (4,)]
+            pconn = await asyncpg.connect(
+                f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+            try:
+                r = await guard.execute_async(pconn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad)
+                assert r.rows == [(2,), (4,)]
+            finally:
+                await pconn.close()
+        finally:
+            conn.execute("DROP TABLE public.orders")
+
+
+def test_execute_on_engine_rechecks_a_supplied_verdict_before_taking_a_connection():
+    class NoPool:
+        def raw_connection(self):
+            raise AssertionError("pool used before the verdict was checked")
+
+    other = make_verdict("SELECT 1", allowed=True)
+    with pytest.raises(HaltSQLUnavailable, match="sql_sha256"):
+        guard.execute_on_engine(NoPool(), SQL_OK, {"tenant_id": "a"}, verdict=other)
+    denied = make_verdict(SQL_OK, allowed=False, codes=["E_X"])
+    with pytest.raises(QueryDenied):
+        guard.execute_on_engine(NoPool(), SQL_OK, {"tenant_id": "a"}, verdict=denied)

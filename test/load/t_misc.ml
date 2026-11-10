@@ -213,6 +213,7 @@ let schema_cases =
             "tables";
             "functions";
             "operators";
+            "casts";
             "deny_casts";
             "allow_explain";
             "mode";

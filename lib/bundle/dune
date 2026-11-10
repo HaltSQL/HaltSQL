@@ -6,8 +6,10 @@
  (libraries
   haltsql.core
   haltsql.load
+  haltsql.b64
   yojson
   digestif
+  base64
   eqaf
   mirage-crypto-ec
   mirage-crypto-rng

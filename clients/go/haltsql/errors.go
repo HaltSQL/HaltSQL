@@ -57,13 +57,22 @@ func (e *Error) Unwrap() error { return e.Err }
 func (e *Error) Allowed() bool { return false }
 
 // DeniedError is returned by GuardedQuery and GuardedExec when the policy
-// denies the SQL. Nothing was sent to the database.
+// denies the SQL, or when a shadow-mode policy would deny it and AllowShadow
+// was not given. Nothing was sent to the database.
 type DeniedError struct {
 	Verdict *Verdict
 }
 
 func (e *DeniedError) Error() string {
 	codes := strings.Join(e.Verdict.Codes(), ", ")
+	if codes == "" && len(e.Verdict.ShadowReasons) > 0 {
+		// A shadow-mode verdict the guard refused to run (see AllowShadow).
+		sc := make([]string, len(e.Verdict.ShadowReasons))
+		for i, r := range e.Verdict.ShadowReasons {
+			sc[i] = r.Code
+		}
+		codes = "shadow mode would deny: " + strings.Join(sc, ", ")
+	}
 	if codes == "" {
 		codes = "no reasons"
 	}

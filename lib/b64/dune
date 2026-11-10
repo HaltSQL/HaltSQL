@@ -1,0 +1,9 @@
+; haltsql.b64: the one standard-base64 helper (strict, canonical-only decoding), on the
+; [base64] package. base64url for JWTs is Haltsql_auth.B64url.
+
+(library
+ (name haltsql_b64)
+ (public_name haltsql.b64)
+ (libraries base64)
+ (instrumentation
+  (backend bisect_ppx)))

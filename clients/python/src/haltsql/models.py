@@ -179,14 +179,24 @@ class PolicyRef:
     name: str
     version: str
     """``sha256:<hex>`` of the normalized policy."""
+    search_path: Optional[Tuple[str, ...]] = None
+    """The schemas the verifier resolved unqualified names against, or ``None``
+    from an engine that does not report it. The verdict holds only if the
+    session that runs the SQL uses this search path; the guard pins it."""
 
     @classmethod
     def from_dict(cls, d: Any) -> "PolicyRef":
         if not isinstance(d, Mapping):
             raise ValueError("policy must be an object")
+        sp = d.get("search_path")
+        if sp is not None and (
+            not isinstance(sp, (list, tuple)) or not all(isinstance(s, str) for s in sp)
+        ):
+            raise ValueError("policy.search_path must be a list of strings")
         return cls(
             name=_req(d, "name", str, "policy"),
             version=_req(d, "version", str, "policy"),
+            search_path=None if sp is None else tuple(sp),
         )
 
 
@@ -305,7 +315,15 @@ class Verdict:
             "allowed": self.allowed,
             "reasons": [r.to_dict() for r in self.reasons],
             "shadow_reasons": [r.to_dict() for r in self.shadow_reasons],
-            "policy": {"name": self.policy.name, "version": self.policy.version},
+            "policy": {
+                "name": self.policy.name,
+                "version": self.policy.version,
+                **(
+                    {}
+                    if self.policy.search_path is None
+                    else {"search_path": list(self.policy.search_path)}
+                ),
+            },
             "statement_kind": self.statement_kind,
             "tables": list(self.tables),
             "columns": list(self.columns),

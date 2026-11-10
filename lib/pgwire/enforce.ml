@@ -92,6 +92,7 @@ let tx_verdict (b : Proxy_config.binding) sql : Verdict.t =
     shadow_reasons = [];
     policy_name = b.policy.name;
     policy_version = b.policy.version;
+    search_path = b.policy.search_path;
     statement_kind = Some "transaction";
     tables = [];
     columns = [];

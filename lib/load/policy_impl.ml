@@ -201,6 +201,33 @@ let default_operators =
     "&&";
   ]
 
+(* Built-in scalar types whose input and conversion functions are pure: they read no
+   catalog, file or setting. Names are the ones the PostgreSQL parser produces (INTEGER is
+   int4, BOOLEAN is bool, CHAR is bpchar, ...). *)
+let default_casts =
+  [
+    "text";
+    "varchar";
+    "bpchar";
+    "int2";
+    "int4";
+    "int8";
+    "numeric";
+    "float4";
+    "float8";
+    "bool";
+    "date";
+    "time";
+    "timetz";
+    "timestamp";
+    "timestamptz";
+    "interval";
+    "uuid";
+    "json";
+    "jsonb";
+    "bytea";
+  ]
+
 let default_deny_casts =
   [
     "regclass";
@@ -234,6 +261,7 @@ let top_keys =
     "tables";
     "functions";
     "operators";
+    "casts";
     "deny_casts";
     "allow_explain";
     "mode";
@@ -531,6 +559,41 @@ let cast_type ctx path j =
         None
       end
 
+(* An allowed cast target: a type name, optionally schema-qualified (["app.status"]). *)
+let cast_allow_type ctx path j =
+  match Dec.string ctx path j with
+  | None -> None
+  | Some s ->
+      let t = String.lowercase_ascii (String.trim s) in
+      let word w =
+        w <> ""
+        && (match w.[0] with 'a' .. 'z' | '_' -> true | _ -> false)
+        && String.for_all is_word_char w
+      in
+      let ok =
+        match String.split_on_char '.' t with
+        | [ n ] -> word n
+        | [ s; n ] -> word s && word n
+        | _ -> false
+      in
+      if ok then Some t
+      else begin
+        Dec.error ctx path
+          (Printf.sprintf "invalid type name %S (use the PostgreSQL name, e.g. int4)" s);
+        None
+      end
+
+let casts_j ctx path j =
+  match Dec.obj ctx path ~keys:[ "allow"; "extend" ] j with
+  | None -> default_casts
+  | Some kvs ->
+      let lst k =
+        Dec.opt kvs path k (fun p v -> Dec.list_of ctx p (cast_allow_type ctx) v)
+      in
+      let base = Option.value (lst "allow") ~default:default_casts in
+      let ext = Option.value (lst "extend") ~default:[] in
+      base @ ext
+
 let deny_casts_j ctx path (j : json) =
   match j with
   | `List _ -> Option.value ~default:[] (Dec.list_of ctx path (cast_type ctx) j)
@@ -812,6 +875,7 @@ let to_json (p : Policy.t) : json =
                p.tables) );
         ("functions", `Assoc [ ("allow", strs p.functions) ]);
         ("operators", `Assoc [ ("allow", strs p.operators) ]);
+        ("casts", `Assoc [ ("allow", strs p.casts) ]);
         ("deny_casts", strs p.deny_casts);
         ("allow_explain", `Bool p.allow_explain);
         ("mode", `String (match p.mode with Enforce -> "enforce" | Shadow -> "shadow"));
@@ -973,6 +1037,10 @@ let decode ctx ?base_dir ?(inline = false) path (j : json) : Policy.t option =
         Option.value ~default:default_operators
           (Dec.opt kvs path "operators" (fun p v -> Some (operators_j ctx p v)))
       in
+      let casts =
+        Option.value ~default:default_casts
+          (Dec.opt kvs path "casts" (fun p v -> Some (casts_j ctx p v)))
+      in
       let deny_casts =
         Option.value ~default:default_deny_casts
           (Dec.opt kvs path "deny_casts" (fun p v -> Some (deny_casts_j ctx p v)))
@@ -1022,6 +1090,7 @@ let decode ctx ?base_dir ?(inline = false) path (j : json) : Policy.t option =
               tables;
               functions;
               operators = List.sort_uniq compare operators;
+              casts = List.sort_uniq compare casts;
               deny_casts = List.sort_uniq compare deny_casts;
               allow_explain;
               mode;

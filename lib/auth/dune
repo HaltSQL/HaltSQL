@@ -9,6 +9,7 @@
   haltsql
   yojson
   digestif
+  base64
   zarith
   mirage-crypto-pk
   mirage-crypto-ec

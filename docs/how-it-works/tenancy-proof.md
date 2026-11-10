@@ -257,20 +257,40 @@ That triggers the placeholder rule described [below](#a-tenant-placeholder-may-o
 `FULL JOIN`, neither side can be proven by `ON`, so both need `WHERE`
 predicates.
 
-HaltSQL does not propagate equality through joins. This query is safe but
-denied, because `c` has no direct predicate of its own:
+### Equality propagation
+
+An occurrence is also proven by a plain equality between its tenant column and
+the tenant column of **another occurrence in the same `SELECT`** that is itself
+proven, when both columns carry the same tenancy key:
 
 ```sql
--- Denied: E_TENANT_MISSING on c
-SELECT o.id FROM orders o
-JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
+SELECT o.id, c.name
+FROM orders o JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
 WHERE o.tenant_id = $1
 LIMIT 10
 ```
 
-Writing `AND c.tenant_id = $1` in the `ON` makes it allowed. The trade-off is
-intentional: a few safe queries are refused so that the rules stay short
-enough to audit completely.
+`o` has a direct predicate; `c` is proven through `c.tenant_id = o.tenant_id`.
+The same limits apply as for a direct predicate, and a few more:
+
+- The equality must be a top-level `AND` condition in one of the occurrence's
+  own locations (the `WHERE`, or a join `ON` that filters it). In
+  `customers c LEFT JOIN orders o ON c.tenant_id = o.tenant_id`, the `ON` does
+  not filter `c`, so `c` still needs its own proof.
+- Both sides must be bare column references: no cast, no `COLLATE`, no
+  expression, and only the `=` operator.
+- At least one occurrence in the chain needs a direct predicate. Two
+  occurrences that are only equal to each other prove nothing.
+- It does not cross a subquery boundary (`EXISTS`, `IN (SELECT ...)`,
+  `LATERAL`, CTEs), and `USING (tenant_id)` / `NATURAL JOIN` are not proofs.
+  Write a direct predicate there.
+
+Why it is sound: the equality sits in a location that filters the occurrence,
+so every surviving row of `c` has `c.tenant_id` equal to the `o.tenant_id` of a
+real (not null-extended) row of `o`, and every such row of `o` carries the
+tenant's value. The prover starts from direct proofs and adds occurrences
+until nothing changes (`Tenancy.transitive_proofs`), so a cycle of unproven
+occurrences is never accepted.
 
 ## Bound mode and bind_params
 

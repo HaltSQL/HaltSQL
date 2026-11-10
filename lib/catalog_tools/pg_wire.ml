@@ -262,7 +262,7 @@ let negotiate (dsn : Pg_dsn.t) fd =
 
 let random_nonce () =
   Lazy.force rng_initialized;
-  Base64.encode_string (Mirage_crypto_rng.generate 18)
+  Haltsql_scram.(nonce_of_entropy (Mirage_crypto_rng.generate nonce_entropy_bytes))
 
 let md5_hex s = Digestif.MD5.(to_hex (digest_string s))
 let password_message pw = frame 'p' (build (fun b -> add_cstr b pw))

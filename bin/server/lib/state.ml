@@ -365,10 +365,27 @@ let load_tls (cfg : Config.t) =
   | None -> Ok None
   | Some t -> Result.map Option.some (Tls_setup.load t)
 
+(* A static token with no [context] lets its holder name any tenant in the request body.
+   That is right for a trusted backend and wrong for anything else, so say it once per
+   load for every such token whose policy isolates tenants. *)
+let warn_unbound_tokens (cfg : Config.t) =
+  List.iter
+    (fun (t : Config.token) ->
+      match (t.token_context, List.assoc_opt t.token_policy cfg.policies) with
+      | None, Some (p : Policy.t) when p.tenancy.keys <> [] ->
+          Log.warn
+            "token is not bound to a context: its holder can request a verdict for any \
+             tenant; set server.auth.tokens[].context unless the caller is a trusted \
+             backend"
+            ~fields:[ ("token", `String t.token_name); ("policy", `String p.name) ]
+      | _ -> ())
+    cfg.tokens
+
 let create ?(sources = { config_file = None; policy_files = []; overrides = Fun.id })
     (cfg : Config.t) =
   let tls = match load_tls cfg with Ok t -> t | Error e -> failwith e in
   let snap = snapshot_of_config ?config_file:sources.config_file cfg in
+  warn_unbound_tokens cfg;
   {
     cfg;
     sources;
@@ -426,6 +443,7 @@ let reload ?(reason = "manual") ?resolver ?remote t =
   match result with
   | Ok (cfg, tls) ->
       t.snap <- snapshot_of_config ?config_file:t.sources.config_file ~previous:t.snap cfg;
+      warn_unbound_tokens cfg;
       t.remote <- candidate_remote;
       t.generation <- t.generation + 1;
       t.audit_restart_pending <- audit_sinks_differ t.cfg cfg;

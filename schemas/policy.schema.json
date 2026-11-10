@@ -324,8 +324,31 @@
       },
       "additionalProperties": false
     },
+    "casts": {
+      "description": "Allowed cast target types (deny by default). Default: built-in scalar types (text, integers, numeric, floats, bool, date/time, uuid, json, jsonb, bytea).",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Replaces the default list.",
+          "type": "array",
+          "items": {
+            "description": "PostgreSQL type name, e.g. int4 or app.status.",
+            "type": "string"
+          }
+        },
+        "extend": {
+          "description": "Adds types to the defaults (or to allow).",
+          "type": "array",
+          "items": {
+            "description": "PostgreSQL type name, e.g. inet or app.status.",
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "deny_casts": {
-      "description": "Denied cast target types. Default: the reg* family and txid_snapshot.",
+      "description": "Cast target types denied even when casts lists them. Default: the reg* family and txid_snapshot.",
       "oneOf": [
         {
           "description": "Replaces the default list.",

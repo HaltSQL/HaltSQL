@@ -106,6 +106,28 @@ describe("operations endpoints", () => {
   });
 });
 
+describe("operations endpoints fail closed", () => {
+  test("health and policies reject on a non-200 answer; ready is true only on 200 + ready", async () => {
+    let next;
+    const srv = await fakeServer(() => next);
+    try {
+      const c = new HaltSQLClient({ baseUrl: srv.url, token: "tok", maxRetries: 0 });
+      next = { status: 500, body: { status: "ok" } };
+      await assert.rejects(c.health(), (e) => e instanceof HaltSQLHttpError && e.status === 500);
+      next = { status: 403, body: vectors.policies };
+      await assert.rejects(c.policies(), (e) => e instanceof HaltSQLHttpError && e.status === 403);
+      next = { status: 503, body: { status: "ready", policies: 2 } };
+      assert.deepEqual(await c.ready(), { ready: false, status: "ready", policies: 2 });
+      next = { status: 200, body: { status: "not_ready", policies: 0 } };
+      assert.deepEqual(await c.ready(), { ready: false, status: "not_ready", policies: 0 });
+      next = { status: 500, body: { status: "ready", policies: 2 } };
+      await assert.rejects(c.ready(), (e) => e instanceof HaltSQLHttpError && e.status === 500);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
 describe("retry and timeouts", () => {
   const ok = vector("allowed_bound_single_tenant");
   const sql = ok.request.sql;
@@ -206,7 +228,15 @@ describe("fail closed on bad responses", () => {
     "allowed as string": { ...ok.response, allowed: "true" },
     "missing allowed": (() => { const { allowed, ...r } = ok.response; return r; })(),
     "allowed with reasons": { ...ok.response, reasons: [{ code: "E_TABLE_DENIED", message: "m", rule: "r" }] },
-    "bad reason code": { ...vector("denied_parse_error").response, reasons: [{ code: "nope", message: "m", rule: "r" }] },
+    // Valid in every other respect (also the hash), so only the code is wrong.
+    "bad reason code": { ...vector("denied_parse_error").response, sql_sha256: sha(sql), reasons: [{ code: "nope", message: "m", rule: "r" }] },
+    "bad shadow reason code": { ...ok.response, shadow_reasons: [{ code: "e_lower", message: "m", rule: "r" }] },
+    "missing reasons": (() => { const { reasons, ...r } = ok.response; return r; })(),
+    "missing shadow_reasons": (() => { const { shadow_reasons, ...r } = ok.response; return r; })(),
+    "shadow_reasons null": { ...ok.response, shadow_reasons: null },
+    "missing bind_params": (() => { const { bind_params, ...r } = ok.response; return r; })(),
+    "bind value array with a number": { ...ok.response, bind_params: [{ param: 1, value: ["acme", 7] }] },
+    "bind value array with null": { ...ok.response, bind_params: [{ param: 1, value: [null] }] },
     "bind param 0": { ...ok.response, bind_params: [{ param: 0, value: "acme" }] },
     "bind value number": { ...ok.response, bind_params: [{ param: 1, value: 7 }] },
     "sql hash mismatch": { ...ok.response, sql_sha256: sha("SELECT 2") },
@@ -224,6 +254,52 @@ describe("fail closed on bad responses", () => {
       }
     });
   }
+
+  test("sql_sha256 must be 64 hex digits even with checkSqlHash off", async () => {
+    for (const bad of ["", "abc", sha("x").toUpperCase(), sha("x") + "0", 7]) {
+      const srv = await fakeServer(() => ({ status: 200, body: { ...ok.response, sql_sha256: bad } }));
+      try {
+        const c = new HaltSQLClient({ baseUrl: srv.url, checkSqlHash: false });
+        await assert.rejects(c.verify(sql, ok.request.context), HaltSQLProtocolError, String(bad));
+      } finally {
+        await srv.close();
+      }
+    }
+  });
+
+  test("an unusable 200 response is final: it is not retried", async () => {
+    const srv = await fakeServer(() => ({ status: 200, body: { ...ok.response, pad: "x".repeat(5000) } }));
+    try {
+      const c = new HaltSQLClient({ baseUrl: srv.url, maxResponseBytes: 1024, maxRetries: 3, ...fast });
+      await assert.rejects(c.verify(sql, ok.request.context), HaltSQLProtocolError);
+      assert.equal(srv.requests.length, 1);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  /** A fetch whose response sends headers and the start of a body, then stalls until aborted. */
+  const stalledFetch = (contentLength) => async (_url, init) => {
+    const body = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(new TextEncoder().encode('{"allowed":'));
+        init.signal.addEventListener("abort", () => ctrl.error(new Error("aborted")));
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-length": String(contentLength) } });
+  };
+
+  test("a declared content-length above the cap is refused before the body is read", async () => {
+    const c = new HaltSQLClient({
+      baseUrl: "http://sidecar", fetch: stalledFetch(1_000_000), maxResponseBytes: 1024, timeoutMs: 500, maxRetries: 0,
+    });
+    await assert.rejects(c.verify("SELECT 1"), (e) => e instanceof HaltSQLProtocolError && /larger than 1024 bytes/.test(e.message));
+  });
+
+  test("a body that stalls after the headers is a timeout, not a hang", async () => {
+    const c = new HaltSQLClient({ baseUrl: "http://sidecar", fetch: stalledFetch(500), timeoutMs: 100, maxRetries: 0 });
+    await assert.rejects(c.verify("SELECT 1"), (e) => e instanceof HaltSQLTimeoutError && e.allowed === false);
+  });
 
   test("redirect is not followed and is an error", async () => {
     const srv = await fakeServer(() => ({ status: 307, body: "", headers: { location: "http://example.invalid/" } }));
@@ -391,6 +467,54 @@ describe("guardedQuery", () => {
     } finally {
       await srv.close();
     }
+  });
+
+  test("shadow would-deny: runs only with allowShadow", async () => {
+    const v = vector("allowed_set_valued_tenant");
+    const shadow = { ...v, response: { ...v.response, shadow_reasons: [{ code: "E_TENANT_MISSING", message: "m", rule: "r" }] } };
+    const srv = await fakeServer(replay(shadow));
+    try {
+      const c = new HaltSQLClient({ baseUrl: srv.url, token: v.token });
+      const db = fakeDb();
+      const e = await guardedQuery(c, db, v.request.sql, v.request.context).catch((x) => x);
+      assert.ok(e instanceof HaltSQLDeniedError);
+      assert.match(e.message, /shadow mode would deny: E_TENANT_MISSING/);
+      assert.equal(db.calls.length, 0);
+      await guardedQuery(c, db, v.request.sql, v.request.context, { allowShadow: true });
+      assert.equal(db.calls.length, 1);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("runs the verified string unchanged and binds by placeholder number", async () => {
+    const v = vector("allowed_join_two_tenant_params");
+    // Leading and trailing whitespace is part of the string that was verified.
+    const sql = `  ${v.request.sql} \n`;
+    const body = {
+      ...v.response,
+      sql_sha256: sha(sql),
+      bind_params: [{ param: 2, value: "second" }, { param: 1, value: "first" }],
+    };
+    const srv = await fakeServer(() => ({ status: 200, body }));
+    try {
+      const c = new HaltSQLClient({ baseUrl: srv.url });
+      const db = fakeDb();
+      await guardedQuery(c, db, sql, v.request.context);
+      assert.deepEqual(db.calls, [{ text: sql, values: ["first", "second"] }]);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  test("a verdict that is not literally allowed === true never runs", async () => {
+    const base = vector("allowed_bound_single_tenant").response;
+    const db = fakeDb();
+    for (const allowed of ["true", 1, {}, null, undefined, false]) {
+      const verifier = { verify: async () => ({ ...base, allowed }) };
+      await assert.rejects(guardedQuery(verifier, db, "SELECT 1", {}), HaltSQLDeniedError, String(allowed));
+    }
+    assert.equal(db.calls.length, 0);
   });
 
   test("sidecar error: throws and never touches the database", async () => {

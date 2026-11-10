@@ -23,7 +23,10 @@
     ],
     "policy": {
       "name": "shadow",
-      "version": "sha256:fc000c63c5f1a76cec2c459c93568e77993d5de22041f3ec464e0df88fbd0891"
+      "version": "sha256:a400ab567f6d38ca62b217c55384ab67c1636bc5b91bb7148a95ec0991a721bd",
+      "search_path": [
+        "app"
+      ]
     },
     "statement_kind": "select",
     "tables": [
@@ -35,7 +38,7 @@
     "bind_params": [],
     "fingerprint": "303dc6e086bb7f31",
     "sql_sha256": "29cb43ea11d19d73f8ffd28cce3a486b1b0a6986296fe88f7e6308c426e721a3",
-    "elapsed_us": 210
+    "elapsed_us": 339
   },
   "compare": [
     "allowed",

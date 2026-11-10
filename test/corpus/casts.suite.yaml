@@ -141,8 +141,33 @@ cases:
     expect: deny
     codes: [E_TENANT_MISSING]
     tags: [casts, tenancy]
-  - name: oid cast is not a reg type
+  - name: oid cast is not in the cast allowlist
     sql: SELECT id::oid FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts]
+  - name: cast to a user-defined type is denied
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = 'x'::public.mytype::text LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts]
+  - name: cast to xml is denied
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND status = '<a/>'::xml::text LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts]
+  - name: pg_catalog-qualified allowed type
+    sql: SELECT id::pg_catalog.int8 FROM orders WHERE tenant_id = $1 LIMIT 10
     expect: allow
     bind: [{ param: 1, value: acme }]
-    tags: [casts, ambiguous]
+    tags: [casts]
+  - name: allowed type name in another schema is denied
+    sql: SELECT id::public.int8 FROM orders WHERE tenant_id = $1 LIMIT 10
+    expect: deny
+    codes: [E_CAST_DENIED]
+    tags: [casts]
+  - name: typed literals use the cast allowlist
+    sql: SELECT id FROM orders WHERE tenant_id = $1 AND created_at > timestamp '2024-01-01' - interval '7 days' LIMIT 10
+    expect: allow
+    bind: [{ param: 1, value: acme }]
+    tags: [casts]

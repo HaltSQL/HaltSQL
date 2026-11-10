@@ -204,9 +204,25 @@ HaltSQL is **0.0.3, a pre-1.0 preview**. Limits to know about:
 - Performance targets (p99 under 1 ms in-process, under 3 ms over the sidecar
   for queries under 8 KB) are goals, not guarantees. One measured run (p50 of
   50–250 µs per verify in process) is in [performance.md](docs/performance.md).
+- **HaltSQL proves things about the SQL text, not about your database.** It
+  does not see views, function bodies, triggers or the session's settings. Run
+  it together with database roles and row-level security
+  ([defense in depth](docs/defense-in-depth.md)), and execute through a guard
+  that pins the policy's `search_path` (the Python guard, the MCP server and
+  the proxy do).
 - Tested on PostgreSQL 17 and 18 and several Postgres-compatible engines in
   containers; managed services have not been run yet
   ([compatibility.md](docs/compatibility.md)).
+
+### What is supported, and what is experimental
+
+HaltSQL ships many components for a project of its age. They are not equally
+mature, so treat them in two tiers:
+
+| Tier | Components | What to expect |
+|---|---|---|
+| **Core** | the verification engine and OCaml library, the `haltsql` CLI, `haltsql-server`, the MCP server, the Python SDK | Security fixes land here first. Tested on every pull request, including the RLS-oracle lab. |
+| **Experimental** | `haltsql-proxy`, the TypeScript, Go and Java SDKs, the agent-framework integrations, the Kubernetes operator, the Helm charts, the Terraform modules, the Console, the cloud audit sinks (S3, GCS, Kafka, Elasticsearch) | They work and are tested, but less deeply; some deployment paths are only statically checked. Interfaces may change in any release. Do not make one of these your only control. |
 
 ## Install
 

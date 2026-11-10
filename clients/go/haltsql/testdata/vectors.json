@@ -15,7 +15,7 @@
     "policies": [
       {
         "name": "saas-analytics",
-        "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7",
+        "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
         "mode": "enforce"
       }
     ],
@@ -39,7 +39,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -58,7 +61,7 @@
         ],
         "fingerprint": "d42f5424e4843af2",
         "sql_sha256": "7d38ccff63dfd358ccd7d73e5543281169aaf408a658b95f19e753b709a79d17",
-        "elapsed_us": 357
+        "elapsed_us": 489
       },
       "expect": {
         "allowed": true,
@@ -86,7 +89,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -113,7 +119,7 @@
         ],
         "fingerprint": "ed9d7500186cb43c",
         "sql_sha256": "2eeba08b071ecdcd05ef346fcddb7744c744aed8fbff56891b79a965b8ed109a",
-        "elapsed_us": 102
+        "elapsed_us": 365
       },
       "expect": {
         "allowed": true,
@@ -142,7 +148,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -160,7 +169,7 @@
         ],
         "fingerprint": "53a2755a1ded78c5",
         "sql_sha256": "dbe751474182bd31d192944676c852b4349431e9da9a40d069f0990e1f6663e0",
-        "elapsed_us": 56
+        "elapsed_us": 219
       },
       "expect": {
         "allowed": true,
@@ -192,7 +201,11 @@
         "shadow_reasons": [],
         "policy": {
           "name": "org-rollup-reports",
-          "version": "sha256:215560f5f440186c723c3818084043cb635e39ce92884d591c224aa4b0fb6014"
+          "version": "sha256:ceec41dab0361927ba82658c0dc813737b42f6373fb586a7936d51752941655e",
+          "search_path": [
+            "reporting",
+            "public"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -215,7 +228,7 @@
         ],
         "fingerprint": "cf1b0bccd23c5e88",
         "sql_sha256": "0456f3af98ef8e93960dc262b9a1de2ac9175744f306f655fb7dff8ae3e22d47",
-        "elapsed_us": 82
+        "elapsed_us": 211
       },
       "expect": {
         "allowed": true,
@@ -247,7 +260,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -261,7 +277,7 @@
         "bind_params": [],
         "fingerprint": "69b9b66d4459bd6f",
         "sql_sha256": "4894062606fea2f1bbae9d24970c0e4d36ea958526f3100a3a9d39ea71f99935",
-        "elapsed_us": 64
+        "elapsed_us": 200
       },
       "expect": {
         "allowed": true,
@@ -302,7 +318,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -319,7 +338,7 @@
         "bind_params": [],
         "fingerprint": "74d4a144cd563bd7",
         "sql_sha256": "2797774eb31291b21333e9e52bb412bc738466dbaa6d00b28d25ff3a29739519",
-        "elapsed_us": 81
+        "elapsed_us": 136
       },
       "expect": {
         "allowed": false,
@@ -355,7 +374,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": null,
         "tables": [],
@@ -363,7 +385,7 @@
         "bind_params": [],
         "fingerprint": null,
         "sql_sha256": "0c25976dce3488b63e5d504cd01eb6c48661a93c4f3caec21ab26cf4a53fd0d2",
-        "elapsed_us": 77
+        "elapsed_us": 118
       },
       "expect": {
         "allowed": false,
@@ -399,7 +421,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": null,
         "tables": [],
@@ -407,7 +432,7 @@
         "bind_params": [],
         "fingerprint": null,
         "sql_sha256": "5d8fbdcae12213f57163ced7f07600d255c592425f66afeae54cf6c0d6febb16",
-        "elapsed_us": 20
+        "elapsed_us": 87
       },
       "expect": {
         "allowed": false,
@@ -443,7 +468,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -456,7 +484,7 @@
         "bind_params": [],
         "fingerprint": "300b6ac332da1da4",
         "sql_sha256": "1d96326eb1fac8ffc3b190a77819a8a3f5eba5b0aece7812b95d2e4bc87d1884",
-        "elapsed_us": 51
+        "elapsed_us": 123
       },
       "expect": {
         "allowed": false,
@@ -499,7 +527,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "delete",
         "tables": [
@@ -511,7 +542,7 @@
         "bind_params": [],
         "fingerprint": "f1f952aa4b63d59c",
         "sql_sha256": "f1f6ccbbd0ce120df4290aea38e629cbab4981e07ace2c670094b6e818e0661d",
-        "elapsed_us": 46
+        "elapsed_us": 120
       },
       "expect": {
         "allowed": false,
@@ -552,7 +583,10 @@
         "shadow_reasons": [],
         "policy": {
           "name": "saas-analytics",
-          "version": "sha256:7f52a6404eb8cf3e4def333bd407b513cd16fa4ad1e8a70de9aa88077b1b79b7"
+          "version": "sha256:a69e6a132df710b6713ee67153e3e67ff811665f0a8f1c4bcba75e23de34dfa0",
+          "search_path": [
+            "app"
+          ]
         },
         "statement_kind": "select",
         "tables": [
@@ -565,7 +599,7 @@
         "bind_params": [],
         "fingerprint": "53a2755a1ded78c5",
         "sql_sha256": "dbe751474182bd31d192944676c852b4349431e9da9a40d069f0990e1f6663e0",
-        "elapsed_us": 68
+        "elapsed_us": 91
       },
       "expect": {
         "allowed": false,
@@ -631,7 +665,7 @@
       "response": {
         "error": {
           "code": "FORBIDDEN",
-          "message": "this token is pinned to a different policy"
+          "message": "this token caller is pinned to a different policy"
         }
       },
       "expect": {

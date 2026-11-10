@@ -479,7 +479,10 @@ let authenticate c d =
             let pw = need_password () in
             ignore pw;
             ensure_rng ();
-            let nonce = B64.encode (Mirage_crypto_rng.generate 18) in
+            let nonce =
+              Haltsql_scram.(
+                nonce_of_entropy (Mirage_crypto_rng.generate nonce_entropy_bytes))
+            in
             let st, first = Scram.client_first ~user:"" ~nonce in
             scram := Some st;
             let body =

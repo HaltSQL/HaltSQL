@@ -9,6 +9,7 @@
   haltsql.report
   haltsql.cloud
   haltsql.bundle
+  haltsql.b64
   haltsql-server.opa
   haltsql.catalog_fetch
   haltsql.catalog_tools

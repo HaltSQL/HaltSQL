@@ -2,10 +2,10 @@
 
     Given the provider configuration, its current signing keys and the current time,
     {!verify} checks, in order: the compact JWS shape, the algorithm allowlist (never
-    [none] or HMAC), the [kid] and key type, the signature, [iss] (exact match), [aud]
-    (contains one of [audiences]), [exp] (required), [nbf] and [iat] (with
-    [leeway_seconds]), [required_claims], then selects the policy and derives the context
-    from [context_claims].
+    [none] or HMAC), the [kid] and key type, the signature, [iss] (exact match), [aud] (a
+    string, or an array of strings, containing one of [audiences]), [exp] (required),
+    [nbf] and [iat] (with [leeway_seconds]), [required_claims], then selects the policy
+    and derives the context from [context_claims].
 
     With [~groups] (the provider's [policy_from_groups], see
     {!Haltsql.Config.groups_policy_of}) the policy is selected by {!Group_policy.select}

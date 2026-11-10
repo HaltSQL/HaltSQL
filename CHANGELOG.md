@@ -18,6 +18,50 @@ even before 1.0.
   `haltsql-google-adk`, `haltsql-crewai`, `haltsql-semantic-kernel` and
   `haltsql-vanna`, published by trusted publishing after `haltsql`, which they
   require. The release dry run builds and `twine check`s them.
+- **Static tokens can be bound to a context.** `server.auth.tokens[]` takes
+  `context` and `request_context_fields`, like mTLS identities. A bound token's
+  tenant comes from the config; a request body that names another tenant gets
+  `403 CONTEXT_NOT_ALLOWED`. Tokens without either key behave as before (the
+  body supplies the context).
+- **Tenant equality propagates through joins in the same `SELECT`.**
+  `JOIN customers c ON c.tenant_id = o.tenant_id` with `WHERE o.tenant_id = $1`
+  is now allowed: `c` is proven through the equality to the proven `o`. The
+  equality must be a top-level `AND` condition in a location that filters the
+  occurrence, on bare columns with the same tenancy key; it does not cross
+  subquery boundaries ([tenancy.md](docs/tenancy.md#equality-propagation)).
+- **Verdicts report the search path, and the Python guard pins it.** The
+  verdict's `policy` object gains `search_path`. `haltsql.guard` (and so the
+  MCP server and the Python integrations) sets it for the transaction that runs
+  the verified SQL, so a role or database default such as
+  `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
+  resolve to a different table than the one the policy lists. The TypeScript, Go and Java
+  verdict types expose the field; their guards do not change session settings.
+- **`haltsql schema check`** compares a policy with the live database (or a
+  `schema pull` snapshot) and fails on drift: a `catalog:` entry that no longer
+  matches the table (a new column would be read by `SELECT *` unchecked),
+  missing tables or columns, a relation earlier in `search_path` that captures
+  an unqualified name, and policy tables that are views.
+- `haltsql lint-policy` warns (`W_NO_CATALOG`) when a policy has no catalog
+  snapshot.
+- `haltsql-server` logs a warning at start and on reload for every static token
+  that has no `context` and is pinned to a policy with tenancy.
+- **Audit records carry the context.** Server audit records gain `context`
+  (the values the statement was verified under) and `context_source`
+  (`authenticated` or `request`), so the log shows which tenant a caller acted
+  as.
+- **haltsql-proxy audits executions, not only verdicts.** Every forwarded
+  extended-protocol `Execute` writes an `execute` audit record (session,
+  portal, statement name, `sql_sha256`, fingerprint, policy version, row
+  limit; never parameter values), so a statement prepared once and run N
+  times shows N records. Under `fail_closed` an Execute whose record cannot be
+  written is refused (58030). Audit consumers that count records per
+  statement should filter on `event`.
+- **Verdicts report the search path, and the Python guard pins it.** The
+  verdict's `policy` object gains `search_path`. `haltsql.guard` (and so the
+  MCP server and the Python integrations) sets it for the transaction that runs
+  the verified SQL, so a role or database default such as
+  `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
+  resolve to a different table than the one the policy lists.
 
 ### Changed
 - The documentation installs published packages everywhere: `pip install
@@ -28,6 +72,135 @@ even before 1.0.
   now pin the version. The Java SDK page says it is built from source until it
   is on Maven Central.
 - PyPI uploads run with `verbose`, so a rejected upload shows PyPI's reason.
+- **Guarded executors no longer run what a shadow policy would deny.** A
+  `mode: shadow` policy still returns `allowed: true` with `shadow_reasons`,
+  but the Python guard (and so the MCP server and every Python integration),
+  the TypeScript `guardedQuery`, the Go `GuardedQuery`/`GuardedExec` and the
+  Java `JdbcGuard` now treat such a verdict as a denial unless the application
+  opts in (`HALTSQL_ALLOW_SHADOW=1` / `guard.set_allow_shadow(True)`,
+  `allowShadow: true`, `AllowShadow()`, `.allowShadow()`). Switching a policy
+  to shadow on the server can no longer turn enforcement off by itself.
+  **Breaking** for shadow rollouts: add the opt-in.
+- **`haltsql-server` verifies off the event loop.** Parsing and analysis run on
+  a bounded thread pool (`HALTSQL_VERIFY_THREADS`, default the CPU count), so a
+  large statement no longer stalls other requests, health checks or reloads.
+- **Casts are denied by default.** A new policy section `casts`
+  (`allow` / `extend`) lists the allowed cast target types; the default is the
+  built-in scalar types (text, integers, numeric, floats, bool, date/time,
+  uuid, json, jsonb, bytea). Before, only the types in `deny_casts` were
+  refused, so `'x'::xml`, `CAST(x AS oid)` and casts to user-defined types
+  passed. `deny_casts` stays as a second guard. **Breaking:** queries that cast
+  to another type now get `E_CAST_DENIED`; add the type with
+  `casts: { extend: [...] }`. Every policy's `version` hash changes because the
+  canonical policy now includes `casts`.
+- **PBKDF2 and base64 use maintained libraries.** The SCRAM key derivation
+  (`Hi()`) in the proxy, the Kafka audit sink, `haltsql rls` and the catalog
+  tools now calls `kdf` (`Pbkdf.pbkdf2`) instead of four hand-written loops,
+  and the base64 codecs in `lib/auth`, `lib/bundle` and `lib/rlsgen` are
+  built on the `base64` package with the same strictness (canonical
+  encodings only). No behaviour change. New direct dependency: `kdf`
+  (already a transitive dependency of `tls` and `x509`).
+- JWT verification stays in-tree; `docs/authentication.md` records why the
+  `jose` package was not adopted.
+- **haltsql-proxy: policy and credential changes reach live sessions.** After
+  a reload, sessions whose user, SCRAM verifier, client CA, policy, context or
+  upstream changed are ended at their next transaction boundary with
+  `FATAL 57P01` (`reload.terminate_changed_sessions`, default `true`; `false`
+  restores the old behaviour). Sessions are also ended
+  `limits.max_session_lifetime_seconds` after authentication (default 3600,
+  `0` disables). `limits.termination_grace_seconds` (default 30) bounds how
+  long an open transaction can delay either. Clients must be able to
+  reconnect, as they already must for a PostgreSQL restart.
+- **haltsql-proxy no longer verifies or writes audit records on its event
+  loop.** `Haltsql.verify` and writes to `stdout`/`file` audit sinks run on a
+  bounded thread pool (`limits.worker_threads`, default: CPUs, 2 to 8), so one
+  session's large statement or a slow audit disk no longer stalls every other
+  session. Per-session message order, the fail-closed audit policy and the
+  order of the hash chain are unchanged.
+- JWT verification stays in-tree; `docs/authentication.md` records why the
+  `jose` package was not adopted, and what the in-tree code is tested
+  against: RFC 7515, 7520 and 8037 examples, tokens signed by
+  pyca/cryptography for all seven algorithms, about 700 negative cases, and
+  a mutation fuzzer (`test/fuzz/fuzz_jwt.ml`) that runs with `dune test`.
+- **One SCRAM implementation.** The proxy (both roles), the Kafka sink,
+  `haltsql rls` and `haltsql schema pull` now share `haltsql.scram` instead of
+  four copies, and all take the strictest behaviour of the four. As a client,
+  HaltSQL now refuses a server that asks for fewer than 4096 or more than
+  600000 PBKDF2 iterations (before, only the Kafka sink did; a PostgreSQL role
+  whose password was set with `scram_iterations` below 4096 must have it set
+  again), a salt or signature that is not canonical base64, an empty salt, an
+  iteration count that is not plain decimal digits, attributes out of order,
+  and SCRAM messages over 4096 bytes. Server error text is made printable
+  before it is reported. Nonces are 24 random bytes everywhere.
+- **One standard-base64 helper.** `haltsql.b64` (strict, canonical-only
+  decoding on the `base64` package) replaces the hand-written base64 in the
+  proxy and the console and the two copies in `haltsql.bundle` and
+  `haltsql.rlsgen`.
+
+### Fixed
+- `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
+  is not hash-chained, that a failed audit write does not block the
+  statement and that there is no hot reload. All three were wrong; the page
+  now describes the code.
+- **Go SDK: a JSON `null` inside a string array of a verdict is a protocol
+  error.** `ParseVerdict` (and so `Verify`) decoded `null` elements of
+  `bind_params[].value`, `tables`, `columns` and `policy.search_path` as empty
+  strings, so a malformed set-valued bind param such as `["acme", null]` was
+  bound as `["acme", ""]`. Such a body is now rejected (`KindProtocol`), as
+  the TypeScript, Java and Python SDKs already did.
+- **Java SDK: the timeout now covers the response body.** `HaltSQLClient`
+  relied on `HttpRequest.timeout`, which ends when the response headers
+  arrive. A sidecar (or a proxy in front of it) that sent the headers and then
+  stalled blocked `verify()` for ever. The body is now read under the same
+  per-attempt deadline; a stalled body raises `Kind.TIMEOUT` and is retried
+  like any other timeout.
+- **Java SDK: `VerifyOptions.requestId` is validated** (1-200 printable ASCII
+  characters, else `Kind.USAGE` before anything is sent), as in the TypeScript
+  and Go SDKs. Only CR/LF were refused before; an empty, over-long or
+  non-ASCII id was sent and then silently replaced by the server.
+
+### Security
+- **haltsql-proxy limits unauthenticated connections per source address**
+  (`limits.max_unauthenticated_per_ip`, default 20, `0` disables). One
+  address can no longer occupy every `max_connections` slot with connections
+  that never authenticate; the connection over the cap gets `FATAL 53300`.
+- **haltsql-proxy refuses MD5 upstream authentication without TLS.** If the
+  database asks for an MD5 password on an unencrypted connection, the proxy no
+  longer answers; sessions fail with `FATAL 08006` and the log names the
+  cause. **Breaking** for configurations that relied on it: enable
+  `upstream.tls`, move the role to SCRAM-SHA-256, or set the new
+  `upstream.allow_insecure_auth: true`.
+- haltsql-proxy logs an `INSECURE UPSTREAM TRANSPORT` warning at start, on
+  reload and in `validate` when `upstream.tls.mode` is `disable` for a
+  non-loopback host. The default mode is unchanged. The docs now state
+  plainly that `require` encrypts without verifying the server and that only
+  `verify-full` authenticates it.
+- **haltsql-proxy pins the upstream `search_path`.** The upstream startup
+  packet sets `search_path` from the bound policy's `search_path` (quoted,
+  with `pg_temp` last), overriding `ALTER ROLE`/`ALTER DATABASE` defaults, and
+  the proxy confirms it with `SHOW search_path` before any client statement is
+  forwarded. A mismatch refuses the session (`FATAL 08006`); on PostgreSQL 18+
+  a later reported change ends it. Before, unqualified names could resolve
+  differently upstream than in the verifier.
+- **Stricter JWK and JWT parsing in `haltsql-server`.** Found by new negative
+  tests of the in-tree JWT code:
+  - An Ed25519 JWKS key that is a point of small order was loaded; with such a
+    key one fixed signature verifies for every message. These keys are now
+    refused.
+  - RSA keys with an even public exponent, or a modulus over 8192 bits, were
+    loaded. Both are now refused.
+  - A JWK's `key_ops` was not read: a key published for `sign` or `encrypt`
+    only could verify tokens. `key_ops` must now contain `verify` when present.
+  - A JWK or JWK Set with duplicate member names was read by its first
+    occurrence. It is now refused, as are duplicate member names nested inside
+    a token's header or claims.
+  - A token with `"b64": false` (RFC 7797) and no `crit` was read as an
+    ordinary token. It is now refused; a non-string `typ` is refused too.
+  - `exp`, `nbf` or `iat` written as an integer of more than 308 digits was
+    read as infinity, so such an `exp` never expired. It is now a bad claim.
+  - An `aud` array containing a non-string next to an accepted audience was
+    accepted. Every element must now be a string.
+
 
 ## [0.0.2] - 2026-11-10
 

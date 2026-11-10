@@ -9,8 +9,11 @@
   haltsql.cloud
   yojson
   digestif
+  haltsql.scram
+  haltsql.b64
   lwt
   lwt.unix
+  threads.posix
   tls
   tls-lwt
   x509

@@ -48,7 +48,7 @@ field of each reason carries a query-specific version of the same advice.
 | [`E_COLUMN_UNRESOLVED`](#e_column_unresolved) | Ambiguous or unknown column |
 | [`E_FUNCTION_DENIED`](#e_function_denied) | Function not in the allowlist |
 | [`E_OPERATOR_DENIED`](#e_operator_denied) | Operator not in the allowlist |
-| [`E_CAST_DENIED`](#e_cast_denied) | Cast to a denied type |
+| [`E_CAST_DENIED`](#e_cast_denied) | Cast to a type that is not allowed |
 | [`E_TENANT_MISSING`](#e_tenant_missing) | Tenant-scoped relation without a provable tenant predicate |
 | [`E_TENANT_MISMATCH`](#e_tenant_mismatch) | Tenant literal differs from the context value |
 | [`E_TENANT_WRITE`](#e_tenant_write) | Write sets or changes a tenant column incorrectly |
@@ -247,8 +247,9 @@ arithmetic operators.
 
 ### E_CAST_DENIED
 
-A cast targets a type in `deny_casts`, such as the `reg*` object-identifier
-types that look up catalog objects by name.
+A cast targets a type that is not in the policy's `casts` allowlist (casts are
+denied by default), or a type in `deny_casts`, such as the `reg*`
+object-identifier types that look up catalog objects by name.
 
 ```sql
 SELECT 'app.orders'::regclass

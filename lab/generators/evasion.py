@@ -298,6 +298,76 @@ def _not_inv(q: BenignQuery, c: Ctx) -> list[Variant]:
                     "adversarial", "tenant")]
 
 
+def _tenant_equalities(a: str, t: TModel, j: Join) -> list[str] | None:
+    """``j.<tenant col> = a.<tenant col>`` for every tenancy key of ``j``'s table, or
+    None when the base table lacks one of those keys."""
+    base_cols = {key: col for col, key in t.tenant_columns}
+    out = []
+    for col, key in j.rel.table.tenant_columns:
+        if key not in base_cols:
+            return None
+        out.append(f"{j.rel.alias}.{qi(col)} = {a}.{qi(base_cols[key])}")
+    return out
+
+
+def _propagation_target(q: BenignQuery) -> tuple[QuerySpec, Join, list[str]] | None:
+    s = _tenant_base(q)
+    if s is None:
+        return None
+    for j in s.joins:
+        if j.rel.table.tenant_scoped and j.kind == "JOIN":
+            eqs = _tenant_equalities(s.base.alias, s.base.table, j)
+            if eqs:
+                return s, j, eqs
+    return None
+
+
+@transform("join_tenant_equality")
+def _join_equality(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """The joined table is filtered only through equality to the (filtered) base's
+    tenant columns. Safe, and HaltSQL proves it by equality propagation; the data has
+    foreign keys that cross tenants, so a wrong proof would show up as an escape."""
+    hit = _propagation_target(q)
+    if hit is None:
+        return []
+    s, j, eqs = hit
+    joins = [Join(x.rel, x.on + eqs, x.kind) if x is j else x for x in s.joins]
+    out = [Variant(render(s.copy(joins=joins), c.model, drop=frozenset({j.rel.alias})), "benign")]
+    left = [Join(x.rel, x.on + eqs, "LEFT JOIN") if x is j else x for x in s.joins]
+    out.append(Variant(render(s.copy(joins=left), c.model, drop=frozenset({j.rel.alias})), "benign"))
+    return out
+
+
+@transform("join_tenant_equality_unproven")
+def _join_equality_unproven(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """Two tables equal to each other on the tenant column, neither filtered."""
+    hit = _propagation_target(q)
+    if hit is None:
+        return []
+    s, j, eqs = hit
+    joins = [Join(x.rel, x.on + eqs, x.kind) if x is j else x for x in s.joins]
+    sql = render(s.copy(joins=joins), c.model, drop=frozenset({j.rel.alias, s.base.alias}))
+    return [Variant(sql, "adversarial", "tenant")]
+
+
+@transform("join_tenant_equality_weakened")
+def _join_equality_weakened(q: BenignQuery, c: Ctx) -> list[Variant]:
+    """The equality is there but proves nothing: under OR, or it filters the wrong side."""
+    hit = _propagation_target(q)
+    if hit is None:
+        return []
+    s, j, eqs = hit
+    a = s.base.alias
+    ored = [Join(x.rel, [f"({' AND '.join(x.on) or 'true'} OR {' AND '.join(eqs)})"], x.kind) if x is j else x
+            for x in s.joins]
+    out = [Variant(render(s.copy(joins=ored), c.model, drop=frozenset({j.rel.alias})), "adversarial", "tenant")]
+    # the base is the preserved side of a LEFT JOIN whose ON carries both the equality and
+    # the joined table's own filter: the base rows are not filtered at all
+    left = [Join(x.rel, x.on + eqs, "LEFT JOIN") if x is j else x for x in s.joins]
+    out.append(Variant(render(s.copy(joins=left), c.model, drop=frozenset({a})), "adversarial", "tenant"))
+    return out
+
+
 @transform("left_join_preserved_side")
 def _left_join(q: BenignQuery, c: Ctx) -> list[Variant]:
     s = _tenant_base(q)
