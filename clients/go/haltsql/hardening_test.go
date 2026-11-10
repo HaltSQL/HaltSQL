@@ -117,3 +117,42 @@ func TestDefaultTimeoutAndUserAgent(t *testing.T) {
 		t.Fatalf("user agent = %q", ua)
 	}
 }
+
+// encoding/json decodes a JSON null inside a []string as "": a null in a
+// string array must be a protocol error, never an empty bind value.
+func TestNullInStringArraysFailsClosed(t *testing.T) {
+	v := findVector(t, "allowed_bound_single_tenant")
+	cases := map[string]func(m map[string]any){
+		"set bind value with a null element": func(m map[string]any) {
+			m["bind_params"] = []any{map[string]any{"param": 1, "value": []any{"acme", nil}}}
+		},
+		"tables with a null element":  func(m map[string]any) { m["tables"] = []any{"app.orders", nil} },
+		"columns with a null element": func(m map[string]any) { m["columns"] = []any{nil} },
+		"search_path with a null element": func(m map[string]any) {
+			m["policy"].(map[string]any)["search_path"] = []any{"app", nil}
+		},
+	}
+	for name, f := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := mutate(t, v.Response, f)
+			if pv, err := ParseVerdict(body); err == nil {
+				t.Fatalf("ParseVerdict accepted %s: %+v", body, pv)
+			}
+			fk := newFake(t, replay(200, body))
+			c := mustNew(t, fk.srv.URL)
+			verdict, err := c.Verify(context.Background(), v.Request.SQL, Context{"tenant_id": "acme"})
+			if verdict != nil || !IsKind(err, KindProtocol) {
+				t.Fatalf("verdict=%+v err=%v", verdict, err)
+			}
+		})
+	}
+	// An empty set and an empty search path are still valid.
+	body := mutate(t, v.Response, func(m map[string]any) {
+		m["bind_params"] = []any{map[string]any{"param": 1, "value": []any{}}}
+		m["policy"].(map[string]any)["search_path"] = []any{}
+	})
+	pv, err := ParseVerdict(body)
+	if err != nil || !pv.BindParams[0].IsSet || pv.BindParams[0].Values == nil || len(pv.BindParams[0].Values) != 0 {
+		t.Fatalf("empty set: %+v, %v", pv, err)
+	}
+}
