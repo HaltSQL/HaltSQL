@@ -153,8 +153,21 @@ describe("binary resolution", () => {
     assert.equal(r.source, "package");
   });
   test("PATH is the last resort; relative PATH entries are ignored", () => {
-    const r = resolveLocalBinary({ ...base, resolveFrom: empty, env: { PATH: `relative/dir:${pathDir}` } });
-    assert.deepEqual(r, { path: pathBin, source: "path" });
+    // An executable really is there, relative to the working directory: it must not be picked up.
+    exe(join(root, "relative/dir/haltsql"));
+    exe(join(root, "haltsql"));
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      const r = resolveLocalBinary({ ...base, resolveFrom: empty, env: { PATH: `relative/dir:.:${pathDir}` } });
+      assert.deepEqual(r, { path: pathBin, source: "path" });
+      assert.throws(
+        () => resolveLocalBinary({ ...base, resolveFrom: empty, env: { PATH: "relative/dir:.:" } }),
+        HaltSQLUsageError,
+      );
+    } finally {
+      process.chdir(cwd);
+    }
   });
   test("an unsupported platform skips the package step", () => {
     const r = resolveLocalBinary({ platform: "linux", arch: "riscv64", resolveFrom: proj, env: { PATH: pathDir } });
@@ -274,6 +287,35 @@ describe("fake engines (fail closed)", () => {
     );
     const v = new LocalVerifier({ binary: bin, policyFile: "p.yaml" });
     await assert.rejects(v.verify("SELECT 1"), HaltSQLProtocolError);
+    await v.close();
+  });
+
+  test("an invalid verdict rejects everything pending and kills the engine", async () => {
+    const bin = fakeEngine(
+      `let n = 0; lines.on("line", (l) => process.stdout.write(JSON.stringify(verdict(JSON.parse(l), n++ === 0 ? { allowed: "true", reasons: [] } : {})) + "\\n"));`,
+    );
+    const v = new LocalVerifier({ binary: bin, policyFile: "p.yaml" });
+    const ps = [v.verify("SELECT 1"), v.verify("SELECT 2")];
+    const pid = v.pid;
+    const rs = await Promise.allSettled(ps);
+    assert.ok(rs.every((r) => r.status === "rejected" && r.reason instanceof HaltSQLProtocolError), JSON.stringify(rs));
+    assert.match(rs[0].reason.message, /allowed must be a boolean/);
+    assert.ok(await waitDead(pid), "engine kept running after an invalid verdict");
+    await v.close();
+  });
+
+  test("output nobody asked for kills the engine; the next call starts a fresh one", async () => {
+    const bin = fakeEngine(
+      `lines.on("line", (l) => { const out = JSON.stringify(verdict(JSON.parse(l))) + "\\n"; process.stdout.write(out + out); });`,
+    );
+    const v = new LocalVerifier({ binary: bin, policyFile: "p.yaml" });
+    const p1 = v.verify("SELECT 1");
+    const pid = v.pid;
+    assert.equal((await p1).sql_sha256, sha("SELECT 1"));
+    assert.ok(await waitDead(pid), "engine kept running after unsolicited output");
+    const p2 = v.verify("SELECT 2");
+    assert.notEqual(v.pid, pid);
+    assert.equal((await p2).sql_sha256, sha("SELECT 2"));
     await v.close();
   });
 

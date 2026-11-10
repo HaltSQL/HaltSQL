@@ -1,5 +1,6 @@
 package com.haltsql.client;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -131,7 +132,33 @@ class TlsTest {
     params.setProtocols(new String[] {"TLSv1.3"});
     HaltSQLClient c =
         HaltSQLClient.builder(url()).sslContext(trusting()).sslParameters(params).build();
+    assertArrayEquals(new String[] {"TLSv1.3"}, c.httpClient().sslParameters().getProtocols());
     assertTrue(verify(c).allowed());
+    // Parameters the server cannot satisfy must fail the handshake, not be dropped.
+    SSLParameters none = new SSLParameters();
+    none.setProtocols(new String[] {"TLSv1.3"});
+    none.setCipherSuites(new String[] {"TLS_RSA_WITH_AES_128_CBC_SHA"});
+    HaltSQLClient strict =
+        HaltSQLClient.builder(url())
+            .sslContext(trusting())
+            .sslParameters(none)
+            .retries(0, Duration.ZERO, Duration.ZERO)
+            .build();
+    HaltSQLException e = assertThrows(HaltSQLException.class, () -> verify(strict));
+    assertEquals(HaltSQLException.Kind.TRANSPORT, e.kind());
+  }
+
+  /** A trust store that does not contain the server's certificate must not be "repaired". */
+  @Test
+  void sslContextWithAnotherCaFailsClosed() throws Exception {
+    TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    tmf.init((KeyStore) null); // the JVM default roots: they do not sign the test certificate
+    SSLContext ctx = SSLContext.getInstance("TLS");
+    ctx.init(null, tmf.getTrustManagers(), null);
+    HaltSQLClient c =
+        HaltSQLClient.builder(url()).sslContext(ctx).retries(0, Duration.ZERO, Duration.ZERO).build();
+    HaltSQLException e = assertThrows(HaltSQLException.class, () -> verify(c));
+    assertEquals(HaltSQLException.Kind.TRANSPORT, e.kind());
   }
 
   @Test
