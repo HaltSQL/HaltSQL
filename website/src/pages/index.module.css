@@ -7,8 +7,7 @@
 .title {
   font-size: clamp(2.75rem, 7.4vw, 6rem);
   line-height: 0.95;
-  font-weight: 900;
-  font-stretch: 125%;
+  font-weight: 800;
   letter-spacing: -0.035em;
   margin: 0;
   max-width: 13ch;
@@ -101,8 +100,7 @@
 .sHead h2 {
   font-size: clamp(2rem, 4vw, 2.9rem);
   line-height: 1;
-  font-weight: 900;
-  font-stretch: 125%;
+  font-weight: 800;
   letter-spacing: -0.03em;
   margin: 0;
 }
@@ -137,7 +135,6 @@
 .mode h3 {
   font-size: 1.5rem;
   font-weight: 800;
-  font-stretch: 125%;
   margin: 0 0 0.25rem;
 }
 
@@ -251,8 +248,7 @@
 
 .final h2 {
   font-size: clamp(2rem, 4vw, 2.75rem);
-  font-weight: 900;
-  font-stretch: 125%;
+  font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1;
   margin: 0;
