@@ -838,6 +838,34 @@ let restart_tests =
             in
             check_str "RollingUpdate" "ok" (member "result" body);
             Lwt.return_unit) );
+    ( "missing service-account files load and are reported at startup",
+      `Quick,
+      fun () ->
+        let kube api =
+          `Assoc
+            [
+              ( "kubernetes",
+                `Assoc
+                  [
+                    ("namespace", `String "haltsql");
+                    ("api", `String api);
+                    ("token_file", `String "/nonexistent/sa/token");
+                    ("ca_file", `String "/nonexistent/sa/ca.crt");
+                  ] );
+            ]
+        in
+        let problems api =
+          let cfg = config ~extra:[ ("fleet", kube api) ] () in
+          match cfg.C.Console_config.kubernetes with
+          | Some k -> C.Console_config.kubernetes_file_problems k
+          | None -> Alcotest.fail "kubernetes block not parsed"
+        in
+        Alcotest.(check int)
+          "https: token and CA" 2
+          (List.length (problems "https://kubernetes.default.svc"));
+        Alcotest.(check int)
+          "loopback http: token only" 1
+          (List.length (problems "http://127.0.0.1:8001")) );
     ( "token file gone at restart time is 503, not 502",
       `Quick,
       fun () ->
@@ -949,8 +977,10 @@ let config_tests =
         rejected "plain http off loopback"
           (k (kube_cfg ~api:"http://kube.example.test:8080" ()));
         rejected "not a URL" (k (kube_cfg ~api:"kube.example.test" ()));
-        rejected "missing token file" (k (kube_cfg ~token:"/nonexistent/token" ()));
-        rejected "https without the CA file"
+        (* service-account files are mounted into the pod: a config validated elsewhere
+           (CI, a chart render) still loads, and Fleet.start warns about them *)
+        accepted "missing token file" (k (kube_cfg ~token:"/nonexistent/token" ()));
+        accepted "https without the CA file"
           (k (kube_cfg ~api:"https://kube.example.test" ~ca:"/nonexistent/ca.crt" ()));
         rejected "bad workload" (k ~workload:"daemonset/x" (kube_cfg ()));
         rejected "bad workload without kubernetes" (fun () ->

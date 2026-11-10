@@ -143,8 +143,8 @@ fleet:
 | `max_concurrent_probes` | `16` | Verifiers probed at the same time (1 to 1024); each uses up to three requests. A verifier that stays unreachable is probed less often: after `n` failed polls in a row it is skipped for `min(2^(n-1) - 1, 8)` polls (its `error` says so), and probed every poll again once it answers. |
 | `kubernetes.namespace` | required | Namespace of the verifier workloads. Must be a valid namespace name (checked at load). |
 | `kubernetes.api` | `https://kubernetes.default.svc` | API server URL. `https://` is verified against `ca_file`; `http://` is accepted only for a loopback host (tests, `kubectl proxy`), since the service-account token would otherwise be sent in cleartext. Checked at load. |
-| `kubernetes.token_file` | in-cluster service-account token | Must exist at load; re-read on every restart, so projected tokens rotate. |
-| `kubernetes.ca_file` | in-cluster CA | Cluster CA bundle (PEM). Must exist at load when `api` is `https://`. |
+| `kubernetes.token_file` | in-cluster service-account token | Re-read on every restart, so projected tokens rotate. A missing file is logged as a warning at startup and makes restarts return `503 NOT_CONFIGURED`; it does not stop the config from loading (so a config can be validated outside the pod). |
+| `kubernetes.ca_file` | in-cluster CA | Cluster CA bundle (PEM), used when `api` is `https://`. Missing: warned at startup, restarts fail, as for `token_file`. |
 
 What each verifier kind exposes:
 

@@ -634,20 +634,32 @@ let kubernetes j =
   if not (K8s_names.valid_dns_name k.k_namespace) then
     invalid "fleet.kubernetes.namespace %S is not a valid namespace name" k.k_namespace;
   let api = Uri.of_string k.k_api in
-  let https =
-    match (Option.map String.lowercase_ascii (Uri.scheme api), Uri.host api) with
-    | Some "https", Some h when h <> "" -> true
-    | Some "http", Some h when is_loopback_host h -> false
-    | _ ->
-        invalid
-          "fleet.kubernetes.api must be https:// (or http:// on a loopback host, e.g. \
-           kubectl proxy): the service-account token would be sent in cleartext"
-  in
-  if not (Sys.file_exists k.k_token_file) then
-    invalid "fleet.kubernetes.token_file %s does not exist" k.k_token_file;
-  if https && not (Sys.file_exists k.k_ca_file) then
-    invalid "fleet.kubernetes.ca_file %s does not exist" k.k_ca_file;
+  (match (Option.map String.lowercase_ascii (Uri.scheme api), Uri.host api) with
+  | Some "https", Some h when h <> "" -> ()
+  | Some "http", Some h when is_loopback_host h -> ()
+  | _ ->
+      invalid
+        "fleet.kubernetes.api must be https:// (or http:// on a loopback host, e.g. \
+         kubectl proxy): the service-account token would be sent in cleartext");
+  (* The token and CA files are only checked when the console starts (Fleet.start logs a
+     warning) and on each restart: they are mounted into the pod, so a config validated
+     elsewhere (CI, a chart render) must not depend on them. *)
   k
+
+(** Problems with the service-account files of [k] (missing token, or missing CA for an
+    https API), for a startup warning. *)
+let kubernetes_file_problems k =
+  let https =
+    match Option.map String.lowercase_ascii (Uri.scheme (Uri.of_string k.k_api)) with
+    | Some "https" -> true
+    | _ -> false
+  in
+  (if Sys.file_exists k.k_token_file then []
+   else [ Printf.sprintf "fleet.kubernetes.token_file %s does not exist" k.k_token_file ])
+  @
+  if https && not (Sys.file_exists k.k_ca_file) then
+    [ Printf.sprintf "fleet.kubernetes.ca_file %s does not exist" k.k_ca_file ]
+  else []
 
 let top_level_keys =
   [

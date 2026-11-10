@@ -964,6 +964,12 @@ let poll_once ?now (ctx : Ctx.t) =
   Lwt.return doc
 
 let start (ctx : Ctx.t) : unit Lwt.t =
+  (* Restarts would fail with 503 NOT_CONFIGURED; say so at startup, not during an
+     incident. *)
+  Option.iter
+    (fun k ->
+      List.iter (log "warn" "%s: restarts will fail") (C.kubernetes_file_problems k))
+    ctx.config.kubernetes;
   if ctx.config.verifiers = [] then Lwt.return_unit
   else
     let period = float_of_int (max 1 ctx.config.fleet_poll_seconds) in
