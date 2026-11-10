@@ -24,6 +24,18 @@ each mutant.
 | `services/server.py`, `auth.py`, `load.py`, `chain.py`, `proxy.py` | the HTTP sidecar's request path, caller authentication (JWT, JWKS, OIDC, mTLS), the policy and config loaders' security defaults, the audit chain verifier, and the proxy's enforcement and session handling (the proxy list needs the lab Postgres and `lab/.venv`) |
 | `sdks/typescript.py`, `sdks/go.py`, `sdks/java.py` | the TypeScript, Go and Java SDKs: response validation, fail-closed paths, retries, bind parameters, guarded execution (need Node, Go, or Java with Maven, the built binaries and the lab Postgres) |
 
+### Python integrations (`integrations/`)
+
+`integrations/mutants_*.py` hold the mutants for the agent-framework packages
+and their shared core, LangChain / LlamaIndex / Vanna, the MCP server's
+transport and configuration, and the local, native and HTTP verifiers (259 in
+all). Each list also says which test directories a mutated file needs
+(`tests_for`), because the frameworks pin conflicting dependencies and every
+package is tested in its own virtualenv (`clients/python/run-all-tests.sh`
+with `FULL=1` creates them). They are not wired into `mutate.py` yet: run a
+mutant by applying its snippet and running the package's tests in its
+virtualenv.
+
 ## Rules for the lists
 
 - A mutant is one realistic regression, written so that the source still

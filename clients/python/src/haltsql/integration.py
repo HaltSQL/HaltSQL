@@ -102,7 +102,10 @@ def feedback_for_model(exc: BaseException) -> str:
     """A message safe to return to an agent when a guarded query did not run.
 
     Denials list each ``CODE: hint`` so the model can fix its SQL. Other
-    failures say only that nothing ran, without internal details.
+    HaltSQL failures say only that nothing ran, without internal details. An
+    error the database server reported (one with an ``sqlstate``) is given as
+    its class and the first line of its message; any other exception, such as
+    a failed connection, as its class name only.
     """
     if isinstance(exc, QueryDenied):
         lines = ["HaltSQL denied the query; it was not executed. Fix the SQL and retry:"]
@@ -117,4 +120,13 @@ def feedback_for_model(exc: BaseException) -> str:
         return f"The query was not executed: {exc}"
     if isinstance(exc, HaltSQLError):
         return "The query was not executed."
-    return f"Database error: {type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}".rstrip(": ")
+    name = type(exc).__name__
+    if getattr(exc, "sqlstate", None):
+        # The database server reported this (it has an SQLSTATE): the first line of
+        # its message helps the model fix the query.
+        text = str(exc)
+        return f"Database error: {name}: {text.splitlines()[0] if text else ''}".rstrip(": ")
+    # Anything else (a failed connection, a driver error, whatever a custom
+    # connect() raised) can name hosts, ports, roles or a whole connection
+    # string. The model gets the exception type only.
+    return f"Database error: {name}"
