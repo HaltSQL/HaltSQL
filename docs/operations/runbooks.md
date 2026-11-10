@@ -186,7 +186,7 @@ Use the path that matches how the policy is delivered:
 | ConfigMap mounted with `subPath`, Helm or operator | Revert and roll out (`helm upgrade`/`helm rollback`, revert the `HaltSQLPolicy`). |
 | Local `bundle:` file | Put the previous `.haltsqlbundle` and its `.sig` back (atomic write, then rename) and reload. |
 | `bundle_source` | Rebuild the previous policies as a bundle with a **higher** `metadata.version` than the bad one, sign it, and push it. Servers refuse older or equal versions (`bundle_source_rollback`), and the config file cannot turn that off. Servers pick it up on the next poll (`poll_interval_s`, default 60). |
-| `haltsql-proxy` | Revert the policy files and reload. New connections get the old policy; existing sessions keep the bad one until they close, so restart the proxy if that matters. |
+| `haltsql-proxy` | Revert the policy files and reload. New connections get the old policy, and sessions bound to the changed policy are ended at their next transaction boundary (`FATAL 57P01`, at most `limits.termination_grace_seconds` later) so their clients reconnect under it. With `reload.terminate_changed_sessions: false`, existing sessions keep the bad one until they close: restart the proxy. |
 
 ### Verify
 
@@ -371,7 +371,7 @@ What applies without a restart, and what does not:
 | OPA and OTLP headers | Config with secret placeholders | Reload (`opa` and `telemetry.otlp` are applied on reload; a reload resolves placeholders again). |
 | Audit sink credentials (static S3 keys, Elasticsearch API key, Kafka SASL password) | Config with secret placeholders | Restart: audit sinks are opened once. Temporary credentials (`web_identity`, `instance`, GCS metadata) refresh by themselves. |
 | Bundle source `auth` | Config with secret placeholders | Restart: the running pollers keep their settings. |
-| Proxy users (`scram_verifier`) and identities | Proxy config | Reload; applies to new connections only. Restart the proxy to end existing sessions. |
+| Proxy users (`scram_verifier`) and identities | Proxy config | Reload. New connections use the new credentials, and sessions of a user whose verifier changed or who was removed are ended at their next transaction boundary (`FATAL 57P01`), unless `reload.terminate_changed_sessions` is `false`. |
 | Proxy upstream password | Proxy config | Reload; applies to new connections. |
 | Kubernetes Secrets under the operator | Projected Secret volume | `kubectl rollout restart deploy/<server>`: the operator cannot read Secret values, so it does not roll on value changes. |
 | Kubernetes Secrets under Helm | Secret injected as env | The chart rolls pods when `tokens` change; with `existingTokenSecret` it does not, so restart the pods. |

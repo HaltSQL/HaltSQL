@@ -63,8 +63,10 @@ auth:
       context: { tenant_id: acme }
 limits:
   max_connections: 200
+  max_unauthenticated_per_ip: 20       # per source address, before authentication
   max_message_bytes: 1048576
   idle_timeout_seconds: 300
+  max_session_lifetime_seconds: 3600   # then FATAL 57P01 at a transaction boundary
 deny_sqlstate: "42501"
 audit:
   sinks:
@@ -179,9 +181,10 @@ same way. The proxy does not trust the role's or database's default:
 
 A session is bound to one policy for its whole life, so the pinned path always
 belongs to the policy that verifies its statements. On PostgreSQL 17 and
-earlier a later change inside the session is not reported to the proxy:
-keep `SET` out of the policy's allowed statements (v1 policies cannot allow
-it). A connection pooler between the proxy and PostgreSQL must run in session
+earlier a later change inside the session is not reported to the proxy. A
+policy cannot allow `SET` (only `select`, `insert`, `update` and `delete`
+exist), which leaves functions: do not put `set_config` in a policy's
+`functions` list. A connection pooler between the proxy and PostgreSQL must run in session
 mode and pass the `search_path` startup parameter through; PgBouncer rejects
 it unless it is tracked or listed in `ignore_startup_parameters`, and ignoring
 it makes the check fail, which is the intended outcome.
@@ -521,6 +524,12 @@ limit off. `limits.idle_timeout_seconds` is separate and off by default.
   available through the proxy.
 - No metrics endpoint yet: audit and reload counters are in the logs, and the
   audit stream itself.
+- The upstream `search_path` is confirmed once, at session start. PostgreSQL
+  17 and earlier do not report later changes, so a policy must not allow
+  `set_config` (a policy cannot allow `SET` itself).
+- `limits.max_unauthenticated_per_ip` sees the address of the TCP peer. The
+  PROXY protocol is not supported, so behind a load balancer that hides
+  client addresses every client shares one budget.
 - Client `options`/GUC startup parameters are ignored, not forwarded.
 
 ## Testing
@@ -532,6 +541,12 @@ dune test test/proxy
 
 `test/proxy/test_pgwire_unit.ml` covers the codecs, SCRAM (RFC 7677 vector),
 config validation, enforcement decisions and statement bookkeeping.
+`test/proxy/test_proxy_session.ml` runs the engine in-process against a fake
+PostgreSQL backend (`fake_pg.ml`) and needs nothing else: `search_path`
+pinning and the refusal on a mismatch, the worker pool, pipelined message
+order, `execute` audit records, the lifetime limit, which sessions a reload
+ends and when, the MD5-without-TLS refusal and the per-address limit on
+unauthenticated connections.
 `test/proxy/test_proxy_integration.ml` starts the real binary four times
 (SCRAM + optional TLS, client-cert auth, tight limits, unavailable upstream TLS)
 against database `haltsql_proxy_test` and drives it with psycopg 3 from
@@ -547,8 +562,8 @@ records in a combined log verified with `haltsql audit verify --mixed`, a
 failing file sink (a FIFO whose reader goes away, so writes get `EPIPE`) with
 `fail_closed` (statements refused with `58030`, then recovery), `buffer`
 (refusal at the bound, in-order drain) and `drop`, `SIGHUP` and `reload.watch`
-(new sessions get the new policy, existing ones keep theirs, a broken config
-is kept out), and an S3 sink writing to a real MinIO container (host port
+(new sessions get the new policy, existing ones keep theirs with
+`reload.terminate_changed_sessions: false`, a broken config is kept out), and an S3 sink writing to a real MinIO container (host port
 16002) whose objects then verify. `test/proxy/test_proxy_audit_unit.ml`
 covers the `audit`/`reload` config sections and the file sink's chain.
 

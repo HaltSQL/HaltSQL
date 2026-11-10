@@ -36,6 +36,12 @@ even before 1.0.
   session. Per-session message order, the fail-closed audit policy and the
   order of the hash chain are unchanged.
 
+### Fixed
+- `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
+  is not hash-chained, that a failed audit write does not block the
+  statement and that there is no hot reload. All three were wrong; the page
+  now describes the code.
+
 ### Security
 - **haltsql-proxy limits unauthenticated connections per source address**
   (`limits.max_unauthenticated_per_ip`, default 20, `0` disables). One

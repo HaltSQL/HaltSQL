@@ -15,14 +15,16 @@ The code lives in `lib/pgwire` and `bin/proxy`:
 |---|---|
 | `bin/proxy/main.ml` | CLI: `run`, `validate`, `scram-verifier`; signal handling |
 | `lib/pgwire/proxy_config.ml` | Loads and validates `kind: ProxyConfig`; builds each user's or identity's binding (policy + context) |
-| `lib/pgwire/server.ml` | Listener, connection limit, TLS server config, graceful shutdown |
-| `lib/pgwire/session.ml` | One client connection: startup, authentication, the enforcing relay |
+| `lib/pgwire/server.ml` | Listener, connection limits (total and per-address before authentication), TLS server config, hot reload and which sessions it ends, graceful shutdown |
+| `lib/pgwire/session.ml` | One client connection: startup, authentication, upstream `search_path` check, the enforcing relay, ending at a transaction boundary |
 | `lib/pgwire/enforce.ml` | Decisions: verify, transaction-control allowlist, Bind rewriting, denial fields |
 | `lib/pgwire/stmt_state.ml` | Prepared-statement bookkeeping across pipelined `Sync` segments |
 | `lib/pgwire/wire.ml` | Message codecs |
 | `lib/pgwire/scram.ml` | Server side of SCRAM-SHA-256 |
-| `lib/pgwire/upstream.ml` | Connects to the real server; forwards cancel requests |
-| `lib/pgwire/plog.ml` | JSON logs on stderr and the audit stream |
+| `lib/pgwire/upstream.ml` | Connects to the real server (TLS, authentication, pinned `search_path`); forwards cancel requests |
+| `lib/pgwire/paudit.ml` | The audit log: hash-chained records, sinks, failure policies |
+| `lib/pgwire/offload.ml` | Bounded thread pool for verification and audit file writes |
+| `lib/pgwire/plog.ml` | Operational JSON logs on stderr |
 
 ## Architecture and trust
 
@@ -37,13 +39,13 @@ flowchart LR
         c2["BI tool / any driver"]
     end
     subgraph px["haltsql-proxy (trusted)"]
-        lst["Listener<br/>max_connections"]
+        lst["Listener<br/>max_connections,<br/>pre-auth cap per address"]
         sess["Session per connection"]
         authn["Auth<br/>SCRAM verifier or client cert"]
         bind["Binding<br/>policy + context"]
         enf["Enforce<br/>Haltsql.verify, Bind rewrite"]
         st["Stmt_state<br/>verdict per statement"]
-        aud["Audit JSON lines"]
+        aud["Audit sinks<br/>hash-chained JSON lines"]
         lst --> sess --> authn --> bind --> enf
         enf -->|"record and look up verdicts"| st
         enf --> aud
@@ -54,7 +56,7 @@ flowchart LR
     enf -->|"service credentials<br/>one upstream connection per session"| pg[("PostgreSQL")]
 ```
 
-Three properties follow from this layout:
+Four properties follow from this layout:
 
 1. **The client cannot skip verification.** Every `Query` and `Parse` goes
    through `Haltsql.verify` before anything is forwarded.
@@ -64,6 +66,9 @@ Three properties follow from this layout:
 3. **The forwarded SQL is the verified SQL.** The SQL bytes sent upstream are
    always byte for byte the bytes that were verified. Only `Bind` parameter
    values for tenancy parameters are rewritten.
+4. **The server reads names the way the verifier did.** The upstream
+   session's `search_path` is set from the bound policy and confirmed before
+   the first statement, and a session keeps one policy for its whole life.
 
 ## Startup and authentication
 
@@ -84,14 +89,24 @@ sequenceDiagram
     C->>P: SASLInitialResponse, then SASLResponse
     P->>P: verify proof against the stored verifier
     P-->>C: AuthenticationOk
-    P->>U: connect with service user, client_encoding UTF8, application_name
+    P->>U: connect with service user, client_encoding UTF8, search_path from the policy, application_name
     U-->>P: auth exchange, ParameterStatus, BackendKeyData, ReadyForQuery
     P->>P: check client_encoding and standard_conforming_strings
-    P-->>C: ParameterStatus, proxy-issued BackendKeyData, ReadyForQuery
+    P-->>C: ParameterStatus, proxy-issued BackendKeyData
+    P->>U: Query SHOW search_path
+    U-->>P: one row, CommandComplete, ReadyForQuery
+    P->>P: compare with the pinned search_path (mismatch is FATAL 08006)
+    P-->>C: ReadyForQuery
 ```
 
 Details that matter for security:
 
+- **Slots before authentication.** A connection counts against
+  `limits.max_connections` from accept. Until it has authenticated it also
+  counts against `limits.max_unauthenticated_per_ip` (default 20) for its
+  source address; the connection over that cap is refused at accept with
+  `FATAL 53300`. `Server` keeps the per-address counter and decrements it
+  when `Session` reports a successful authentication or the connection ends.
 - **TLS.** An `SSLRequest` is answered with `S` and a TLS handshake when
   `tls` is configured, otherwise `N`. Plaintext bytes pipelined after the
   `SSLRequest` are a protocol violation (CVE-2021-23214). `GSSENCRequest` is
@@ -122,15 +137,67 @@ Details that matter for security:
   `standard_conforming_strings` other than `on`, the session is terminated.
   The verified bytes must mean the same thing to Postgres as they did to the
   parser.
+- **Pinned `search_path`.** The verifier resolves an unqualified name through
+  the policy's `search_path` (`pg_catalog` first unless the policy places it).
+  PostgreSQL resolves it through the session's `search_path`, which by
+  default comes from `ALTER ROLE` / `ALTER DATABASE` or `postgresql.conf` and
+  has nothing to do with the policy. So `Upstream.connect` puts
+  `search_path` in the upstream startup packet (which overrides role and
+  database settings): the policy's schemas, each double-quoted, then
+  `pg_temp`. `pg_temp` is explicit and last because PostgreSQL otherwise
+  searches temporary tables before everything else. When the upstream
+  reports `ReadyForQuery`, `Session.confirm_search_path` sends
+  `SHOW search_path`, parses the answer the way PostgreSQL parses the
+  setting (`Upstream.parse_search_path`) and compares the schema lists. The
+  client's `ReadyForQuery` is held back until the comparison passed, so no
+  client statement can be forwarded before it; a mismatch ends the session
+  with `FATAL 08006`. PostgreSQL 18 and later also report the setting as a
+  `ParameterStatus`, at startup and on every change, and a reported value
+  that differs ends the session. The path belongs to the session's binding,
+  which never changes (see [Lifecycle](#lifecycle)).
+- **Upstream transport.** `upstream.tls.mode` is `disable` (the default),
+  `require` (encrypted, any certificate accepted) or `verify-full` (chain
+  and host verified); only the last authenticates the database. The proxy
+  never sends a cleartext password without TLS, and refuses MD5
+  authentication without TLS unless `upstream.allow_insecure_auth` is set.
+  `Proxy_config.transport_notes` produces the warning logged at start when
+  TLS is off towards a host that is not a loopback address.
 
 ## The enforcing relay
 
-After startup, two loops run side by side (`Lwt.pick`):
+After startup, four promises run side by side (`Lwt.pick`; the first to finish
+ends the session):
 
 - `client_loop` reads one frontend message at a time and passes it to
   `handle_client_message`, which verifies, rewrites, replaces or drops it.
 - `upstream_loop` reads backend messages, updates statement bookkeeping, swaps
   injected errors for denial errors, and relays everything else.
+- `lifetime_timer` asks the session to end after
+  `limits.max_session_lifetime_seconds`.
+- `terminator` waits for such a request (from the timer or from a reload) and
+  ends the session at the next transaction boundary (see
+  [Lifecycle](#lifecycle)).
+
+### Threads
+
+The proxy is one Lwt event loop: code that blocks blocks every session. Two
+things would, so they run on a bounded pool of system threads (`Offload`,
+`limits.worker_threads`, default the number of CPUs clamped to 2..8):
+
+- **Verification.** `Haltsql.verify` waits for the parser's own worker pool
+  and then analyses the statement. `handle_client_message` hands
+  `Enforce.simple` / `Enforce.parse` to the pool and waits for the verdict.
+- **Audit writes** to `stdout` and `file` sinks, which are blocking `write`
+  calls (see [Audit and logs](#audit-and-logs)).
+
+Ordering does not change. `client_loop` handles one message at a time and
+does not read the next one until the current one is verified, audited and
+forwarded (or replaced), so pipelined `Parse` / `Bind` / `Execute` reach the
+upstream in the client's order; only *other* sessions run while one waits.
+`upstream_loop` keeps relaying responses to earlier segments meanwhile, which
+is the same interleaving `Stmt_state` already handled for a `Bind` waiting on
+an earlier `Parse`. A pool job cannot be cancelled: if the session ended
+while its job ran, the result is discarded and nothing is forwarded.
 
 ### Simple protocol
 
@@ -209,9 +276,20 @@ A problem in steps 1 to 3 is a denial with `E_PARAM_UNBOUND`. The client
 cannot make the proxy skip the rewrite: any shape it cannot rewrite safely is
 refused.
 
-**Other messages.** `Describe`, `Execute`, `Close`, `Flush` and `Sync` are
-validated and relayed. `Close` of a statement removes its verdict right away
-(removing early is safe, because a missing entry can only cause a denial).
+**Execute.** A verdict is recorded at `Parse`, but a prepared statement can
+run any number of times. Each `Execute` therefore writes an `execute` audit
+record before it is forwarded: the portal, the statement the portal was bound
+from, that statement's `sql_sha256` and fingerprint, and the row limit, never
+parameter values. The session keeps a small portal table for this (filled at
+`Bind`, emptied on `Close`, when the statement is closed, and when the
+transaction that owned the portal has ended), so a portal the proxy did not
+bind is recorded with a `null` statement instead of a guessed one. If the
+record cannot be written under `fail_closed`, the `Execute` is replaced by a
+denial like any other refused message.
+
+**Other messages.** `Describe`, `Close`, `Flush` and `Sync` are validated and
+relayed. `Close` of a statement removes its verdict right away (removing
+early is safe, because a missing entry can only cause a denial).
 
 ## Denials and ordering
 
@@ -314,8 +392,17 @@ stateDiagram-v2
     Discarding --> Relaying: Sync
     Relaying --> Closed: Terminate, FATAL, protocol violation, idle timeout
     Discarding --> Closed: Terminate or protocol violation
+    Relaying --> Ending: lifetime reached, or a reload changed the session
+    Discarding --> Ending: lifetime reached, or a reload changed the session
+    Ending --> Closed: transaction boundary or grace period over (FATAL 57P01)
     Closed --> [*]
 ```
+
+`ConnectingUpstream` includes the `SHOW search_path` round trip: the client
+sees its first `ReadyForQuery` only after it. In `Ending` the relay works as
+before (statements are still verified, under the session's own policy) until
+the upstream reports `ReadyForQuery` with status idle and nothing is in
+flight.
 
 ## Cancel requests
 
@@ -348,37 +435,96 @@ default) with `FATAL 57P05`, but only when no request is in flight.
 
 ## Audit and logs
 
-Every verified statement produces one audit record (`audit.type`: `stdout`,
-`file` or `none`), including statements let through by the
-transaction-control allowlist:
+`Paudit` writes the audit log. Every verified statement produces one record,
+including statements let through by the transaction-control allowlist, and
+every forwarded `Execute` produces one more:
 
 ```json
 {"ts":"...","event":"statement","session":"49fd05aacd53","user":"agent",
  "policy":"proxy-test","policy_version":"sha256:...","protocol":"extended",
  "allowed":false,"reasons":["E_COLUMN_DENIED"],"shadow_reasons":[],
  "sql_sha256":"...","fingerprint":"...","tables":["app.users"],
- "bind_params":[1],"statement":""}
+ "bind_params":[1],"statement":"","prev_hash":"<64 hex>","hash":"<64 hex>"}
+{"ts":"...","event":"execute","session":"49fd05aacd53","user":"agent",
+ "policy":"proxy-test","policy_version":"sha256:...","protocol":"extended",
+ "portal":"","statement":"s1","sql_sha256":"...","fingerprint":"...",
+ "max_rows":0,"prev_hash":"<64 hex>","hash":"<64 hex>"}
 ```
 
-- `bind_params` lists parameter positions only, never values.
+- `bind_params` lists parameter positions only, never values. `execute`
+  records carry no parameter values either.
 - Proxy-level refusals have their own events (`bind`, `parse`,
   `function_call`) with `reasons` and `message`.
 - The SQL text appears only with `audit.log_raw_sql: true`.
-- Operational logs go to stderr as JSON lines. Neither stream contains
-  passwords, verifiers, SCRAM messages, keys or bind values.
+- Operational logs (`Plog`) go to stderr as JSON lines. Neither stream
+  contains passwords, verifiers, SCRAM messages, keys or bind values.
 
-> **Note:** The proxy's audit stream is a plain JSON-lines log. Unlike the
-> `haltsql-server` audit sinks, its records are not hash-chained, and a failed
-> audit write does not block the statement (`lib/pgwire/plog.ml`). If you need
-> tamper evidence for proxy traffic, ship the stream to append-only storage.
+**Hash chain.** Records are sealed with the same `Audit_chain` code as the
+`haltsql-server` audit log: `hash = sha256_hex(prev_hash ^ L)`, `L` being the
+compact JSON of the record without `hash`, and the first record of a chain
+has 64 zeros as `prev_hash`. Each sink (`stdout`, `file`, `s3`, `gcs`) keeps
+its own chain; a file sink continues the chain of the existing file across
+restarts, and refuses to start on a file whose last line is not a sealed
+record. `haltsql audit verify` checks any of them.
+
+**A record that cannot be written blocks the statement.** With the default
+`on_error: fail_closed`, `Paudit.record_async` returns an error and the
+session replaces the statement (or the `Execute`) with a refusal: `ERROR`,
+SQLSTATE `58030`, `PROXY_AUDIT_UNAVAILABLE`, delivered in-band through the
+same token mechanism as a policy denial. Nothing reaches the database without
+its audit record, and a denial that cannot be recorded is refused the same
+way. `buffer` queues records in memory up to `max_buffer_records` and refuses
+beyond that; `drop` discards, counts and logs. See
+[../proxy.md](../proxy.md#failure-policy-on_error).
+
+**Order and threads.** `record_async` takes a process-wide FIFO lock, stamps
+the record, and writes `stdout`/`file` sinks on an `Offload` thread; object
+sinks append to their in-memory batch (and spool) on the event loop, where
+their uploader lives. One writer at a time, served in arrival order, means
+that in every sink the chain order, the timestamp order and the order in
+which statements were accepted are the same. The session waits for the
+outcome before it forwards, which is what keeps `fail_closed` true with the
+write off the loop. The retry loop that drains a `buffer` and the final flush
+at shutdown take the same lock.
 
 ## Lifecycle
 
-- `haltsql-proxy run -c FILE` loads and validates the config once. There is
-  no hot reload: restart the proxy to change users, policies or contexts.
-- New connections above `limits.max_connections` get `FATAL 53300`.
+- `haltsql-proxy run -c FILE` loads and validates the config. `SIGHUP`, or a
+  change to the config or a file it pulls in with `reload.watch: true`,
+  reloads it (`Server.reload`). A configuration that does not load or
+  validate is rejected and the current one stays in force. The listen
+  address and the audit sinks only change with a restart.
+- **A session has one binding for life.** It keeps the configuration snapshot
+  it was accepted under; a reload never swaps the policy of an open session,
+  because its upstream `search_path` was pinned for that policy and its
+  prepared statements were verified under it.
+- **A reload ends the sessions it changes.** Each authenticated session is
+  registered with the listener (`Session.live`: principal, credential,
+  binding, snapshot). After a reload, `Session.stale` compares it with the
+  new configuration: user or certificate identity removed, SCRAM verifier or
+  client CA bundle changed, bound to another policy, policy content
+  (`version`) or context changed, upstream changed, or
+  `allow_transaction_control` changed. Such a session is asked to end; all
+  others continue untouched. `reload.terminate_changed_sessions: false`
+  turns this off.
+- **Every session ends after `limits.max_session_lifetime_seconds`**
+  (default one hour, `0` for no limit), which bounds how long anything a
+  reload does not see can stay in effect.
+- **Ending happens at a transaction boundary.** The session goes on until the
+  upstream reports `ReadyForQuery` with transaction status idle and no
+  segment is in flight (immediately, if it is already there). Then the
+  client gets `FATAL 57P01` (`admin_shutdown`, what `pg_terminate_backend`
+  produces, so drivers and pools reconnect) and both connections close. A
+  client message that arrives at that point is neither verified nor
+  forwarded. A session that does not get there within
+  `limits.termination_grace_seconds` (default 30) is closed anyway, so
+  holding a transaction open does not keep an old policy alive; the upstream
+  rolls the transaction back.
+- New connections above `limits.max_connections`, or above
+  `limits.max_unauthenticated_per_ip` for their address, get `FATAL 53300`.
 - On `SIGTERM` or `SIGINT` the proxy stops accepting, lets sessions finish
-  for `shutdown_grace_seconds`, closes the rest and exits `0`.
+  for `shutdown_grace_seconds`, closes the rest, flushes the audit sinks and
+  exits `0`.
 
 Related pages: [deployment-modes.md](./deployment-modes.md),
 [tenancy-proof.md](./tenancy-proof.md),
