@@ -18,7 +18,7 @@ variable "name" {
 variable "image" {
   description = "haltsql image (pin a digest in production)."
   type        = string
-  default     = "ghcr.io/haltsql/haltsql:0.1.0"
+  default     = "ghcr.io/haltsql/haltsql:0.0.1"
 }
 
 variable "agent_token_sha256_secret" {

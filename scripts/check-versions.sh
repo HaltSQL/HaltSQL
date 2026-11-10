@@ -2,7 +2,7 @@
 # Fail when the version strings that ship in a release drift apart.
 #
 #   scripts/check-versions.sh                 # every manifest carries one version
-#   scripts/check-versions.sh --tag v0.1.0    # ... and it is the version of this tag
+#   scripts/check-versions.sh --tag v0.0.1    # ... and it is the version of this tag
 #   scripts/check-versions.sh --print         # print the version and exit
 #
 # A release-candidate tag (vX.Y.Z-rc.N) is checked against X.Y.Z: the manifests
@@ -67,6 +67,20 @@ record clients/mcp/pyproject.toml "[project] version" \
   "$(first_match clients/mcp/pyproject.toml 's/^version = "([^"]+)"$/\1/p')"
 record clients/mcp/src/haltsql_mcp/__init__.py "__version__" \
   "$(first_match clients/mcp/src/haltsql_mcp/__init__.py 's/^__version__ = "([^"]+)"$/\1/p')"
+# The MCP server and the framework integrations require haltsql>=<this version>.
+record clients/mcp/pyproject.toml "haltsql>= floor" \
+  "$(first_match clients/mcp/pyproject.toml 's/^ *"haltsql>=([^"]+)",?$/\1/p')"
+for d in integrations/*/; do
+  [ -f "$d/pyproject.toml" ] || continue
+  record "${d}pyproject.toml" "[project] version" \
+    "$(first_match "$d/pyproject.toml" 's/^version = "([^"]+)"$/\1/p')"
+  record "${d}pyproject.toml" "haltsql>= floor" \
+    "$(first_match "$d/pyproject.toml" 's/.*"haltsql(\[[a-z,]+\])?>=([^",]+)".*/\2/p')"
+  inits=("$d"src/*/__init__.py)
+  init="${inits[0]}"
+  record "$init" "__version__" \
+    "$( [ -f "$init" ] && first_match "$init" 's/^__version__ = "([^"]+)"$/\1/p')"
+done
 
 record clients/typescript/package.json "version" \
   "$(first_match clients/typescript/package.json 's/^  "version": "([^"]+)",?$/\1/p')"

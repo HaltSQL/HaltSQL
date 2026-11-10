@@ -1,6 +1,6 @@
 {
   "name": "@haltsql/client",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Fail-closed client for the HaltSQL sidecar: verify LLM-generated PostgreSQL before running it.",
   "license": "MIT",
   "repository": {
@@ -40,9 +40,9 @@
     "vectors": "node scripts/gen-testvectors.mjs"
   },
   "optionalDependencies": {
-    "@haltsql/native-darwin-arm64": "0.1.0",
-    "@haltsql/native-linux-arm64": "0.1.0",
-    "@haltsql/native-linux-x64": "0.1.0"
+    "@haltsql/native-darwin-arm64": "0.0.1",
+    "@haltsql/native-linux-arm64": "0.0.1",
+    "@haltsql/native-linux-x64": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

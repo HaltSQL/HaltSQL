@@ -4,7 +4,7 @@ metadata:
   name: haltsql
 spec:
   replicas: 2
-  image: ghcr.io/haltsql/haltsql:0.1.0
+  image: ghcr.io/haltsql/haltsql:0.0.1
   policies:
     - name: analytics
   config:

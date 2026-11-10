@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: pre-1.0](https://img.shields.io/badge/status-0.1.0%20preview-orange.svg)
+![Status: pre-1.0](https://img.shields.io/badge/status-0.0.1%20preview-orange.svg)
 
 **A policy firewall for LLM-generated PostgreSQL.**
 
@@ -192,7 +192,7 @@ When the query passes, `bind_params` tells you what to bind:
 
 ## Status
 
-HaltSQL is **0.1.0, a pre-1.0 preview**. Limits to know about:
+HaltSQL is **0.0.1, a pre-1.0 preview**. Limits to know about:
 
 - PostgreSQL only. HaltSQL vendors libpg_query 17 (the Postgres 17 grammar);
   `haltsql version` prints the exact version.
@@ -222,7 +222,7 @@ opam pin add haltsql-proxy https://github.com/HaltSQL/HaltSQL.git    # optional 
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD:/etc/haltsql:ro" \
-  ghcr.io/haltsql/haltsql:0.1.0 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
+  ghcr.io/haltsql/haltsql:0.0.1 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
   --allow-unauthenticated   # local development only; use a config with tokens otherwise
 ```
 

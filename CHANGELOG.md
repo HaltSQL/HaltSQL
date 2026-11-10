@@ -278,8 +278,12 @@ even before 1.0.
   unavailable also skips with a message.
 
 ### Changed
+- **The first release is numbered 0.0.1**, not 0.1.0. Nothing was ever
+  tagged or published as 0.1.0; every manifest, image reference, example and
+  the section below now say 0.0.1. The framework integrations require
+  `haltsql>=0.0.1`.
 - The Helm chart now versions in lockstep with HaltSQL: chart `version` is
-  `0.1.0` (it was `0.2.0`, never published).
+  `0.0.1` (it was `0.2.0`, never published).
 - CI on pull requests runs only the jobs whose files changed: a `changes`
   job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
   `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test
@@ -534,7 +538,7 @@ These were found while integrating the unreleased features above.
   after `cosign verify` of its digest. The image is now always run by
   digest, never by a mutable tag.
 
-## [0.1.0] - 2026-11-07
+## [0.0.1] - 2026-11-07
 
 First preview release. PostgreSQL only. Not yet recommended as the only
 control in front of production data; see `docs/defense-in-depth.md`.
@@ -580,5 +584,5 @@ control in front of production data; see `docs/defense-in-depth.md`.
 - `INSERT` may only name columns listed in the table's `columns`.
 - `LIKE`, `ILIKE` and `SIMILAR TO` are checked against the operator allowlist.
 
-[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.1.0
+[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.0.1

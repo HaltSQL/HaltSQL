@@ -45,18 +45,18 @@ The `dryrun/` packages can be deleted from the organisation's package settings.
 
 ```sh
 # Version strings agree, and match the tag you are about to push
-scripts/check-versions.sh --tag v0.1.0
+scripts/check-versions.sh --tag v0.0.1
 
 # Dry run from a branch, no tag needed
-gh workflow run release.yml --ref my-branch -f tag=v0.1.0-rc.1 -f dry_run=true
+gh workflow run release.yml --ref my-branch -f tag=v0.0.1-rc.1 -f dry_run=true
 gh workflow run native-packages.yml --ref my-branch -f dry_run=true
 
 # Or as a release candidate, which also signs with the tag identity users verify
-git tag -s v0.1.0-rc.1 && git push origin v0.1.0-rc.1
+git tag -s v0.0.1-rc.1 && git push origin v0.0.1-rc.1
 
 # Verify the draft locally (needs write access to see a draft; private dryrun/
 # packages need `docker login ghcr.io` with read:packages)
-scripts/verify-release.sh v0.1.0-rc.1
+scripts/verify-release.sh v0.0.1-rc.1
 ```
 
 A manual run signs with the branch's workflow identity, so verify it with

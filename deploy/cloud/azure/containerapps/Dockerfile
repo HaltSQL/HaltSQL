@@ -8,7 +8,7 @@
 #
 # CONFIG is sidecar.yaml (app.yaml) or shared.yaml (shared-service.yaml).
 # Pin the base image by digest in production.
-ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.1.0
+ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.1
 FROM ${HALTSQL_IMAGE}
 ARG CONFIG=sidecar.yaml
 COPY haltsql/${CONFIG} /etc/haltsql/config.yaml

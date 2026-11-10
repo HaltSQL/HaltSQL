@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Verify a HaltSQL release the way docs/security/supply-chain.md tells users to.
 #
-#   scripts/verify-release.sh v0.1.0                 # download the GitHub release and verify it
-#   scripts/verify-release.sh --dir assets v0.1.0    # verify files already downloaded
+#   scripts/verify-release.sh v0.0.1                 # download the GitHub release and verify it
+#   scripts/verify-release.sh --dir assets v0.0.1    # verify files already downloaded
 #
 # Runs, for the release TAG:
 #   1. cosign verify-blob of SHA256SUMS (keyless, release workflow identity)

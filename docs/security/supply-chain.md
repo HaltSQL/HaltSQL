@@ -83,7 +83,7 @@ Known gaps:
 Keyless signatures are issued by Sigstore to the identity of the GitHub
 Actions workflow that ran, so there is no long-lived signing key to protect or
 leak. The certificate identity is the workflow file and ref, for example
-`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.1.0`,
+`https://github.com/HaltSQL/HaltSQL/.github/workflows/release.yml@refs/tags/v0.0.1`,
 and the OIDC issuer is `https://token.actions.githubusercontent.com`.
 
 > **Note:** a release rebuilt by hand (`workflow_dispatch`) runs from the
@@ -132,9 +132,9 @@ fixes while HaltSQL is pre-1.0.
 
 You need [cosign](https://github.com/sigstore/cosign) v2.4 or later (v3 works
 too), the [GitHub CLI](https://cli.github.com/) 2.49 or later, and `jq`.
-Replace `v0.1.0` with the release you are checking.
+Replace `v0.0.1` with the release you are checking.
 
-`scripts/verify-release.sh v0.1.0` runs every command below (and checks that
+`scripts/verify-release.sh v0.0.1` runs every command below (and checks that
 every asset is present, listed in `SHA256SUMS` and signed) against a
 downloaded release; the release workflow runs it on every release before
 anyone else can. The steps by hand:
@@ -142,7 +142,7 @@ anyone else can. The steps by hand:
 ### Release tarballs
 
 ```sh
-TAG=v0.1.0
+TAG=v0.0.1
 gh release download "$TAG" --repo HaltSQL/HaltSQL --dir "haltsql-$TAG"
 cd "haltsql-$TAG"
 
@@ -169,7 +169,7 @@ gh attestation verify "haltsql-$TAG-linux-amd64.tar.gz" --repo HaltSQL/HaltSQL
 ### Container images
 
 ```sh
-IMAGE=ghcr.io/haltsql/haltsql:0.1.0
+IMAGE=ghcr.io/haltsql/haltsql:0.0.1
 ID='^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v'
 
 # Signature

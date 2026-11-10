@@ -234,7 +234,7 @@ The statement kinds a caller may run. Everything else (DDL, `DO`, `CALL`,
 denied with `E_STATEMENT_KIND`. Write kinds also need per-table
 [`writes`](#writes). Only one statement per request is ever allowed.
 
-Write support is limited in 0.1.0; read-only policies are the main target.
+Write support is limited in 0.0.1; read-only policies are the main target.
 
 ### require_limit
 
@@ -403,7 +403,7 @@ Built-in presets. The authoritative lists are in
 minor releases, but never to include functions with side effects. An unknown
 preset name is a load error.
 
-| Preset | Contents (0.1.0) |
+| Preset | Contents (0.0.1) |
 |---|---|
 | `aggregates` | `count`, `sum`, `avg`, `min`, `max`, `bool_and`, `bool_or`, `every`, `string_agg`, `array_agg`, `stddev`, `stddev_pop`, `stddev_samp`, `variance`, `var_pop`, `var_samp`, `percentile_cont`, `percentile_disc`, `mode` |
 | `math` | `abs`, `ceil`, `ceiling`, `floor`, `round`, `trunc`, `sign`, `sqrt`, `cbrt`, `power`, `mod`, `div`, `ln`, `log`, `log10`, `exp`, `pi`, `degrees`, `radians` |
@@ -439,7 +439,7 @@ The operator symbols a query may use. Any other operator is
 | `allow` | list of strings | Replaces the default list. |
 | `extend` | list of strings | Added to `allow`, or to the default list when `allow` is omitted. |
 
-The default list (`Policy_load.default_operators`) in 0.1.0 is:
+The default list (`Policy_load.default_operators`) in 0.0.1 is:
 
 - comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`
 - arithmetic (also date and interval arithmetic): `+`, `-`, `*`, `/`, `%`

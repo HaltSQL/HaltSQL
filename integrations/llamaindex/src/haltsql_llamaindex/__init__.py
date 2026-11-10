@@ -33,7 +33,7 @@ __all__ = [
     "guarded_nl_sql_query_engine",
     "__version__",
 ]
-__version__ = "0.1.0"
+__version__ = "0.0.1"
 
 
 class HaltSQLSQLError(NotImplementedError):

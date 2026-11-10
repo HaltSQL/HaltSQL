@@ -15,7 +15,7 @@ Catalogs covered:
 - [Collibra](#collibra)
 - [OpenMetadata](#openmetadata)
 
-| Catalog | `schema import` (export file) in 0.1.0 | `schema fetch` (live API) |
+| Catalog | `schema import` (export file) in 0.0.1 | `schema fetch` (live API) |
 |---|---|---|
 | dbt | yes: `manifest.json`, `catalog.json` | no (dbt Cloud is not covered) |
 | DataHub | yes: file-sink exports, GraphQL responses | with the catalog live-fetch work |
@@ -195,7 +195,7 @@ the manifest holds the same values as JSON.
   for the target you parsed with. A manifest parsed with a `dev` target names
   `dbt_alice.customers`, which matches nothing in production. Parse with the
   production target, or the target whose schemas you pulled.
-- **Descriptions in `manifest.json` are not read** in 0.1.0. A description
+- **Descriptions in `manifest.json` are not read** in 0.0.1. A description
   such as "Primary contact email" only counts through `catalog.json`, and only
   when `persist_docs` wrote it to the database as a comment.
 - **dbt Cloud** (the Discovery API) is not supported. Download the
@@ -276,7 +276,7 @@ haltsql schema import --from datahub datahub_export.json -o policies/pii.datahub
 
 ### Live fetch from DataHub
 
-> **Availability:** live fetch from OpenMetadata/DataHub is not in the 0.1.0 release; it lands with the catalog live-fetch work.
+> **Availability:** live fetch from OpenMetadata/DataHub is not in the 0.0.1 release; it lands with the catalog live-fetch work.
 
 With that work, `haltsql schema fetch --from datahub` reads the same labels
 straight from DataHub's GraphQL API, so nobody has to export a file:
@@ -460,12 +460,12 @@ classification-like.
 
 ## OpenMetadata
 
-There is no OpenMetadata importer in 0.1.0: `schema import --from` accepts
+There is no OpenMetadata importer in 0.0.1: `schema import --from` accepts
 `dbt`, `datahub`, `unity`, `atlan` and `collibra` only. If the PII tags in
 OpenMetadata come from dbt, import the dbt `manifest.json` directly in the
 meantime.
 
-> **Availability:** live fetch from OpenMetadata/DataHub is not in the 0.1.0 release; it lands with the catalog live-fetch work.
+> **Availability:** live fetch from OpenMetadata/DataHub is not in the 0.0.1 release; it lands with the catalog live-fetch work.
 
 That work adds both an importer (`schema import --from openmetadata`) and a
 live provider (`schema fetch --from openmetadata`). They read the same
