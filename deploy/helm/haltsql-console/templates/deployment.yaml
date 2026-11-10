@@ -4,6 +4,18 @@
 {{- if and .Values.rbac.create (not (or .Values.rbac.deployments .Values.rbac.statefulsets)) -}}
 {{- fail "rbac.create needs rbac.deployments or rbac.statefulsets (the verifier workloads the console may restart)" -}}
 {{- end -}}
+{{- /* Dev mode needs a loopback listen address and replaces every auth method,
+       so it cannot serve a Service, an Ingress or the sidecar: the console would
+       refuse to start, or sign every caller in. Run the bare binary instead. */ -}}
+{{- if .Values.console.devRole -}}
+{{- fail "console.devRole is not supported by the chart: dev mode needs a loopback listen address and signs every request in. Run the binary locally with --dev (docs/console/deploy.md#local-the-bare-binary)" -}}
+{{- end -}}
+{{- range .Values.extraArgs -}}
+{{- /* cmdliner accepts unambiguous prefixes of long options (--d, --de). */ -}}
+{{- if regexMatch "^--d(e(v)?)?(=|$)" (toString .) -}}
+{{- fail (printf "extraArgs must not enable dev mode (%s)" .) -}}
+{{- end -}}
+{{- end -}}
 {{- $o2p := .Values.oauth2Proxy -}}
 {{- if $o2p.enabled -}}
 {{- if not $o2p.existingSecret -}}
@@ -32,8 +44,13 @@ spec:
   template:
     metadata:
       annotations:
+        {{- /* Rolls the pod when the chart-rendered config changes. Not set with
+               console.existingConfigMap (the chart cannot see that ConfigMap), and
+               not for secretEnv/existingSecret: a hash of secret values would be
+               readable by anyone who can get pods. Restart, or use a reloader. */}}
+        {{- if not .Values.console.existingConfigMap }}
         checksum/config: {{ include "console.config" . | sha256sum }}
-        checksum/secret-env: {{ toJson .Values.secretEnv | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -44,7 +61,9 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "console.serviceAccountName" . }}
-      automountServiceAccountToken: {{ include "console.automountToken" . }}
+      # Never at pod level: when the token is needed it is projected into the
+      # console container only (not oauth2-proxy or extraContainers).
+      automountServiceAccountToken: false
       enableServiceLinks: false
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . | quote }}
@@ -73,10 +92,6 @@ spec:
             # The flag outranks the image's HALTSQL_CONSOLE_LISTEN and the config.
             - --listen
             - {{ include "console.listen" . | quote }}
-            {{- with .Values.console.devRole }}
-            - --dev
-            - {{ . | quote }}
-            {{- end }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -133,6 +148,11 @@ spec:
               mountPath: {{ .Values.persistence.mountPath | quote }}
             - name: tmp
               mountPath: /tmp
+            {{- if eq (include "console.automountToken" .) "true" }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
             {{- if .Values.verifierConfig.configMap }}
             - name: verifier-config
               mountPath: /etc/haltsql/config
@@ -218,6 +238,26 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if eq (include "console.automountToken" .) "true" }}
+        # What automountServiceAccountToken would mount, for the console only:
+        # a bound, expiring token (re-read on every restart call), the cluster
+        # CA and the namespace.
+        - name: kube-api-access
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3607
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - { key: ca.crt, path: ca.crt }
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: { apiVersion: v1, fieldPath: metadata.namespace }
+        {{- end }}
         {{- with .Values.verifierConfig.configMap }}
         - name: verifier-config
           configMap:

@@ -82,7 +82,8 @@ app.kubernetes.io/part-of: haltsql
 {{- end -}}
 {{- end -}}
 
-{{/* Whether the service account token is mounted. */}}
+{{/* Whether the service account token is mounted (into the console container
+only, through a projected volume; never at pod level). */}}
 {{- define "console.automountToken" -}}
 {{- if or .Values.rbac.create .Values.serviceAccount.automountServiceAccountToken -}}
 true
@@ -111,13 +112,28 @@ The console config document: console.config with the chart-owned keys set.
 {{- with .Values.console.frontendDir -}}
 {{- $_ := set $cfg "frontend_dir" . -}}
 {{- end -}}
-{{- if .Values.oauth2Proxy.enabled -}}
 {{- $auth := default dict (get $cfg "auth") -}}
 {{- if not (kindIs "map" $auth) -}}
 {{- fail "console.config.auth must be a map" -}}
 {{- end -}}
-{{- $_ := set $auth "proxy" (dict "user_header" "X-Forwarded-Email" "name_header" "X-Forwarded-Preferred-Username" "groups_header" "X-Forwarded-Groups" "label" "oauth2-proxy") -}}
+{{- if .Values.oauth2Proxy.enabled -}}
+{{- /* The sidecar reaches the console over loopback, so identity headers are
+       accepted only from 127.0.0.1 / ::1 (the console refuses an auth.proxy
+       without trusted_proxies or a shared secret). The chart owns every key:
+       oauth2-proxy overwrites exactly these headers on each request. */ -}}
+{{- $_ := set $auth "proxy" (dict "user_header" "X-Forwarded-Email" "name_header" "X-Forwarded-Preferred-Username" "groups_header" "X-Forwarded-Groups" "label" "oauth2-proxy" "trusted_proxies" (list "127.0.0.1/32" "::1/128")) -}}
 {{- $_ := set $cfg "auth" $auth -}}
+{{- else if get $auth "proxy" -}}
+{{- $p := get $auth "proxy" -}}
+{{- if not (kindIs "map" $p) -}}
+{{- fail "console.config.auth.proxy must be a map" -}}
+{{- end -}}
+{{- if not (or (get $p "trusted_proxies") (get $p "secret_header")) -}}
+{{- fail "console.config.auth.proxy needs trusted_proxies and/or secret_header + secret_sha256 (the console refuses to start without them); or enable oauth2Proxy" -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingressFrom) (not (get $p "secret_header")) -}}
+{{- fail "console.config.auth.proxy without the oauth2-proxy sidecar: set networkPolicy.ingressFrom to your proxy (an empty list admits every pod in the namespace), or add auth.proxy.secret_header + secret_sha256" -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.rbac.create -}}
 {{- $fleet := default dict (get $cfg "fleet") -}}

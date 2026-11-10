@@ -43,6 +43,17 @@ verifierConfig: { configMap: haltsql-config, policiesConfigMap: haltsql-policies
 rbac: { create: true, deployments: [haltsql] }
 ```
 
+## Verify the image
+
+Pin `image.digest` to a signed release image. The identity regexp accepts
+only the release workflow on a version tag:
+
+```sh
+cosign verify ghcr.io/haltsql/haltsql-console@sha256:<digest> \
+  --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Secure defaults
 
 - one replica, `Recreate` strategy: two consoles never write the same
@@ -51,17 +62,27 @@ rbac: { create: true, deployments: [haltsql] }
   `allowPrivilegeEscalation: false`, every capability dropped, `RuntimeDefault`
   seccomp; only `state_dir` and a size-limited `/tmp` are writable; meets the
   Pod Security Standards `restricted` profile;
-- no service account token and no service-link env vars, unless `rbac.create`
-  needs the token for verifier restarts;
+- no service account token and no service-link env vars; when `rbac.create`
+  needs the token for verifier restarts it is projected into the console
+  container only (`automountServiceAccountToken: false` on the pod, so the
+  oauth2-proxy sidecar and `extraContainers` never get it);
 - the restart Role is namespaced and allows only `patch` on the named
-  Deployments/StatefulSets: no `get`, `list`, `watch`, no other resources;
+  Deployments/StatefulSets: no `get`, `list`, `watch`, no other resources.
+  RBAC cannot narrow a patch to the restart annotation, so the console can
+  patch any field of those workloads; add an admission policy if that
+  matters (docs/console/deploy.md);
+- no dev mode: the chart refuses `console.devRole` and `--dev` in
+  `extraArgs`;
 - secrets only through `existingSecret` and `${env:...}` placeholders (or the
   console's own `${vault:...}`, `${aws-sm:...}`, `${gcp-sm:...}`);
 - NetworkPolicy: ingress only on the HTTP port, egress only to DNS, the
   verifiers, TCP 443 and explicit extra rules;
 - `ClusterIP` Service; the Ingress is opt-in;
-- with `oauth2Proxy.enabled`, the console listens on `127.0.0.1` only, so the
-  trusted identity headers can only come from the sidecar.
+- with `oauth2Proxy.enabled`, the console listens on `127.0.0.1` only and
+  `auth.proxy.trusted_proxies` is `127.0.0.1/32` and `::1/128`, so the trusted
+  identity headers can only come from the sidecar. An `auth.proxy` of your
+  own (without the sidecar) must set `trusted_proxies` or a shared secret and,
+  without the secret, a non-empty `networkPolicy.ingressFrom`.
 
 ## Values
 
@@ -79,7 +100,7 @@ rbac: { create: true, deployments: [haltsql] }
 | `nameOverride` / `fullnameOverride` | `""` | |
 | `serviceAccount.create` / `name` | `true` / `""` | |
 | `serviceAccount.annotations` | `{}` | IRSA, GKE or AKS Workload Identity for S3/GCS reads and secret managers. |
-| `serviceAccount.automountServiceAccountToken` | `false` | Forced on by `rbac.create`. |
+| `serviceAccount.automountServiceAccountToken` | `false` | Forced on by `rbac.create`. Projected into the console container only. |
 | `podAnnotations` / `podLabels` | `{}` | e.g. `azure.workload.identity/use: "true"`. |
 | `priorityClassName` / `runtimeClassName` | `""` | |
 
@@ -89,11 +110,11 @@ rbac: { create: true, deployments: [haltsql] }
 |---|---|---|
 | `console.port` | `8090` | Listen port (`--listen`). |
 | `console.config` | see `values.yaml` | The console config ([config.md](../../../docs/console/config.md)), rendered into a ConfigMap. Do not set `listen` or `state_dir` (the chart sets them; the schema refuses them). With `oauth2Proxy.enabled` the chart sets `auth.proxy`; with `rbac.create`, `fleet.kubernetes.namespace`. |
-| `console.existingConfigMap` | `""` | Your own ConfigMap with key `console.yaml` instead. Set `state_dir` to `persistence.mountPath` in it. |
-| `console.devRole` | `""` | `--dev ROLE`: every request is a local user with that role. Development only. The console refuses to start with it unless it listens on a loopback address, so it is not reachable through the Service. |
+| `console.config.audit.max_records` | `200000` | Records kept in memory, about 2.4 KB each: keep `max_records` x 2.4 KB under half of `resources.limits.memory`. The console's own default (2,000,000) needs about 5 GB. |
+| `console.existingConfigMap` | `""` | Your own ConfigMap with key `console.yaml` instead. Set `state_dir` to `persistence.mountPath` in it. Pods do not roll when it changes: restart the Deployment or use a reloader. |
 | `console.frontendDir` | `""` | `frontend_dir`; the image reserves `/usr/share/haltsql-console/web`. |
 | `existingSecret` | `""` | Secret whose keys become environment variables (`envFrom`) for `${env:NAME}` placeholders: admin tokens, GitHub token, webhook URLs. |
-| `secretEnv` | `{}` | Testing only: key/values rendered into a chart Secret. They end up in the Helm release; prefer `existingSecret`. |
+| `secretEnv` | `{}` | Testing only: key/values rendered into a chart Secret. They end up in the Helm release; prefer `existingSecret`. Pods do not roll when they change (no hash of secret values in pod annotations). |
 | `verifierConfig.configMap` | `""` | The verifiers' config, mounted at `/etc/haltsql/config` (with the `haltsql` chart: `<release>-config`). |
 | `verifierConfig.policiesConfigMap` | `""` | The verifiers' policies, mounted at `/etc/haltsql/policies` (`<release>-policies`), so relative paths in the verifier config resolve the same way. |
 | `auditVolume.volume` | `{}` | One pod volume source with the verifiers' audit files (file audit sources), mounted read-only. Leave empty for S3/GCS. |
@@ -115,7 +136,7 @@ rbac: { create: true, deployments: [haltsql] }
 
 | Key | Default | Description |
 |---|---|---|
-| `rbac.create` | `false` | Role + RoleBinding allowing only `patch` on the named workloads; mounts the token and sets `fleet.kubernetes.namespace`. |
+| `rbac.create` | `false` | Role + RoleBinding allowing only `patch` on the named workloads (a full patch: RBAC cannot limit it to the restart annotation); projects the token into the console container and sets `fleet.kubernetes.namespace`. |
 | `rbac.namespace` | `""` | The verifiers' namespace; defaults to the release namespace. |
 | `rbac.deployments` / `rbac.statefulsets` | `[]` | Workload names. At least one is required with `rbac.create`. |
 
@@ -124,14 +145,14 @@ rbac: { create: true, deployments: [haltsql] }
 | Key | Default | Description |
 |---|---|---|
 | `oauth2Proxy.enabled` | `false` | Run oauth2-proxy in the pod; the Service and probes go through it, the console binds to loopback, and `auth.proxy` trusts `X-Forwarded-Email`, `X-Forwarded-Groups` and `X-Forwarded-Preferred-Username`. `/healthz` and `/readyz` pass without a session. |
-| `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy:v7.8.1` | `repository`, `tag`, `digest`, `pullPolicy`. |
+| `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy:v7.8.1`, pinned by digest | `repository`, `tag`, `digest`, `pullPolicy`. The digest wins over the tag; update both together. |
 | `oauth2Proxy.port` | `4180` | |
 | `oauth2Proxy.existingSecret` | `""` | Required: `OAUTH2_PROXY_CLIENT_ID`, `OAUTH2_PROXY_CLIENT_SECRET`, `OAUTH2_PROXY_COOKIE_SECRET`. |
 | `oauth2Proxy.provider` | `oidc` | Any oauth2-proxy provider (`oidc`, `google`, `entra-id`, ...). |
 | `oauth2Proxy.oidcIssuerUrl` | `""` | Required with `provider: oidc`. |
 | `oauth2Proxy.redirectUrl` | `""` | `https://<host>/oauth2/callback`. |
 | `oauth2Proxy.emailDomains` | `["*"]` | |
-| `oauth2Proxy.allowedGroups` | `[]` | Only these groups may sign in. |
+| `oauth2Proxy.allowedGroups` | `[]` | Only these groups may sign in. Empty = every IdP user can sign in (the console still rejects users with no mapped role); the release NOTES warn unless `extraArgs` restricts groups (`--google-group`, `--github-team`, ...). |
 | `oauth2Proxy.scope` | `openid email profile` | Add `groups` where the IdP needs it. |
 | `oauth2Proxy.extraArgs` | `[]` | Extra flags, e.g. `--google-group=...`. |
 | `oauth2Proxy.extraVolumeMounts` | `[]` | Mounts into the sidecar (volumes from `extraVolumes`). |
@@ -157,9 +178,9 @@ rbac: { create: true, deployments: [haltsql] }
 | `extraArgs` / `extraEnv` / `extraEnvFrom` | `[]` | |
 | `extraVolumes` / `extraVolumeMounts` | `[]` | e.g. a Secrets Store CSI volume. |
 | `initContainers` / `extraContainers` | `[]` | |
-| `resources` | requests `100m`/`256Mi`, limit `1Gi` | The record index is in memory; size the limit for `audit.max_records`. |
+| `resources` | requests `100m`/`256Mi`, limit `1Gi` | The record index is in memory (about 2.4 KB per record); the default `audit.max_records` (200000) fits this limit. |
 | `podSecurityContext` / `securityContext` | hardened (above) | |
-| `startupProbe` | `/healthz`, 60 x 2 s | |
+| `startupProbe` | `/healthz`, 60 x 2 s | Process start only: `/healthz` answers once the listener is up; the record index rebuilds in the background and gates no probe. |
 | `livenessProbe` | `/healthz`, every 10 s | |
 | `readinessProbe` | `/readyz`, every 5 s | `503` while `state_dir` is not writable. |
 | `terminationGracePeriodSeconds` | `30` | |
@@ -172,7 +193,7 @@ rbac: { create: true, deployments: [haltsql] }
 | Key | Default | Description |
 |---|---|---|
 | `networkPolicy.enabled` | `true` | |
-| `networkPolicy.ingressFrom` | `[]` | Peers allowed to reach the console: the ingress controller, the load balancer's subnet. Empty = pods in the release namespace. |
+| `networkPolicy.ingressFrom` | `[]` | Peers allowed to reach the console: the ingress controller, the load balancer's subnet. Empty = pods in the release namespace. Required with your own `auth.proxy` (no sidecar, no shared secret). |
 | `networkPolicy.extraIngress` | `[]` | |
 | `networkPolicy.egress.allowDNS` | `true` | |
 | `networkPolicy.egress.verifiers` | pods `app.kubernetes.io/name: haltsql`, TCP 8080 | Egress rules to the verifiers' HTTP API. |

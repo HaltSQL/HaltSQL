@@ -14,7 +14,7 @@ image:
   tag: ""            # defaults to .Chart.AppVersion
   # Pin an exact, signed image. When set it wins over `tag`. Verify first:
   #   cosign verify ghcr.io/haltsql/haltsql-console@sha256:... \
-  #     --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' \
+  #     --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   digest: ""         # e.g. sha256:3f1c...
   pullPolicy: IfNotPresent
@@ -31,11 +31,15 @@ serviceAccount:
   # (azure.workload.identity/client-id) for S3/GCS audit reads and secrets.
   annotations: {}
   # The token is mounted when rbac.create is true (verifier restarts through
-  # the Kubernetes API) or when this is true (e.g. Vault's kubernetes auth).
+  # the Kubernetes API) or when this is true (e.g. Vault's kubernetes auth),
+  # as a projected volume in the console container only (never the
+  # oauth2-proxy sidecar or extraContainers).
   automountServiceAccountToken: false
 
 # Verifier restarts (fleet.kubernetes): a namespaced Role that allows only
 # `patch` on the named Deployments/StatefulSets, bound to the ServiceAccount.
+# RBAC cannot limit a patch to the restart annotation, so this is a full patch
+# of those workloads; see docs/console/deploy.md for an admission policy.
 # When enabled the chart sets fleet.kubernetes.namespace in the config and
 # mounts the service account token.
 rbac:
@@ -51,9 +55,6 @@ runtimeClassName: ""
 
 console:
   port: 8090
-  # --dev ROLE: every request is authenticated as a local user with ROLE
-  # (dev, analyst, owner, audit or admin). Development only. Never in production.
-  devRole: ""
   # Served at / when set. The image reserves /usr/share/haltsql-console/web.
   frontendDir: ""
   # The console configuration (docs/console/config.md), rendered into a
@@ -76,8 +77,16 @@ console:
     audit:
       sources: []
       #  - { verifier: auto, s3: "s3://acme-audit/haltsql/", region: us-east-1 }
+      # Records kept in memory (oldest evicted first). The console's own
+      # default (2,000,000) needs several GiB; this fits resources.limits.memory
+      # (1Gi) with headroom. An index entry measures about 2.4 KB
+      # (test/console/test_deploy.ml); keep max_records x that under half the
+      # memory limit, and raise both together.
+      max_records: 200000
   # Use your own ConfigMap (key console.yaml) instead of rendering `config`.
   # The chart still passes --listen; set state_dir to persistence.mountPath.
+  # Pods do not roll when that ConfigMap changes (the chart cannot hash it):
+  # restart the Deployment or use a reloader.
   existingConfigMap: ""
 
 # Secret holding the values referenced as ${env:NAME} in the config (verifier
@@ -87,7 +96,9 @@ console:
 # podAnnotations or use a reloader.
 existingSecret: ""
 # For quick tests only: key/value pairs rendered into a chart-managed Secret
-# (envFrom). Values end up in the Helm release. Prefer existingSecret.
+# (envFrom). Values end up in the Helm release. Prefer existingSecret. Pods do
+# not roll when these change either (a hash of them in a pod annotation would
+# be readable by anyone who can get pods).
 secretEnv: {}
 
 # The verifiers' own config and policies, mounted read-only so the Playground,
@@ -128,7 +139,8 @@ oauth2Proxy:
   image:
     repository: quay.io/oauth2-proxy/oauth2-proxy
     tag: v7.8.1
-    digest: ""
+    # The multi-arch index of v7.8.1; wins over `tag`. Update both together.
+    digest: sha256:d62e2d81c6f5048f652f67c302083be1272c181b971fad80e5a30ebe2b8b75d8
     pullPolicy: IfNotPresent
   port: 4180
   # Secret with OAUTH2_PROXY_CLIENT_ID, OAUTH2_PROXY_CLIENT_SECRET and
@@ -138,7 +150,10 @@ oauth2Proxy:
   oidcIssuerUrl: ""      # e.g. https://login.microsoftonline.com/<tenant>/v2.0
   redirectUrl: ""        # e.g. https://console.example.com/oauth2/callback
   emailDomains: ["*"]
-  allowedGroups: []      # only these IdP groups may sign in
+  # Only these IdP groups may sign in. Empty = every user of the IdP can sign
+  # in (the console still rejects users whose groups map to no role); the
+  # release NOTES warn about it.
+  allowedGroups: []
   scope: "openid email profile"
   extraArgs: []
   extraVolumeMounts: []  # e.g. a Google service-account key from extraVolumes
@@ -179,8 +194,8 @@ resources:
     cpu: 100m
     memory: 256Mi
   limits:
-    # The in-memory record index grows with audit.max_records; size the
-    # memory limit for your retention window.
+    # The in-memory record index grows with console.config.audit.max_records
+    # (about 2.4 KB per record; see that key). Raise both together.
     memory: 1Gi
 
 podSecurityContext:
@@ -204,8 +219,11 @@ securityContext:
   seccompProfile:
     type: RuntimeDefault
 
-# The first start rebuilds the record index from the audit sources; the
-# startup probe allows failureThreshold * periodSeconds for it.
+# /healthz answers 200 as soon as the listener is up, and /readyz only checks
+# that state_dir is writable: the record index rebuilds from the audit sources
+# in the background after startup and gates neither probe. The startup probe
+# covers process start (config load, secrets, volume mount), allowing
+# failureThreshold * periodSeconds for it.
 startupProbe:
   enabled: true
   httpGet: { path: /healthz, port: http }
@@ -238,7 +256,9 @@ podDisruptionBudget:
 networkPolicy:
   enabled: true
   # Who may reach the console: the ingress controller or your identity-aware
-  # proxy. Empty = any pod in the release namespace.
+  # proxy. Empty = any pod in the release namespace (agents and verifiers
+  # included). Required when console.config.auth.proxy is used without the
+  # oauth2-proxy sidecar and without a shared secret: rendering fails.
   ingressFrom: []
   #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
   extraIngress: []

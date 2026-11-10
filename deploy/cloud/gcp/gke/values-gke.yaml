@@ -113,6 +113,11 @@ networkPolicy:
   ingressFrom:
     - namespaceSelector:
         matchLabels: { kubernetes.io/metadata.name: agents }
+    # haltsql-console in this namespace (deploy/cloud/gcp/console/gke.values.yaml)
+    # polls the admin API, /readyz and /metrics. In another namespace, add a
+    # namespaceSelector for it next to this podSelector.
+    - podSelector:
+        matchLabels: { app.kubernetes.io/name: haltsql-console }
   metricsFrom:
     - namespaceSelector:
         matchLabels: { kubernetes.io/metadata.name: gmp-system }

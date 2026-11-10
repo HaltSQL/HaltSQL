@@ -35,8 +35,8 @@ console:
     auth:
       # Entra ID sign-in through the oauth2-proxy sidecar; group claims are
       # object IDs (enable "groupMembershipClaims": "SecurityGroup" on the
-      # app registration). The chart adds auth.proxy.
-      tokens: []
+      # app registration). The chart adds auth.proxy. Automation tokens go
+      # in auth.tokens; not set here so earlier values files keep theirs.
       roles:
         admin: [00000000-0000-0000-0000-00000000a001]     # haltsql-admins
         owner: [00000000-0000-0000-0000-00000000a002]     # haltsql-policy-owners
@@ -51,6 +51,8 @@ console:
         token: ${env:HALTSQL_ADMIN_TOKEN}   # synced from Key Vault by the CSI driver
         workload: deployment/haltsql
     audit:
+      # About 2.4 KB per record in memory: 400k fits the 2Gi limit below.
+      max_records: 400000
       sources:
         # Azure Blob is not an audit source yet: the verifiers write per-pod
         # file sinks to an Azure Files share (audit-share.yaml) and the

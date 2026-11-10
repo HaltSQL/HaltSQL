@@ -90,11 +90,13 @@ scripts/console-docker-smoke.sh                                 # or: make conso
 Release images are `ghcr.io/haltsql/haltsql-console:<version>`, multi-arch
 (`linux/amd64`, `linux/arm64`), built by the release workflow from the same
 builder stage as the `haltsql` image, with SPDX SBOM and SLSA provenance
-attestations, signed keylessly with cosign. Pin by digest in production:
+attestations, signed keylessly with cosign. Pin by digest in production; the
+identity regexp accepts only the release workflow on a version tag, not any
+workflow or branch of the repository:
 
 ```sh
 cosign verify ghcr.io/haltsql/haltsql-console@sha256:<digest> \
-  --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' \
+  --certificate-identity-regexp '^https://github.com/HaltSQL/HaltSQL/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/haltsql/haltsql-console@sha256:<digest> --repo HaltSQL/HaltSQL
 ```
@@ -182,12 +184,20 @@ renders:
 - a **Deployment** with one replica and the `Recreate` strategy, the same
   hardening as the `haltsql` chart (uid/gid 65532, read-only root filesystem,
   no capabilities, `RuntimeDefault` seccomp, no service-link env vars, no
-  service account token unless restarts are enabled), and startup, liveness
-  and readiness probes;
+  service account token at pod level; with restarts enabled the token is
+  projected into the console container only, never the oauth2-proxy sidecar
+  or `extraContainers`), and startup, liveness and readiness probes. The
+  chart has no dev mode: it refuses `console.devRole` and `--dev` in
+  `extraArgs`, since dev mode needs a loopback listen address and signs every
+  request in;
 - a **PersistentVolumeClaim** for `state_dir` (`ReadWriteOnce`, 10 Gi;
   `persistence.existingClaim` to bring your own);
 - a **ConfigMap** with the console config (`console.config`; the chart sets
-  `listen` and `state_dir`), or your own (`console.existingConfigMap`);
+  `listen` and `state_dir`), or your own (`console.existingConfigMap`). The
+  default `audit.max_records` is 200,000: an index entry takes about 2.4 KB
+  of memory, so keep `max_records` x 2.4 KB under half of
+  `resources.limits.memory` (1 Gi by default) and raise both together. The
+  console's own default of 2,000,000 records needs about 5 GB;
 - **secrets** from `existingSecret` (every key becomes an environment
   variable for `${env:...}` placeholders), so tokens live in External Secrets,
   the Secrets Store CSI driver or Sealed Secrets, never in values;
@@ -199,22 +209,49 @@ renders:
 - a **ServiceAccount** and, with `rbac.create`, a namespaced **Role and
   RoleBinding** that allow only `patch` on the listed Deployments and
   StatefulSets (verifier restarts); the chart then sets
-  `fleet.kubernetes.namespace` and mounts the token;
-- a **NetworkPolicy**: ingress only on the HTTP port from `ingressFrom`;
-  egress only to DNS, the verifiers (pods of the `haltsql` chart on 8080 by
-  default), TCP 443 (IdP, GitHub, Slack, PagerDuty, catalogs, S3/GCS, secret
-  managers, the Kubernetes API) and `extraRules`;
+  `fleet.kubernetes.namespace` and projects the token into the console
+  container. RBAC cannot limit a patch to the `restartedAt` annotation the
+  console sets, so the Role allows any patch of those workloads (image,
+  command, env); see [Keeping it private](#keeping-it-private) for an
+  admission policy that narrows it;
+- a **NetworkPolicy**: ingress only on the HTTP port from `ingressFrom`
+  (empty = every pod in the release namespace); egress only to DNS, the
+  verifiers (pods of the `haltsql` chart on 8080 by default), TCP 443 (IdP,
+  GitHub, Slack, PagerDuty, catalogs, S3/GCS, secret managers, the Kubernetes
+  API) and `extraRules`;
 - an optional **oauth2-proxy sidecar** (`oauth2Proxy.enabled`): the console
   then listens on `127.0.0.1` only, the Service points at the sidecar, and
   the chart sets `auth.proxy` to trust `X-Forwarded-Email`,
   `X-Forwarded-Groups` and `X-Forwarded-Preferred-Username`, which
-  oauth2-proxy sets from the session and overwrites on every request;
+  oauth2-proxy sets from the session and overwrites on every request, with
+  `trusted_proxies: [127.0.0.1/32, "::1/128"]` (the console refuses an
+  `auth.proxy` without `trusted_proxies` or a shared secret). Set
+  `oauth2Proxy.allowedGroups` (or a provider group flag in `extraArgs`) so
+  only the console's groups can sign in; the release notes warn otherwise.
+  An `auth.proxy` of your own, without the sidecar, must set
+  `trusted_proxies` or `secret_header` + `secret_sha256`, and without the
+  secret the chart also requires a non-empty `networkPolicy.ingressFrom`;
 - a **PodDisruptionBudget** (off by default) and a **ServiceMonitor** (off;
   the console has no Prometheus endpoint yet).
 
-If the console runs in a different namespace from the verifiers, also allow
-it in the `haltsql` chart's `networkPolicy.ingressFrom`, and set
-`rbac.namespace` to the verifiers' namespace.
+The verifiers' NetworkPolicy must admit the console, **even in the same
+namespace**: a policy whose `ingressFrom` lists only the agents' namespace
+drops the console's admin API calls. The shipped verifier policies
+([`values-gke.yaml`](../../deploy/cloud/gcp/gke/values-gke.yaml), the EKS and
+AKS `networkpolicy-shared.yaml`) admit pods labelled
+`app.kubernetes.io/name: haltsql-console` in their namespace; add the same
+`podSelector` to your own:
+
+```yaml
+networkPolicy:              # the haltsql chart's values
+  ingressFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: agents } }
+    - podSelector: { matchLabels: { app.kubernetes.io/name: haltsql-console } }
+```
+
+If the console runs in a different namespace, put a `namespaceSelector` for
+it in the same entry as that `podSelector`, and set `rbac.namespace` to the
+verifiers' namespace.
 
 Plain manifests: `helm template haltsql-console deploy/helm/haltsql-console
 -n haltsql -f my-values.yaml > console.yaml` produces reviewable YAML for
@@ -236,7 +273,10 @@ terraform apply -var kube_context=my-eks \
 ```
 
 The admin-token Secret is referenced by name (`admin_token_secret`) and is
-never written to Terraform state.
+never written to Terraform state. `automation_tokens` are applied after
+`values_files`, because Helm replaces lists: a values file that sets
+`console.config.auth.tokens` would otherwise drop them silently. The cloud
+overlays leave `auth.tokens` unset for the same reason.
 
 ## AWS
 
@@ -262,14 +302,16 @@ helm upgrade --install haltsql-console deploy/helm/haltsql-console -n haltsql \
   ([`irsa-trust-policy.json`](../../deploy/cloud/aws/console/irsa-trust-policy.json))
   admits only `system:serviceaccount:haltsql:haltsql-console`. Its permission
   policy ([`iam-policy.json`](../../deploy/cloud/aws/console/iam-policy.json))
-  is read-only and scoped to the audit prefix and the console's secrets:
+  is read-only and scoped to the audit prefix and the secrets the console
+  itself resolves (`${aws-sm:...}`); list each one by name, never the whole
+  `haltsql-console/` prefix:
 
   ```json
   { "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::corp-haltsql-audit",
     "Condition": { "StringLike": { "s3:prefix": ["haltsql/audit/", "haltsql/audit/*"] } } },
   { "Action": "s3:GetObject", "Resource": "arn:aws:s3:::corp-haltsql-audit/haltsql/audit/*" },
   { "Action": "kms:Decrypt", "Condition": { "StringEquals": { "kms:ViaService": "s3.eu-west-1.amazonaws.com" } } },
-  { "Action": "secretsmanager:GetSecretValue", "Resource": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/*" }
+  { "Action": "secretsmanager:GetSecretValue", "Resource": ["arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/admin-token-??????"] }
   ```
 
   No `s3:PutObject` or `DeleteObject`: the console never writes the audit
@@ -313,7 +355,15 @@ IAM authorization enabled):
   registered with an **internal** ALB target group (health check
   `/readyz`). Secrets (`HALTSQL_ADMIN_TOKEN`, the oauth2-proxy client and
   cookie secrets) are injected by ECS from Secrets Manager; the execution
-  role needs `secretsmanager:GetSecretValue` on them.
+  role needs `secretsmanager:GetSecretValue` on them. The oauth2-proxy
+  secrets live under their own name (`haltsql-console-oauth2`), outside the
+  `haltsql-console/` prefix, so the task role (which the console's code runs
+  with) cannot read the cookie secret and forge oauth2-proxy sessions.
+- [`console.ecs.yaml`](../../deploy/cloud/aws/console/console.ecs.yaml) sets
+  `auth.proxy.trusted_proxies: [127.0.0.1/32, "::1/128"]`: the containers of
+  a task share the loopback interface, and the console accepts identity
+  headers only from that connection. oauth2-proxy admits only the console's
+  groups (`--allowed-group`).
 - The task role gets the S3 read and Secrets Manager statements of
   `iam-policy.json` plus `elasticfilesystem:ClientMount` and `ClientWrite`
   on the access point.
@@ -380,7 +430,11 @@ helm upgrade --install haltsql-console deploy/helm/haltsql-console -n haltsql \
 - **State.** A `premium-rwo` Persistent Disk; schedule snapshots with a
   `VolumeSnapshotClass` or a GKE Backup plan.
 - **Network.** The NetworkPolicy admits Google's health-check ranges and the
-  internal ALB's proxy-only subnet; egress is DNS, the verifiers and 443.
+  internal ALB's proxy-only subnet; egress is DNS, the verifiers, 443 and the
+  GKE metadata server (`169.254.169.252:988`, and `169.254.169.254:80` on
+  Dataplane V2), without which Workload Identity tokens, and with them the
+  `${gcp-sm:...}` admin token and GCS audit reads, fail. The verifiers'
+  `values-gke.yaml` admits the console's pods on the API port.
 
 ### Cloud Run alternative
 
@@ -398,7 +452,32 @@ runs the console as a Cloud Run service with:
   Cloud Storage FUSE volume also mounts, but the console replaces its state
   files with an atomic rename, which Cloud Storage FUSE does not guarantee;
   use it only for disposable demos. The share must be writable by uid 65532;
-- the console config and the verifiers' config mounted from Secret Manager.
+- the console config mounted from Secret Manager, and the verifiers' config
+  (the `haltsql-internal-config` secret of
+  [`service-internal.yaml`](../../deploy/cloud/gcp/cloudrun/service-internal.yaml))
+  at the verifier's own path, `/etc/haltsql/config/config.yaml`, with the
+  signed bundle it loads on the same read-only Cloud Storage volume at
+  `/etc/haltsql/bundles`. Without the bundle the console loads no policies
+  and the Playground, decision trails and exposure stay empty. Grant
+  `haltsql-console@` `roles/storage.objectViewer` on the policy bucket.
+
+The console config (secret `haltsql-console-config`) points at those paths
+and trusts oauth2-proxy over loopback only:
+
+```yaml
+auth:
+  proxy:
+    user_header: X-Forwarded-Email
+    name_header: X-Forwarded-Preferred-Username
+    groups_header: X-Forwarded-Groups
+    label: oauth2-proxy
+    trusted_proxies: [127.0.0.1/32, "::1/128"]   # required; oauth2-proxy is on loopback
+  roles: { admin: [haltsql-admins@acme.example], audit: [compliance@acme.example] }
+policies:
+  server_config: /etc/haltsql/config/config.yaml
+audit:
+  max_records: 400000     # about 2.4 KB each; fits the 2 GiB limit
+```
 
 Verifier restarts are not available on Cloud Run; redeploy the verifier
 service from your runbooks.
@@ -470,7 +549,11 @@ container (Entra ID), and the console on `127.0.0.1:8090`:
 - secrets are Container Apps secrets that reference Key Vault through the
   app's managed identity (`keyVaultUrl` + `identity`); Container Apps
   resolves them and the console sees plain environment variables;
-- the console config is mounted from a secret volume;
+- the console config is mounted from a secret volume; its `auth.proxy` sets
+  `trusted_proxies: [127.0.0.1/32, "::1/128"]` (as in the Cloud Run example
+  above), since oauth2-proxy reaches the console over the replica's loopback;
+- oauth2-proxy admits only the console's Entra groups (`--allowed-group`
+  with the groups' object IDs);
 - the verifiers' file audit sinks are read from a shared Azure Files share.
 
 Verifier restarts are not available on Container Apps; restart the verifier
@@ -505,7 +588,11 @@ and archived elsewhere.
 3. `helm upgrade` (or a new ECS task definition, Cloud Run revision or
    Container Apps revision). The single replica is replaced in place
    (`Recreate`), so expect a short console outage; enforcement is unaffected.
-   Config changes roll the pod through the `checksum/config` annotation.
+   Changes to `console.config` roll the pod through the `checksum/config`
+   annotation. Changes to `console.existingConfigMap`, `existingSecret` or
+   `secretEnv` do not (the chart cannot see the first two, and does not put
+   a hash of secret values in a pod annotation): run
+   `kubectl rollout restart deployment/haltsql-console` or use a reloader.
 4. After the upgrade, `/readyz` must answer `200` and Fleet must show every
    verifier; the record index rebuilds from the audit sources in the
    background.
@@ -526,4 +613,34 @@ Roll back with `helm rollback` (or the previous revision). Take a snapshot of
   the new token to the verifiers, update the console's secret, restart the
   console, then remove the old token.
 - The console never writes to verifiers. Restarts go through a namespaced
-  Role that allows only `patch` on the named workloads.
+  Role that allows only `patch` on the named workloads. RBAC cannot narrow
+  that patch to the `kubectl.kubernetes.io/restartedAt` annotation, so a
+  compromised console container could change those workloads' image,
+  command or env. To close that, admit only restart patches from the
+  console's service account, for example with a ValidatingAdmissionPolicy
+  (Kubernetes 1.30+):
+
+  ```yaml
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicy
+  metadata: { name: haltsql-console-restart-only }
+  spec:
+    failurePolicy: Fail
+    matchConstraints:
+      resourceRules:
+        - apiGroups: [apps]
+          apiVersions: [v1]
+          operations: [UPDATE]
+          resources: [deployments, statefulsets]
+    matchConditions:
+      - name: console
+        expression: request.userInfo.username == "system:serviceaccount:haltsql:haltsql-console"
+    validations:
+      - expression: >-
+          object.spec.template.spec == oldObject.spec.template.spec &&
+          object.spec.replicas == oldObject.spec.replicas
+        message: haltsql-console may only restart workloads
+  ```
+
+  Bind it with a `ValidatingAdmissionPolicyBinding` scoped to the verifiers'
+  namespace.

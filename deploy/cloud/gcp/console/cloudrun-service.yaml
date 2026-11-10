@@ -12,9 +12,17 @@
 #   * Filestore (NFS) rather than a GCS FUSE volume: the console replaces its
 #     state files with an atomic rename, which Cloud Storage FUSE does not
 #     guarantee. Use GCS FUSE only for a disposable demo.
-#   * The console config comes from Secret Manager mounted as a file, and the
-#     verifiers' config/policies from a second secret (same files as the
-#     verifier service's).
+#   * The console config comes from Secret Manager mounted as a file. The
+#     verifiers' config is the same secret as service-internal.yaml's, mounted
+#     at the same path (/etc/haltsql/config/config.yaml), and the signed bundle
+#     it loads comes from the same read-only Cloud Storage volume at
+#     /etc/haltsql/bundles, so the Playground, decision trails and exposure use
+#     the verifiers' policies. Set policies.server_config to
+#     /etc/haltsql/config/config.yaml in the console config, and grant
+#     haltsql-console@ roles/storage.objectViewer on the policy bucket.
+#   * auth.proxy in the console config must set trusted_proxies
+#     [127.0.0.1/32, "::1/128"]: oauth2-proxy reaches the console over loopback
+#     (docs/console/deploy.md#cloud-run-alternative).
 # Replace REPLACE_ME_PROJECT, the VPC connector/network, the Filestore IP and
 # the IdP values before use.
 apiVersion: serving.knative.dev/v1
@@ -43,7 +51,7 @@ spec:
       containers:
         # Ingress container: sign-in, then X-Forwarded-Email/-Groups to the console.
         - name: oauth2-proxy
-          image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1@sha256:d62e2d81c6f5048f652f67c302083be1272c181b971fad80e5a30ebe2b8b75d8
           ports:
             - name: http1
               containerPort: 4180
@@ -83,7 +91,9 @@ spec:
               value: 127.0.0.1:8090
           volumeMounts:
             - { name: console-config, mountPath: /etc/haltsql-console }
-            - { name: verifier-config, mountPath: /etc/haltsql }
+            # The verifier's config and signed bundle at the verifier's paths.
+            - { name: verifier-config, mountPath: /etc/haltsql/config, readOnly: true }
+            - { name: bundles, mountPath: /etc/haltsql/bundles, readOnly: true }
             - { name: state, mountPath: /var/lib/haltsql-console }
           startupProbe:
             httpGet: { path: /healthz, port: 8090 }
@@ -101,8 +111,14 @@ spec:
             items: [{ key: latest, path: console.yaml }]
         - name: verifier-config
           secret:
-            secretName: haltsql-verifier-config     # the verifiers' config.yaml
+            secretName: haltsql-internal-config     # the verifiers' config.yaml (service-internal.yaml)
             items: [{ key: latest, path: config.yaml }]
+        - name: bundles                             # same bucket as service-internal.yaml
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            readOnly: true
+            volumeAttributes:
+              bucketName: REPLACE_ME_PROJECT-haltsql-policies
         - name: google-sa
           secret:
             secretName: haltsql-console-oauth2-google-sa
