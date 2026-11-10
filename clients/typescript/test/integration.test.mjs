@@ -1,5 +1,6 @@
 // Integration tests. Each part skips cleanly when its dependency is missing:
 //  - Postgres (make -C lab up; localhost:5417): guardedQuery with node-postgres.
+//    HALTSQL_REQUIRE_POSTGRES=1 (set in CI) turns that skip into a failure.
 //  - haltsql-server binary (_build or HALTSQL_SERVER_BIN): real sidecar.
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -11,29 +12,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { HaltSQLClient, HaltSQLDeniedError, guardedQuery } from "../dist/esm/index.js";
-import { fakeServer, vector } from "./helpers.mjs";
+import { PG, fakeServer, dropDatabase, pgReachable, recreateDatabase, vector } from "./helpers.mjs";
 
-const PG = {
-  host: process.env.HALTSQL_PGHOST ?? "localhost",
-  port: Number(process.env.HALTSQL_PGPORT ?? 5417),
-  user: process.env.HALTSQL_PGUSER ?? "postgres",
-  password: process.env.HALTSQL_PGPASSWORD ?? "haltlab",
-};
 const DB = "haltsql_polyglot_ts";
 
-async function pgReachable() {
-  const c = new pg.Client({ ...PG, database: "postgres", connectionTimeoutMillis: 1500 });
-  try {
-    await c.connect();
-    await c.end();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const havePg = await pgReachable();
-if (!havePg) console.log(`# skipping Postgres tests: ${PG.host}:${PG.port} not reachable (run: make -C lab up)`);
 
 describe("guardedQuery against Postgres", { skip: !havePg && "Postgres not reachable" }, () => {
   let admin;
@@ -41,8 +24,7 @@ describe("guardedQuery against Postgres", { skip: !havePg && "Postgres not reach
   before(async () => {
     admin = new pg.Client({ ...PG, database: "postgres" });
     await admin.connect();
-    await admin.query(`DROP DATABASE IF EXISTS ${DB}`);
-    await admin.query(`CREATE DATABASE ${DB}`);
+    await recreateDatabase(admin, DB);
     pool = new pg.Pool({ ...PG, database: DB, max: 2 });
     await pool.query(`
       CREATE SCHEMA app;
@@ -56,7 +38,7 @@ describe("guardedQuery against Postgres", { skip: !havePg && "Postgres not reach
   });
   after(async () => {
     await pool?.end();
-    await admin?.query(`DROP DATABASE IF EXISTS ${DB}`);
+    if (admin) await dropDatabase(admin, DB);
     await admin?.end();
   });
 

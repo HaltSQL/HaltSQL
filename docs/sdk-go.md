@@ -37,9 +37,10 @@ Run SQL only when `err == nil && verdict.Allowed`.
 
 ## Run it with database/sql (pgx)
 
-`GuardedQuery` / `GuardedExec` verify the SQL and, only if it is allowed, run
-**exactly that string** with any `database/sql` handle (`*sql.DB`, `*sql.Tx`,
-`*sql.Conn`), binding the verdict's bind params as `$1..$n`:
+`GuardedQueryTx` / `GuardedExecTx` verify the SQL and, only if it is allowed,
+run **exactly that string** in a transaction that uses the policy's search
+path, binding the verdict's bind params as `$1..$n`. They take a `*sql.DB` or
+a `*sql.Conn` (anything with `BeginTx`):
 
 ```go
 import (
@@ -49,18 +50,73 @@ import (
 
 db, _ := sql.Open("pgx", os.Getenv("DATABASE_URL"))
 
-rows, verdict, err := haltsql.GuardedQuery(ctx, hc, db, sqlFromModel,
+var ids []int64
+verdict, err := haltsql.GuardedQueryTx(ctx, hc, db, sqlFromModel,
     haltsql.Context{"tenant_id": session.TenantID},
+    func(rows *sql.Rows) error { // called inside the transaction
+        for rows.Next() {
+            var id int64
+            if err := rows.Scan(&id); err != nil {
+                return err
+            }
+            ids = append(ids, id)
+        }
+        return nil
+    },
     haltsql.OnVerdict(func(v *haltsql.Verdict) { audit(v.Policy.Version, v.Fingerprint, v.Allowed) }))
 var denied *haltsql.DeniedError
 switch {
 case errors.As(err, &denied):
     return deny(denied.Verdict.Reasons) // nothing was sent to Postgres
 case err != nil:
-    return err // sidecar error or database error
+    return err // sidecar error or database error; the transaction was rolled back
 }
-defer rows.Close()
+
+res, verdict, err := haltsql.GuardedExecTx(ctx, hc, db, writeFromModel, vctx) // a write policy
 ```
+
+On one connection they send:
+
+1. `BeginTx`, read-only when `verdict.StatementKind` is `select`;
+2. `SELECT set_config(name, value, true)` for each entry of
+   `haltsql.TxSettings(map[string]string{...})`, in name order (for example
+   `"app.tenant_id"` for row-level security, or `"statement_timeout"`);
+3. `SELECT set_config('search_path', ..., true)` with
+   `verdict.Policy.SearchPath`, each schema quoted as an identifier. This is
+   the pin: the verified `orders` is the policy's `orders` whatever the role's
+   or the database's default search path is. It is applied last, so a
+   `search_path` in `TxSettings` does not override it, and it is
+   transaction-local, so the session's own search path is back afterwards;
+4. the verified string, unchanged;
+5. `Commit`, or `Rollback` on any error.
+
+A denial, a shadow would-deny or a HaltSQL error returns before a transaction
+is opened. A verdict without `Policy.SearchPath` (an engine older than the
+field) still runs, without step 3.
+
+`GuardedQueryTx` hands the rows to a function instead of returning them: a
+`*sql.Rows` cannot be read after its transaction has ended, and the guard must
+end the transaction it opened. Read the rows inside the function; an error it
+returns rolls the transaction back and is returned to you unchanged.
+
+### `GuardedQuery` / `GuardedExec`: one statement, no pin
+
+`GuardedQuery` and `GuardedExec` are the low-level forms. They verify and then
+make one `QueryContext` / `ExecContext` call on any `database/sql` handle
+(`*sql.DB`, `*sql.Tx`, `*sql.Conn`); `GuardedQuery` returns the `*sql.Rows`.
+**They do not pin the search path** and open no transaction. Use them only
+when one of these holds:
+
+- the session already uses the policy's search path: you set it on the
+  connection (`search_path=app` in the pgx connection string), the role or the
+  database; or
+- the SQL names every table with its schema (`app.orders`).
+
+Otherwise a default such as `ALTER ROLE ... SET search_path = public, app` can
+make a verified `orders` read `public.orders`. They are also the forms to use
+inside a `*sql.Tx` you manage yourself; pin the search path there with
+`SELECT set_config('search_path', $1, true)` and
+`verdict.SearchPathSetting()`. Passing `TxSettings` to them is a usage error.
 
 With pgx's `database/sql` driver:
 
@@ -91,7 +147,7 @@ Every other outcome is an `*haltsql.Error` with a `Kind`:
 | `KindProtocol` | Body is not JSON, a required field is missing or mistyped, `allowed` is true while `reasons` is not empty, the body is too large, or `sql_sha256` does not equal the SHA-256 of the SQL that was sent. |
 | `KindUsage` | Bad options or arguments (float/bool context values, invalid UTF-8 SQL, a token or request id with control characters). |
 
-`GuardedQuery` / `GuardedExec` additionally return `*haltsql.DeniedError` for a
+The `Guarded*` functions additionally return `*haltsql.DeniedError` for a
 policy denial. Helpers: `haltsql.IsDenied(err)`, `haltsql.IsKind(err, k)`.
 Every error type's `Allowed()` returns `false`.
 
@@ -99,15 +155,18 @@ Unknown verdict fields are ignored ([compatibility
 rules](verdict.md#stability-guarantees)); unknown reason codes are kept as
 strings.
 
-`GuardedQuery` and `GuardedExec` return a `*DeniedError` for SQL that a
+The `Guarded*` functions return a `*DeniedError` for SQL that a
 `mode: shadow` policy would deny, unless you pass `haltsql.AllowShadow()`
 (for a [shadow rollout](tutorials/roll-out-a-policy-safely.md)).
 
-**Search path.** The guard runs one statement on your connection and does not
-change session settings. The verdict holds only under the policy's search path
-(`verdict.Policy.SearchPath`): configure the connection or role with that `search_path`, or have
-the model write schema-qualified names. (The Python guard and the MCP server
-set it for you; so does `haltsql-proxy`.)
+**Search path.** The verdict holds only under the policy's search path
+(`verdict.Policy.SearchPath`). `GuardedQueryTx` and `GuardedExecTx` set it for
+the transaction that runs the SQL, as the Python guard, the MCP server and
+`haltsql-proxy` do. `GuardedQuery` and `GuardedExec` run one statement on your
+connection and do not change session settings: with them, configure the
+connection or role with that `search_path`, or have the model write
+schema-qualified names
+([when that is acceptable](#guardedquery--guardedexec-one-statement-no-pin)).
 
 ## Options
 
@@ -180,7 +239,8 @@ Tests use `httptest` and replay real `haltsql-server` responses from
 pgx integration tests live in a separate module so the SDK stays
 dependency-free. They need Postgres (`make -C lab up`; `HALTSQL_PG*` variables
 override the defaults), create and drop the database `haltsql_polyglot_go`,
-and skip cleanly when Postgres is unreachable:
+and skip cleanly when Postgres is unreachable. With
+`HALTSQL_REQUIRE_POSTGRES=1` (set in CI) unreachable is a failure instead:
 
 ```sh
 cd clients/go/pgxtest

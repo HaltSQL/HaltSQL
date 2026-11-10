@@ -41,19 +41,20 @@ CommonJS works the same way: `const { HaltSQLClient } = require("@haltsql/client
 
 ## Run it with node-postgres
 
-`guardedQuery` verifies the SQL and, only if it is allowed, runs **exactly
-that string** with `pg`, binding `verdict.bind_params` as `$1..$n`:
+`guardedTransaction` verifies the SQL and, only if it is allowed, runs
+**exactly that string** with `pg` in a transaction that uses the policy's
+search path, binding `verdict.bind_params` as `$1..$n`:
 
 ```ts
 import pg from "pg";
-import { HaltSQLClient, HaltSQLDeniedError, guardedQuery } from "@haltsql/client";
+import { HaltSQLClient, HaltSQLDeniedError, guardedTransaction } from "@haltsql/client";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 try {
-  const { result, verdict } = await guardedQuery(
+  const { result, verdict } = await guardedTransaction(
     haltsql,
-    pool, // a pg.Pool, pg.Client or PoolClient
+    pool, // a pg.Pool
     sqlFromModel,
     { tenant_id: session.tenantId },
     { onVerdict: (v) => audit.log({ policy: v.policy.version, fp: v.fingerprint, allowed: v.allowed }) },
@@ -65,10 +66,55 @@ try {
 }
 ```
 
-`pg` is not a dependency of the SDK: `guardedQuery` accepts anything with a
-`query(text, values)` method. A set-valued bind param (hierarchical tenants,
-`org_id = ANY($1)`) is passed as a JS `string[]`, which node-postgres sends as
-a Postgres array.
+On a client it checks out of the pool, `guardedTransaction` sends:
+
+1. `BEGIN READ ONLY` when `verdict.statement_kind` is `select`, otherwise
+   `BEGIN`;
+2. `SELECT set_config(name, value, true)` for each entry of the `settings`
+   option (for example `{ "app.tenant_id": tenantId }` for row-level security,
+   or `{ statement_timeout: "5000" }`);
+3. `SELECT set_config('search_path', ..., true)` with
+   `verdict.policy.search_path`, each schema quoted as an identifier. This is
+   the pin: the verified `orders` is the policy's `orders` whatever the role's
+   or the database's default search path is. It is applied last, so a
+   `search_path` in `settings` does not override it, and it is
+   transaction-local, so the session's own search path is back afterwards;
+4. the verified string, unchanged;
+5. `COMMIT`, or `ROLLBACK` on any error (the error is rethrown and the client
+   goes back to the pool).
+
+A denied verdict, a shadow would-deny or a HaltSQL error rejects before a
+client is checked out. A verdict without `policy.search_path` (an engine older
+than the field) still runs, without step 3.
+
+Which handle to pass:
+
+| You have | Call |
+|---|---|
+| a `pg.Pool` | `guardedTransaction(haltsql, pool, sql, ctx, opts)`. It needs `connect()`: a transaction must stay on one session, and `pool.query` may use a different one for each statement. |
+| a connected `pg.Client`, or a `PoolClient` you checked out | `guardedTransactionOnClient(haltsql, client, sql, ctx, opts)`. The client must be idle (not inside a transaction): the function sends its own `BEGIN` and `COMMIT`. A pool is refused here. |
+
+### `guardedQuery`: one statement, no pin
+
+`guardedQuery(haltsql, db, sql, ctx, opts)` is the low-level form. It verifies
+and then makes one `db.query(sql, values)` call on a `pg.Pool`, `pg.Client` or
+`PoolClient`. **It does not pin the search path** and opens no transaction.
+Use it only when one of these holds:
+
+- the session already uses the policy's search path: you set it on the
+  connection (`options: "-c search_path=app"`), the role or the database; or
+- the SQL names every table with its schema (`app.orders`).
+
+Otherwise a default such as `ALTER ROLE ... SET search_path = public, app` can
+make a verified `orders` read `public.orders`. It is also the form to use
+inside a transaction you manage yourself; pin the search path there with
+`SELECT set_config('search_path', $1, true)` and `searchPathSetting(verdict)`.
+
+`pg` is not a dependency of the SDK: the helpers accept anything with the
+methods they call (`connect()` resolving to a client with `query` and
+`release`; or `query(text, values)`). A set-valued bind param (hierarchical
+tenants, `org_id = ANY($1)`) is passed as a JS `string[]`, which node-postgres
+sends as a Postgres array.
 
 To bind manually, use `bindParamsToPositional(verdict)`; it returns the values
 in `$1..$n` order and throws unless the verdict is an allow with contiguous,
@@ -90,7 +136,7 @@ if (verdict.allowed) { /* run exactly sqlFromModel, binding verdict.bind_params 
 
 await haltsql.check(sql, ctx);                         // throws HaltSQLDeniedError unless allowed
 const verdicts = await haltsql.verifyMany([a, b], ctx); // pipelined, input order
-await guardedQuery(haltsql, pool, sql, ctx);           // same helper as with HaltSQLClient
+await guardedTransaction(haltsql, pool, sql, ctx);     // same helper as with HaltSQLClient
 
 await haltsql.close(); // or: await using haltsql = await LocalVerifier.create(...)
 ```
@@ -197,21 +243,24 @@ response. Everything else rejects with a subclass of `HaltSQLError`, whose
 | `HaltSQLTransportError` | Connection refused/reset, DNS or TLS failure, or the caller aborted. |
 | `HaltSQLProtocolError` | Body is not JSON, a required field is missing or mistyped, `allowed` is `true` while `reasons` is not empty, the body is too large, or `sql_sha256` does not equal the SHA-256 of the SQL that was sent. |
 | `HaltSQLUsageError` | Bad options or arguments (a non-integer context value, a token or header with control characters, an invalid `requestId`, a denied verdict passed to `bindParamsToPositional`). |
-| `HaltSQLDeniedError` | `guardedQuery` only: the policy denied the SQL. `verdict` and `codes` are available. |
+| `HaltSQLDeniedError` | `guardedTransaction`, `guardedTransactionOnClient`, `guardedQuery` and `LocalVerifier.check`: the policy denied the SQL. `verdict` and `codes` are available. |
 
 Unknown fields in a verdict are ignored, as the [compatibility
 rules](verdict.md#stability-guarantees) require. Unknown reason codes are kept
 as strings; only `allowed === true` permits running a query.
 
-`guardedQuery` rejects with `HaltSQLDeniedError` for SQL that a
+The guarded helpers reject with `HaltSQLDeniedError` for SQL that a
 `mode: shadow` policy would deny, unless you pass `{ allowShadow: true }` (for
 a [shadow rollout](tutorials/roll-out-a-policy-safely.md)).
 
-**Search path.** The guard runs one statement on your connection and does not
-change session settings. The verdict holds only under the policy's search path
-(`verdict.policy.search_path`): configure the connection or role with that `search_path`, or have
-the model write schema-qualified names. (The Python guard and the MCP server
-set it for you; so does `haltsql-proxy`.)
+**Search path.** The verdict holds only under the policy's search path
+(`verdict.policy.search_path`). `guardedTransaction` and
+`guardedTransactionOnClient` set it for the transaction that runs the SQL, as
+the Python guard, the MCP server and `haltsql-proxy` do. `guardedQuery` runs
+one statement on your connection and does not change session settings: with
+it, configure the connection or role with that `search_path`, or have the
+model write schema-qualified names
+([when that is acceptable](#guardedquery-one-statement-no-pin)).
 
 ## Options
 
@@ -296,7 +345,9 @@ that skip cleanly when their dependency is missing:
 
 - node-postgres against Postgres 17 (`make -C lab up`; override with
   `HALTSQL_PGHOST`, `HALTSQL_PGPORT`, `HALTSQL_PGUSER`, `HALTSQL_PGPASSWORD`).
-  The test creates and drops its own database `haltsql_polyglot_ts`.
+  The tests create and drop their own databases (`haltsql_polyglot_ts`,
+  `haltsql_polyglot_ts_tx`). With `HALTSQL_REQUIRE_POSTGRES=1` (set in CI) an
+  unreachable Postgres fails the run instead of skipping these tests.
 - the real sidecar binary (`_build/default/bin/server/main.exe`, or
   `HALTSQL_SERVER_BIN`).
 
