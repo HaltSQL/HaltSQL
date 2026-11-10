@@ -21,8 +21,8 @@
   unix))
 
 (tests
- (names test_console)
- (modules test_console)
+ (names test_console test_comply)
+ (modules test_console test_comply)
  (package haltsql-server)
  (deps
   (glob_files fixtures/*)
@@ -32,6 +32,9 @@
   haltsql_console
   haltsql
   haltsql.report
+  haltsql.cloud
+  haltsql.catalog_tools
+  haltsql.catalog_fetch
   alcotest
   cohttp-lwt-unix
   cohttp-lwt
