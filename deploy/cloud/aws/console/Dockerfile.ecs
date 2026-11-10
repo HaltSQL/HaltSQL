@@ -7,7 +7,7 @@
 #     -t haltsql-console-config:2026-11-09 deploy/cloud/aws/console
 #
 # Pin the base by digest after verifying its signature (docs/console/deploy.md).
-ARG HALTSQL_CONSOLE_IMAGE=ghcr.io/haltsql/haltsql-console:0.0.1
+ARG HALTSQL_CONSOLE_IMAGE=ghcr.io/haltsql/haltsql-console:0.0.3
 FROM ${HALTSQL_CONSOLE_IMAGE}
 COPY console.ecs.yaml /etc/haltsql-console/console.yaml
 COPY verifier-config.yaml /etc/haltsql/config.yaml

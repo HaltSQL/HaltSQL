@@ -83,7 +83,7 @@ spec:
           resources:
             limits: { cpu: "1", memory: 256Mi }
         - name: console
-          image: ghcr.io/haltsql/haltsql-console:0.0.1    # pin @sha256 in production
+          image: ghcr.io/haltsql/haltsql-console:0.0.3    # pin @sha256 in production
           args: ["--config", "/etc/haltsql-console/console.yaml"]
           env:
             # Loopback only: the console is reachable solely through oauth2-proxy.
