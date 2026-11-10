@@ -21,6 +21,7 @@ each mutant.
 |---|---|
 | `engine.py` | the analyzer, the tenancy prover, the parser bridge and its limits, the facade |
 | `python.py` | the Python guard, the verdict model, the HTTP client, the MCP tool core |
+| `services/server.py`, `auth.py`, `load.py`, `chain.py`, `proxy.py` | the HTTP sidecar's request path, caller authentication (JWT, JWKS, OIDC, mTLS), the policy and config loaders' security defaults, the audit chain verifier, and the proxy's enforcement and session handling (the proxy list needs the lab Postgres and `lab/.venv`) |
 
 ## Rules for the lists
 
