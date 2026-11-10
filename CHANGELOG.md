@@ -29,6 +29,8 @@ even before 1.0.
   `ALTER ROLE ... SET search_path` can no longer make a verified `orders`
   resolve to a different table than the one the policy lists. The TypeScript, Go and Java
   verdict types expose the field; their guards do not change session settings.
+- `haltsql lint-policy` warns (`W_NO_CATALOG`) when a policy has no catalog
+  snapshot.
 - `haltsql-server` logs a warning at start and on reload for every static token
   that has no `context` and is pinned to a policy with tenancy.
 - **Audit records carry the context.** Server audit records gain `context`
