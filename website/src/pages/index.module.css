@@ -12,6 +12,7 @@
   letter-spacing: -0.035em;
   margin: 0;
   max-width: 13ch;
+  text-wrap: balance;
 }
 
 .heroRow {

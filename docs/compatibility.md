@@ -1,6 +1,6 @@
 # Database compatibility
 
-HaltSQL never connects to the database: it parses SQL with the PostgreSQL 17
+The HaltSQL verifier never connects to the database: it parses SQL with the PostgreSQL 17
 grammar and checks it against your policy. The question for a Postgres flavour
 is therefore whether what HaltSQL proves about a query (tenant filter, allowed
 columns, no side effects) still holds when that flavour executes it, and
