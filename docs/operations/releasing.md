@@ -23,7 +23,7 @@ verification commands in the docs are exercised on every run.
 |---|---|
 | Push `vX.Y.Z` | Real |
 | Push `vX.Y.Z-rc.N` | Dry run |
-| Run `release.yml` by hand, `dry_run` ticked (the default) | Dry run; the `tag` input is only a label and needs no git tag |
+| Run `release.yml` by hand, `dry_run` ticked (the default) | Dry run; the `tag` input is only a label and needs no git tag. Without a matching tag there is no draft release (the workflow token cannot create a tag on a commit that changes workflows); the assets are in the run's `release-assets` artifact |
 | Run `release.yml` by hand, `dry_run` unticked | Real rebuild of an existing tag |
 | Run `native-packages.yml` by hand, `dry_run` ticked (the default) | Builds and tests, then the publish dry run |
 

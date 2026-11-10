@@ -61,6 +61,7 @@ jobs:
       image: ${{ steps.mode.outputs.image }}
       mcp_image: ${{ steps.mode.outputs.mcp_image }}
       chart_repo: ${{ steps.mode.outputs.chart_repo }}
+      tag_exists: ${{ steps.mode.outputs.tag_exists }}
     steps:
       - name: Decide the mode
         id: mode
@@ -87,8 +88,18 @@ jobs:
             ref="$TAG"
             [ "$EVENT" = push ] && ref="$GITHUB_SHA"
           fi
+          # A GitHub release attaches to a tag. A pushed tag exists; a manual dry
+          # run may use a label that is not a tag, and the workflow token cannot
+          # create one (GitHub refuses refs that add workflow changes without the
+          # `workflow` scope), so such a run makes no draft release.
+          tag_exists=true
+          if [ "$EVENT" = workflow_dispatch ] && \
+             [ -z "$(git ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG")" ]; then
+            tag_exists=false
+          fi
           {
             echo "dry_run=$dry_run"
+            echo "tag_exists=$tag_exists"
             echo "ref=$ref"
             echo "version=${TAG#v}"
             echo "image=$ns/haltsql"
@@ -98,6 +109,9 @@ jobs:
           if [ "$dry_run" = true ]; then
             echo "### Dry run of $TAG" >> "$GITHUB_STEP_SUMMARY"
             echo "Images and chart go to \`$ns/\` (tag \`dryrun-$GITHUB_RUN_ID\`); the GitHub release is a draft." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$tag_exists" != true ]; then
+            echo "No git tag \`$TAG\`: no draft release; the assets are in the \`release-assets\` artifact." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -621,12 +635,19 @@ jobs:
           } > release-notes.md
           cat release-notes.md
 
+      # The exact asset set, for the verify job (a draft release is not readable
+      # with a read-only token, and a manual dry run without a tag has none).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
       - name: Create GitHub release
+        if: needs.meta.outputs.tag_exists == 'true'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
-          # A manual dry run may label a commit that has no tag yet.
-          target_commitish: ${{ github.sha }}
           name: ${{ needs.meta.outputs.dry_run == 'true' && 'DRY RUN ' || '' }}HaltSQL ${{ env.TAG }}
           body_path: release-notes.md
           draft: ${{ needs.meta.outputs.dry_run == 'true' }}
@@ -638,14 +659,6 @@ jobs:
             dist/*.oci.txt
             dist/*.sigstore.json
             dist/SHA256SUMS
-
-      # The exact asset set, for the verify job (a draft release is not readable
-      # with a read-only token).
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-assets
-          path: dist/
-          if-no-files-found: error
 
   verify:
     name: Verify the release as a user would
