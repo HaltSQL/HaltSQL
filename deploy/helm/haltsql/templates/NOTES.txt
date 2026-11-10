@@ -8,10 +8,24 @@ Verify SQL:
     -d '{"sql":"SELECT 1","context":{"tenant_id":"acme"}}'
 
 Treat any non-200 response as a denial (fail closed).
-{{- if and (not .Values.tokens) (not .Values.server.allowUnauthenticated) }}
+{{- if not (or .Values.tokens .Values.oidc .Values.mtlsIdentities .Values.server.allowUnauthenticated) }}
 
-WARNING: no tokens are configured and allowUnauthenticated is false: every
-/v1 request will be rejected with 401.
+WARNING: no tokens, OIDC providers or mTLS identities are configured and
+allowUnauthenticated is false: every /v1 request will be rejected with 401.
+{{- end }}
+{{- if .Values.server.allowUnauthenticated }}
+
+WARNING: server.allowUnauthenticated is true: every caller is accepted
+without credentials. This is for local development only.
+{{- end }}
+{{- with (include "haltsql.unboundTokens" .) }}
+
+WARNING: these tokens are not bound to a context: {{ . }}.
+Their holders name the tenant in the request body, so each can obtain a
+verdict for any tenant. Give each token a `context` (and, if needed,
+`request_context_fields`), or use OIDC / mTLS; leave a token unbound only for
+a trusted backend that takes the tenant from its own session, or for a policy
+without tenancy. server.requireBoundTokens=true turns this into an error.
 {{- end }}
 {{- if not (or .Values.policies .Values.existingPolicyConfigMap .Values.extraPolicies) }}
 

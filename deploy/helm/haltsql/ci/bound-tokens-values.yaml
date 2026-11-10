@@ -1,0 +1,30 @@
+# Exercises the token-binding and verify-pool values:
+#   helm template t deploy/helm/haltsql -f deploy/helm/haltsql/ci/bound-tokens-values.yaml
+server:
+  verifyThreads: 4
+  requireBoundTokens: true
+tokens:
+  - name: acme-agent
+    sha256: 3f7c0a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbcce
+    policy: analytics-agent
+    context: { tenant_id: acme, region_ids: [eu, us] }
+    request_context_fields: [user_id]
+  - name: backend
+    sha256: 91c16f0d6cc1bec3c3603972182a07c66ff4fa71618a975e963d6dbe42b6dd37
+    policy: analytics-agent
+    request_context_fields: [tenant_id]
+policies:
+  analytics-agent.yaml: |
+    apiVersion: haltsql.dev/v1
+    kind: Policy
+    metadata: { name: analytics-agent }
+    search_path: [app]
+    statements: { allow: [select] }
+    require_limit: { max: 1000 }
+    tenancy:
+      mode: bound
+      keys: { tenant: "${ctx.tenant_id}" }
+    tables:
+      app.orders:
+        columns: [id, tenant_id, status]
+        tenant_column: tenant_id

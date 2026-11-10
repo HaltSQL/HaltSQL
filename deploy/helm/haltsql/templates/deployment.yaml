@@ -75,8 +75,12 @@ spec:
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
-          {{- if or .Values.tokens .Values.extraEnv }}
+          {{- if or .Values.tokens .Values.extraEnv .Values.server.verifyThreads }}
           env:
+            {{- with .Values.server.verifyThreads }}
+            - name: HALTSQL_VERIFY_THREADS
+              value: {{ . | int | quote }}
+            {{- end }}
             {{- range $i, $t := .Values.tokens }}
             - name: HALTSQL_TOKEN_{{ $i }}_SHA256
               valueFrom:

@@ -124,8 +124,26 @@ list would silently drop the chart's policies, so use extraPolicies.
 {{- toYaml $merged -}}
 {{- end -}}
 
+{{/*
+Names of the tokens that are not bound to a context (neither `context` nor
+`request_context_fields`), comma-separated. The holder of such a token names
+the tenant in the request body.
+*/}}
+{{- define "haltsql.unboundTokens" -}}
+{{- $names := list -}}
+{{- range .Values.tokens -}}
+{{- if not (or (hasKey . "context") (hasKey . "request_context_fields")) -}}
+{{- $names = append $names .name -}}
+{{- end -}}
+{{- end -}}
+{{- join ", " $names -}}
+{{- end -}}
+
 {{/* The chart-rendered part of the Config document. Token hashes come from env. */}}
 {{- define "haltsql.baseConfig" -}}
+{{- if and .Values.server.requireBoundTokens (include "haltsql.unboundTokens" .) -}}
+{{- fail (printf "server.requireBoundTokens is set, but these tokens have neither context nor request_context_fields: %s" (include "haltsql.unboundTokens" .)) -}}
+{{- end -}}
 apiVersion: haltsql.dev/v1
 kind: Config
 server:
@@ -154,6 +172,12 @@ server:
       - name: {{ $t.name | quote }}
         token_sha256: "${env:HALTSQL_TOKEN_{{ $i }}_SHA256}"
         policy: {{ $t.policy | quote }}
+        {{- if hasKey $t "context" }}
+        context: {{ toJson $t.context }}
+        {{- end }}
+        {{- if hasKey $t "request_context_fields" }}
+        request_context_fields: {{ toJson $t.request_context_fields }}
+        {{- end }}
     {{- else }} []
     {{- end }}
 policies:
