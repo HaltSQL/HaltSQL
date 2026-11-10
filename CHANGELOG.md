@@ -37,6 +37,10 @@ even before 1.0.
   order of the hash chain are unchanged.
 
 ### Security
+- **haltsql-proxy limits unauthenticated connections per source address**
+  (`limits.max_unauthenticated_per_ip`, default 20, `0` disables). One
+  address can no longer occupy every `max_connections` slot with connections
+  that never authenticate; the connection over the cap gets `FATAL 53300`.
 - **haltsql-proxy refuses MD5 upstream authentication without TLS.** If the
   database asks for an MD5 password on an unencrypted connection, the proxy no
   longer answers; sessions fail with `FATAL 08006` and the log names the

@@ -12,6 +12,9 @@ type t = {
   bound_port : int;
   conns : (int, Lwt_unix.file_descr) Hashtbl.t;
   live : (int, Session.live) Hashtbl.t;  (** authenticated sessions, by connection *)
+  preauth : (string, int) Hashtbl.t;
+      (** source address -> connections that have not finished authentication *)
+  mutable preauth_refused : int;
   mutable next_conn : int;
   mutable stopping : bool;
   stopped : unit Lwt.t;
@@ -29,6 +32,7 @@ let port t = t.bound_port
 let generation t = t.gen.generation
 let config t = t.gen.cfg
 let active t = Hashtbl.length t.conns
+let unauthenticated t = Hashtbl.fold (fun _ n acc -> acc + n) t.preauth 0
 let time () = Some (Ptime_clock.now ())
 
 (* When Extended Key Usage is present on a client certificate it must permit
@@ -85,21 +89,26 @@ let end_if_stale t (l : Session.live) =
         l.terminate "the proxy configuration for this session changed";
         true
 
-let too_many fd =
+let source_of = function
+  | Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a
+  | Unix.ADDR_UNIX _ -> "unix"
+
+let preauth_count t ip = Option.value ~default:0 (Hashtbl.find_opt t.preauth ip)
+
+let preauth_add t ip d =
+  let n = preauth_count t ip + d in
+  if n <= 0 then Hashtbl.remove t.preauth ip else Hashtbl.replace t.preauth ip n
+
+let too_many
+    ?(message = "sorry, too many clients already (haltsql-proxy limits.max_connections)")
+    fd =
   let io = Io.of_fd fd in
   let* () =
     Lwt.catch
       (fun () ->
         Io.write io
           (Wire.error_response
-             [
-               ('S', "FATAL");
-               ('V', "FATAL");
-               ('C', "53300");
-               ( 'M',
-                 "sorry, too many clients already (haltsql-proxy limits.max_connections)"
-               );
-             ]))
+             [ ('S', "FATAL"); ('V', "FATAL"); ('C', "53300"); ('M', message) ]))
       (fun _ -> Lwt.return_unit)
   in
   Io.close io
@@ -110,8 +119,8 @@ let rec accept_loop t =
     let* r =
       Lwt.catch
         (fun () ->
-          let* fd, _ = Lwt_unix.accept t.sock in
-          Lwt.return (Some fd))
+          let* fd, addr = Lwt_unix.accept t.sock in
+          Lwt.return (Some (fd, source_of addr)))
         (function
           | Unix.Unix_error ((Unix.EBADF | Unix.EINVAL), _, _) -> Lwt.return None
           | Unix.Unix_error (e, _, _) ->
@@ -124,7 +133,8 @@ let rec accept_loop t =
     in
     match r with
     | None -> accept_loop t
-    | Some fd ->
+    | Some (fd, ip) ->
+        let per_ip = t.gen.cfg.limits.max_unauthenticated_per_ip in
         if t.stopping then (
           Lwt.async (fun () -> too_many fd);
           Lwt.return_unit)
@@ -132,6 +142,26 @@ let rec accept_loop t =
           Plog.log Plog.Warn "connection limit reached"
             [ ("max_connections", `Int t.gen.cfg.limits.max_connections) ];
           Lwt.async (fun () -> too_many fd);
+          accept_loop t)
+        else if per_ip > 0 && preauth_count t ip >= per_ip then (
+          (* One address may not hold more than its share of the connection slots with
+             connections that never authenticate (each can sit for auth_timeout). *)
+          t.preauth_refused <- t.preauth_refused + 1;
+          (* 1st, 10th, 100th, ...: a flood must not become a log flood *)
+          let rec power_of_ten n = n = 1 || (n mod 10 = 0 && power_of_ten (n / 10)) in
+          if power_of_ten t.preauth_refused then
+            Plog.log Plog.Warn "too many unauthenticated connections from one address"
+              [
+                ("address", `String ip);
+                ("max_unauthenticated_per_ip", `Int per_ip);
+                ("refused_total", `Int t.preauth_refused);
+              ];
+          Lwt.async (fun () ->
+              too_many
+                ~message:
+                  "sorry, too many unauthenticated connections from your address \
+                   (haltsql-proxy limits.max_unauthenticated_per_ip)"
+                fd);
           accept_loop t)
         else begin
           let n = t.next_conn in
@@ -141,7 +171,15 @@ let rec accept_loop t =
           (* The session keeps this snapshot for its whole life; a reload that changes
              what the session depends on ends it (end_if_stale). *)
           let shared = t.gen in
+          preauth_add t ip 1;
+          let pending = ref true in
+          let no_longer_pending () =
+            if !pending then (
+              pending := false;
+              preauth_add t ip (-1))
+          in
           let on_authenticated (l : Session.live) =
+            no_longer_pending ();
             Hashtbl.replace t.live n l;
             (* a reload may have happened between accept and authentication *)
             if shared.generation <> t.gen.generation then ignore (end_if_stale t l)
@@ -150,6 +188,7 @@ let rec accept_loop t =
               Lwt.finalize
                 (fun () -> Session.handle ~on_authenticated shared ~id fd)
                 (fun () ->
+                  no_longer_pending ();
                   Hashtbl.remove t.live n;
                   Hashtbl.remove t.conns n;
                   Lwt_condition.broadcast t.idle ();
@@ -322,6 +361,8 @@ let start ?reload cfg =
       bound_port;
       conns = Hashtbl.create 64;
       live = Hashtbl.create 64;
+      preauth = Hashtbl.create 64;
+      preauth_refused = 0;
       next_conn = 0;
       stopping = false;
       stopped;

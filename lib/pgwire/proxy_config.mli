@@ -67,6 +67,9 @@ type limits = {
   termination_grace : float;
       (** seconds a session that has to end (lifetime, reload) may take to reach a
           transaction boundary before it is closed anyway; default 30 *)
+  max_unauthenticated_per_ip : int;
+      (** connections one source address may have open that have not finished
+          authentication; default 20, 0 = no per-address limit *)
 }
 
 type audit_sink =

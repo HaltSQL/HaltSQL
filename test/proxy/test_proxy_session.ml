@@ -132,6 +132,20 @@ let login ?(user = "agent") ?(password = password) port =
   let* ms = read_until_ready io in
   Lwt.return (io, ms)
 
+(* Sends only the startup packet and reports what comes back first. *)
+let login_startup_only port =
+  let* io = connect port in
+  let* () =
+    Lwt.catch
+      (fun () ->
+        Io.write io (Wire.encode_startup [ ("user", "agent"); ("database", "app") ]))
+      (fun _ -> Lwt.return_unit)
+  in
+  let* m =
+    Lwt.catch (fun () -> Io.read_message io ~max:65536) (fun _ -> Lwt.return ('!', ""))
+  in
+  Lwt.return (io, [ m ])
+
 let login_ok ?user ?password port =
   let* io, ms = login ?user ?password port in
   if errors ms <> [] then Alcotest.failf "login failed: %s %s" (sqlstate ms) (message ms);
@@ -847,6 +861,55 @@ let test_reload_in_transaction () =
         (List.length versions);
       Io.close io)
 
+(* ----------------------------------------------- pre-auth connections *)
+
+let refused_at_accept io =
+  let* ms = read_until_ready io in
+  Lwt.return (sqlstate ms, message ms)
+
+(* One address cannot fill the proxy with connections that never authenticate. *)
+let test_preauth_cap () =
+  with_env
+    ~make:
+      (limits [ ("max_unauthenticated_per_ip", `Int 3); ("max_connections", `Int 50) ])
+    (fun e ->
+      (* authenticated sessions do not count: more of them than the cap *)
+      let* sessions = Lwt_list.map_s (fun _ -> login_ok e.port) [ 1; 2; 3; 4; 5 ] in
+      check_int "nothing pending" 0 (Server.unauthenticated e.srv);
+      (* three connections that say nothing *)
+      let* idle = Lwt_list.map_s (fun _ -> connect e.port) [ 1; 2; 3 ] in
+      let* () = wait_until "three pending" (fun () -> Server.unauthenticated e.srv = 3) in
+      let* extra = connect e.port in
+      let* code, msg = refused_at_accept extra in
+      check_str "the fourth is refused" "53300" code;
+      check_bool "says which limit" true (contains msg "max_unauthenticated_per_ip");
+      let* () = Io.close extra in
+      (* a real client is refused too while the address is over its share *)
+      let* io, ms = login_startup_only e.port in
+      check_str "also a well-behaved one" "53300" (sqlstate ms);
+      let* () = Io.close io in
+      (* established sessions are unaffected *)
+      let* ms = simple (List.hd sessions) q_ok in
+      check_str "existing sessions keep working" "CZ" (tags ms);
+      (* one of the silent connections goes away: the slot is free again *)
+      let* () = Io.close (List.hd idle) in
+      let* () = wait_until "slot released" (fun () -> Server.unauthenticated e.srv = 2) in
+      let* again = login_ok e.port in
+      let* () =
+        wait_until "authentication released its slot" (fun () ->
+            Server.unauthenticated e.srv = 2)
+      in
+      Lwt_list.iter_s Io.close ((again :: idle) @ sessions))
+
+let test_preauth_cap_disabled () =
+  with_env
+    ~make:(limits [ ("max_unauthenticated_per_ip", `Int 0) ])
+    (fun e ->
+      let* idle = Lwt_list.map_s (fun _ -> connect e.port) (List.init 30 Fun.id) in
+      let* () = wait_until "all pending" (fun () -> Server.unauthenticated e.srv = 30) in
+      let* io = login_ok e.port in
+      Lwt_list.iter_s Io.close (io :: idle))
+
 (* ---------------------------------------------------- upstream transport *)
 
 let upstream_of ?(allow = false) (pg : Fake_pg.t) : Proxy_config.upstream =
@@ -982,6 +1045,12 @@ let () =
           Alcotest.test_case "portals" `Quick test_execute_portals;
           Alcotest.test_case "unaudited Execute is refused" `Quick
             test_execute_fail_closed;
+        ] );
+      ( "pre-auth connections",
+        [
+          Alcotest.test_case "per-address cap on unauthenticated connections" `Quick
+            test_preauth_cap;
+          Alcotest.test_case "0 disables the cap" `Quick test_preauth_cap_disabled;
         ] );
       ( "upstream transport",
         [

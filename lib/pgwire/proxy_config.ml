@@ -39,6 +39,7 @@ type limits = {
   worker_threads : int;
   max_session_lifetime : float;
   termination_grace : float;
+  max_unauthenticated_per_ip : int;
 }
 
 type audit_sink = Audit_stdout | Audit_file of string | Audit_none
@@ -1087,6 +1088,7 @@ let decode ctx (j : Yojson.Safe.t) =
                  worker_threads = Offload.default_threads ();
                  max_session_lifetime = 3600.;
                  termination_grace = 30.;
+                 max_unauthenticated_per_ip = 20;
                })
           ""
           (fun p j ->
@@ -1101,6 +1103,7 @@ let decode ctx (j : Yojson.Safe.t) =
                     "worker_threads";
                     "max_session_lifetime_seconds";
                     "termination_grace_seconds";
+                    "max_unauthenticated_per_ip";
                   ]
                 j
             with
@@ -1136,14 +1139,19 @@ let decode ctx (j : Yojson.Safe.t) =
                   optional lk "termination_grace_seconds" ~default:(Some 30.) p
                     (fun p j -> number ctx p ~min:0. ~max:3600. j)
                 in
-                match (mc, mm, it, at, wt, ml, tg) with
+                let mu =
+                  optional lk "max_unauthenticated_per_ip" ~default:(Some 20) p
+                    (fun p j -> int ctx p ~min:0 ~max:100_000 j)
+                in
+                match (mc, mm, it, at, wt, ml, tg, mu) with
                 | ( Some max_connections,
                     Some max_message_bytes,
                     Some idle_timeout,
                     Some auth_timeout,
                     Some worker_threads,
                     Some max_session_lifetime,
-                    Some termination_grace ) ->
+                    Some termination_grace,
+                    Some max_unauthenticated_per_ip ) ->
                     Some
                       {
                         max_connections;
@@ -1153,6 +1161,7 @@ let decode ctx (j : Yojson.Safe.t) =
                         worker_threads;
                         max_session_lifetime;
                         termination_grace;
+                        max_unauthenticated_per_ip;
                       }
                 | _ -> None))
       in
@@ -1506,6 +1515,7 @@ let to_json_redacted c : Yojson.Safe.t =
             ("worker_threads", `Int c.limits.worker_threads);
             ("max_session_lifetime_seconds", `Float c.limits.max_session_lifetime);
             ("termination_grace_seconds", `Float c.limits.termination_grace);
+            ("max_unauthenticated_per_ip", `Int c.limits.max_unauthenticated_per_ip);
           ] );
       ("deny_sqlstate", `String c.deny_sqlstate);
       ("allow_transaction_control", `Bool c.allow_transaction_control);

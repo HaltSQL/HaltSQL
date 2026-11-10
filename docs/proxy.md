@@ -105,7 +105,8 @@ configured value, so key material does not end up in logs.
 | `auth.method` | required | `scram` or `cert`. |
 | `auth.users[]` | | `scram`: `name`, `scram_verifier` (PostgreSQL's stored format), `policy`, `context`. |
 | `auth.identities[]` | | `cert`: exactly one of `subject_cn` or `spiffe_id` (URI SAN), plus `policy`, `context`. |
-| `limits.max_connections` | `100` | Extra clients get FATAL 53300. |
+| `limits.max_connections` | `100` | Extra clients get FATAL 53300. Counts every open connection, authenticated or not. |
+| `limits.max_unauthenticated_per_ip` | `20` | Connections one source address may have open that have not finished authentication. Further ones from that address get FATAL 53300 until one authenticates or closes. `0` disables the per-address limit. See [Connection limits](#connection-limits). |
 | `limits.max_message_bytes` | `1048576` | Largest client message; larger is FATAL 08P01. |
 | `limits.idle_timeout_seconds` | `0` (off) | Close sessions idle this long with nothing in flight (FATAL 57P05). |
 | `limits.auth_timeout_seconds` | `30` | Startup + authentication must finish within this (FATAL 08006). |
@@ -184,6 +185,32 @@ it). A connection pooler between the proxy and PostgreSQL must run in session
 mode and pass the `search_path` startup parameter through; PgBouncer rejects
 it unless it is tracked or listed in `ignore_startup_parameters`, and ignoring
 it makes the check fail, which is the intended outcome.
+
+### Connection limits
+
+A connection takes one of the `limits.max_connections` slots from the moment
+it is accepted, and may hold it for `limits.auth_timeout_seconds` without
+ever sending a byte. Without a second limit, one client opening
+`max_connections` sockets would lock everybody else out for as long as it
+keeps reopening them.
+
+`limits.max_unauthenticated_per_ip` caps how many such not yet authenticated
+connections a single source address may hold (TLS handshake, startup packet,
+SCRAM exchange and cancel requests all count). The connection over the cap is
+answered with `FATAL 53300 sorry, too many unauthenticated connections from
+your address` and closed at once; the first, 10th, 100th, ... refusal is
+logged with the address. A connection stops counting when it authenticates,
+so the limit does not bound how many sessions an address may have, only how
+many it may have in the handshake at the same time. The default of 20 is
+well above what a connection pool opens concurrently (the handshake takes
+milliseconds), and a fifth of the default `max_connections`.
+
+Choose the value with the network path in mind: clients behind one NAT
+gateway, or behind a TCP load balancer that does not preserve source
+addresses, share one address and one budget. What this limit cannot do is
+stop a flood from many addresses; for that, restrict who can reach the
+listener (network policy, security groups) and consider a lower
+`auth_timeout_seconds`.
 
 ### Upstream transport security
 

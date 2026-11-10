@@ -590,6 +590,12 @@ let test_config_new_keys () =
   in
   Alcotest.(check (float 0.)) "lifetime 0 = unlimited" 0. c'.limits.max_session_lifetime;
   Alcotest.(check (float 0.)) "grace set" 1.5 c'.limits.termination_grace;
+  check_int "max_unauthenticated_per_ip default" 20 c.limits.max_unauthenticated_per_ip;
+  check_int "max_unauthenticated_per_ip 0 = off" 0
+    (ok (limits [ ("max_unauthenticated_per_ip", `Int 0) ])).limits
+      .max_unauthenticated_per_ip;
+  has_error "max_unauthenticated_per_ip negative" "limits.max_unauthenticated_per_ip"
+    (limits [ ("max_unauthenticated_per_ip", `Int (-1)) ]);
   has_error "lifetime negative" "limits.max_session_lifetime_seconds"
     (limits [ ("max_session_lifetime_seconds", `Int (-1)) ]);
   has_error "grace too long" "limits.termination_grace_seconds"

@@ -38,6 +38,11 @@ val port : t -> int
 val active : t -> int
 (** Number of open client connections. *)
 
+val unauthenticated : t -> int
+(** How many of them have not finished authentication. Each source address may hold at
+    most [limits.max_unauthenticated_per_ip] of these; further connections from it are
+    refused with FATAL 53300 until one authenticates or closes. *)
+
 val shutdown : t -> unit Lwt.t
 (** Stops accepting, waits up to [shutdown_grace_seconds] for sessions to finish, closes
     the remaining ones, then flushes and closes the audit sinks. Idempotent. *)
