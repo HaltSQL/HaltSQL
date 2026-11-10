@@ -40,7 +40,7 @@ __all__ = [
     "haltsql_tool_input_guardrail",
     "__version__",
 ]
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 #: Maps the run context object (``RunContextWrapper.context``) to a HaltSQL context.
 ContextFrom = Callable[[Any], Mapping[str, Any]]

@@ -433,11 +433,11 @@ let config_show_errors () =
 let version () =
   let r = run [ "version" ] in
   check_code "exit" 0 r;
-  check_contains "haltsql" r.out "haltsql 0.0.1";
+  check_contains "haltsql" r.out "haltsql 0.0.2";
   check_contains "pg" r.out "postgres grammar";
   check_contains "ocaml" r.out ("ocaml " ^ Sys.ocaml_version);
   let j = json_of (run [ "version"; "--json" ]).out in
-  Alcotest.(check bool) "json" true (member "haltsql" j = `String "0.0.1")
+  Alcotest.(check bool) "json" true (member "haltsql" j = `String "0.0.2")
 
 let help () =
   List.iter

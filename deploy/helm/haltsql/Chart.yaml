@@ -5,8 +5,8 @@ type: application
 # The chart versions in lockstep with HaltSQL: `version` and `appVersion` are the
 # release version (scripts/check-versions.sh enforces it). It was 0.2.0 before
 # its first publication; no 0.2.0 chart was ever released.
-version: 0.0.1
-appVersion: "0.0.1"
+version: 0.0.2
+appVersion: "0.0.2"
 # matchLabelKeys in the default topology spread needs 1.27+; the optional
 # preStop sleep (preStopSleepSeconds) needs 1.30+.
 kubeVersion: ">=1.27.0-0"
@@ -21,4 +21,4 @@ annotations:
   artifacthub.io/containsSecurityUpdates: "false"
   artifacthub.io/images: |
     - name: haltsql
-      image: ghcr.io/haltsql/haltsql:0.0.1
+      image: ghcr.io/haltsql/haltsql:0.0.2

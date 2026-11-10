@@ -4,7 +4,7 @@ from .config import ConfigError, Settings, TokenEntry, hash_token, load_tokens_f
 from .core import HaltSQLTools, ToolFailure, jsonable, summarize_policy
 from .server import StaticTokenVerifier, build_server, build_tools, main
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 __all__ = [
     "__version__",

@@ -417,22 +417,42 @@ jobs:
           pattern: npm-*
           path: npm-out
           merge-multiple: true
-      # No token: a dry run never contacts the registry for auth. --provenance is
-      # left out because npm generates provenance only on a real publish.
-      - name: npm publish --dry-run (platform packages)
-        run: |
-          set -eu
-          ls -la npm-out
-          tgz=(npm-out/*.tgz)
-          [ "${#tgz[@]}" -eq 3 ] || { echo "expected 3 platform packages"; exit 1; }
-          # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
-          for t in ./npm-out/*.tgz; do npm publish --dry-run --access public "$t"; done
-      - name: npm publish --dry-run (@haltsql/client)
+      # The same steps, in the same order and with the same npm, as publish-npm.
+      # Pack @haltsql/client. Its @haltsql/native-* optional dependencies are added
+      # only here (scripts/set-native-deps.mjs), at this version: kept out of the
+      # committed package.json so package-lock.json never lists packages that a
+      # release has not published yet, which `npm ci` refuses. Every package is
+      # then published from a tarball.
+      - name: Pack @haltsql/client
         working-directory: clients/typescript
         run: |
           npm ci
           npm run build
-          npm publish --dry-run --access public
+          node scripts/set-native-deps.mjs
+          npm pack --pack-destination "$GITHUB_WORKSPACE/npm-out"
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - name: npm with trusted-publishing support
+        run: |
+          npm install -g npm@11.21.1
+          npm --version
+      # No token: a dry run never contacts the registry for auth. --provenance is
+      # left out because npm generates provenance only on a real publish.
+      - name: npm publish --dry-run
+        run: |
+          set -eu
+          ls -la npm-out
+          native=(npm-out/haltsql-native-*.tgz)
+          client=(npm-out/haltsql-client-*.tgz)
+          [ "${#native[@]}" -eq 3 ] && [ -f "${native[0]}" ] || { echo "expected 3 platform packages"; exit 1; }
+          [ "${#client[@]}" -eq 1 ] && [ -f "${client[0]}" ] || { echo "expected 1 client package"; exit 1; }
+          # The client must depend on exactly the three platform packages being published.
+          v=$(scripts/check-versions.sh --print)
+          want=$(for t in "${native[@]}"; do tar -xOzf "$t" package/package.json | jq -r '.name + "@" + .version'; done | sort)
+          got=$(tar -xOzf "${client[0]}" package/package.json | jq -r '.optionalDependencies | to_entries[] | .key + "@" + .value' | sort)
+          [ "$got" = "$want" ] || { echo "client optionalDependencies:"; echo "$got"; echo "platform packages:"; echo "$want"; exit 1; }
+          echo "$want" | grep -qv "@$v\$" && { echo "platform packages are not version $v"; exit 1; }
+          # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
+          for t in "${native[@]}" "${client[@]}"; do npm publish --dry-run --access public "./$t"; done
 
   # Real upload to TestPyPI, only when the maintainer has set it up: repository
   # variable TESTPYPI_PUBLISH=true and trusted publishers on test.pypi.org for
@@ -546,28 +566,45 @@ jobs:
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
-      - name: npm with trusted-publishing support
-        run: |
-          npm install -g npm@11.21.1
-          npm --version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: npm-*
           path: npm-out
           merge-multiple: true
-      # Platform packages first, so @haltsql/client never points at a missing version.
-      - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
-          for t in ./npm-out/*.tgz; do npm publish --provenance --access public "$t"; done
-      - name: Publish @haltsql/client
+      # Pack @haltsql/client. Its @haltsql/native-* optional dependencies are added
+      # only here (scripts/set-native-deps.mjs), at this version: kept out of the
+      # committed package.json so package-lock.json never lists packages that a
+      # release has not published yet, which `npm ci` refuses. Every package is
+      # then published from a tarball.
+      - name: Pack @haltsql/client
         working-directory: clients/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm ci
           npm run build
-          npm publish --provenance --access public
+          node scripts/set-native-deps.mjs
+          npm pack --pack-destination "$GITHUB_WORKSPACE/npm-out"
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - name: npm with trusted-publishing support
+        run: |
+          npm install -g npm@11.21.1
+          npm --version
+      # Platform packages first, so @haltsql/client never points at a missing
+      # version. A version already on npm is skipped, so a re-run after a partial
+      # publish finishes the job instead of failing on the first package.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -eu
+          native=(npm-out/haltsql-native-*.tgz)
+          client=(npm-out/haltsql-client-*.tgz)
+          [ "${#native[@]}" -eq 3 ] && [ -f "${client[0]}" ] || { echo "expected 3 platform packages and the client"; exit 1; }
+          for t in "${native[@]}" "${client[@]}"; do
+            id=$(tar -xOzf "$t" package/package.json | node -p 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); p.name + "@" + p.version')
+            if npm view "$id" version > /dev/null 2>&1; then
+              echo "$id is already on npm; skipping"
+              continue
+            fi
+            # "./": a bare dir/file.tgz is read as a GitHub user/repo shorthand.
+            npm publish --provenance --access public "./$t"
+          done
