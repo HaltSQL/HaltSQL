@@ -226,7 +226,11 @@ jobs:
 
   image:
     name: Container image (multi-arch)
-    needs: [meta]
+    # After linux-static: its native amd64/arm64 builds fill the static-<arch>
+    # caches with the `builder` stage (the version build args only reach the
+    # `runtime` stage), so the arm64 image here, built under QEMU, is a cache hit
+    # instead of an hours-long emulated OCaml build.
+    needs: [meta, linux-static]
     runs-on: ubuntu-latest
     timeout-minutes: 240
     permissions:
@@ -273,9 +277,9 @@ jobs:
       - name: Build and smoke-test the amd64 image before pushing
         run: |
           docker buildx build --platform linux/amd64 --load -t haltsql-local:dev \
-            --cache-from type=gha .
+            --cache-from type=gha,scope=static-amd64 --cache-from type=gha .
           docker buildx build --platform linux/amd64 --target scratch --load \
-            -t haltsql-local:scratch --cache-from type=gha .
+            -t haltsql-local:scratch --cache-from type=gha,scope=static-amd64 .
           docker run -d --name haltsql-release-pg -p 5417:5432 \
             -e POSTGRES_PASSWORD="ci-${{ github.run_id }}" postgres:17-alpine
           for _ in $(seq 60); do
@@ -310,7 +314,10 @@ jobs:
           # index as in-toto attestations.
           provenance: mode=max
           sbom: true
-          cache-from: type=gha
+          cache-from: |
+            type=gha,scope=static-amd64
+            type=gha,scope=static-arm64
+            type=gha
           cache-to: type=gha,mode=max
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
