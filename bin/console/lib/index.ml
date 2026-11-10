@@ -79,7 +79,12 @@ let bucket_of ts =
     let b = Float.floor (ts /. bucket_seconds) in
     if b <= -4e18 then min_int + 1 else if b >= 4e18 then max_int - 1 else int_of_float b
 
-type stream = { nodes : vec; mutable sorted : bool }
+type stream = {
+  nodes : vec;
+  mutable sorted : bool;
+  mutable version : int;  (** [t.gen] at the last add or removal *)
+  mutable layout : int;  (** [t.gen] at creation or the last out-of-order add *)
+}
 
 type t = {
   mutable items : node array;
@@ -95,6 +100,7 @@ type t = {
   mutable newest_ok : bool;
   max_records : int;
   retention : float;
+  mutable gen : int;  (** bumped on every stream change; never repeats *)
 }
 
 let create ?(max_records = 2_000_000) ?(retention_seconds = 7. *. 86400.) () =
@@ -112,6 +118,7 @@ let create ?(max_records = 2_000_000) ?(retention_seconds = 7. *. 86400.) () =
     newest_ok = true;
     max_records = max 1 max_records;
     retention = retention_seconds;
+    gen = 0;
   }
 
 let size t = t.count
@@ -148,7 +155,11 @@ let kill t n =
   (match Hashtbl.find_opt t.streams e.verifier with
   | Some s ->
       if vec_live s.nodes <= 1 then Hashtbl.remove t.streams e.verifier
-      else vec_kill s.nodes
+      else begin
+        vec_kill s.nodes;
+        t.gen <- t.gen + 1;
+        s.version <- t.gen
+      end
   | None -> ());
   (match t.oldest_c with
   | Some x when t.oldest_ok && not (x < e.ts) -> t.oldest_ok <- false
@@ -192,12 +203,19 @@ let add_entry t e =
     (match IntMap.find_opt k t.buckets with
     | Some v -> vec_push v n
     | None -> t.buckets <- IntMap.add k (vec_make n) t.buckets);
+    t.gen <- t.gen + 1;
     (match Hashtbl.find_opt t.streams e.verifier with
     | Some s ->
         let v = s.nodes in
-        if s.sorted && v.len > 0 && v.a.(v.len - 1).e.seq > e.seq then s.sorted <- false;
+        if v.len > 0 && v.a.(v.len - 1).e.seq >= e.seq then begin
+          s.sorted <- false;
+          s.layout <- t.gen
+        end;
+        s.version <- t.gen;
         vec_push v n
-    | None -> Hashtbl.replace t.streams e.verifier { nodes = vec_make n; sorted = true });
+    | None ->
+        Hashtbl.replace t.streams e.verifier
+          { nodes = vec_make n; sorted = true; version = t.gen; layout = t.gen });
     if t.oldest_ok then
       t.oldest_c <-
         (match t.oldest_c with Some x when x <= e.ts -> Some x | _ -> Some e.ts);
@@ -312,24 +330,54 @@ let between t ~since ~until =
     List.rev !acc
   end
 
+let ensure_sorted s =
+  let vec = s.nodes in
+  if not s.sorted then begin
+    vec_compact vec;
+    let a = Array.sub vec.a 0 vec.len in
+    Array.stable_sort (fun x y -> compare x.e.seq y.e.seq) a;
+    Array.blit a 0 vec.a 0 vec.len;
+    s.sorted <- true
+  end
+
 let verifier_stream t v =
   match Hashtbl.find_opt t.streams v with
   | None -> []
   | Some s ->
+      ensure_sorted s;
       let vec = s.nodes in
-      if not s.sorted then begin
-        vec_compact vec;
-        let a = Array.sub vec.a 0 vec.len in
-        Array.stable_sort (fun x y -> compare x.e.seq y.e.seq) a;
-        Array.blit a 0 vec.a 0 vec.len;
-        s.sorted <- true
-      end;
       let acc = ref [] in
       for i = vec.len - 1 downto 0 do
         let n = vec.a.(i) in
         if n.live then acc := n.e :: !acc
       done;
       !acc
+
+let stream_version t v =
+  Option.map (fun s -> (s.version, s.layout)) (Hashtbl.find_opt t.streams v)
+
+let verifier_range t v ~after ~limit =
+  match Hashtbl.find_opt t.streams v with
+  | None -> []
+  | Some s ->
+      ensure_sorted s;
+      let vec = s.nodes in
+      (* first slot with seq > after (dead slots keep their place in seq order) *)
+      let lo = ref 0 and hi = ref vec.len in
+      while !lo < !hi do
+        let mid = (!lo + !hi) / 2 in
+        if vec.a.(mid).e.seq > after then hi := mid else lo := mid + 1
+      done;
+      let acc = ref [] and k = ref 0 and i = ref !lo in
+      while !k < limit && !i < vec.len do
+        let n = vec.a.(!i) in
+        if n.live then begin
+          acc := n.e :: !acc;
+          incr k
+        end;
+        incr i
+      done;
+      List.rev !acc
 
 let verifier_counts t =
   Hashtbl.fold (fun k s acc -> (k, vec_live s.nodes) :: acc) t.streams []
@@ -418,7 +466,9 @@ let outcome_of_string = function
 
 let contains ~sub s =
   let n = String.length sub and m = String.length s in
-  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
+  (* compares in place: no substring per position *)
+  let rec at i j = j = n || (s.[i + j] = sub.[j] && at i (j + 1)) in
+  let rec go i = i + n <= m && (at i 0 || go (i + 1)) in
   n = 0 || go 0
 
 let starts_with ~prefix s = String.starts_with ~prefix s

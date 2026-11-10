@@ -85,6 +85,12 @@ type audit = {
   retention_hours : int;  (** default 168 *)
   max_records : int;  (** default 2_000_000 *)
   poll_seconds : int;  (** default 5 *)
+  max_object_mb : int;  (** largest S3/GCS object read, default 256 *)
+  max_line_mb : int;  (** longer file lines are skipped, default 64 *)
+  request_timeout_seconds : int;  (** S3/GCS request timeout, default 60 *)
+  relist_minutes : int;  (** full object listing of the retention window, default 10 *)
+  object_attempts : int;  (** reads of an object before it is skipped, default 5 *)
+  chain_check_seconds : int;  (** audit-chain status refresh, default 300 *)
 }
 
 type policies = {
@@ -515,12 +521,44 @@ let audit_source i j =
   | _ -> invalid "%s needs exactly one of file, s3 or gcs" ctx
 
 let audit j =
-  check_keys "audit" [ "sources"; "retention_hours"; "max_records"; "poll_seconds" ] j;
+  check_keys "audit"
+    [
+      "sources";
+      "retention_hours";
+      "max_records";
+      "poll_seconds";
+      "max_object_mb";
+      "max_line_mb";
+      "request_timeout_seconds";
+      "relist_minutes";
+      "object_attempts";
+      "chain_check_seconds";
+    ]
+    j;
+  let sources = List.mapi audit_source (list_opt "audit" "sources" j) in
+  (* The same file or prefix listed twice would be ingested twice. *)
+  let label = function
+    | _, Src_file f -> f
+    | _, Src_s3 { uri; _ } -> uri
+    | _, Src_gcs { uri } -> uri
+  in
+  ignore
+    (List.fold_left
+       (fun seen src ->
+         let l = label src in
+         if List.mem l seen then invalid "audit.sources lists %s twice" l else l :: seen)
+       [] sources);
   {
-    sources = List.mapi audit_source (list_opt "audit" "sources" j);
+    sources;
     retention_hours = int_opt "audit" "retention_hours" j ~default:168;
     max_records = int_opt "audit" "max_records" j ~default:2_000_000;
     poll_seconds = int_opt "audit" "poll_seconds" j ~default:5;
+    max_object_mb = int_opt "audit" "max_object_mb" j ~default:256;
+    max_line_mb = int_opt "audit" "max_line_mb" j ~default:64;
+    request_timeout_seconds = int_opt "audit" "request_timeout_seconds" j ~default:60;
+    relist_minutes = int_opt "audit" "relist_minutes" j ~default:10;
+    object_attempts = int_opt "audit" "object_attempts" j ~default:5;
+    chain_check_seconds = int_opt "audit" "chain_check_seconds" j ~default:300;
   }
 
 let policies j =
