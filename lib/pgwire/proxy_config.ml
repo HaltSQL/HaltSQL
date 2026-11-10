@@ -35,6 +35,7 @@ type limits = {
   max_message_bytes : int;
   idle_timeout : float;
   auth_timeout : float;
+  worker_threads : int;
 }
 
 type audit_sink = Audit_stdout | Audit_file of string | Audit_none
@@ -1055,6 +1056,7 @@ let decode ctx (j : Yojson.Safe.t) =
                  max_message_bytes = 1_048_576;
                  idle_timeout = 0.;
                  auth_timeout = 30.;
+                 worker_threads = Offload.default_threads ();
                })
           ""
           (fun p j ->
@@ -1066,6 +1068,7 @@ let decode ctx (j : Yojson.Safe.t) =
                     "max_message_bytes";
                     "idle_timeout_seconds";
                     "auth_timeout_seconds";
+                    "worker_threads";
                   ]
                 j
             with
@@ -1087,13 +1090,26 @@ let decode ctx (j : Yojson.Safe.t) =
                   optional lk "auth_timeout_seconds" ~default:(Some 30.) p (fun p j ->
                       number ctx p ~min:1. ~max:600. j)
                 in
-                match (mc, mm, it, at) with
+                let wt =
+                  optional lk "worker_threads"
+                    ~default:(Some (Offload.default_threads ()))
+                    p
+                    (fun p j -> int ctx p ~min:1 ~max:64 j)
+                in
+                match (mc, mm, it, at, wt) with
                 | ( Some max_connections,
                     Some max_message_bytes,
                     Some idle_timeout,
-                    Some auth_timeout ) ->
+                    Some auth_timeout,
+                    Some worker_threads ) ->
                     Some
-                      { max_connections; max_message_bytes; idle_timeout; auth_timeout }
+                      {
+                        max_connections;
+                        max_message_bytes;
+                        idle_timeout;
+                        auth_timeout;
+                        worker_threads;
+                      }
                 | _ -> None))
       in
       let deny_sqlstate =
@@ -1381,6 +1397,7 @@ let to_json_redacted c : Yojson.Safe.t =
             ("max_message_bytes", `Int c.limits.max_message_bytes);
             ("idle_timeout_seconds", `Float c.limits.idle_timeout);
             ("auth_timeout_seconds", `Float c.limits.auth_timeout);
+            ("worker_threads", `Int c.limits.worker_threads);
           ] );
       ("deny_sqlstate", `String c.deny_sqlstate);
       ("allow_transaction_control", `Bool c.allow_transaction_control);

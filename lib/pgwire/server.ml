@@ -177,6 +177,7 @@ let apply_reload t ~trigger (cfg : Proxy_config.t) =
         else cfg
       in
       Plog.set_level cfg.log_level;
+      Offload.configure ~threads:cfg.limits.worker_threads;
       t.gen <- { t.gen with cfg; generation = t.gen.generation + 1; tls_server };
       t.reloads <- t.reloads + 1;
       t.last_reload_error <- None;
@@ -228,6 +229,7 @@ let rec watch_loop t =
 let start ?reload cfg =
   Sec.init_rng ();
   Plog.set_level cfg.log_level;
+  Offload.configure ~threads:cfg.limits.worker_threads;
   (* a bug in one session must never take the whole proxy down *)
   (Lwt.async_exception_hook :=
      fun e ->
@@ -310,6 +312,7 @@ let start ?reload cfg =
                `String (Proxy_config.sink_name s.sink))
              cfg.audit_sinks) );
       ("reload_watch", `Bool cfg.reload.watch);
+      ("worker_threads", `Int cfg.limits.worker_threads);
     ];
   Lwt.async (fun () -> accept_loop t);
   if t.loader <> None then Lwt.async (fun () -> watch_loop t);

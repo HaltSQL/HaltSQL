@@ -94,52 +94,64 @@ let audit_refusal () =
        (or a full buffer) cannot be written; retry once the sink has recovered."
     "the audit log could not be written; statement refused"
 
-let audited s r =
-  match r with
-  | Ok () -> Ok ()
-  | Error e ->
-      log s Plog.Error "statement refused: audit log unavailable" [ ("error", `String e) ];
-      Error (audit_refusal ())
+(* Runs [f] on a worker thread (see Offload). The session's client loop handles one
+   message at a time and waits here, so per-session message order is unchanged; only
+   other sessions get to run meanwhile. A worker job cannot be cancelled: if the session
+   ended while it ran, stop instead of acting on a dead session. *)
+let off_loop s f =
+  let* r = Offload.run f in
+  if s.finished then Lwt.fail Done else Lwt.return r
+
+(* The record is written (or refused) before the caller forwards anything. *)
+let audited s fields =
+  let* r = Paudit.record_async s.sh.audit fields in
+  if s.finished then Lwt.fail Done
+  else
+    match r with
+    | Ok () -> Lwt.return (Ok ())
+    | Error e ->
+        log s Plog.Error "statement refused: audit log unavailable"
+          [ ("error", `String e) ];
+        Lwt.return (Error (audit_refusal ()))
 
 let audit_verdict s ~protocol ?stmt ~sql (v : Haltsql.Verdict.t)
     (r : (unit, Enforce.deny) result) =
   let codes = match r with Ok () -> [] | Error d -> d.codes in
   audited s
-  @@ Paudit.record s.sh.audit
-       (audit_base s ~event:"statement"
-       @ [
-           ("policy_version", `String v.policy_version);
-           ("protocol", `String protocol);
-           ("allowed", `Bool (Result.is_ok r));
-           ("reasons", `List (List.map (fun c -> `String c) codes));
-           ( "shadow_reasons",
-             `List
-               (List.map
-                  (fun (x : Haltsql.Reason.t) ->
-                    `String (Haltsql.Reason.code_to_string x.code))
-                  v.shadow_reasons) );
-           ("sql_sha256", `String v.sql_sha256);
-           ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
-           ("tables", `List (List.map (fun t -> `String t) v.tables));
-           ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
-         ]
-       @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
-       @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
+    (audit_base s ~event:"statement"
+    @ [
+        ("policy_version", `String v.policy_version);
+        ("protocol", `String protocol);
+        ("allowed", `Bool (Result.is_ok r));
+        ("reasons", `List (List.map (fun c -> `String c) codes));
+        ( "shadow_reasons",
+          `List
+            (List.map
+               (fun (x : Haltsql.Reason.t) ->
+                 `String (Haltsql.Reason.code_to_string x.code))
+               v.shadow_reasons) );
+        ("sql_sha256", `String v.sql_sha256);
+        ("fingerprint", match v.fingerprint with Some f -> `String f | None -> `Null);
+        ("tables", `List (List.map (fun t -> `String t) v.tables));
+        ("bind_params", `List (List.map (fun (n, _) -> `Int n) v.bind_params));
+      ]
+    @ (match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+    @ if s.sh.cfg.log_raw_sql then [ ("sql", `String sql) ] else [])
 
 let audit_local s ~event ?stmt (d : Enforce.deny) =
   audited s
-  @@ Paudit.record s.sh.audit
-       (audit_base s ~event
-       @ [
-           ("allowed", `Bool false);
-           ("reasons", `List (List.map (fun c -> `String c) d.codes));
-           ("message", `String d.message);
-         ]
-       @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
+    (audit_base s ~event
+    @ [
+        ("allowed", `Bool false);
+        ("reasons", `List (List.map (fun c -> `String c) d.codes));
+        ("message", `String d.message);
+      ]
+    @ match stmt with Some n -> [ ("statement", `String n) ] | None -> [])
 
 (* A proxy-level denial, replaced by the audit refusal if it cannot be audited. *)
 let local_denial s ~event ?stmt d =
-  match audit_local s ~event ?stmt d with Ok () -> d | Error refusal -> refusal
+  let+ r = audit_local s ~event ?stmt d in
+  match r with Ok () -> d | Error refusal -> refusal
 
 (* ------------------------------------------------------------------ *)
 (* Startup                                                              *)
@@ -481,11 +493,14 @@ let handle_client_message s tag payload =
       if s.discarding then Lwt.return_unit
       else
         let sql = Wire.decode_query payload in
-        let v, r =
-          Enforce.simple ~sqlstate:(sqlstate s)
-            ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) sql
+        let b = binding s in
+        let* v, r =
+          off_loop s (fun () ->
+              Enforce.simple ~sqlstate:(sqlstate s)
+                ~allow_tx:s.sh.cfg.allow_transaction_control b sql)
         in
-        match audit_verdict s ~protocol:"simple" ~sql v r with
+        let* a = audit_verdict s ~protocol:"simple" ~sql v r in
+        match a with
         | Error refusal -> deny_simple s refusal
         | Ok () -> (
             match r with
@@ -504,11 +519,14 @@ let handle_client_message s tag payload =
       if s.discarding then Lwt.return_unit
       else
         let p = Wire.decode_parse payload in
-        let v, r =
-          Enforce.parse ~sqlstate:(sqlstate s)
-            ~allow_tx:s.sh.cfg.allow_transaction_control (binding s) p.query
+        let b = binding s in
+        let* v, r =
+          off_loop s (fun () ->
+              Enforce.parse ~sqlstate:(sqlstate s)
+                ~allow_tx:s.sh.cfg.allow_transaction_control b p.query)
         in
-        match audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r with
+        let* a = audit_verdict s ~protocol:"extended" ~stmt:p.stmt ~sql:p.query v r in
+        match a with
         | Error refusal -> deny_extended s refusal
         | Ok () -> (
             match r with
@@ -529,7 +547,8 @@ let handle_client_message s tag payload =
                       Enforce.local_deny ~sqlstate:"42P05" ~code:"PROXY_STATEMENT_EXISTS"
                         (Printf.sprintf "prepared statement \"%s\" already exists" p.stmt)
                     in
-                    deny_extended s (local_denial s ~event:"parse" ~stmt:p.stmt d)
+                    let* d = local_denial s ~event:"parse" ~stmt:p.stmt d in
+                    deny_extended s d
                 | _ ->
                     Stmt_state.note_parse s.st p.stmt v;
                     (* Never let the client choose how the injected tenant value is
@@ -551,13 +570,16 @@ let handle_client_message s tag payload =
                 forward s
                   (if v.bind_params = [] then Wire.frame 'B' payload
                    else Wire.encode_bind b')
-            | Error d -> deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
+            | Error d ->
+                let* d = local_denial s ~event:"bind" ~stmt:b.bstmt d in
+                deny_extended s d)
         | Stmt_state.Missing | Stmt_state.Wait ->
             let d =
               Enforce.local_deny ~sqlstate:"26000" ~code:"PROXY_STATEMENT_UNKNOWN"
                 (Printf.sprintf "prepared statement \"%s\" does not exist" b.bstmt)
             in
-            deny_extended s (local_denial s ~event:"bind" ~stmt:b.bstmt d))
+            let* d = local_denial s ~event:"bind" ~stmt:b.bstmt d in
+            deny_extended s d)
   | 'D' ->
       if s.discarding then Lwt.return_unit
       else (
@@ -599,7 +621,8 @@ let handle_client_message s tag payload =
           Enforce.local_deny ~sqlstate:(sqlstate s) ~code:"PROXY_FUNCTION_CALL"
             "the fastpath function call protocol is not allowed"
         in
-        deny_simple s (local_denial s ~event:"function_call" d)
+        let* d = local_denial s ~event:"function_call" d in
+        deny_simple s d
   | 'd' | 'c' | 'f' ->
       fatal "08P01" "COPY sub-protocol is not allowed through haltsql-proxy"
   | 'p' -> fatal "08P01" "unexpected password message"

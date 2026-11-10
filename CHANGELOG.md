@@ -10,6 +10,14 @@ even before 1.0.
 
 ## [Unreleased]
 
+### Changed
+- **haltsql-proxy no longer verifies or writes audit records on its event
+  loop.** `Haltsql.verify` and writes to `stdout`/`file` audit sinks run on a
+  bounded thread pool (`limits.worker_threads`, default: CPUs, 2 to 8), so one
+  session's large statement or a slow audit disk no longer stalls every other
+  session. Per-session message order, the fail-closed audit policy and the
+  order of the hash chain are unchanged.
+
 ### Security
 - **haltsql-proxy pins the upstream `search_path`.** The upstream startup
   packet sets `search_path` from the bound policy's `search_path` (quoted,

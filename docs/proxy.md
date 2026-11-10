@@ -108,6 +108,7 @@ configured value, so key material does not end up in logs.
 | `limits.max_message_bytes` | `1048576` | Largest client message; larger is FATAL 08P01. |
 | `limits.idle_timeout_seconds` | `0` (off) | Close sessions idle this long with nothing in flight (FATAL 57P05). |
 | `limits.auth_timeout_seconds` | `30` | Startup + authentication must finish within this (FATAL 08006). |
+| `limits.worker_threads` | CPUs, 2 to 8 | Threads (1 to 64) that run policy verification and audit writes to stdout/file off the event loop, so a slow statement or a slow disk in one session does not stall the others. |
 | `deny_sqlstate` | `42501` | SQLSTATE of policy denials. |
 | `allow_transaction_control` | `true` | Let plain `BEGIN`/`START TRANSACTION [modes]`, `COMMIT`, `END`, `ROLLBACK`, `ABORT` through without a policy check, so drivers work outside autocommit. Matching is exact, token by token: comments, quotes, savepoints, `AND CHAIN` and `PREPARE TRANSACTION` are not matched and go to the policy. |
 | `audit.type` | `stdout` | Single-sink form: `stdout`, `file` (with `path`) or `none`. |
@@ -299,6 +300,21 @@ logged to stderr (`audit sink write failed; ...`, with the sink name and the
 OS error); a write that fails after part of a line reached a file makes the
 next record start on a new line, so the fragment shows up as one invalid line
 in `haltsql audit verify` rather than corrupting the next record.
+
+### Ordering and blocking writes
+
+The proxy is a single event loop. Verification and writes to `stdout`/`file`
+sinks run on a small thread pool (`limits.worker_threads`) so that neither a
+large statement nor a slow disk, a full pipe or a stalled network mount stops
+other sessions. This does not weaken the failure policy: a session still
+waits for its record to be written (or refused) before the statement is
+forwarded, and within a session messages are still handled strictly one after
+the other. Audit writes are serialized process-wide and served in arrival
+order, and the timestamp is taken when a record's turn comes, so in every sink
+the chain order, the timestamp order and the order in which statements were
+accepted agree. While a write is blocked, statements wait for it (none is
+forwarded unaudited); at shutdown a write that is still blocked after 5
+seconds is abandoned with an error log instead of hanging the exit.
 
 ### Logs
 

@@ -555,6 +555,32 @@ let test_config_errors () =
    It used to be treated as a path, and the "cannot open <path>" error then printed the
    whole private key. Inline PEM is now accepted, and no TLS error ever echoes the
    value. *)
+(* Keys added after the first release: defaults, bounds, and that unknown keys next to
+   them are still refused. *)
+let test_config_new_keys () =
+  let limits kvs = base_config ~extra:[ ("limits", `Assoc kvs) ] () in
+  let ok j =
+    match load j with
+    | Ok c -> c
+    | Error es ->
+        Alcotest.failf "unexpected: %s"
+          (String.concat "; " (List.map Haltsql.Load_error.to_string es))
+  in
+  let c = ok (base_config ()) in
+  check_int "worker_threads default" (Offload.default_threads ()) c.limits.worker_threads;
+  check_bool "worker_threads default is bounded" true
+    (c.limits.worker_threads >= 2 && c.limits.worker_threads <= 8);
+  check_int "worker_threads set" 3
+    (ok (limits [ ("worker_threads", `Int 3) ])).limits.worker_threads;
+  has_error "worker_threads low" "limits.worker_threads: 0 is out of range"
+    (limits [ ("worker_threads", `Int 0) ]);
+  has_error "worker_threads high" "limits.worker_threads: 65 is out of range"
+    (limits [ ("worker_threads", `Int 65) ]);
+  has_error "unknown limits key" "limits" (limits [ ("verify_threads", `Int 2) ]);
+  let red = Yojson.Safe.to_string (Proxy_config.to_json_redacted c) in
+  check_bool "worker_threads in the effective config" true
+    (Astring_like.contains red "\"worker_threads\"")
+
 let test_config_tls_key_material () =
   let tmp contents =
     let f = Filename.temp_file "haltsql_tls" ".pem" in
@@ -928,6 +954,7 @@ let () =
           Alcotest.test_case "valid" `Quick test_config_ok;
           Alcotest.test_case "YAML example" `Quick test_config_yaml_example;
           Alcotest.test_case "errors" `Quick test_config_errors;
+          Alcotest.test_case "newer keys" `Quick test_config_new_keys;
           Alcotest.test_case "tls key material never echoed" `Quick
             test_config_tls_key_material;
         ] );

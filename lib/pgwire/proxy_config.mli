@@ -47,6 +47,9 @@ type limits = {
   max_message_bytes : int;  (** default 1 MiB; applies to client messages *)
   idle_timeout : float;  (** seconds; 0 = none (default) *)
   auth_timeout : float;  (** seconds to finish startup + auth; default 30 *)
+  worker_threads : int;
+      (** threads that run verification and audit file writes off the event loop
+          ({!Offload}); 1..64, default {!Offload.default_threads} *)
 }
 
 type audit_sink =

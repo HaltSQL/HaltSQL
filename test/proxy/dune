@@ -33,7 +33,16 @@
  (name test_proxy_session)
  (package haltsql-proxy)
  (modules test_proxy_session fake_pg)
- (libraries haltsql_pgwire haltsql alcotest yojson lwt lwt.unix unix)
+ (libraries
+  haltsql_pgwire
+  haltsql
+  haltsql.cloud
+  alcotest
+  yojson
+  lwt
+  lwt.unix
+  threads.posix
+  unix)
  (deps
   (source_tree fixtures)))
 

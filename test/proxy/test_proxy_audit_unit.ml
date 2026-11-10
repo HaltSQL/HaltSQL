@@ -256,8 +256,105 @@ let t_paudit_unopenable () =
   | exception Failure m ->
       Alcotest.(check bool) "names the file" true (contains m "/nonexistent-dir")
 
+(* record_async: a sink whose write blocks (a FIFO nobody reads) stalls neither the
+   event loop nor the order of the chain. *)
+let t_paudit_async_blocked () =
+  let path = tmp () in
+  Sys.remove path;
+  Unix.mkfifo path 0o600;
+  let rd = Unix.openfile path [ Unix.O_RDONLY; Unix.O_NONBLOCK ] 0 in
+  let n = 48 in
+  let data =
+    Lwt_main.run
+      (Lwt_unix.with_timeout 30. (fun () ->
+           let open Lwt.Syntax in
+           let a = Paudit.open_ [ spec (Config.Sink_file path) ] in
+           (* 48 records of about 4 KiB: far more than a pipe holds (64 KiB) *)
+           let pad = String.make 4096 'x' in
+           let results =
+             List.init n (fun i ->
+                 Paudit.record_async a [ ("n", `Int i); ("pad", `String pad) ])
+           in
+           let ticks = ref 0 in
+           let rec tick k =
+             if k = 0 then Lwt.return_unit
+             else
+               let* () = Lwt_unix.sleep 0.01 in
+               incr ticks;
+               tick (k - 1)
+           in
+           let* () = tick 25 in
+           Alcotest.(check int) "event loop kept running" 25 !ticks;
+           Alcotest.(check bool)
+             "the writer is blocked on the full pipe" true
+             (List.exists (fun r -> Lwt.state r = Lwt.Sleep) results);
+           Alcotest.(check bool)
+             "records before it were written" true
+             (List.exists (fun r -> Lwt.state r <> Lwt.Sleep) results);
+           (* a reader shows up: everything is written, in submission order *)
+           let lrd = Lwt_unix.of_unix_file_descr ~blocking:false rd in
+           let buf = Buffer.create 65536 and chunk = Bytes.create 65536 in
+           let rec drain () =
+             let* k = Lwt_unix.read lrd chunk 0 (Bytes.length chunk) in
+             if k = 0 then Lwt.return_unit
+             else (
+               Buffer.add_subbytes buf chunk 0 k;
+               drain ())
+           in
+           let reader = drain () in
+           let* rs = Lwt.all results in
+           Alcotest.(check bool) "all written" true (List.for_all Result.is_ok rs);
+           let* () = Paudit.close a in
+           let* () = reader in
+           let* () = Lwt_unix.close lrd in
+           Lwt.return (Buffer.contents buf)))
+  in
+  Sys.remove path;
+  let ls = lines data in
+  Alcotest.(check (result int (pair int string))) "chain" (Ok n) (Chain.verify_lines ls);
+  Alcotest.(check (list int))
+    "chain order is submission order" (List.init n Fun.id)
+    (List.map
+       (fun l ->
+         match Yojson.Safe.from_string l with
+         | `Assoc kvs -> (
+             match List.assoc_opt "n" kvs with Some (`Int i) -> i | _ -> -1)
+         | _ -> -1)
+       ls)
+
+(* record_async keeps the failure policies: fail_closed refuses, drop does not. *)
+let t_paudit_async_failure_policy () =
+  let run on_error =
+    let path = tmp () in
+    Sys.remove path;
+    Unix.mkfifo path 0o600;
+    let rd = Unix.openfile path [ Unix.O_RDONLY; Unix.O_NONBLOCK ] 0 in
+    let r =
+      Lwt_main.run
+        (let open Lwt.Syntax in
+         let a = Paudit.open_ [ spec ~on_error (Config.Sink_file path) ] in
+         let* first = Paudit.record_async a [ ("n", `Int 1) ] in
+         Unix.close rd;
+         (* no reader any more: EPIPE *)
+         let* second = Paudit.record_async a [ ("n", `Int 2) ] in
+         let healthy = Paudit.healthy a in
+         let* () = Paudit.close a in
+         Lwt.return (first, second, healthy))
+    in
+    Sys.remove path;
+    r
+  in
+  (match run Proxy_config.Audit_fail_closed with
+  | Ok (), Error m, false ->
+      Alcotest.(check bool) "names the sink" true (contains m "paudit")
+  | _ -> Alcotest.fail "fail_closed: expected Ok, Error, unhealthy");
+  match run Proxy_config.Audit_drop with
+  | Ok (), Ok (), true -> ()
+  | _ -> Alcotest.fail "drop: expected Ok, Ok, healthy"
+
 let () =
   Sec.init_rng ();
+  (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
   Alcotest.run "proxy-audit-unit"
     [
       ( "config",
@@ -274,5 +371,9 @@ let () =
           Alcotest.test_case "file chain across restarts" `Quick t_paudit_file_chain;
           Alcotest.test_case "corrupt tail refused" `Quick t_paudit_refuses_corrupt_tail;
           Alcotest.test_case "unopenable file" `Quick t_paudit_unopenable;
+          Alcotest.test_case "async: blocked sink, loop runs, order kept" `Quick
+            t_paudit_async_blocked;
+          Alcotest.test_case "async: failure policies" `Quick
+            t_paudit_async_failure_policy;
         ] );
     ]
