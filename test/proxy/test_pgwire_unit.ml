@@ -594,7 +594,30 @@ let test_config_new_keys () =
     (limits [ ("max_session_lifetime_seconds", `Int (-1)) ]);
   has_error "grace too long" "limits.termination_grace_seconds"
     (limits [ ("termination_grace_seconds", `Int 3601) ]);
+  let upstream kvs =
+    base_config
+      ~upstream:
+        (Some
+           (`Assoc
+              ([
+                 ("host", `String "127.0.0.1");
+                 ("database", `String "app");
+                 ("user", `String "svc");
+               ]
+              @ kvs)))
+      ()
+  in
+  check_bool "allow_insecure_auth default" false c.upstream.allow_insecure_auth;
+  check_bool "allow_insecure_auth set" true
+    (ok (upstream [ ("allow_insecure_auth", `Bool true) ])).upstream.allow_insecure_auth;
+  has_error "allow_insecure_auth type" "upstream.allow_insecure_auth"
+    (upstream [ ("allow_insecure_auth", `String "yes") ]);
+  has_error "unknown upstream key" "upstream" (upstream [ ("allow_md5", `Bool true) ]);
+  has_error "verify-ca is not a mode" "upstream.tls.mode"
+    (upstream [ ("tls", `Assoc [ ("mode", `String "verify-ca") ]) ]);
   let red = Yojson.Safe.to_string (Proxy_config.to_json_redacted c) in
+  check_bool "allow_insecure_auth in the effective config" true
+    (Astring_like.contains red "\"allow_insecure_auth\":false");
   check_bool "worker_threads in the effective config" true
     (Astring_like.contains red "\"worker_threads\"")
 
@@ -916,6 +939,7 @@ let test_stalled_upstream () =
       tls_mode = Proxy_config.Tls_require;
       tls_ca = [];
       connect_timeout = 0.3;
+      allow_insecure_auth = false;
     }
   in
   let t0 = Unix.gettimeofday () in

@@ -185,12 +185,25 @@ let validate config json =
       else prerr_endline ("haltsql-proxy: " ^ msg);
       code
   | Ok cfg ->
+      let warnings =
+        List.filter_map
+          (function
+            | Proxy_config.Transport_warning m -> Some m
+            | Proxy_config.Transport_info _ -> None)
+          (Proxy_config.transport_notes cfg)
+      in
       if json then
         print_endline
           (Yojson.Safe.pretty_to_string
              (`Assoc
-                [ ("valid", `Bool true); ("config", Proxy_config.to_json_redacted cfg) ]))
-      else Printf.printf "%s: valid ProxyConfig\n" config;
+                [
+                  ("valid", `Bool true);
+                  ("warnings", `List (List.map (fun w -> `String w) warnings));
+                  ("config", Proxy_config.to_json_redacted cfg);
+                ]))
+      else (
+        List.iter (fun w -> prerr_endline ("haltsql-proxy: warning: " ^ w)) warnings;
+        Printf.printf "%s: valid ProxyConfig\n" config);
       exit_ok
 
 let validate_cmd =

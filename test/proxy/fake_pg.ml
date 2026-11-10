@@ -22,6 +22,7 @@ type t = {
   mutable received : (char * string) list;  (** frontend messages, newest first *)
   mutable connections : int;
   mutable closed : int;
+  mutable passwords : int;  (** password messages received *)
 }
 
 let startup_params t = match t.startups with p :: _ -> p | [] -> []
@@ -101,11 +102,13 @@ let authenticate t io ~user =
   | Cleartext pw ->
       let* () = Io.write io (auth_request 3 "") in
       let* _, p = Io.read_message io ~max:65536 in
+      t.passwords <- t.passwords + 1;
       if password_of p = pw then Io.write io Wire.auth_ok else reject ()
   | Md5 pw ->
       let salt = "\x01\x02\x03\x04" in
       let* () = Io.write io (auth_request 5 salt) in
       let* _, p = Io.read_message io ~max:65536 in
+      t.passwords <- t.passwords + 1;
       if password_of p = Upstream.md5_password ~user ~password:pw ~salt then
         Io.write io Wire.auth_ok
       else reject ()
@@ -228,6 +231,7 @@ let start () =
       received = [];
       connections = 0;
       closed = 0;
+      passwords = 0;
     }
   in
   let rec accept () =

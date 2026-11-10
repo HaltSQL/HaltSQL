@@ -21,7 +21,14 @@ type client_tls = {
       (** default true: plaintext clients are refused once TLS is configured *)
 }
 
-type upstream_tls_mode = Tls_disable | Tls_require | Tls_verify_full
+type upstream_tls_mode =
+  | Tls_disable  (** plaintext (the default) *)
+  | Tls_require
+      (** encrypted, but ANY server certificate is accepted: protects against passive
+          eavesdropping only *)
+  | Tls_verify_full
+      (** encrypted, certificate chain verified against [tls_ca] and the host name or IP
+          address checked: the only mode that authenticates the server *)
 
 type upstream = {
   host : string;
@@ -32,6 +39,10 @@ type upstream = {
   tls_mode : upstream_tls_mode;
   tls_ca : X509.Certificate.t list;  (** required for verify-full *)
   connect_timeout : float;  (** seconds *)
+  allow_insecure_auth : bool;
+      (** default false: MD5 password authentication is refused unless the upstream
+          connection is encrypted. (Cleartext passwords are never sent unencrypted,
+          whatever this says.) *)
 }
 
 type binding = { policy_name : string; policy : Policy.t; context : Context.t }
@@ -136,6 +147,18 @@ val of_file : ?env:(string -> string option) -> string -> (t, Load_error.t list)
 
 val sink_name : Config.sink_kind -> string
 (** ["stdout"], the file path, ["s3://bucket/prefix"] or ["gs://bucket/prefix"]. *)
+
+type transport_note = Transport_warning of string | Transport_info of string
+
+val transport_notes : t -> transport_note list
+(** What an operator should know about the upstream transport: a warning when TLS is
+    disabled towards a host that is not a loopback address ([localhost], [127.0.0.0/8],
+    [::1]) or when [allow_insecure_auth] permits MD5 without TLS; a note when the mode is
+    [require] (encrypted, server not verified) towards such a host. Logged at start and on
+    reload, printed by [haltsql-proxy validate]. *)
+
+val is_loopback : string -> bool
+(** [localhost] or a loopback IP literal. Other names are not resolved. *)
 
 val on_error_name : audit_on_error -> string
 

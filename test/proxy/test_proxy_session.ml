@@ -46,13 +46,15 @@ let config ~up_port ~audit_file ?(policy = "fixtures/policy.yaml")
        ("listen", `String "127.0.0.1:0");
        ( "upstream",
          `Assoc
-           ([
-              ("host", `String "127.0.0.1");
-              ("port", `Int up_port);
-              ("database", `String "app");
-              ("user", `String "svc");
-              ("connect_timeout_seconds", `Float 2.);
-            ]
+           (List.filter
+              (fun (k, _) -> not (List.mem_assoc k upstream))
+              [
+                ("host", `String "127.0.0.1");
+                ("port", `Int up_port);
+                ("database", `String "app");
+                ("user", `String "svc");
+                ("connect_timeout_seconds", `Float 2.);
+              ]
            @ upstream) );
        ("policies", `List [ `Assoc [ ("path", `String policy) ] ]);
        ("auth", `Assoc [ ("method", `String "scram"); ("users", `List users) ]);
@@ -845,6 +847,117 @@ let test_reload_in_transaction () =
         (List.length versions);
       Io.close io)
 
+(* ---------------------------------------------------- upstream transport *)
+
+let upstream_of ?(allow = false) (pg : Fake_pg.t) : Proxy_config.upstream =
+  {
+    host = "127.0.0.1";
+    port = pg.port;
+    database = "app";
+    user = "svc";
+    password = Some "upstream-password";
+    tls_mode = Proxy_config.Tls_disable;
+    tls_ca = [];
+    connect_timeout = 2.;
+    allow_insecure_auth = allow;
+  }
+
+(* MD5 over a plaintext upstream connection: refused before anything derived from the
+   password is sent, unless explicitly allowed. *)
+let test_md5_plaintext () =
+  Lwt_main.run
+    (let* pg = Fake_pg.start () in
+     pg.auth <- Fake_pg.Md5 "upstream-password";
+     let attempt u =
+       Lwt.catch
+         (fun () ->
+           let* io = Upstream.connect u ~application_name:None in
+           let* () = Io.close io in
+           Lwt.return "connected")
+         (function
+           | Upstream.Upstream_error m -> Lwt.return m
+           | e -> Lwt.return (Printexc.to_string e))
+     in
+     let* r = attempt (upstream_of pg) in
+     check_bool ("refused: " ^ r) true (contains r "MD5" && contains r "unencrypted");
+     check_bool "the error names the ways out" true
+       (contains r "allow_insecure_auth" && contains r "scram-sha-256");
+     check_int "no password message was sent" 0 pg.passwords;
+     let* r = attempt (upstream_of ~allow:true pg) in
+     check_str "explicit opt-in" "connected" r;
+     check_int "the MD5 response was sent" 1 pg.passwords;
+     (* cleartext stays refused whatever the opt-in says *)
+     pg.auth <- Fake_pg.Cleartext "upstream-password";
+     let* r = attempt (upstream_of ~allow:true pg) in
+     check_bool ("cleartext refused: " ^ r) true (contains r "cleartext");
+     check_int "no cleartext password was sent" 1 pg.passwords;
+     Fake_pg.stop pg)
+
+(* Seen from a client: the session is refused, with the reason in the proxy log only. *)
+let test_md5_session () =
+  let make allow ~up_port ~audit_file =
+    config ~up_port ~audit_file
+      ~upstream:
+        ([ ("password", `String "upstream-password") ]
+        @ if allow then [ ("allow_insecure_auth", `Bool true) ] else [])
+      ()
+  in
+  let prepare (pg : Fake_pg.t) = pg.auth <- Fake_pg.Md5 "upstream-password" in
+  with_env ~prepare ~make:(make false) (fun e ->
+      let* io, ms = login e.port in
+      check_str "upstream connection failure" "08006" (sqlstate ms);
+      check_bool "nothing about the upstream's auth leaks to the client" false
+        (contains (message ms) "MD5");
+      check_int "no password message reached the upstream" 0 e.pg.passwords;
+      Io.close io);
+  with_env ~prepare ~make:(make true) (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io q_ok in
+      check_str "served with the opt-in" "CZ" (tags ms);
+      Io.close io)
+
+let test_transport_notes () =
+  let notes ?(tls = []) ?(extra = []) host =
+    let c =
+      load
+        (config ~up_port:5432 ~audit_file:"unused.jsonl"
+           ~upstream:
+             ([ ("host", `String host) ]
+             @ (if tls = [] then [] else [ ("tls", `Assoc tls) ])
+             @ extra)
+           ())
+    in
+    List.map
+      (function
+        | Proxy_config.Transport_warning m -> "W:" ^ m
+        | Proxy_config.Transport_info m -> "I:" ^ m)
+      (Proxy_config.transport_notes c)
+  in
+  let none name l = Alcotest.(check (list string)) name [] l in
+  none "loopback IPv4, TLS off" (notes "127.0.0.1");
+  none "127.0.0.0/8" (notes "127.8.9.10");
+  none "localhost" (notes "LocalHost");
+  none "::1" (notes "::1");
+  (match notes "db.internal" with
+  | [ w ] ->
+      check_bool "warning" true (String.length w > 2 && String.sub w 0 2 = "W:");
+      check_bool "names the host" true (contains w "db.internal");
+      check_bool "says what to set" true (contains w "verify-full")
+  | l -> Alcotest.failf "expected one warning, got %d" (List.length l));
+  check_int "a non-loopback address" 1 (List.length (notes "10.1.2.3"));
+  (match notes ~tls:[ ("mode", `String "require") ] "db.internal" with
+  | [ i ] ->
+      check_bool "a note, not a warning" true (String.sub i 0 2 = "I:");
+      check_bool "says the certificate is not verified" true (contains i "not verified")
+  | l -> Alcotest.failf "require: expected one note, got %d" (List.length l));
+  none "require on loopback" (notes ~tls:[ ("mode", `String "require") ] "127.0.0.1");
+  check_int "allow_insecure_auth without TLS, even on loopback" 1
+    (List.length (notes ~extra:[ ("allow_insecure_auth", `Bool true) ] "127.0.0.1"));
+  check_int "both" 2
+    (List.length (notes ~extra:[ ("allow_insecure_auth", `Bool true) ] "db.internal"));
+  check_bool "loopback detection does not resolve names" false
+    (Proxy_config.is_loopback "localhost.example.com")
+
 let () =
   Sec.init_rng ();
   (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
@@ -869,6 +982,13 @@ let () =
           Alcotest.test_case "portals" `Quick test_execute_portals;
           Alcotest.test_case "unaudited Execute is refused" `Quick
             test_execute_fail_closed;
+        ] );
+      ( "upstream transport",
+        [
+          Alcotest.test_case "MD5 over plaintext refused unless allowed" `Quick
+            test_md5_plaintext;
+          Alcotest.test_case "MD5 upstream, seen from a client" `Quick test_md5_session;
+          Alcotest.test_case "startup warnings" `Quick test_transport_notes;
         ] );
       ( "lifetime",
         [

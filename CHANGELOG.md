@@ -37,6 +37,17 @@ even before 1.0.
   order of the hash chain are unchanged.
 
 ### Security
+- **haltsql-proxy refuses MD5 upstream authentication without TLS.** If the
+  database asks for an MD5 password on an unencrypted connection, the proxy no
+  longer answers; sessions fail with `FATAL 08006` and the log names the
+  cause. **Breaking** for configurations that relied on it: enable
+  `upstream.tls`, move the role to SCRAM-SHA-256, or set the new
+  `upstream.allow_insecure_auth: true`.
+- haltsql-proxy logs an `INSECURE UPSTREAM TRANSPORT` warning at start, on
+  reload and in `validate` when `upstream.tls.mode` is `disable` for a
+  non-loopback host. The default mode is unchanged. The docs now state
+  plainly that `require` encrypts without verifying the server and that only
+  `verify-full` authenticates it.
 - **haltsql-proxy pins the upstream `search_path`.** The upstream startup
   packet sets `search_path` from the bound policy's `search_path` (quoted,
   with `pg_temp` last), overriding `ALTER ROLE`/`ALTER DATABASE` defaults, and

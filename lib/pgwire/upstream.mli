@@ -1,11 +1,12 @@
 (** Connections from the proxy to the real PostgreSQL server, using the service
     credentials from the config (never the client's).
 
-    Supports TLS ([disable] / [require] / [verify-full]) and trust, cleartext (only over
-    TLS), MD5 and SCRAM-SHA-256 authentication. The server's SCRAM signature is verified
-    (mutual authentication). The startup always sets [client_encoding=UTF8] so the bytes
-    HaltSQL verified are interpreted as UTF-8 by the server, and [search_path] so the
-    server resolves unqualified names the way the verifier did. *)
+    Supports TLS ([disable] / [require] / [verify-full]; only [verify-full] verifies the
+    server certificate) and trust, cleartext (only over TLS), MD5 (only over TLS unless
+    [allow_insecure_auth]) and SCRAM-SHA-256 authentication. The server's SCRAM signature
+    is verified (mutual authentication). The startup always sets [client_encoding=UTF8] so
+    the bytes HaltSQL verified are interpreted as UTF-8 by the server, and [search_path]
+    so the server resolves unqualified names the way the verifier did. *)
 
 exception Upstream_error of string
 (** Connection, TLS or authentication failure. The message is safe to log (no secrets). *)

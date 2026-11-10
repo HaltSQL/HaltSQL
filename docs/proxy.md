@@ -96,9 +96,10 @@ configured value, so key material does not end up in logs.
 | `tls.required` | `true` | Refuse clients that do not upgrade to TLS (FATAL 28000). |
 | `upstream.host`, `upstream.port` | -, `5432` | The real server. Every resolved address is tried in order. |
 | `upstream.database`, `upstream.user` | required | Service credentials. Clients must ask for exactly this database name. |
-| `upstream.password` | none | For SCRAM-SHA-256, MD5 or cleartext (cleartext only over TLS). Omit for `trust`. |
-| `upstream.tls.mode` | `disable` | `disable`, `require` (encrypt, no verification) or `verify-full` (chain + host name; the host name is checked against DNS SubjectAltName entries only, so a server certificate that carries the name only in its CN is rejected). With `verify-full`, `upstream.host` must be an IP address or a valid DNS host name (no `_`); a host the certificate check cannot use is a config error. |
+| `upstream.password` | none | For SCRAM-SHA-256, MD5 or cleartext (both only over TLS; see `allow_insecure_auth`). Omit for `trust`. |
+| `upstream.tls.mode` | `disable` | `disable` (plaintext), `require` (encrypted, **any certificate accepted**) or `verify-full` (encrypted, certificate chain and host verified). Only `verify-full` authenticates the database; see [Upstream transport security](#upstream-transport-security). With `verify-full`, the host name is checked against DNS SubjectAltName entries only (a certificate that carries the name only in its CN is rejected), and `upstream.host` must be an IP address or a valid DNS host name (no `_`); a host the certificate check cannot use is a config error. There is no `verify-ca` mode. |
 | `upstream.tls.ca` | none | PEM CA bundle; required for `verify-full`. |
+| `upstream.allow_insecure_auth` | `false` | Allow MD5 password authentication over an unencrypted upstream connection. Off by default: the proxy refuses to answer an MD5 request without TLS. Cleartext passwords are never sent without TLS, whatever this says. |
 | `upstream.connect_timeout_seconds` | `10` | TCP connect timeout (authentication gets three times this). |
 | `policies` | required | List of `{path: file}` or `{inline: {...policy...}}`. Each is referenced by its `metadata.name`. |
 | `auth.method` | required | `scram` or `cert`. |
@@ -146,8 +147,9 @@ that is a TeletexString, malformed, empty or contains control characters never
 matches a `subject_cn` identity (fail closed).
 
 **Upstream.** The proxy authenticates to PostgreSQL with `trust`, cleartext
-(only over TLS), MD5 or SCRAM-SHA-256, and verifies the server's SCRAM
-signature (mutual authentication). It always sends `client_encoding=UTF8`, and
+(only over TLS), MD5 (only over TLS unless `upstream.allow_insecure_auth`) or
+SCRAM-SHA-256, and verifies the server's SCRAM signature (mutual
+authentication). It always sends `client_encoding=UTF8`, and
 terminates the session if the server ever reports a different
 `client_encoding` or `standard_conforming_strings` other than `on`, because the
 verified bytes must mean the same thing to the server as to the parser.
@@ -182,6 +184,48 @@ it). A connection pooler between the proxy and PostgreSQL must run in session
 mode and pass the `search_path` startup parameter through; PgBouncer rejects
 it unless it is tracked or listed in `ignore_startup_parameters`, and ignoring
 it makes the check fail, which is the intended outcome.
+
+### Upstream transport security
+
+The connection from the proxy to PostgreSQL carries every statement, every
+result row and the service role's login. `upstream.tls.mode` decides what
+protects it:
+
+| Mode | Encrypted | Server authenticated | Protects against |
+|---|---|---|---|
+| `disable` (default) | no | no | nothing on the network. Acceptable only on a loopback address or a network you fully control. |
+| `require` | yes | **no**: any certificate is accepted, self-signed or an attacker's | passive eavesdropping. Someone who can redirect or intercept the connection (DNS, ARP, a compromised hop) can still pose as the database, read every statement and result, and answer with data of their choosing. |
+| `verify-full` | yes | yes: chain to `upstream.tls.ca`, and the certificate must be for `upstream.host` | eavesdropping and impersonation. **Use this for any database that is not on the same host.** |
+
+`require` here means what `sslmode=require` means in libpq: encryption
+without identity. It does not mean "TLS is verified". The mode libpq calls
+`verify-ca` (chain checked, host name not) does not exist in the proxy,
+because a certificate for any other host under the same CA would pass it;
+use `verify-full`.
+
+The default stays `disable` so that existing configurations keep working, but
+the proxy does not stay quiet about it:
+
+- At start, on reload and in `haltsql-proxy validate`, `disable` towards a
+  host that is not `localhost`, `127.0.0.0/8` or `::1` logs a warning,
+  `INSECURE UPSTREAM TRANSPORT`, with the host and the setting to change.
+  `require` towards such a host logs an info line saying the certificate is
+  not verified. Host names other than `localhost` are not resolved for this
+  check: a name that points at the local machine still gets the warning.
+- **MD5 authentication is refused without TLS.** An MD5 response can be
+  replayed against the server by anyone who also learns the stored hash, and a
+  captured exchange can be brute-forced offline. If the server asks for MD5 on
+  a plaintext connection the proxy does not answer; sessions fail with
+  `FATAL 08006` and the log says `upstream requested MD5 password
+  authentication over an unencrypted connection; refusing to send it`. Fix it
+  by enabling `upstream.tls`, or by moving the role to SCRAM
+  (`password_encryption = scram-sha-256`, then set the password again), or, if
+  you accept the risk (a loopback sidecar, for example), with
+  `upstream.allow_insecure_auth: true`, which itself logs a warning.
+- A cleartext password is never sent without TLS. SCRAM-SHA-256 is safe to
+  run over plaintext as far as the password goes (the proxy also verifies the
+  server's proof), but it does not protect the statements and results that
+  follow.
 
 ## Protocol handling
 

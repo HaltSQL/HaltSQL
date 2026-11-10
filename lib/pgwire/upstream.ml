@@ -207,6 +207,14 @@ let authenticate (u : upstream) io =
               let* p = password () in
               let* () = Io.write io (Wire.password_message p) in
               loop ~scram:None
+        | Wire.Auth_md5 _, None when Io.tls io = None && not u.allow_insecure_auth ->
+            (* An MD5 response is a replayable password equivalent and a sniffed
+               exchange can be brute-forced offline: never over a plaintext link
+               unless the operator asked for it. *)
+            fail
+              "upstream requested MD5 password authentication over an unencrypted \
+               connection; refusing to send it (enable upstream.tls, switch the role to \
+               scram-sha-256, or set upstream.allow_insecure_auth: true)"
         | Wire.Auth_md5 salt, None ->
             let* p = password () in
             let* () =

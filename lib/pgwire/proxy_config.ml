@@ -22,6 +22,7 @@ type upstream = {
   tls_mode : upstream_tls_mode;
   tls_ca : X509.Certificate.t list;
   connect_timeout : float;
+  allow_insecure_auth : bool;
 }
 
 type binding = { policy_name : string; policy : Policy.t; context : Context.t }
@@ -426,7 +427,14 @@ let upstream_j ctx path j =
     obj ctx path
       ~keys:
         [
-          "host"; "port"; "database"; "user"; "password"; "tls"; "connect_timeout_seconds";
+          "host";
+          "port";
+          "database";
+          "user";
+          "password";
+          "tls";
+          "connect_timeout_seconds";
+          "allow_insecure_auth";
         ]
       j
   with
@@ -458,6 +466,10 @@ let upstream_j ctx path j =
       let connect_timeout =
         optional kvs "connect_timeout_seconds" ~default:(Some 10.) path (fun p j ->
             number ctx p ~min:0.1 ~max:300. j)
+      in
+      let allow_insecure_auth =
+        optional kvs "allow_insecure_auth" ~default:(Some false) path (fun p j ->
+            bool ctx p j)
       in
       let verify_full = ref false in
       let tls =
@@ -503,15 +515,29 @@ let upstream_j ctx path j =
                 a valid DNS host name (letters, digits, '-' and '.')"
                h)
       | _ -> ());
-      match (host, port, database, user, password, connect_timeout, tls) with
+      match
+        (host, port, database, user, password, connect_timeout, tls, allow_insecure_auth)
+      with
       | ( Some host,
           Some port,
           Some database,
           Some user,
           Some password,
           Some connect_timeout,
-          Some (tls_mode, tls_ca) ) ->
-          Some { host; port; database; user; password; tls_mode; tls_ca; connect_timeout }
+          Some (tls_mode, tls_ca),
+          Some allow_insecure_auth ) ->
+          Some
+            {
+              host;
+              port;
+              database;
+              user;
+              password;
+              tls_mode;
+              tls_ca;
+              connect_timeout;
+              allow_insecure_auth;
+            }
       | _ -> None)
 
 let policies_j ctx path j =
@@ -1285,6 +1311,57 @@ let of_file ?env path =
           { c with source_files = abs :: List.filter (fun f -> f <> abs) c.source_files })
         (of_json ~file:path ~base_dir ?env j)
 
+(* ------------------------------------------------------------------ *)
+(* Transport warnings                                                   *)
+
+let is_loopback host =
+  String.lowercase_ascii host = "localhost"
+  ||
+  match Ipaddr.of_string host with
+  | Ok (Ipaddr.V4 a) -> Ipaddr.V4.Prefix.mem a Ipaddr.V4.Prefix.loopback
+  | Ok (Ipaddr.V6 a) -> (
+      Ipaddr.V6.compare a Ipaddr.V6.localhost = 0
+      ||
+      match Ipaddr.v4_of_v6 a with
+      | Some a4 -> Ipaddr.V4.Prefix.mem a4 Ipaddr.V4.Prefix.loopback
+      | None -> false)
+  | Error _ -> false
+
+type transport_note = Transport_warning of string | Transport_info of string
+
+let transport_notes c =
+  let u = c.upstream in
+  let remote = not (is_loopback u.host) in
+  (match u.tls_mode with
+    | Tls_disable when remote ->
+        [
+          Transport_warning
+            (Printf.sprintf
+               "upstream.tls.mode is disable and upstream.host %s is not a loopback \
+                address: every statement, every result row and the upstream login cross \
+                the network unencrypted and unauthenticated. Set upstream.tls.mode: \
+                verify-full with upstream.tls.ca."
+               u.host);
+        ]
+    | Tls_require when remote ->
+        [
+          Transport_info
+            (Printf.sprintf
+               "upstream.tls.mode is require: the connection to %s is encrypted but the \
+                server certificate is not verified, so an attacker on the network path \
+                can impersonate the database. Use verify-full with upstream.tls.ca."
+               u.host);
+        ]
+    | Tls_disable | Tls_require | Tls_verify_full -> [])
+  @
+  if u.allow_insecure_auth && u.tls_mode = Tls_disable then
+    [
+      Transport_warning
+        "upstream.allow_insecure_auth is set and upstream TLS is disabled: if the server \
+         asks for MD5 authentication, a replayable password hash is sent in the clear.";
+    ]
+  else []
+
 let on_error_name = function
   | Audit_fail_closed -> "fail_closed"
   | Audit_buffer -> "buffer"
@@ -1381,6 +1458,7 @@ let to_json_redacted c : Yojson.Safe.t =
                       | Tls_verify_full -> "verify-full") );
                 ] );
             ("connect_timeout_seconds", `Float c.upstream.connect_timeout);
+            ("allow_insecure_auth", `Bool c.upstream.allow_insecure_auth);
           ] );
       ( "policies",
         `List

@@ -62,6 +62,16 @@ let tls_server_config (c : client_tls) =
   | Ok cfg -> cfg
   | Error (`Msg m) -> failwith ("invalid TLS configuration: " ^ m)
 
+let log_transport_notes (cfg : Proxy_config.t) =
+  List.iter
+    (fun n ->
+      match n with
+      | Proxy_config.Transport_warning m ->
+          Plog.log Plog.Warn "INSECURE UPSTREAM TRANSPORT" [ ("detail", `String m) ]
+      | Proxy_config.Transport_info m ->
+          Plog.log Plog.Info "upstream transport" [ ("detail", `String m) ])
+    (Proxy_config.transport_notes cfg)
+
 (* Ends a session the current configuration no longer covers. *)
 let end_if_stale t (l : Session.live) =
   let cfg = t.gen.cfg in
@@ -199,6 +209,8 @@ let apply_reload t ~trigger (cfg : Proxy_config.t) =
       in
       Plog.set_level cfg.log_level;
       Offload.configure ~threads:cfg.limits.worker_threads;
+      if Proxy_config.transport_notes cfg <> Proxy_config.transport_notes old then
+        log_transport_notes cfg;
       t.gen <- { t.gen with cfg; generation = t.gen.generation + 1; tls_server };
       t.reloads <- t.reloads + 1;
       t.last_reload_error <- None;
@@ -341,6 +353,7 @@ let start ?reload cfg =
       ("reload_watch", `Bool cfg.reload.watch);
       ("worker_threads", `Int cfg.limits.worker_threads);
     ];
+  log_transport_notes cfg;
   Lwt.async (fun () -> accept_loop t);
   if t.loader <> None then Lwt.async (fun () -> watch_loop t);
   Lwt.return t
