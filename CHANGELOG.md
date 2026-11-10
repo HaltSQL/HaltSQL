@@ -22,6 +22,15 @@ even before 1.0.
   as.
 
 ### Changed
+- **Guarded executors no longer run what a shadow policy would deny.** A
+  `mode: shadow` policy still returns `allowed: true` with `shadow_reasons`,
+  but the Python guard (and so the MCP server and every Python integration),
+  the TypeScript `guardedQuery`, the Go `GuardedQuery`/`GuardedExec` and the
+  Java `JdbcGuard` now treat such a verdict as a denial unless the application
+  opts in (`HALTSQL_ALLOW_SHADOW=1` / `guard.set_allow_shadow(True)`,
+  `allowShadow: true`, `AllowShadow()`, `.allowShadow()`). Switching a policy
+  to shadow on the server can no longer turn enforcement off by itself.
+  **Breaking** for shadow rollouts: add the opt-in.
 - **`haltsql-server` verifies off the event loop.** Parsing and analysis run on
   a bounded thread pool (`HALTSQL_VERIFY_THREADS`, default the CPU count), so a
   large statement no longer stalls other requests, health checks or reloads.

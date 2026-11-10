@@ -99,6 +99,10 @@ Unknown verdict fields are ignored ([compatibility
 rules](verdict.md#stability-guarantees)); unknown reason codes are kept as
 strings.
 
+`GuardedQuery` and `GuardedExec` return a `*DeniedError` for SQL that a
+`mode: shadow` policy would deny, unless you pass `haltsql.AllowShadow()`
+(for a [shadow rollout](tutorials/roll-out-a-policy-safely.md)).
+
 ## Options
 
 | Option | Default | Meaning |

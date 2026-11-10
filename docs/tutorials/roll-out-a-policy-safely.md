@@ -197,6 +197,22 @@ policy would have denied is recorded as `shadow_reasons`.
 > the database role and row-level security from
 > [Defense in depth](../defense-in-depth.md) already protect the data.
 
+Shadow mode needs a second, client-side switch. The guarded executors in the
+SDKs and the MCP server refuse to run a query that a shadow policy would deny
+unless the application opts in, so a policy flipped to `shadow` cannot by
+itself turn enforcement off:
+
+| Client | Opt-in for the shadow rollout |
+|---|---|
+| Python SDK, integrations, MCP server | `HALTSQL_ALLOW_SHADOW=1`, or `haltsql.guard.set_allow_shadow(True)` |
+| TypeScript | `guardedQuery(..., { allowShadow: true })` |
+| Go | `haltsql.AllowShadow()` guard option |
+| Java | `new JdbcGuard(client).allowShadow()` |
+
+Remove the opt-in when the rollout ends. Code that calls `verify` itself and
+runs the SQL on `allowed` must make the same check: treat a verdict with
+non-empty `shadow_reasons` as a denial unless you are in a shadow rollout.
+
 In `policies/saas.yaml`, change the last line:
 
 ```yaml

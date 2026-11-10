@@ -22,6 +22,13 @@ export interface SqlVerifier {
 export interface GuardedQueryOptions extends VerifyOptions {
   /** Called with every verdict (allowed or denied) before anything runs; use it for audit logs. */
   onVerdict?: (verdict: Verdict) => void;
+  /**
+   * Run SQL that a shadow-mode policy would deny (`allowed: true` with
+   * `shadow_reasons`). Default `false`: such a verdict is rejected with
+   * {@link HaltSQLDeniedError}, so switching a policy to shadow on the server
+   * cannot by itself turn enforcement off in this application.
+   */
+  allowShadow?: boolean;
 }
 
 export interface GuardedQueryResult<R> {
@@ -54,10 +61,13 @@ export async function guardedQuery<R>(
   if (db === null || typeof db !== "object" || typeof db.query !== "function") {
     throw new HaltSQLUsageError("db must have a query(text, values) method");
   }
-  const { onVerdict, ...verifyOpts } = opts;
+  const { onVerdict, allowShadow, ...verifyOpts } = opts;
   const verdict = await haltsql.verify(sql, context, verifyOpts);
   onVerdict?.(verdict);
   if (verdict.allowed !== true) throw new HaltSQLDeniedError(verdict);
+  if (allowShadow !== true && verdict.shadow_reasons.length > 0) {
+    throw new HaltSQLDeniedError(verdict);
+  }
   const values = bindParamsToPositional(verdict);
   // Pass the verified string itself: never a copy that was trimmed or templated.
   const result = await db.query(sql, values);

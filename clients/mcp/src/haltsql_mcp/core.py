@@ -257,6 +257,16 @@ class HaltSQLTools:
                 "reasons": _reasons(verdict),
                 "message": "HaltSQL denied the query. Fix it using the reasons and hints, then retry.",
             }
+        if verdict.shadow_reasons and not guard.shadow_allowed():
+            # A shadow-mode policy would deny this. Running it needs an explicit
+            # opt-in on this server (HALTSQL_ALLOW_SHADOW=1), so a policy switched
+            # to shadow elsewhere cannot silently turn enforcement off here.
+            return {
+                "allowed": False,
+                "executed": False,
+                "reasons": [r.to_dict() for r in verdict.shadow_reasons],
+                "message": "HaltSQL denied the query. Fix it using the reasons and hints, then retry.",
+            }
         try:
             conn = await self.connect()
         except Exception as e:  # noqa: BLE001
@@ -272,7 +282,11 @@ class HaltSQLTools:
                 max_rows=self.row_cap,
             )
         except QueryDenied as e:  # pragma: no cover - verdict already checked
-            return {"allowed": False, "executed": False, "reasons": _reasons(e.verdict)}
+            return {
+                "allowed": False,
+                "executed": False,
+                "reasons": [r.to_dict() for r in e.reasons],
+            }
         except (GuardError, HaltSQLUnavailable) as e:
             raise ToolFailure(f"query not executed: {e}") from None
         except Exception as e:  # noqa: BLE001 - database error

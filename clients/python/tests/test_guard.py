@@ -253,3 +253,42 @@ async def test_authorize_async_with_async_verifier():
 
     v = await guard.authorize_async(SQL_OK, {"tenant_id": "z"}, verifier=AsyncV())
     assert v.bind_args() == ["z"]
+
+
+# ---- shadow mode: executing a "would deny" verdict needs an explicit opt-in ----
+
+def _shadow(sql, ctx, _policy):
+    return make_verdict_dict(sql, allowed=True, shadow_codes=["E_TENANT_MISSING"])
+
+
+def test_shadow_would_deny_is_refused_by_default(monkeypatch):
+    monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
+    guard.set_allow_shadow(None)
+    fv = FakeVerifier(_shadow)
+    with pytest.raises(QueryDenied) as ei:
+        guard.execute(Untouchable(), SQL_BAD, {"tenant_id": "acme"}, verifier=fv)
+    assert [r.code for r in ei.value.reasons] == ["E_TENANT_MISSING"]
+    assert "shadow mode" in str(ei.value)
+    with pytest.raises(QueryDenied):
+        guard.authorize(SQL_BAD, {"tenant_id": "acme"}, verifier=fv)
+
+
+def test_shadow_opt_in_by_call_and_by_environment(monkeypatch):
+    fv = FakeVerifier(_shadow)
+    try:
+        guard.set_allow_shadow(True)
+        assert guard.authorize(SQL_BAD, {}, verifier=fv).allowed is True
+        guard.set_allow_shadow(False)
+        monkeypatch.setenv("HALTSQL_ALLOW_SHADOW", "1")  # an explicit False wins
+        with pytest.raises(QueryDenied):
+            guard.authorize(SQL_BAD, {}, verifier=fv)
+        guard.set_allow_shadow(None)
+        assert guard.authorize(SQL_BAD, {}, verifier=fv).allowed is True
+    finally:
+        guard.set_allow_shadow(None)
+
+
+def test_clean_shadow_verdict_runs_without_opt_in(monkeypatch):
+    monkeypatch.delenv("HALTSQL_ALLOW_SHADOW", raising=False)
+    fv = FakeVerifier(lambda sql, ctx, p: make_verdict_dict(sql, allowed=True))
+    assert guard.authorize(SQL_OK, {}, verifier=fv).allowed is True

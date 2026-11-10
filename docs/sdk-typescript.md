@@ -203,6 +203,10 @@ Unknown fields in a verdict are ignored, as the [compatibility
 rules](verdict.md#stability-guarantees) require. Unknown reason codes are kept
 as strings; only `allowed === true` permits running a query.
 
+`guardedQuery` rejects with `HaltSQLDeniedError` for SQL that a
+`mode: shadow` policy would deny, unless you pass `{ allowShadow: true }` (for
+a [shadow rollout](tutorials/roll-out-a-policy-safely.md)).
+
 ## Options
 
 ```ts

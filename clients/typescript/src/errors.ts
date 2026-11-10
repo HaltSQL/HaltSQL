@@ -74,7 +74,10 @@ export class HaltSQLUsageError extends HaltSQLError {
 export class HaltSQLDeniedError extends HaltSQLError {
   readonly verdict: Verdict;
   constructor(verdict: Verdict) {
-    const codes = verdict.reasons.map((r) => r.code).join(", ") || "no reasons";
+    const shadow = verdict.shadow_reasons.map((r) => r.code).join(", ");
+    const codes =
+      verdict.reasons.map((r) => r.code).join(", ") ||
+      (shadow ? `shadow mode would deny: ${shadow}` : "no reasons");
     super("denied", `haltsql: denied by policy ${verdict.policy.name}: ${codes}`);
     this.verdict = verdict;
   }

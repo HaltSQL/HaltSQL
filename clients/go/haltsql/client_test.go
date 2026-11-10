@@ -646,6 +646,35 @@ func TestGuardedQueryDenied(t *testing.T) {
 	}
 }
 
+// A shadow-mode policy answers "allowed" with shadow reasons. The guard runs
+// such SQL only with AllowShadow.
+func TestGuardedQueryShadowNeedsOptIn(t *testing.T) {
+	v := findVector(t, "allowed_set_valued_tenant")
+	var m map[string]any
+	if err := json.Unmarshal(v.Response, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["shadow_reasons"] = []map[string]any{{"code": "E_TENANT_MISSING", "message": "m", "rule": "r"}}
+	body, _ := json.Marshal(m)
+	f := newFake(t, replay(200, body))
+	c := mustNew(t, f.srv.URL, WithToken(*v.Token))
+	db, d := recDB(t)
+	vctx := Context{"org_ids": []string{"acme", "acme-eu", "acme-us"}}
+	rows, _, err := GuardedQuery(context.Background(), c, db, v.Request.SQL, vctx)
+	var de *DeniedError
+	if rows != nil || !errors.As(err, &de) || len(d.calls) != 0 {
+		t.Fatalf("shadow would-deny ran without opt-in: rows=%v err=%v calls=%d", rows, err, len(d.calls))
+	}
+	if !strings.Contains(de.Error(), "shadow mode would deny: E_TENANT_MISSING") {
+		t.Fatalf("error = %q", de.Error())
+	}
+	rows, _, err = GuardedQuery(context.Background(), c, db, v.Request.SQL, vctx, AllowShadow())
+	if err != nil || len(d.calls) != 1 {
+		t.Fatalf("AllowShadow: err=%v calls=%d", err, len(d.calls))
+	}
+	rows.Close()
+}
+
 func TestGuardedQuerySidecarError(t *testing.T) {
 	f := newFake(t, replay(500, []byte(`{"error":{"code":"INTERNAL","message":"boom"}}`)))
 	c := mustNew(t, f.srv.URL, WithRetries(0, 0, 0))

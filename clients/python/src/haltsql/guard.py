@@ -19,12 +19,13 @@ Nothing here formats values into SQL.
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Dict, List, Mapping, Optional, Protocol, Sequence, Union
 
-from .errors import GuardError, HaltSQLUnavailable
+from .errors import GuardError, HaltSQLUnavailable, QueryDenied
 from .models import Context, Verdict
 
 __all__ = [
@@ -96,12 +97,41 @@ def _default_verifier(async_: bool) -> Any:
         return _default_sync
 
 
+_allow_shadow: Optional[bool] = None
+
+
+def set_allow_shadow(allow: Optional[bool]) -> None:
+    """Whether guarded execution runs queries a **shadow-mode** policy would deny.
+
+    A shadow-mode policy returns ``allowed: true`` with the violations in
+    ``shadow_reasons``. The guard refuses to run such a query unless the
+    application opts in here, so switching a policy to shadow on the server
+    cannot by itself turn enforcement off. ``True`` runs them (a shadow
+    rollout), ``False`` refuses, ``None`` (the default) reads the
+    ``HALTSQL_ALLOW_SHADOW`` environment variable (``1``/``true`` to allow).
+    """
+    global _allow_shadow
+    if allow is not None and not isinstance(allow, bool):
+        raise TypeError("allow must be a bool or None")
+    _allow_shadow = allow
+
+
+def shadow_allowed() -> bool:
+    """The current setting of :func:`set_allow_shadow`."""
+    if _allow_shadow is not None:
+        return _allow_shadow
+    return os.environ.get("HALTSQL_ALLOW_SHADOW", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _authorize(verdict: Any, sql: str) -> Verdict:
     if not isinstance(verdict, Verdict):
         raise HaltSQLUnavailable("verifier did not return a Verdict")
     if not verdict.matches_sql(sql):
         raise HaltSQLUnavailable("verdict is for a different SQL string (sql_sha256 mismatch)")
-    return verdict.raise_for_denied()
+    verdict.raise_for_denied()
+    if verdict.shadow_reasons and not shadow_allowed():
+        raise QueryDenied(verdict)
+    return verdict
 
 
 def _verify_sync(verifier: Optional[Verifier], sql: str, context: Optional[Context]) -> Verdict:
