@@ -21,8 +21,8 @@
   unix))
 
 (tests
- (names test_console)
- (modules test_console)
+ (names test_console test_build)
+ (modules test_console test_build)
  (package haltsql-server)
  (deps
   (glob_files fixtures/*)
@@ -32,6 +32,7 @@
   haltsql_console
   haltsql
   haltsql.report
+  haltsql.bundle
   alcotest
   cohttp-lwt-unix
   cohttp-lwt

@@ -261,8 +261,14 @@ a caller seen in records but not configured becomes its own agent with
 `via` guessed from the record (`proxy` source → `proxy`, verifier kind `mcp`
 → `mcp`, else `sidecar`). In-process agents have `queries: null`.
 
+Agents also carry `caller_types` and `configured` (listed in `agents:`), and
+the response has the `range` it covers. `sort` defaults to `denied`.
+
 `GET /api/v1/agents/{name}` adds `top_codes: [{code, count, top_object}]`
-and `policies: { enforced: {...}, shadow: [...] }`.
+and `policies: { enforced: {name, version, mode, origin, loaded}, shadow: [...] }`.
+`top_object` is the most frequent object denied with that code (column,
+function, table, `LIMIT n`), named from detailed reasons re-derived from raw
+SQL when it was logged, else the most frequent table of those records.
 
 ### Playground: `POST /api/v1/playground/check`
 
@@ -284,21 +290,36 @@ and `policies: { enforced: {...}, shadow: [...] }`.
     "allowed": false,
     "stages": [ { "stage": "parse", "state": "passed", "detail": "One SELECT." } ],
     "verdict": { "...": "verdict JSON exactly as haltsql-server returns it" },
-    "opa": { "asked": false, "allowed": null, "ms": null, "error": null }
+    "opa": { "asked": false, "allowed": null, "ms": null, "error": null, "outcome": "skipped", "reasons": [] }
   } ],
-  "columns": [ { "column": "app.orders.region", "tags": [], "sources": ["dbt"], "allowed_by": ["analytics v11"] } ],
-  "test_case": "- name: ...\n  policy: analytics\n  context: { tenant_id: acme }\n  sql: ...\n  expect: allow\n" }
+  "columns": [ { "column": "app.orders.region", "tags": [], "sources": ["dbt"], "allowed_by": ["analytics"] } ],
+  "test_case": "- name: ...\n  # policy: analytics\n  context: {\"tenant_id\":\"acme\"}\n  sql: ...\n  expect: allow\n",
+  "sql_sha256": "..." }
 ```
 
-OPA is consulted only when the HaltSQL verdict allows and `opa` is configured
-in the console (same `opa:` block as the server).
+Stages are `parse`, `tables`, `tenancy`, `functions`, `limit`, `opa`, each
+`passed | denied | not_run | skipped` with a detail (`not_run` after a parse
+failure, and for OPA when HaltSQL denied). `allowed` is true when the final
+verdict has neither reasons nor shadow reasons (a shadow policy that would deny
+reports `false`). An invalid `draft` returns `400` with
+`error.errors: ["<load error>", ...]`; an unknown live policy `404`.
+
+OPA is consulted only when the HaltSQL verdict allows, `opa` is configured
+in the console (same `opa:` block as the server) and the request does not set
+`"opa": false`. The input document is the server's (`caller.type` is
+`playground`); `timeout_ms` and `on_error` apply as on the server.
+
+`test_case` is one case in the `haltsql test` suite format, from the first
+result (`expect` and, for a denial, `codes`); suite cases have no per-case
+policy, so the policy is a comment. The activity log entry
+(`playground.check`) stores the SQL's SHA-256, never the SQL.
 
 ### Policies and rollouts
 
 | | |
 |---|---|
-| `GET /api/v1/policies` | `{ "policies": [ { "name", "version", "mode": "enforce|shadow", "origin", "bundle", "verifiers": ["haltsql-1"], "owner" } ] }` |
-| `GET /api/v1/policies/{name}` | Policy detail: YAML (no secrets), tables and columns allowed, shadow siblings. |
+| `GET /api/v1/policies` | `{ "policies": [ { "name", "version", "mode": "enforce|shadow", "origin": "config|bundle|file", "file", "bundle", "verifiers": ["haltsql-1"], "owner", "shadow": ["<sibling>"], "loaded": true } ], "loaded": "<last successful load>", "errors": [], "notes": [] }` |
+| `GET /api/v1/policies/{name}` | Policy detail: the list fields plus `description`, `format`, `yaml` (the source; normalized YAML for inline and bundle policies), `statements`, `require_limit`, `tenancy`, `tables` (`[{table, columns, tenant_columns, writes}]`), `functions`. |
 | `GET /api/v1/policies/{name}/report?since=&compare=<shadow policy>` | Shadow comparison and suggestions. |
 | `POST /api/v1/policies/{name}/pull-request` | `propose_changes`. `{ "suggestions": ["<id>"], "tests": ["<yaml>"], "title"? }` opens or updates a PR in `integrations.github.repo`. `503 NOT_CONFIGURED` without GitHub. |
 
@@ -319,6 +340,53 @@ Report response:
 
 Suggestions come from `Report.Suggest.compute`, so tenancy, writes, OPA
 denials and PII columns are never suggested.
+
+Details of the report:
+
+- Records are the index records of the policy since `since` (RFC 3339, a date
+  or a duration such as `7d`; default the whole retention window). Records
+  with raw SQL are re-verified to name the denied objects, like
+  `haltsql report`. The response also has `version`, `since`, `records` and
+  `missing_detail`.
+- `compare` defaults to the first shadow sibling (`<name>-*`, `<name>_*`,
+  `<name>.*` in shadow mode); `null` (and `comparison: null`) when there is
+  none. `days_in_shadow` counts from the oldest record logged under the
+  compare policy.
+- `comparison` re-verifies the raw SQL of the policy's records under the
+  compare policy (`compared` of `records` had SQL). Records do not carry
+  context values, so the re-verification uses placeholder tenancy values: in
+  `literal` tenancy mode, tenant literals then never match. `tenancy_relaxed`
+  counts records denied with an `E_TENANT_*` code that the compare policy
+  allows.
+- Suggestions also carry `code`, `applicable`, `notes` and
+  `evidence.denied`/`shadow_denied`; `review` is `{pull_request, url}` when the
+  stored PR includes the suggestion, else `null`.
+- `never` has one row per code that is never suggested, plus one per
+  sensitive column (`target`) and unsafe function. `E_TENANT_*` and
+  `E_CONTEXT_MISSING` are `tenancy`, `E_EXTERNAL_POLICY` is `external_policy`,
+  everything else (query fixes, writes, statement kinds) `query_fix`.
+- `pull_request` is `null` until a PR was opened from the console. Its live
+  state (`open | closed | merged | missing | unknown`), check runs and
+  approvals (each reviewer's latest decisive review) are read from GitHub and
+  cached for 30 seconds; a failed read gives `state: "unknown"` and `error`.
+
+`POST /api/v1/policies/{name}/pull-request` applies the chosen suggestions to
+the policy file in the repository with `Report.Patch` (validated before
+committing; `409` when the patched policy does not validate or nothing
+applies), appends `tests` (each one case or a list of cases in the
+`haltsql test` format; `400` when invalid) to `<tests_path>/<name>.yaml`,
+commits both in one commit on `<branch_prefix><name>` and opens a PR, or
+updates the open PR it opened before for this policy. Response `201` (opened)
+or `200` (updated):
+
+```json
+{ "number": 212, "url": "...", "branch": "haltsql-console/analytics", "head_sha": "...", "state": "open",
+  "created": true, "applied": ["analytics/column/app.orders.region"], "skipped": [ { "id", "reason" } ],
+  "files": ["policies/analytics.yaml", "tests/analytics.yaml"] }
+```
+
+The PR is stored (`number`, `url`, `branch`, `head_sha`, suggestions) and the
+action logged as `policy.pull_request`.
 
 ### Fleet
 
