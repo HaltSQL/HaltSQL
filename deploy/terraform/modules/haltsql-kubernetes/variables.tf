@@ -242,6 +242,11 @@ variable "server" {
     log_raw_sql           = optional(bool, false)
     # Audit sinks, in the shape of the Config document's audit.sinks.
     audit_sinks = optional(any, [{ type = "stdout" }])
+    # Fail the plan's Helm render when a token has neither context nor
+    # request_context_fields (chart value server.requireBoundTokens).
+    require_bound_tokens = optional(bool, false)
+    # HALTSQL_VERIFY_THREADS (1-256); null lets the server use the CPU count.
+    verify_threads = optional(number)
   })
   default = {}
 
@@ -252,6 +257,10 @@ variable "server" {
   validation {
     condition     = var.server.max_request_bytes >= 1024 && var.server.max_request_bytes <= 67108864
     error_message = "server.max_request_bytes must be between 1024 and 67108864."
+  }
+  validation {
+    condition     = var.server.verify_threads == null ? true : (var.server.verify_threads >= 1 && var.server.verify_threads <= 256 && floor(var.server.verify_threads) == var.server.verify_threads)
+    error_message = "server.verify_threads must be an integer between 1 and 256."
   }
   validation {
     condition     = contains(["debug", "info", "warn", "error"], var.server.log_level)
@@ -270,13 +279,28 @@ variable "server" {
 }
 
 variable "tokens" {
-  description = "Static bearer tokens. Only the SHA-256 of each token is given (never the token); each token is pinned to one policy."
+  description = "Static bearer tokens. Only the SHA-256 of each token is given (never the token); each token is pinned to one policy. context fixes the token's context (e.g. { tenant_id = \"acme\" }) and request_context_fields lists the fields the request body may still add; a token with neither is unbound (its holder names the tenant in the request body)."
   type = list(object({
-    name   = string
-    sha256 = string
-    policy = string
+    name                   = string
+    sha256                 = string
+    policy                 = string
+    context                = optional(any)
+    request_context_fields = optional(list(string))
   }))
   default = []
+
+  validation {
+    condition = alltrue([
+      for t in var.tokens : t.context == null ? true : try(alltrue([for k in keys(t.context) : can(regex("^[A-Za-z_][A-Za-z0-9_]*$", k))]), false)
+    ])
+    error_message = "tokens[*].context must be a map (give every token's context the same value types) whose keys are context field names (letters, digits and '_', not starting with a digit)."
+  }
+  validation {
+    condition = alltrue([
+      for t in var.tokens : alltrue([for f in (t.request_context_fields == null ? [] : t.request_context_fields) : can(regex("^[A-Za-z_][A-Za-z0-9_]*$", f))])
+    ])
+    error_message = "tokens[*].request_context_fields must be context field names (letters, digits and '_', not starting with a digit)."
+  }
 
   validation {
     condition     = alltrue([for t in var.tokens : can(regex("^[0-9a-f]{64}$", t.sha256))])

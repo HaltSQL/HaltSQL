@@ -34,10 +34,14 @@ module "haltsql" {
   }
   replicas = 2
 
+  # The test caller is a trusted backend that names the tenant itself, so the
+  # token allows tenant_id in the request body. For an agent that serves one
+  # tenant, fix it instead: context = { tenant_id = "acme" }.
   tokens = [{
-    name   = "e2e-agent"
-    sha256 = var.token_sha256
-    policy = "tf-analytics"
+    name                   = "e2e-agent"
+    sha256                 = var.token_sha256
+    policy                 = "tf-analytics"
+    request_context_fields = ["tenant_id"]
   }]
 
   policies = {

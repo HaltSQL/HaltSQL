@@ -108,16 +108,16 @@ together with `chart_version`, which is then required.
 | `image` | `repository`, `tag` or `digest` (a digest wins), `pull_policy`. |
 | `replicas`, `autoscaling` | Replica count, or a CPU HorizontalPodAutoscaler. |
 | `resources` | Requests and limits. A memory limit is always set. |
-| `server` | Port, request size limit, log level and format, metrics, `audit_sinks` (Config `audit.sinks` shape), `log_raw_sql`, `default_policy`, `reload_watch`. |
-| `tokens`, `existing_token_secret` | Static bearer tokens. Each has a name, a SHA-256 and the one policy it is pinned to. The chart stores the hashes in a Secret, or you name an existing Secret. |
+| `server` | Port, request size limit, log level and format, metrics, `audit_sinks` (Config `audit.sinks` shape), `log_raw_sql`, `default_policy`, `reload_watch`, `verify_threads` (`HALTSQL_VERIFY_THREADS`), `require_bound_tokens` (the chart refuses to render an unbound token). |
+| `tokens`, `existing_token_secret` | Static bearer tokens. Each has a name, a SHA-256 and the one policy it is pinned to, and optionally a `context` (for example `{ tenant_id = "acme" }`) and `request_context_fields`, which bind it to a tenant. The chart stores the hashes in a Secret, or you name an existing Secret. |
 | `policies`, `existing_policy_config_map` | Policy documents keyed by file name, or an existing ConfigMap. Each value must parse as YAML with `kind: Policy`. |
 | `bundle_sources` | Signed bundles pulled from OCI, S3 or HTTPS (Config `bundle_source`; see [policy-bundles.md](policy-bundles.md)). `public_keys` is mandatory. Uses the chart's `extraPolicies` and its bundle cache volume. |
 | `config`, `config_yaml` | Extra Config keys such as `telemetry`, `secrets` and `opa`, given as an object or as YAML. Uses the chart's `extraConfig`. |
-| `secret_env` | Environment variables from existing Kubernetes Secrets, for `${env:NAME}` placeholders. Needs a chart extension. |
+| `secret_env` | Environment variables from existing Kubernetes Secrets, for `${env:NAME}` placeholders. Uses the chart's `extraEnv`. |
 | `oidc_providers` | Config `server.auth.oidc`. Exactly one of `policy`, `policy_claim` (with `allowed_policies`) or `policy_from_groups`. `https` issuers only. `HS*` algorithms are rejected. |
 | `tls`, `mtls_identities` | Built-in TLS from a `kubernetes.io/tls` Secret, and client-certificate identities. Identities require `client_auth` to be `optional` or `required`. |
 | `service` | Service type (ClusterIP by default), port and annotations. |
-| `network_policy` | Ingress allow-list. `egress` rules need a chart extension (see below). |
+| `network_policy` | Ingress allow-list, and `egress` rules (the chart's `networkPolicy.egress` list form). |
 | `pod_disruption_budget` | `min_available`. |
 | `service_monitor` | Prometheus Operator ServiceMonitor. |
 | `workload_identity` | Cloud identity for the pods (next section). |
@@ -127,6 +127,25 @@ together with `chart_version`, which is then required.
 The plan fails when there is no way to authenticate: no tokens, OIDC
 providers or mTLS identities, and `allow_unauthenticated` not set. It also
 fails when there are no policies.
+
+The plan warns, without failing, in two cases (Terraform `check` blocks):
+
+- `tokens_bound_to_a_tenant`: a token has neither `context` nor
+  `request_context_fields` and its policy (one of `policies`) has `tenancy`.
+  The holder of such a token names the tenant in the request body. Set
+  `context`, or use `oidc_providers` or `mtls_identities`; set
+  `server.require_bound_tokens = true` to turn any unbound token into a
+  failed render. Policies from `bundle_sources` or an existing ConfigMap are
+  not visible to the check; haltsql-server logs the same warning for them.
+- `unauthenticated_access`: `server.allow_unauthenticated` is set.
+
+The cloud modules (`haltsql-aws`, `haltsql-azure`, `haltsql-gcp`) take the
+whole Config as `config_yaml`, so token `context` and every other Config key
+pass through unchanged, and `HALTSQL_VERIFY_THREADS` goes in their plain
+environment map (`environment`, on Azure `environment_variables`). They run the same two checks on `config_yaml` (inline
+policies only). All values of `tokens[*].context` in one list must have the
+same shape for Terraform's type system (for example all strings); a token
+`context` needs a haltsql image newer than 0.0.2.
 
 Outputs: `namespace`, `release_name`, `chart_version`, `service_name`,
 `service_account`, `service_port`, `endpoint` and `endpoints` (the base,
@@ -175,8 +194,9 @@ the key, so the setting is never silently dropped:
 |---|---|---|
 | `bundle_sources` | `extraPolicies`: a list appended to the rendered `policies` | Yes. `bundle_source` entries without `cache_dir` get `<cache.mountPath>/bundles` on the chart's `cache` volume |
 | `config`, `config_yaml` | `extraConfig`: deep-merged into the rendered Config | Yes (`extraConfig.policies` is refused; use `extraPolicies`) |
-| `secret_env` | `extraEnv`: appended to the container's `env` | Not yet |
-| `network_policy.egress` | `networkPolicy.egress`: replaces the chart's deny-all `egress: []` | Not yet |
+| `secret_env` | `extraEnv`: appended to the container's `env` | Yes |
+| `network_policy.egress` | `networkPolicy.egress`: replaces the chart's deny-all `egress: []` | Yes (the list form, rendered verbatim) |
+| `tokens[*].context`, `tokens[*].request_context_fields`, `server.require_bound_tokens`, `server.verify_threads` | `tokens[].context`, `tokens[].request_context_fields`, `server.requireBoundTokens`, `server.verifyThreads` | Yes |
 | `proxy` | `proxy.{enabled,replicas,port,config}`: a haltsql-proxy Deployment and Service | Not yet |
 
 The chart's NetworkPolicy denies all egress. Without `egress` rules, OIDC
@@ -401,8 +421,8 @@ Before destroying, each job checks that the deployment is healthy:
   `server.auth.mtls` identities cannot be used there. Use tokens or OIDC,
   or the Kubernetes module with `tls`.
 - **The Kubernetes module depends on the Helm chart for some features.**
-  `secret_env`, `network_policy.egress` and `proxy` need chart values the
-  chart does not have yet (see [Chart extensions](#chart-extensions)); the
-  plan fails when you use them. `bundle_sources` and `config`/`config_yaml`
-  work with the bundled chart. PDBs
+  `proxy` needs chart values the chart does not have yet (see
+  [Chart extensions](#chart-extensions)); the plan fails when you use it.
+  `bundle_sources`, `config`/`config_yaml`, `secret_env` and
+  `network_policy.egress` work with the bundled chart. PDBs
   support only `minAvailable`.

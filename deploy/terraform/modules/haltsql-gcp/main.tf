@@ -240,3 +240,37 @@ resource "google_cloud_run_v2_service_iam_member" "invoker" {
   role     = "roles/run.invoker"
   member   = each.value
 }
+
+# ---------------------------------------------------------------------------
+# Plan-time warnings (they never block an apply) for settings in config_yaml
+# that are only safe in development or for a trusted backend.
+# ---------------------------------------------------------------------------
+
+locals {
+  config_doc = yamldecode(var.config_yaml)
+
+  # Inline policies that isolate tenants, by policy name. Policies from a
+  # bundle are not visible here; haltsql-server logs the same warning for them.
+  config_tenancy_policies = try([
+    for p in local.config_doc.policies : p.inline.metadata.name if can(p.inline.tenancy)
+  ], [])
+
+  config_unbound_tenant_tokens = try([
+    for t in local.config_doc.server.auth.tokens : t.name
+    if !can(t.context) && !can(t.request_context_fields) && contains(local.config_tenancy_policies, t.policy)
+  ], [])
+}
+
+check "unauthenticated_access" {
+  assert {
+    condition     = try(local.config_doc.server.auth.allow_unauthenticated, false) != true
+    error_message = "config_yaml sets server.auth.allow_unauthenticated: haltsql-server accepts every caller without credentials. This is for local development only."
+  }
+}
+
+check "tokens_bound_to_a_tenant" {
+  assert {
+    condition     = length(local.config_unbound_tenant_tokens) == 0
+    error_message = "These tokens in config_yaml are pinned to a policy with tenancy but have neither context nor request_context_fields, so their holders can name any tenant in the request body: ${join(", ", local.config_unbound_tenant_tokens)}. Give each a context (or use OIDC); leave a token unbound only for a trusted backend that takes the tenant from its own session."
+  }
+}
