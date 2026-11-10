@@ -99,7 +99,8 @@ jobs:
 
       - name: Start Postgres
         working-directory: lab
-        run: make up PROFILE=${{ github.event_name == 'schedule' && 'matrix' || '' }}
+        # Every run but a pull request's includes the version-matrix scenario.
+        run: make up PROFILE=${{ github.event_name != 'pull_request' && 'matrix' || '' }}
 
       - name: Oracle self-test (allow-everything verifier must be caught)
         working-directory: lab
