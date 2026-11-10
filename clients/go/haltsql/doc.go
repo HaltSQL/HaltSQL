@@ -9,13 +9,20 @@
 //
 //	hc, err := haltsql.New("http://127.0.0.1:8080", haltsql.WithToken(os.Getenv("HALTSQL_TOKEN")))
 //	if err != nil { ... }
-//	rows, verdict, err := haltsql.GuardedQuery(ctx, hc, db,
+//	verdict, err := haltsql.GuardedQueryTx(ctx, hc, db,
 //	    "SELECT id FROM orders WHERE tenant_id = $1 LIMIT 50",
-//	    haltsql.Context{"tenant_id": session.TenantID})
+//	    haltsql.Context{"tenant_id": session.TenantID},
+//	    func(rows *sql.Rows) error { /* read the rows */ return nil })
 //	var denied *haltsql.DeniedError
 //	if errors.As(err, &denied) { /* return denied.Verdict.Reasons to the agent */ }
 //
-// The package uses only the standard library. GuardedQuery and GuardedExec
+// GuardedQueryTx and GuardedExecTx run the verified SQL in a transaction
+// pinned to the policy's search path (read-only for a SELECT). GuardedQuery
+// and GuardedExec are the low-level single-statement forms: they do not pin
+// the search path, so use them only when the session already uses it or the
+// SQL is schema-qualified.
+//
+// The package uses only the standard library. The Guarded* functions
 // work with any database/sql driver; with github.com/jackc/pgx/v5/stdlib a
 // set-valued bind param ([]string) is sent as a Postgres array, as
 // "col = ANY($n)" requires. For drivers that cannot encode []string (lib/pq),
