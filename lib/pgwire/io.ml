@@ -39,9 +39,15 @@ let refill t =
     match t.kind with
     | Plain -> Lwt_unix.read t.fd t.buf 0 (Bytes.length t.buf)
     | Tls s ->
-        Lwt.catch
-          (fun () -> Tls_lwt.Unix.read s t.buf)
-          (function End_of_file -> Lwt.return 0 | e -> Lwt.fail e)
+        (* Never cancelled: tls-lwt records any exception of a read, including the
+           [Lwt.Canceled] of a read abandoned by [Lwt.pick] or a timeout, as the failure
+           of the whole connection and refuses every later write. The FATAL error that
+           ends a session is written after exactly such a cancellation. The read ends
+           when the connection is closed. *)
+        Lwt.no_cancel
+          (Lwt.catch
+             (fun () -> Tls_lwt.Unix.read s t.buf)
+             (function End_of_file -> Lwt.return 0 | e -> Lwt.fail e))
   in
   if n <= 0 then Lwt.fail Closed
   else begin

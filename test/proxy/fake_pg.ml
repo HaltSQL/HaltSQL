@@ -6,7 +6,16 @@
 open Haltsql_pgwire
 open Lwt.Syntax
 
-type auth = Trust | Md5 of string | Cleartext of string
+(* How a SCRAM-SHA-256 exchange ends: the way a real server ends it, with a
+   server-final message whose signature is wrong (a peer that does not know the
+   password), or with AuthenticationOk and no server-final message at all. *)
+type scram_end = Honest | Wrong_signature | No_server_final
+
+type auth =
+  | Trust
+  | Md5 of string
+  | Cleartext of string
+  | Scram of string * scram_end  (** password *)
 
 type t = {
   sock : Lwt_unix.file_descr;
@@ -23,6 +32,9 @@ type t = {
   mutable connections : int;
   mutable closed : int;
   mutable passwords : int;  (** password messages received *)
+  mutable cancels : (int * int) list;  (** CancelRequest (pid, key), newest first *)
+  mutable on_query : string -> string option;
+      (** raw bytes to answer a simple query with, instead of completing it *)
 }
 
 let startup_params t = match t.startups with p :: _ -> p | [] -> []
@@ -112,6 +124,32 @@ let authenticate t io ~user =
       if password_of p = Upstream.md5_password ~user ~password:pw ~salt then
         Io.write io Wire.auth_ok
       else reject ()
+  | Scram (pw, ending) -> (
+      let* () = Io.write io (Wire.auth_sasl [ Scram.mechanism ]) in
+      let* _, p = Io.read_message io ~max:65536 in
+      t.passwords <- t.passwords + 1;
+      let first =
+        match Wire.decode_sasl_initial p with _, Some f -> f | _, None -> ""
+      in
+      match
+        Scram.Server.start
+          ~verifier:(Some (Scram.make_verifier ~iterations:4096 pw))
+          ~mock_secret:"fake" ~user ~server_nonce:(Scram.new_nonce ()) first
+      with
+      | Error _ -> reject ()
+      | Ok (st, server_first) -> (
+          let* () = Io.write io (Wire.auth_sasl_continue server_first) in
+          let* _, final = Io.read_message io ~max:65536 in
+          match (Scram.Server.finish st final, ending) with
+          | Error _, _ -> reject ()
+          | Ok server_final, Honest ->
+              let* () = Io.write io (Wire.auth_sasl_final server_final) in
+              Io.write io Wire.auth_ok
+          | Ok _, Wrong_signature ->
+              let forged = "v=" ^ Sec.b64_encode (String.make 32 'x') in
+              let* () = Io.write io (Wire.auth_sasl_final forged) in
+              Io.write io Wire.auth_ok
+          | Ok _, No_server_final -> Io.write io Wire.auth_ok))
 
 let rec read_start io =
   let* body = Io.read_startup io ~max:10_000 in
@@ -119,8 +157,8 @@ let rec read_start io =
   | Wire.Ssl_request | Wire.Gssenc_request ->
       let* () = Io.write io "N" in
       read_start io
-  | Wire.Startup { params; _ } -> Lwt.return (Some params)
-  | Wire.Cancel_request _ -> Lwt.return None
+  | Wire.Startup { params; _ } -> Lwt.return (`Start params)
+  | Wire.Cancel_request { pid; key } -> Lwt.return (`Cancel (pid, key))
 
 let serve t fd =
   let io = Io.of_fd fd in
@@ -137,6 +175,7 @@ let serve t fd =
       | 'Q' -> (
           let q = Wire.decode_query payload in
           match String.uppercase_ascii (String.trim q) with
+          | _ when t.on_query q <> None -> Io.write io (Option.get (t.on_query q))
           | "SHOW SEARCH_PATH" ->
               let v = Option.value t.show_search_path ~default:search_path in
               let* () = Io.write io (text_row "search_path" v ^ complete "SHOW") in
@@ -186,8 +225,10 @@ let serve t fd =
         (fun () ->
           let* start = read_start io in
           match start with
-          | None -> Lwt.return_unit
-          | Some params ->
+          | `Cancel c ->
+              t.cancels <- c :: t.cancels;
+              Lwt.return_unit
+          | `Start params ->
               t.startups <- params :: t.startups;
               let user = Option.value ~default:"" (List.assoc_opt "user" params) in
               let* () = authenticate t io ~user in
@@ -232,6 +273,8 @@ let start () =
       connections = 0;
       closed = 0;
       passwords = 0;
+      cancels = [];
+      on_query = (fun _ -> None);
     }
   in
   let rec accept () =
