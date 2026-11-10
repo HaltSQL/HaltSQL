@@ -21,8 +21,8 @@
   unix))
 
 (tests
- (names test_console test_fleet test_records test_comply test_signals)
- (modules test_console test_fleet test_records test_comply test_signals)
+ (names test_console test_fleet test_records test_comply test_signals test_build)
+ (modules test_console test_fleet test_records test_comply test_signals test_build)
  (package haltsql-server)
  (deps
   (glob_files fixtures/*)
@@ -32,6 +32,7 @@
   haltsql_console
   haltsql
   haltsql.report
+  haltsql.bundle
   haltsql.cloud
   haltsql.catalog_tools
   haltsql.catalog_fetch

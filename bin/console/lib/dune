@@ -8,6 +8,8 @@
   haltsql
   haltsql.report
   haltsql.cloud
+  haltsql.bundle
+  haltsql-server.opa
   haltsql.catalog_fetch
   haltsql.catalog_tools
   haltsql-server.auth
