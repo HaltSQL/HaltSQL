@@ -89,7 +89,7 @@ flowchart TD
   by digest:
 
   ```sh
-  az acr import -n "$ACR" --source ghcr.io/haltsql/haltsql:0.1.0 --image haltsql:0.1.0
+  az acr import -n "$ACR" --source ghcr.io/haltsql/haltsql:0.0.1 --image haltsql:0.0.1
   ```
 
   To verify the signature first, see

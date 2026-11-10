@@ -50,7 +50,7 @@ __all__ = [
     "build_sql_agent",
     "__version__",
 ]
-__version__ = "0.1.0"
+__version__ = "0.0.1"
 
 #: Tool name -> name of its SQL argument, guarded by default. ``execute_sql``
 #: with ``sql`` matches MCP Toolbox's ``postgres-execute-sql`` kind when the

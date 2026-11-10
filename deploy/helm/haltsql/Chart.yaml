@@ -2,10 +2,11 @@ apiVersion: v2
 name: haltsql
 description: HaltSQL policy firewall for LLM-generated PostgreSQL (HTTP sidecar service)
 type: application
-# 0.2.0: hardened defaults (startup probe, zone spread, anti-affinity, egress
-# rules for OIDC), values.schema.json, extraEnv/extraVolumes/extraConfig.
-version: 0.2.0
-appVersion: "0.1.0"
+# The chart versions in lockstep with HaltSQL: `version` and `appVersion` are the
+# release version (scripts/check-versions.sh enforces it). It was 0.2.0 before
+# its first publication; no 0.2.0 chart was ever released.
+version: 0.0.1
+appVersion: "0.0.1"
 # matchLabelKeys in the default topology spread needs 1.27+; the optional
 # preStop sleep (preStopSleepSeconds) needs 1.30+.
 kubeVersion: ">=1.27.0-0"
@@ -20,4 +21,4 @@ annotations:
   artifacthub.io/containsSecurityUpdates: "false"
   artifacthub.io/images: |
     - name: haltsql
-      image: ghcr.io/haltsql/haltsql:0.1.0
+      image: ghcr.io/haltsql/haltsql:0.0.1

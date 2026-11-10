@@ -1,13 +1,36 @@
 name: Release
 
+# Builds, signs and publishes a release. Two modes, decided once by the `meta` job:
+#
+#   real      a pushed vX.Y.Z tag (or a manual run with dry_run=false for an
+#             existing tag). Publishes ghcr.io/haltsql/{haltsql,haltsql-mcp}:<version>,
+#             the Helm chart at oci://ghcr.io/haltsql/charts/haltsql and a GitHub
+#             release with the tarballs, SBOM, checksums and signatures.
+#   dry run   a pushed release-candidate tag (vX.Y.Z-rc.N), or a manual run with
+#             dry_run=true (the default). Runs every build, smoke test, SBOM,
+#             signing, provenance and verification step, but pushes only under
+#             ghcr.io/haltsql/dryrun/...: images tagged dryrun-<run id> (never a
+#             version tag) and the chart as X.Y.Z-rc.N (an OCI chart's tag is its
+#             version). The GitHub release is created as a *draft*.
+#
+# Every mode ends with scripts/verify-release.sh against what was just produced,
+# so the verification commands in docs/security/supply-chain.md are exercised on
+# every run. The PyPI and npm packages are built and published by
+# native-packages.yml, which follows the same real/dry-run split.
+
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build, e.g. v0.1.0"
+        description: "Release tag. Real mode: an existing tag to rebuild. Dry run: a label for the artifacts (needs no git tag)"
         required: true
+        default: v0.0.0-dryrun
+      dry_run:
+        description: "Dry run: sign and attest everything, publish nothing public"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -19,18 +42,91 @@ concurrency:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  IMAGE: ghcr.io/haltsql/haltsql
-  MCP_IMAGE: ghcr.io/haltsql/haltsql-mcp
-  CONSOLE_IMAGE: ghcr.io/haltsql/haltsql-console
   OCAML_VERSION: "5.2"
+  HELM_VERSION: v3.22.1 # same as ci.yml
   # The static Linux tarballs are built from the `dist` stage of the Dockerfile,
   # which pins the builder image by digest and the opam-repository commit
   # (OPAM_REPOSITORY_COMMIT), so tarballs and the image always ship the same
   # dependency versions.
 
 jobs:
+  meta:
+    name: Release mode and version check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+      ref: ${{ steps.mode.outputs.ref }}
+      version: ${{ steps.mode.outputs.version }}
+      image: ${{ steps.mode.outputs.image }}
+      mcp_image: ${{ steps.mode.outputs.mcp_image }}
+      console_image: ${{ steps.mode.outputs.console_image }}
+      chart_repo: ${{ steps.mode.outputs.chart_repo }}
+      tag_exists: ${{ steps.mode.outputs.tag_exists }}
+    steps:
+      - name: Decide the mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -eu
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::$TAG is not a vX.Y.Z[-pre] tag"; exit 1 ;;
+          esac
+          dry_run=false
+          # A release candidate is always a dry run; so is a manual run unless
+          # dry_run=false is chosen explicitly.
+          case "$TAG" in *-rc.*) dry_run=true ;; esac
+          if [ "$EVENT" = workflow_dispatch ] && [ "$INPUT_DRY_RUN" != false ]; then dry_run=true; fi
+          if [ "$dry_run" = true ]; then
+            ns=ghcr.io/haltsql/dryrun
+            # A manual dry run builds the dispatched commit; the tag is a label.
+            ref="$GITHUB_SHA"
+          else
+            ns=ghcr.io/haltsql
+            ref="$TAG"
+            [ "$EVENT" = push ] && ref="$GITHUB_SHA"
+          fi
+          # A GitHub release attaches to a tag. A pushed tag exists; a manual dry
+          # run may use a label that is not a tag, and the workflow token cannot
+          # create one (GitHub refuses refs that add workflow changes without the
+          # `workflow` scope), so such a run makes no draft release.
+          tag_exists=true
+          if [ "$EVENT" = workflow_dispatch ] && \
+             [ -z "$(git ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG")" ]; then
+            tag_exists=false
+          fi
+          {
+            echo "dry_run=$dry_run"
+            echo "tag_exists=$tag_exists"
+            echo "ref=$ref"
+            echo "version=${TAG#v}"
+            echo "image=$ns/haltsql"
+            echo "mcp_image=$ns/haltsql-mcp"
+            echo "console_image=$ns/haltsql-console"
+            echo "chart_repo=$ns/charts"
+          } | tee -a "$GITHUB_OUTPUT"
+          if [ "$dry_run" = true ]; then
+            echo "### Dry run of $TAG" >> "$GITHUB_STEP_SUMMARY"
+            echo "Images and chart go to \`$ns/\` (tag \`dryrun-$GITHUB_RUN_ID\`); the GitHub release is a draft." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$tag_exists" != true ]; then
+            echo "No git tag \`$TAG\`: no draft release; the assets are in the \`release-assets\` artifact." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ steps.mode.outputs.ref }}
+
+      - name: Every manifest carries the tag's version
+        run: scripts/check-versions.sh --tag "$TAG"
+
   linux-static:
     name: Linux ${{ matrix.arch }} (static, musl)
+    needs: [meta]
     # Built exactly like the container image: the `dist` stage of the Dockerfile
     # (Alpine/musl builder, HALTSQL_STATIC=1, pinned opam-repository commit), on a
     # native runner per architecture. The builder stage itself fails unless every
@@ -49,7 +145,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
@@ -100,13 +196,14 @@ jobs:
 
   macos:
     name: macOS arm64
+    needs: [meta]
     runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - name: Set up OCaml
         uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
@@ -124,7 +221,8 @@ jobs:
           out="haltsql-${TAG}-darwin-arm64"
           mkdir -p "$out" dist
           for b in haltsql haltsql-server haltsql-proxy; do
-            cp "_build/install/default/bin/$b" "$out/"
+            # dune installs read-only files; strip needs to write.
+            install -m 0755 "_build/install/default/bin/$b" "$out/$b"
             strip "$out/$b"
             otool -L "$out/$b"
             if otool -L "$out/$b" | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
@@ -142,24 +240,34 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  image:
-    name: Container image (multi-arch)
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+  # Each architecture is built, smoke-tested and pushed on a native runner (no
+  # QEMU: the emulated arm64 OCaml build took well over an hour), by digest only,
+  # with its own SBOM and SLSA provenance. The `image` job below merges the two
+  # into one multi-arch index, tags it, signs it and attests it.
+  image-build:
+    name: Container image (${{ matrix.arch }}, native)
+    needs: [meta]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
@@ -169,32 +277,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ env.TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
-          labels: |
-            org.opencontainers.image.title=haltsql
-            org.opencontainers.image.licenses=MIT
-
-      - name: Build and smoke-test the amd64 image before pushing
+      - name: Build and smoke-test the image before pushing
         run: |
-          docker buildx build --platform linux/amd64 --load -t haltsql-local:dev \
-            --cache-from type=gha .
-          docker buildx build --platform linux/amd64 --target scratch --load \
-            -t haltsql-local:scratch --cache-from type=gha .
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load -t haltsql-local:dev \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=image-${{ matrix.arch }}" .
+          docker buildx build --platform "linux/${{ matrix.arch }}" --target scratch --load \
+            -t haltsql-local:scratch \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=image-${{ matrix.arch }}" .
           docker run -d --name haltsql-release-pg -p 5417:5432 \
             -e POSTGRES_PASSWORD="ci-${{ github.run_id }}" postgres:17-alpine
           for _ in $(seq 60); do
             docker exec haltsql-release-pg pg_isready -U postgres > /dev/null 2>&1 && break
             sleep 1
           done
-          HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 SCRATCH_IMAGE=haltsql-local:scratch \
-            scripts/docker-smoke.sh
+          # IMAGE is also this job's registry name; the smoke test runs the local build.
+          IMAGE=haltsql-local:dev HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 \
+            SCRATCH_IMAGE=haltsql-local:scratch scripts/docker-smoke.sh
           docker rm -f haltsql-release-pg
 
       - name: Build metadata
@@ -203,36 +303,121 @@ jobs:
           echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=haltsql
+            org.opencontainers.image.licenses=MIT
           build-args: |
             VERSION=${{ env.TAG }}
             REVISION=${{ steps.buildinfo.outputs.revision }}
             CREATED=${{ steps.buildinfo.outputs.created }}
-          # SLSA provenance (max) and an SPDX SBOM are attached to the image
-          # index as in-toto attestations.
+          # SLSA provenance (max) and an SPDX SBOM, kept through the merge below.
           provenance: mode=max
           sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=static-${{ matrix.arch }}
+            type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p digests
+          echo "$DIGEST" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          touch "digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  image:
+    name: Container image (multi-arch index, signed)
+    needs: [meta, image-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-digest-*
+          path: digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Real: <version> and <major>.<minor> (the latter not for pre-releases).
+      # Dry run: only dryrun-<run id>, in the dryrun/ namespace.
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=raw,value=dryrun-${{ github.run_id }},enable=${{ needs.meta.outputs.dry_run == 'true' }}
+
+      - name: Create the multi-arch index
+        id: merge
+        working-directory: digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          digests=(*)
+          [ "${#digests[@]}" -eq 2 ] || { echo "::error::expected 2 platform digests, got ${digests[*]}"; exit 1; }
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -r '.tags[] | "-t " + .' <<< "$TAGS_JSON") \
+            $(printf "${IMAGE}@sha256:%s " "${digests[@]}")
+          tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${IMAGE}@${digest}"
+          # Both platforms, each with its SBOM and provenance, are in the index.
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .Image}}' \
+              | jq -e --arg p "$platform" 'has($p)' > /dev/null || { echo "::error::$platform missing"; exit 1; }
+          done
+          docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .SBOM}}' | jq -e 'length > 0' > /dev/null
+          docker buildx imagetools inspect "${IMAGE}@${digest}" --format '{{json .Provenance}}' | jq -e 'length > 0' > /dev/null
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign image (keyless)
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: Verify the image signature
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: |
           cosign verify "${IMAGE}@${DIGEST}" \
             --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
@@ -242,12 +427,12 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
           push-to-registry: true
 
   mcp-image:
     name: haltsql-mcp image (GHCR, signed)
-    needs: [image]
+    needs: [meta, image]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -255,11 +440,16 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      MCP_IMAGE: ${{ needs.meta.outputs.mcp_image }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -277,8 +467,9 @@ jobs:
         with:
           images: ${{ env.MCP_IMAGE }}
           tags: |
-            type=semver,pattern={{version}},value=${{ env.TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+            type=semver,pattern={{version}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=raw,value=dryrun-${{ github.run_id }},enable=${{ needs.meta.outputs.dry_run == 'true' }}
           labels: |
             org.opencontainers.image.title=haltsql-mcp
             org.opencontainers.image.licenses=MIT
@@ -286,12 +477,12 @@ jobs:
       # The haltsql CLI comes from the image the `image` job just pushed, by digest.
       - name: Build and smoke-test the amd64 image before pushing
         env:
-          HALTSQL_IMAGE: ${{ env.IMAGE }}@${{ needs.image.outputs.digest }}
+          HALTSQL_IMAGE: ${{ needs.meta.outputs.image }}@${{ needs.image.outputs.digest }}
         run: |
           docker pull --platform linux/amd64 "$HALTSQL_IMAGE"
           docker buildx build --platform linux/amd64 --load -f clients/mcp/Dockerfile \
             --build-arg HALTSQL_IMAGE="$HALTSQL_IMAGE" -t haltsql-mcp:dev .
-          HALTSQL_IMAGE="$HALTSQL_IMAGE" scripts/mcp-docker-smoke.sh
+          MCP_IMAGE=haltsql-mcp:dev HALTSQL_IMAGE="$HALTSQL_IMAGE" scripts/mcp-docker-smoke.sh
 
       - name: Build metadata
         id: buildinfo
@@ -310,7 +501,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            HALTSQL_IMAGE=${{ env.IMAGE }}@${{ needs.image.outputs.digest }}
+            HALTSQL_IMAGE=${{ needs.meta.outputs.image }}@${{ needs.image.outputs.digest }}
             VERSION=${{ env.TAG }}
             REVISION=${{ steps.buildinfo.outputs.revision }}
             CREATED=${{ steps.buildinfo.outputs.created }}
@@ -339,24 +530,30 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-  console-image:
-    name: haltsql-console image (GHCR, signed)
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+  console-image-build:
+    name: haltsql-console image (${{ matrix.arch }}, native)
+    needs: [meta]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
+    env:
+      CONSOLE_IMAGE: ${{ needs.meta.outputs.console_image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
@@ -366,23 +563,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
-        with:
-          images: ${{ env.CONSOLE_IMAGE }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ env.TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
-          labels: |
-            org.opencontainers.image.title=haltsql-console
-            org.opencontainers.image.licenses=MIT
-
       # Same Dockerfile and builder stage as the haltsql image (target "console").
-      - name: Build and smoke-test the amd64 image before pushing
+      - name: Build and smoke-test the image before pushing
         run: |
-          docker buildx build --platform linux/amd64 --target console --load \
-            -t haltsql-console-local:dev --cache-from type=gha .
+          docker buildx build --platform "linux/${{ matrix.arch }}" --target console --load \
+            -t haltsql-console-local:dev \
+            --cache-from "type=gha,scope=static-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=image-${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=console-${{ matrix.arch }}" .
           scripts/console-docker-smoke.sh
 
       - name: Build metadata
@@ -391,35 +579,123 @@ jobs:
           echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: console
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.CONSOLE_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=haltsql-console
+            org.opencontainers.image.licenses=MIT
           build-args: |
             VERSION=${{ env.TAG }}
             REVISION=${{ steps.buildinfo.outputs.revision }}
             CREATED=${{ steps.buildinfo.outputs.created }}
-          # SLSA provenance (max) and an SPDX SBOM, as for the haltsql image.
+          # SLSA provenance (max) and an SPDX SBOM, kept through the merge below.
           provenance: mode=max
           sbom: true
-          cache-from: type=gha
+          cache-from: |
+            type=gha,scope=static-${{ matrix.arch }}
+            type=gha,scope=image-${{ matrix.arch }}
+            type=gha,scope=console-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=console-${{ matrix.arch }}
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p digests
+          echo "$DIGEST" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          touch "digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: console-image-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  console-image:
+    name: haltsql-console image (multi-arch index, signed)
+    needs: [meta, console-image-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      CONSOLE_IMAGE: ${{ needs.meta.outputs.console_image }}
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: console-image-digest-*
+          path: digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Real: <version> and <major>.<minor> (the latter not for pre-releases).
+      # Dry run: only dryrun-<run id>, in the dryrun/ namespace.
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.CONSOLE_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ needs.meta.outputs.dry_run != 'true' }}
+            type=raw,value=dryrun-${{ github.run_id }},enable=${{ needs.meta.outputs.dry_run == 'true' }}
+
+      - name: Create the multi-arch index
+        id: merge
+        working-directory: digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          digests=(*)
+          [ "${#digests[@]}" -eq 2 ] || { echo "::error::expected 2 platform digests, got ${digests[*]}"; exit 1; }
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -r '.tags[] | "-t " + .' <<< "$TAGS_JSON") \
+            $(printf "${CONSOLE_IMAGE}@sha256:%s " "${digests[@]}")
+          tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}'
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${CONSOLE_IMAGE}@${digest}"
+          # Both platforms, each with its SBOM and provenance, are in the index.
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "${CONSOLE_IMAGE}@${digest}" --format '{{json .Image}}' \
+              | jq -e --arg p "$platform" 'has($p)' > /dev/null || { echo "::error::$platform missing"; exit 1; }
+          done
+          docker buildx imagetools inspect "${CONSOLE_IMAGE}@${digest}" --format '{{json .SBOM}}' | jq -e 'length > 0' > /dev/null
+          docker buildx imagetools inspect "${CONSOLE_IMAGE}@${digest}" --format '{{json .Provenance}}' | jq -e 'length > 0' > /dev/null
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign image (keyless)
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: cosign sign --yes "${CONSOLE_IMAGE}@${DIGEST}"
 
       - name: Verify the image signature
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.merge.outputs.digest }}
         run: |
           cosign verify "${CONSOLE_IMAGE}@${DIGEST}" \
             --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
@@ -429,23 +705,105 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ${{ env.CONSOLE_IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
           push-to-registry: true
+
+  helm-chart:
+    name: Helm chart (OCI, signed)
+    needs: [meta]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      CHART_REPO: ${{ needs.meta.outputs.chart_repo }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # The chart's version and appVersion equal the release version
+      # (scripts/check-versions.sh); a release candidate is packaged as
+      # X.Y.Z-rc.N so it can never be mistaken for the final chart.
+      - name: Lint and package
+        run: |
+          set -eu
+          helm lint --strict deploy/helm/haltsql
+          helm template haltsql deploy/helm/haltsql > /dev/null
+          mkdir -p dist
+          helm package deploy/helm/haltsql --version "$VERSION" --app-version "$VERSION" -d dist
+          ls -l dist
+
+      - name: Push to GHCR
+        id: push
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          helm push "dist/haltsql-${VERSION}.tgz" "oci://${CHART_REPO}" 2>&1 | tee push.log
+          digest=$(sed -nE 's/^Digest: (sha256:[0-9a-f]{64})$/\1/p' push.log)
+          [ -n "$digest" ] || { echo "::error::no digest in helm push output"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign and verify the chart (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -eu
+          printf '%s' "$REGISTRY_TOKEN" | cosign login ghcr.io -u "$ACTOR" --password-stdin
+          cosign sign --yes "${CHART_REPO}/haltsql@${DIGEST}"
+          cosign verify "${CHART_REPO}/haltsql@${DIGEST}" \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+
+      - name: Attest chart provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.CHART_REPO }}/haltsql
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # The chart archive is also a release asset (checksummed, signed, attested).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-helm-chart
+          path: dist/*.tgz
+          if-no-files-found: error
 
   publish:
     name: Checksums, SBOM, signatures, GitHub release
-    needs: [linux-static, macos, image, console-image]
+    needs: [meta, linux-static, macos, image, mcp-image, console-image, helm-chart]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
       attestations: write
+    env:
+      DRY_RUN: ${{ needs.meta.outputs.dry_run }}
+      VERSION: ${{ needs.meta.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.meta.outputs.ref }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -462,10 +820,29 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      # The digests of everything pushed to GHCR, so the signed checksum file
+      # also pins the images and the chart. scripts/verify-release.sh reads it.
+      - name: Record OCI digests
+        env:
+          IMAGE_REF: ${{ needs.meta.outputs.image }}@${{ needs.image.outputs.digest }}
+          MCP_REF: ${{ needs.meta.outputs.mcp_image }}@${{ needs.mcp-image.outputs.digest }}
+          CONSOLE_REF: ${{ needs.meta.outputs.console_image }}@${{ needs.console-image.outputs.digest }}
+          CHART_REF: ${{ needs.meta.outputs.chart_repo }}/haltsql@${{ needs.helm-chart.outputs.digest }}
+        run: |
+          set -eu
+          {
+            echo "image $IMAGE_REF"
+            echo "mcp-image $MCP_REF"
+            echo "console-image $CONSOLE_REF"
+            echo "helm-chart $CHART_REF"
+          } > "dist/haltsql-${TAG}.oci.txt"
+          cat "dist/haltsql-${TAG}.oci.txt"
+          grep -c '@sha256:[0-9a-f]\{64\}$' "dist/haltsql-${TAG}.oci.txt" | grep -qx 4
+
       - name: Generate SHA256SUMS
         working-directory: dist
         run: |
-          sha256sum -- *.tar.gz *.cdx.json > SHA256SUMS
+          sha256sum -- *.tar.gz *.tgz *.cdx.json *.oci.txt > SHA256SUMS
           cat SHA256SUMS
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
@@ -473,42 +850,111 @@ jobs:
       - name: Sign artifacts (keyless)
         working-directory: dist
         run: |
-          for f in *.tar.gz *.cdx.json SHA256SUMS; do
+          for f in *.tar.gz *.tgz *.cdx.json *.oci.txt SHA256SUMS; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
 
-      - name: Attest build provenance for binaries
+      - name: Attest build provenance for binaries and the chart archive
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.tgz
 
       - name: Extract release notes from CHANGELOG
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          CONSOLE_IMAGE: ${{ needs.meta.outputs.console_image }}
+          CONSOLE_DIGEST: ${{ needs.console-image.outputs.digest }}
+          CHART_REPO: ${{ needs.meta.outputs.chart_repo }}
         run: |
-          version="${TAG#v}"
-          awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" {found=1; next}
-            found && /^## \[/ {exit}
-            found {print}
-          ' CHANGELOG.md > release-notes.md
+          set -eu
+          # A candidate takes the notes of its final version.
+          base="${VERSION%%-rc.*}"
           {
+            if [ "$DRY_RUN" = true ]; then
+              echo "> **Dry run** ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Not a release: images and chart are under \`ghcr.io/haltsql/dryrun/\`. Delete this draft when done."
+              echo
+            fi
+            awk -v v="$base" '
+              $0 ~ "^## \\[" v "\\]" {found=1; next}
+              found && /^## \[/ {exit}
+              found {print}
+            ' CHANGELOG.md
             echo
-            echo "Container image: \`${IMAGE}:${version}\` (digest \`${{ needs.image.outputs.digest }}\`)."
-            echo "Console image: \`${CONSOLE_IMAGE}:${version}\` (digest \`${{ needs.console-image.outputs.digest }}\`)."
+            echo "Container image: \`${IMAGE}:${VERSION}\` (digest \`${DIGEST}\`)."
+            echo "Console image: \`${CONSOLE_IMAGE}:${VERSION}\` (digest \`${CONSOLE_DIGEST}\`)."
+            echo "Helm chart: \`oci://${CHART_REPO}/haltsql\` version \`${VERSION}\`."
             echo
-            echo "Verify downloads with \`sha256sum -c SHA256SUMS\` and"
-            echo "\`cosign verify-blob --bundle FILE.sigstore.json --certificate-identity-regexp 'https://github.com/HaltSQL/HaltSQL/' --certificate-oidc-issuer https://token.actions.githubusercontent.com FILE\`."
-          } >> release-notes.md
+            echo "Verify everything with \`scripts/verify-release.sh ${TAG}\`, or by hand as described in"
+            echo "[docs/security/supply-chain.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/security/supply-chain.md#verifying-a-release)."
+          } > release-notes.md
           cat release-notes.md
 
+      # The exact asset set, for the verify job (a draft release is not readable
+      # with a read-only token, and a manual dry run without a tag has none).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
       - name: Create GitHub release
+        if: needs.meta.outputs.tag_exists == 'true'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
-          name: HaltSQL ${{ env.TAG }}
+          name: ${{ needs.meta.outputs.dry_run == 'true' && 'DRY RUN ' || '' }}HaltSQL ${{ env.TAG }}
           body_path: release-notes.md
+          draft: ${{ needs.meta.outputs.dry_run == 'true' }}
           prerelease: ${{ startsWith(env.TAG, 'v0.') || contains(env.TAG, '-') }}
           files: |
             dist/*.tar.gz
+            dist/*.tgz
             dist/*.cdx.json
+            dist/*.oci.txt
             dist/*.sigstore.json
             dist/SHA256SUMS
+
+  verify:
+    name: Verify the release as a user would
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.meta.outputs.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Log in to GHCR (dry-run packages may be private)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: scripts/verify-release.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -eu
+          args=(--dir release-assets)
+          # A manual run is signed with the branch's workflow identity, not a tag's.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            args+=(--identity "https://github.com/${GITHUB_WORKFLOW_REF}")
+          fi
+          scripts/verify-release.sh "${args[@]}" "$TAG"

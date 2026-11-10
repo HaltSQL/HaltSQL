@@ -12,7 +12,7 @@ Source: [`clients/java`](../clients/java).
 <dependency>
   <groupId>com.haltsql</groupId>
   <artifactId>haltsql-client</artifactId>
-  <version>0.1.0</version>
+  <version>0.0.1</version>
 </dependency>
 ```
 

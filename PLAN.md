@@ -751,7 +751,7 @@ Open questions:
 
 ## 14. Enterprise integrations status
 
-Status as of 2026-11-08 (unreleased, on top of 0.1.0). "Tier 1" is what an
+Status as of 2026-11-08 (unreleased, on top of 0.0.1). "Tier 1" is what an
 enterprise needs to deploy the sidecar and call it from its stack; "Tier 2"
 is the policy lifecycle and database-side tooling around it; "Tier 3" is
 operating it at scale (SIEM, remote bundles, IdP groups, OPA, Kubernetes,

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haltsql-langchain"
-version = "0.1.0"
+version = "0.0.1"
 description = "HaltSQL guard for LangChain SQL tools and SQLDatabase"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
-dependencies = ["haltsql[psycopg]>=0.1.0"]
+dependencies = ["haltsql[psycopg]>=0.0.1"]
 
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.3", "langchain-community>=0.3", "sqlalchemy>=2"]

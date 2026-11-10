@@ -10,7 +10,7 @@
 //     --platform linux-x64 \
 //     --binary _build/default/bin/haltsql/main.exe \
 //     --lib _build/default/native/libhaltsql.so \
-//     --out dist-native/linux-x64 [--version 0.1.0] [--allow-nonsystem-deps]
+//     --out dist-native/linux-x64 [--version 0.0.1] [--allow-nonsystem-deps]
 //
 // Then: (cd dist-native/linux-x64 && npm publish --access public)
 //

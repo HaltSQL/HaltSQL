@@ -10,7 +10,34 @@ even before 1.0.
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-11-09
+
+First preview release. PostgreSQL only. Not yet recommended as the only
+control in front of production data; see `docs/defense-in-depth.md`.
+
 ### Added
+- **Release dry runs.** A `vX.Y.Z-rc.N` tag, or a manual run of
+  `release.yml` / `native-packages.yml` with `dry_run`, runs every build,
+  smoke test, SBOM, cosign signing and provenance step but publishes only a
+  draft GitHub release and packages under `ghcr.io/haltsql/dryrun/` (images
+  tagged `dryrun-<run id>`), checks the PyPI files with `twine check --strict`
+  and runs `npm publish --dry-run`. A TestPyPI upload runs when the
+  `TESTPYPI_PUBLISH` repository variable is set. See
+  [releasing.md](docs/operations/releasing.md).
+- **Helm chart as a signed OCI artifact.** Releases push the chart to
+  `oci://ghcr.io/haltsql/charts/haltsql`, sign its digest with cosign, attest
+  its provenance, and attach the chart archive to the GitHub release.
+- `scripts/verify-release.sh <tag>` runs the verification that
+  [supply-chain.md](docs/security/supply-chain.md#verifying-a-release)
+  documents: checksums, every cosign bundle, `gh attestation verify`, image
+  signatures, SBOM and SLSA provenance, and the chart. `release.yml` runs it
+  as its last job.
+- Releases attach `haltsql-<tag>.oci.txt`, the signed list of image and chart
+  digests.
+- `scripts/check-versions.sh` fails CI when the version in the opam files,
+  SDKs, MCP server and Helm chart drift apart, and fails a release whose tag
+  does not match them.
+- `haltsql-mcp` is built and published to PyPI with `haltsql`.
 - **`haltsql schema fetch`**: PII labels from a live data catalog API over
   HTTPS (new `haltsql.catalog_fetch` library: bearer auth with the token from
   `--token-env`/`--token-file`, never the command line; bounded pagination;
@@ -254,8 +281,43 @@ even before 1.0.
   MinIO, HTTPS and proxy-audit) with a message; the `dune test` jobs in
   `ci.yml` set it. Without it, a suite whose Docker daemon or image is
   unavailable also skips with a message.
+- `haltsql` OCaml library with a total `Haltsql.verify : Policy.t -> Context.t -> string -> Verdict.t`
+  that never raises, never rewrites SQL, and never connects to a database.
+- SQL parsing with libpg_query 17-6.2.5 (the real PostgreSQL 17 parser),
+  vendored and bound by HaltSQL's own thin C stubs (the OCaml runtime lock is
+  released while parsing; inputs containing NUL bytes are rejected), then
+  converted into a typed AST. Constructs the
+  converter does not map are denied (`E_UNSUPPORTED`).
+- Policy documents (`kind: Policy`, `apiVersion: haltsql.dev/v1`) in YAML or
+  JSON: `search_path`, `catalog`, `limits`, `statements`, `require_limit`,
+  `tenancy` (`bound` and `literal` modes, composite keys), `tables` (columns,
+  tenant columns, writes), `functions` (allowlist and presets), `operators`,
+  `deny_casts`, `allow_explain`, and `mode` (`enforce` or `shadow`).
+- Per-scope tenant isolation proof (see `docs/tenancy.md`).
+- Stable reason codes and a versioned verdict JSON format.
+- Safe YAML/JSON loading: YAML 1.2 core schema, duplicate and unknown keys
+  rejected, located error messages, JSON Schemas for every document kind.
+- `haltsql` CLI: `verify` (single and `--batch` JSONL), `explain`, `validate`,
+  `convert`, `schema export`, `test`, `config show`, `version`.
+- `haltsql-server` HTTP sidecar: `POST /v1/verify`, `GET /healthz`,
+  `GET /readyz`, `GET /metrics`, `GET /v1/policies`, bearer tokens pinned to
+  policies.
+- `kind: TestSuite` documents for policy tests in CI.
+- Documentation, threat model, ADRs 0001–0005, CI, release and security
+  workflows.
+- haltlab: the enterprise test lab (Docker Compose Postgres 13–17, synthetic
+  multi-tenant schemas with RLS and honeytokens, adversarial workload
+  generators, and database oracles that execute every allowed query).
+- Test suites: an attack corpus and sql-guardrail conformance suite
+  (1,705 cases), property tests, golden verdicts, a fuzzer and benchmarks.
 
 ### Changed
+- **The first release is numbered 0.0.1**, not 0.1.0. Nothing was ever
+  tagged or published as 0.1.0; every manifest, image reference, example and
+  the section below now say 0.0.1. The framework integrations require
+  `haltsql>=0.0.1`.
+- The Helm chart now versions in lockstep with HaltSQL: chart `version` is
+  `0.0.1` (it was `0.2.0`, never published).
 - CI on pull requests runs only the jobs whose files changed: a `changes`
   job (`.github/scripts/changes.sh`) gates every job in `ci.yml` and
   `integration.yml`, so a docs-only PR no longer starts ~30 runners. PRs test
@@ -270,7 +332,7 @@ even before 1.0.
   `HaltSQL/haltsql.github.io` repository; and `cosign verify` must use the new
   repository's workflow identity. Old `ghcr.io/ardada2468/...` images are not
   republished.
-- Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,
+- Helm chart: values schema, startup probe, `server.extraConfig`,
   configurable NetworkPolicy egress, extra env/volumes/containers, zone
   spreading, `podMonitoring` for GKE managed Prometheus, and `server.port` is
   honored. Requires Kubernetes 1.27+.
@@ -509,44 +571,6 @@ These were found while integrating the unreleased features above.
   fatal, and there is no container fallback. A container image is used only
   after `cosign verify` of its digest. The image is now always run by
   digest, never by a mutable tag.
-
-## [0.1.0] - 2026-11-07
-
-First preview release. PostgreSQL only. Not yet recommended as the only
-control in front of production data; see `docs/defense-in-depth.md`.
-
-### Added
-- `haltsql` OCaml library with a total `Haltsql.verify : Policy.t -> Context.t -> string -> Verdict.t`
-  that never raises, never rewrites SQL, and never connects to a database.
-- SQL parsing with libpg_query 17-6.2.5 (the real PostgreSQL 17 parser),
-  vendored and bound by HaltSQL's own thin C stubs (the OCaml runtime lock is
-  released while parsing; inputs containing NUL bytes are rejected), then
-  converted into a typed AST. Constructs the
-  converter does not map are denied (`E_UNSUPPORTED`).
-- Policy documents (`kind: Policy`, `apiVersion: haltsql.dev/v1`) in YAML or
-  JSON: `search_path`, `catalog`, `limits`, `statements`, `require_limit`,
-  `tenancy` (`bound` and `literal` modes, composite keys), `tables` (columns,
-  tenant columns, writes), `functions` (allowlist and presets), `operators`,
-  `deny_casts`, `allow_explain`, and `mode` (`enforce` or `shadow`).
-- Per-scope tenant isolation proof (see `docs/tenancy.md`).
-- Stable reason codes and a versioned verdict JSON format.
-- Safe YAML/JSON loading: YAML 1.2 core schema, duplicate and unknown keys
-  rejected, located error messages, JSON Schemas for every document kind.
-- `haltsql` CLI: `verify` (single and `--batch` JSONL), `explain`, `validate`,
-  `convert`, `schema export`, `test`, `config show`, `version`.
-- `haltsql-server` HTTP sidecar: `POST /v1/verify`, `GET /healthz`,
-  `GET /readyz`, `GET /metrics`, `GET /v1/policies`, bearer tokens pinned to
-  policies.
-- `kind: TestSuite` documents for policy tests in CI.
-- Documentation, threat model, ADRs 0001–0005, CI, release and security
-  workflows.
-- haltlab: the enterprise test lab (Docker Compose Postgres 13–17, synthetic
-  multi-tenant schemas with RLS and honeytokens, adversarial workload
-  generators, and database oracles that execute every allowed query).
-- Test suites: an attack corpus and sql-guardrail conformance suite
-  (1,705 cases), property tests, golden verdicts, a fuzzer and benchmarks.
-
-### Security
 - libpg_query runs on long-lived worker threads with large stacks, so deeply
   nested input cannot overflow a small domain stack.
 - Without a `catalog:` snapshot the catalog is empty; it is never derived
@@ -556,5 +580,5 @@ control in front of production data; see `docs/defense-in-depth.md`.
 - `INSERT` may only name columns listed in the table's `columns`.
 - `LIKE`, `ILIKE` and `SIMILAR TO` are checked against the operator allowlist.
 
-[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.1.0
+[Unreleased]: https://github.com/HaltSQL/HaltSQL/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/HaltSQL/HaltSQL/releases/tag/v0.0.1

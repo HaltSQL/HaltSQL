@@ -13,7 +13,7 @@ replicaCount: 3
 
 image:
   repository: ghcr.io/haltsql/haltsql
-  tag: "0.1.0"
+  tag: "0.0.1"
   # digest: sha256:...          # pin the signed image digest in production
 
 # haltsql calls no Azure API, so its pods need no Workload Identity: leave the

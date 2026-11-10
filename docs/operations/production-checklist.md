@@ -5,7 +5,7 @@ This page is for platform and SRE teams taking `haltsql-server` or
 each upgrade. Every item says why it matters, how to check it, and which page
 covers it in detail.
 
-> **Note:** HaltSQL is pre-1.0. The 0.1.0 release notes in
+> **Note:** HaltSQL is pre-1.0. The 0.0.1 release notes in
 > [CHANGELOG.md](../../CHANGELOG.md) say it is not yet recommended as the only
 > control in front of production data. Several features on this page (built-in
 > TLS, OIDC, mTLS, cloud and SIEM audit sinks, signed bundles and bundle
@@ -23,7 +23,7 @@ cannot close for you; the others are strongly recommended.
 
 | Item | Why | Check | Reference |
 |---|---|---|---|
-| **Required.** Pin the image by digest, not by tag. | Tags such as `0.1` move. A digest is what you tested. | The pod spec or Helm `image.digest` holds `sha256:...`. | [deployment.md](../deployment.md#docker), [Helm chart README](../../deploy/helm/haltsql/README.md#supply-chain-pin-and-verify-the-image) |
+| **Required.** Pin the image by digest, not by tag. | Tags such as `0.0` move. A digest is what you tested. | The pod spec or Helm `image.digest` holds `sha256:...`. | [deployment.md](../deployment.md#docker), [Helm chart README](../../deploy/helm/haltsql/README.md#supply-chain-pin-and-verify-the-image) |
 | Verify release signatures and provenance before promoting a version. | Release artifacts are signed keylessly by the release workflow. A signature that does not verify means the artifact did not come from it. | `cosign verify-blob ...`, `cosign verify ...` and `gh attestation verify ...` as shown in the reference. | [deployment.md](../deployment.md#verifying-release-artifacts) |
 | Run the same HaltSQL version in policy CI and on the servers. | The CLI that validates and tests policies in CI should load documents exactly as the server will. | `haltsql version` in CI and `haltsql_build_info{version}` on `/metrics` match. | [upgrades.md](upgrades.md) |
 

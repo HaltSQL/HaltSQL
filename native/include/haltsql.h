@@ -42,7 +42,7 @@ typedef int64_t haltsql_policy;
 /* Returns HALTSQL_ABI_VERSION of the compiled library. Never fails. */
 int haltsql_abi_version(void);
 
-/* HaltSQL release version (e.g. "0.1.0"). Caller frees with haltsql_string_free. */
+/* HaltSQL release version (e.g. "0.0.1"). Caller frees with haltsql_string_free. */
 char *haltsql_version(void);
 
 /* Loads a policy file (YAML or JSON, by extension). On success returns a handle > 0
