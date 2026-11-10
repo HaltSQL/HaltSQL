@@ -181,6 +181,38 @@ let trim r first =
       r.origins
   end
 
+(* ---- whole-list checks ---- *)
+
+(** Verifies an explicit record list (in [seq] order) with the same rules as the
+    incremental checker, outside the per-context state. For callers that check a fixed
+    record set rather than the live index, such as evidence packs. *)
+let check_entries verifier (entries : Index.entry list) =
+  let r = fresh verifier in
+  List.iter (consume ~is_gap:(fun _ -> false) r) entries;
+  r.checked_at <- Unix.gettimeofday ();
+  r
+
+(** One verifier's stream in the index, checked from scratch. *)
+let check (index : Index.t) verifier =
+  check_entries verifier (Index.verifier_stream index verifier)
+
+(** [entries] (non-empty, chained, in [seq] order) folded into one segment: its span,
+    count and first break. *)
+let verify_segment (entries : Index.entry list) =
+  match (entries, List.rev entries) with
+  | [], _ | _, [] -> invalid_arg "Chain.verify_segment: no records"
+  | (first : Index.entry) :: _, (last : Index.entry) :: _ ->
+      let r = check_entries "" entries in
+      {
+        origins = [];
+        first_seq = first.seq;
+        trimmed_to = first.seq;
+        last_seq = last.seq;
+        count = records r;
+        break = first_break r;
+        gap = false;
+      }
+
 (* ---- per-context state ---- *)
 
 let state_key : (string, result) Hashtbl.t Ctx.Key.t = Ctx.Key.create "chain.state"

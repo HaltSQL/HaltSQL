@@ -1152,6 +1152,37 @@ let add_lines ?(verifier = "haltsql-1") ~from ~location (r : running) lines =
 
 let chain_fix_tests =
   [
+    ( "whole-list check and verify_segment agree with the incremental checker",
+      `Quick,
+      fun () ->
+        with_console ~background:false (config ()) (fun r ->
+            let lines = seal (recs 6) in
+            add_lines r ~from:0 ~location:"a.jsonl" lines;
+            let inc = C.Chain.get r.ctx "haltsql-1" in
+            let whole = C.Chain.check r.ctx.index "haltsql-1" in
+            Alcotest.(check (pair string int))
+              "check = incremental"
+              (C.Chain.state_of inc, C.Chain.records inc)
+              (C.Chain.state_of whole, C.Chain.records whole);
+            let stream = C.Index.verifier_stream r.ctx.index "haltsql-1" in
+            let seg = C.Chain.verify_segment stream in
+            Alcotest.(check (triple int int bool))
+              "segment" (0, 6, true)
+              (seg.C.Chain.first_seq, seg.count, seg.break = None);
+            (* a record that does not link to its predecessor breaks the segment *)
+            let stray = seal ~prev:(String.make 64 'f') (recs ~prefix:"x" 1) in
+            add_lines r ~from:6 ~location:"a.jsonl" stray;
+            let stream = C.Index.verifier_stream r.ctx.index "haltsql-1" in
+            Alcotest.(check bool)
+              "broken" true
+              ((C.Chain.verify_segment stream).break <> None);
+            Alcotest.(check string)
+              "check broken" "broken"
+              (C.Chain.state_of (C.Chain.check r.ctx.index "haltsql-1"));
+            Alcotest.check_raises "empty"
+              (Invalid_argument "Chain.verify_segment: no records") (fun () ->
+                ignore (C.Chain.verify_segment []));
+            Lwt.return_unit) );
     ( "incremental chain state follows appends, tampering and eviction",
       `Quick,
       fun () ->
