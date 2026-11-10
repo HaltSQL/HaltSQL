@@ -76,6 +76,17 @@ val between : t -> since:float -> until:float -> entry list
 val verifier_stream : t -> string -> entry list
 (** Every entry of one verifier, in [seq] order (for chain checks and neighbours). *)
 
+val stream_version : t -> string -> (int * int) option
+(** [(version, layout)] of one verifier's stream, [None] when it has no entries. [version]
+    changes on every add or removal; [layout] changes when the stream is (re)created or an
+    entry arrives out of [seq] order, so a reader that consumed the stream up to some
+    [seq] can catch up with {!verifier_range} while [layout] is unchanged. Neither value
+    ever repeats. O(1). *)
+
+val verifier_range : t -> string -> after:int -> limit:int -> entry list
+(** At most [limit] entries of one verifier with [seq > after], in [seq] order. O(log m +
+    limit + dead slots skipped). *)
+
 val verifiers : t -> string list
 (** Verifiers with at least one entry, sorted. *)
 

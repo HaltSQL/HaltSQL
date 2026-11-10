@@ -256,9 +256,10 @@ Permission `search_queries`.
   } ], "next_cursor": null, "total": 37 }
 ```
 
-Newest first. The cursor is an offset into that order (records have no global,
-monotonic key to page on), so a page fetched while new records arrive can
-repeat records from the page before.
+Newest first (equal timestamps: most recently ingested first). The cursor names the
+last record returned (its timestamp and request id), and the next page is what sorts
+after it, so records that arrive between pages never shift a later page. `total` is
+counted on the first page only and is `null` on later pages.
 
 `GET /api/v1/records/{request_id}`:
 
@@ -268,13 +269,14 @@ repeat records from the page before.
   "trail": [ { "stage": "parse | tables | tenancy | limit | functions | opa | verdict",
                "state": "passed | denied | not_run | skipped", "detail": "..." } ],
   "trail_source": "reverified | codes",
+  "reasons_detail": "codes | redacted | full",
   "reasons": [ { "code": "E_TENANT_MISMATCH", "rule": "tenancy.mismatch", "message": "...", "hint": "..." } ],
   "policy": { "name": "support-copilot", "version": "sha256:...", "bundle": "prod 1.4.0", "loaded_version": "sha256:..." },
   "custody": {
     "verifier": "haltsql-2", "seq": 8412096, "hash": "...", "prev_hash": "...",
     "neighbours": [ { "seq": 8412095, "request_id": "...", "hash": "...", "prev_hash": "...", "outcome": "allowed" } ],
     "location": "s3://acme-audit/haltsql/2026/11/07/13/haltsql-2-20261107T130000.000001Z.42-0000000412-<sha256>.jsonl#L412",
-    "chain_state": "intact | broken | unknown",
+    "chain_state": "intact | gap | broken | unknown",
     "first_break": { "seq": 8412001, "request_id": "...", "location": "...", "message": "hash mismatch (record was modified)" },
     "last_verified": "...",
     "verify_command": "haltsql audit verify s3://acme-audit/haltsql/ --host haltsql-2 --region us-east-1"
@@ -284,6 +286,12 @@ repeat records from the page before.
 
 `GET /records/{id}` needs `search_queries` and never includes SQL. `reasons` has one
 entry per recorded code; `rule` and `hint` are `null` when only the code is known.
+Re-verification (`trail_source: reverified`) names the rule behind each code, but its
+messages and hints can quote SQL literals (the other tenant's value in
+`E_TENANT_MISMATCH`), so by default they are replaced by the generic description of the
+code (`reasons_detail: redacted`). `GET /records/{id}?details=full` returns them
+(`reasons_detail: full`); it needs `see_raw_sql` and its reason, and is written to the
+activity log as `record.view_details`.
 `policy.bundle` comes from the last fleet snapshot of the record's verifier and
 `policy.loaded_version` is the version of the policy the console loaded (both `null`
 when unknown); a re-derived trail uses the loaded policy, so compare the two versions.
@@ -291,11 +299,22 @@ when unknown); a re-derived trail uses the loaded policy, so compare the two ver
 **Custody.** `seq` is the record's position in its verifier's stream as ingested
 (files in name order, objects in key order); `neighbours` are the records up to two
 positions before and after. The chain is checked locally over the records in the
-index: the stream is split into segments at every record whose `prev_hash` is the
-genesis hash (a new chain, as after a restart without a spool), the first record of a
-segment may link to a record that has left the retention window, and every other link
-and hash must verify. `chain_state` is that of the record's segment: `broken` (with
-`first_break`) when any record in it fails, `unknown` when the record has no `hash`.
+index, in `seq` order, following hash links: a record continues the segment whose last
+`hash` is its `prev_hash`, so independent chains under one verifier name (several hosts
+under one prefix) are checked separately. A record that links to no segment starts a
+new one when its `prev_hash` is the genesis hash (a new chain, as after a restart
+without a spool), when it is the first record read from its file or object-sink host
+(its predecessor may have left the retention window), or right after an ingestion gap
+(rotation or truncation that may have skipped records, or an object skipped after
+repeated read failures); otherwise the link is broken. Every hash must verify.
+`chain_state` is that of the record's segment: `broken` (with `first_break`) when any
+record in it fails, `gap` when the segment starts after an ingestion gap, `unknown` when
+the record has no `hash`. The check is incremental (only records added since the last
+check are hashed); `POST /records/{id}/verify-chain` re-walks the verifier's whole
+stream, yielding to other requests as it goes, shares one walk between concurrent
+calls, and serves the incremental result within 30 seconds of the last walk. The
+published chain status (`chains[]`) carries `state` (`intact`, `gap`, `broken`,
+`unknown`), `records`, `segments`, `gaps`, `first_break` and `checked_at`.
 `verify_command` re-verifies the original records with the CLI: `haltsql audit verify
 <file>` for files, `haltsql audit verify s3://bucket/prefix/ --host <host>` (plus
 `--region`/`--endpoint` when configured) for S3, and, because the CLI does not read

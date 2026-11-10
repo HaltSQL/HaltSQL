@@ -1,24 +1,45 @@
 (* Audit ingestion: polls every audit.sources entry (files, directories, globs, S3, GCS)
    and adds new records to the Index. Owner: PR console/02-records.
 
-   Files are tailed by byte offset: only complete lines are consumed, a file that shrinks
-   or is replaced (new inode) is read again from the start. Objects in S3/GCS are
-   immutable, so each object key is read exactly once. Each verifier's records get
-   consecutive [seq] numbers in the order they are read (files in sorted order, objects in
-   key order), which is the order the chain check in [Chain] walks. *)
+   Files are tracked by inode, not by path, and tailed by byte offset through a
+   descriptor kept open between polls: only complete lines are consumed. Each poll first
+   drains every tracked file through its own descriptor (so the unread tail of a file
+   that was renamed away by rotation is still read, under the path it was first seen
+   at), then looks for files it does not know yet. A file that shrinks, or whose first
+   line changed (copytruncate followed by new writes), is read again from the start and
+   a gap is recorded for the chain check ({!is_gap}): records may have been lost. A file
+   that is already tracked (by this or an earlier source) is never read twice, so a glob
+   that also matches rotated names, or two sources naming the same file, do not
+   duplicate records; a record identical to one already indexed for the same verifier is
+   skipped too. File I/O runs through Lwt_unix jobs and directory listing in a
+   preemptive thread, so a slow mount does not block the event loop.
+
+   Objects in S3/GCS are immutable, so each object key is read once. Listings start at
+   the [YYYY/MM/DD/HH/] partition of the retention start every [relist_minutes], and at
+   the partition of an hour ago in between, so neither the listing nor the set of keys
+   already read grows beyond the retention window. An object that cannot be read is
+   retried on later polls while the objects of other hosts are still read; after
+   [object_attempts] failures it is skipped, reported in status, and a gap is recorded.
+   A failing source backs off exponentially; object sources are polled concurrently.
+
+   Each verifier's records get consecutive [seq] numbers in the order they are read
+   (files in name order, objects in key order). *)
 
 open Lwt.Syntax
 module Config = Console_config
 module Http = Haltsql_cloud.Http
 
-let log level fmt =
+(** A JSON log line on stderr for [component]. *)
+let log_component component level fmt =
   Printf.ksprintf
     (fun m ->
-      Printf.eprintf "{\"ts\":%S,\"level\":%S,\"component\":\"ingest\",\"msg\":%s}\n%!"
+      Printf.eprintf "{\"ts\":%S,\"level\":%S,\"component\":%S,\"msg\":%s}\n%!"
         (Api.iso8601 (Unix.gettimeofday ()))
-        level
+        level component
         (Yojson.Safe.to_string (`String m)))
     fmt
+
+let log level fmt = log_component "ingest" level fmt
 
 (* ---- verifier names ---- *)
 
@@ -58,46 +79,121 @@ let infer_verifier ~configured name =
     | Some h -> h
     | None -> strip_ext (Filename.basename name)
 
+(* ---- limits ---- *)
+
+type limits = {
+  max_object_bytes : int;
+  max_line_bytes : int;
+  timeout : float;
+  relist : float;  (** seconds between full listings *)
+  attempts : int;
+  retention : float;
+}
+
+let limits_of (cfg : Config.t) =
+  let mb n = max 1 n * 1024 * 1024 in
+  {
+    max_object_bytes = mb cfg.audit.max_object_mb;
+    max_line_bytes = mb cfg.audit.max_line_mb;
+    timeout = float_of_int (max 1 cfg.audit.request_timeout_seconds);
+    relist = 60. *. float_of_int (max 1 cfg.audit.relist_minutes);
+    attempts = max 1 cfg.audit.object_attempts;
+    retention = 3600. *. float_of_int cfg.audit.retention_hours;
+  }
+
+let max_pages = 100_000
+
 (* ---- per-source state ---- *)
 
 type file_pos = {
-  mutable offset : int;
+  path : string;  (** where the file was first seen; locations use it *)
+  key : int * int;  (** (device, inode) *)
+  verifier : string;
+  mutable fd : Lwt_unix.file_descr option;
+  mutable offset : int;  (** end of the last consumed line *)
   mutable line : int;  (** lines consumed so far (the next line is [line + 1]) *)
-  mutable inode : int;
+  mutable head : string;  (** the first line (up to 4 KiB), to detect copytruncate *)
+  mutable skipping : bool;  (** inside a line longer than [max_line_bytes] *)
+  mutable missing : int;  (** consecutive polls the inode was not found *)
 }
 
 type obj = {
-  list : unit -> (string list, string) result Lwt.t;
+  list : start_after:string option -> (string list, string) result Lwt.t;
   get : string -> (string, string) result Lwt.t;
 }
 
-type kind = File of string | Objects of { uri : string; client : obj Lazy.t }
+type kind =
+  | File of string
+  | Objects of {
+      uri : string;
+      make : unit -> (obj, string) result;
+      stamp : unit -> string option;  (** changes when the credentials should be re-read *)
+    }
 
 type source = {
   configured : string;  (** verifier name, or ["auto"] *)
   label : string;  (** the path or URI, for status *)
   kind : kind;
-  files : (string, file_pos) Hashtbl.t;
-  seen : (string, unit) Hashtbl.t;  (** object keys already read *)
+  files : (int * int, file_pos) Hashtbl.t;
+  mutable tracked : file_pos list;  (** in discovery order *)
+  seen : (string, unit) Hashtbl.t;  (** object keys already read, within retention *)
+  failures : (string, int) Hashtbl.t;  (** object key -> failed reads *)
+  mutable skipped : (string * string) list;  (** objects given up on, newest first *)
+  mutable client : (obj * string option) option;
+  mutable last_full_list : float;
+  mutable failing : int;  (** consecutive failed polls *)
+  mutable next_poll : float;
+  mutable overlaps : string list;  (** files left to an earlier source *)
   mutable records : int;
   mutable last_read : float option;
   mutable error : string option;
   mutable verifiers_seen : string list;
 }
 
-type t = { sources : source list; next_seq : (string, int) Hashtbl.t }
+type t = {
+  sources : source list;
+  next_seq : (string, int) Hashtbl.t;
+  gaps : (string, (int, unit) Hashtbl.t) Hashtbl.t;  (** verifier -> seqs after a gap *)
+  claims : (int * int, string) Hashtbl.t;  (** file -> label of the source reading it *)
+  limits : limits;
+}
+
+(* ---- gaps ---- *)
+
+let gaps_key : (string, (int, unit) Hashtbl.t) Hashtbl.t Ctx.Key.t =
+  Ctx.Key.create "ingest.gaps"
+
+(** [is_gap ctx verifier seq]: ingestion may have lost records right before [seq]. *)
+let is_gap (ctx : Ctx.t) verifier =
+  match Option.bind (Ctx.get ctx gaps_key) (fun g -> Hashtbl.find_opt g verifier) with
+  | None -> fun _ -> false
+  | Some h -> Hashtbl.mem h
+
+let mark_gap t verifier =
+  let seq = Option.value (Hashtbl.find_opt t.next_seq verifier) ~default:0 in
+  let h =
+    match Hashtbl.find_opt t.gaps verifier with
+    | Some h -> h
+    | None ->
+        let h = Hashtbl.create 4 in
+        Hashtbl.replace t.gaps verifier h;
+        h
+  in
+  Hashtbl.replace h seq ()
 
 (* ---- S3 ---- *)
+
+(* Index of [sep] in [s] at or after [from], without allocating. *)
+let find_sub s sep from =
+  let n = String.length sep and m = String.length s in
+  let rec at i j = j = n || (s.[i + j] = sep.[j] && at i (j + 1)) in
+  let rec go i = if i + n > m then None else if at i 0 then Some i else go (i + 1) in
+  go from
 
 let split_on s sep =
   let n = String.length sep in
   let rec go acc i =
-    let rec find j =
-      if j + n > String.length s then None
-      else if String.sub s j n = sep then Some j
-      else find (j + 1)
-    in
-    match find i with
+    match find_sub s sep i with
     | Some j -> go (String.sub s i (j - i) :: acc) (j + n)
     | None -> List.rev (String.sub s i (String.length s - i) :: acc)
   in
@@ -116,15 +212,12 @@ let parse_bucket_url ~scheme u =
     in
     if bucket = "" then None else Some (bucket, prefix)
 
-let max_object_bytes = 256 * 1024 * 1024
+let page_cap uri =
+  Error (Printf.sprintf "listing %s stopped after %d pages" uri max_pages)
 
-let s3_client ~env ~uri ~region ~endpoint : obj =
-  let fail m =
-    let e = Lwt.return (Error m) in
-    { list = (fun () -> e); get = (fun _ -> e) }
-  in
+let s3_client ~env ~limits ~uri ~region ~endpoint : (obj, string) result =
   match parse_bucket_url ~scheme:"s3://" uri with
-  | None -> fail (Printf.sprintf "%s: expected s3://bucket/prefix" uri)
+  | None -> Error (Printf.sprintf "%s: expected s3://bucket/prefix" uri)
   | Some (bucket, prefix) -> (
       let endpoint_ok =
         match endpoint with
@@ -141,7 +234,7 @@ let s3_client ~env ~uri ~region ~endpoint : obj =
             | Error m -> Error m)
       in
       match endpoint_ok with
-      | Error m -> fail m
+      | Error m -> Error m
       | Ok endpoint ->
           let region =
             match region with
@@ -166,7 +259,9 @@ let s3_client ~env ~uri ~region ~endpoint : obj =
                   Haltsql_cloud.Sigv4.sign ~s3:true c ~service:"s3" ~region
                     ~time:(Unix.gettimeofday ()) ~meth:"GET" ~uri ~headers:[] ~payload:""
                 in
-                let* r = Http.request ~timeout:60. ~max_body ~headers `GET uri in
+                let* r =
+                  Http.request ~timeout:limits.timeout ~max_body ~headers `GET uri
+                in
                 match r with
                 | Error m -> Lwt.return (Error m)
                 | Ok r when r.status >= 200 && r.status < 300 -> Lwt.return (Ok r.body)
@@ -178,10 +273,13 @@ let s3_client ~env ~uri ~region ~endpoint : obj =
                     Lwt.return
                       (Error (Printf.sprintf "S3 GET returned HTTP %d %s" r.status code)))
           in
-          let list () =
+          let list ~start_after =
             let rec go acc token pages =
               let q =
                 [ ("list-type", [ "2" ]); ("prefix", [ prefix ]) ]
+                @ (match (token, start_after) with
+                  | None, Some k -> [ ("start-after", [ k ]) ]
+                  | _ -> [])
                 @
                 match token with
                 | Some k -> [ ("continuation-token", [ k ]) ]
@@ -204,8 +302,10 @@ let s3_client ~env ~uri ~region ~endpoint : obj =
                     ( Haltsql_cloud.Cloud_util.xml_tag body "IsTruncated",
                       Haltsql_cloud.Cloud_util.xml_tag body "NextContinuationToken" )
                   with
-                  | Some "true", Some k when pages < 100_000 -> go acc (Some k) (pages + 1)
-                  | Some "true", _ ->
+                  | Some "true", Some _ when pages + 1 >= max_pages ->
+                      Lwt.return (page_cap uri)
+                  | Some "true", Some k -> go acc (Some k) (pages + 1)
+                  | Some "true", None ->
                       Lwt.return
                         (Error "S3 listing is truncated without a continuation token")
                   | _ -> Lwt.return (Ok (List.rev acc)))
@@ -213,52 +313,76 @@ let s3_client ~env ~uri ~region ~endpoint : obj =
             go [] None 0
           in
           let get key =
-            signed_get ~max_body:max_object_bytes
+            signed_get ~max_body:limits.max_object_bytes
               (Uri.of_string (base ^ "/" ^ Http.pct_encode ~keep_slash:true key))
           in
-          { list; get })
+          Ok { list; get })
 
 (* ---- GCS (JSON API) ---- *)
 
-let gcs_client ~env ~uri : obj =
-  let fail m =
-    let e = Lwt.return (Error m) in
-    { list = (fun () -> e); get = (fun _ -> e) }
-  in
+let gcs_client ~env ~limits ~uri : (obj, string) result =
   match parse_bucket_url ~scheme:"gs://" uri with
-  | None -> fail (Printf.sprintf "%s: expected gs://bucket/prefix" uri)
+  | None -> Error (Printf.sprintf "%s: expected gs://bucket/prefix" uri)
   | Some (bucket, prefix) -> (
-      let base =
+      (* With an emulator, its address is checked like any other endpoint (http only on
+         loopback) and no credentials are sent to it. *)
+      let target =
         match env "STORAGE_EMULATOR_HOST" with
-        | Some h when String.trim h <> "" ->
+        | Some h when String.trim h <> "" -> (
             let h = String.trim h in
-            if String.length h > 4 && String.sub h 0 4 = "http" then h else "http://" ^ h
-        | _ -> "https://storage.googleapis.com"
+            let h =
+              if
+                String.starts_with ~prefix:"http://" h
+                || String.starts_with ~prefix:"https://" h
+              then h
+              else "http://" ^ h
+            in
+            let h =
+              if String.ends_with ~suffix:"/" h then String.sub h 0 (String.length h - 1)
+              else h
+            in
+            match Http.check_endpoint ~what:"STORAGE_EMULATOR_HOST" h with
+            | Ok _ -> Ok (h, None)
+            | Error m -> Error m)
+        | _ -> (
+            match Haltsql_cloud.Gcp_auth.default ~env () with
+            | Error m -> Error ("gcp credentials: " ^ m)
+            | Ok auth -> Ok ("https://storage.googleapis.com", Some auth))
       in
-      match Haltsql_cloud.Gcp_auth.default ~env () with
-      | Error m -> fail ("gcp credentials: " ^ m)
-      | Ok auth ->
+      match target with
+      | Error m -> Error m
+      | Ok (base, auth) ->
           let authed_get ?(max_body = 8 * 1024 * 1024) u =
-            let* tok = Haltsql_cloud.Gcp_auth.token auth in
-            match tok with
-            | Error m -> Lwt.return (Error ("gcp auth: " ^ m))
-            | Ok tok -> (
-                let* r =
-                  Http.request ~timeout:60. ~max_body
-                    ~headers:[ ("authorization", "Bearer " ^ tok) ]
-                    `GET u
-                in
+            let* headers =
+              match auth with
+              | None -> Lwt.return (Ok [])
+              | Some a -> (
+                  let* tok = Haltsql_cloud.Gcp_auth.token a in
+                  match tok with
+                  | Error m -> Lwt.return (Error ("gcp auth: " ^ m))
+                  | Ok tok -> Lwt.return (Ok [ ("authorization", "Bearer " ^ tok) ]))
+            in
+            match headers with
+            | Error m -> Lwt.return (Error m)
+            | Ok headers -> (
+                let* r = Http.request ~timeout:limits.timeout ~max_body ~headers `GET u in
                 match r with
                 | Error m -> Lwt.return (Error m)
                 | Ok r when r.status >= 200 && r.status < 300 -> Lwt.return (Ok r.body)
                 | Ok r ->
-                    if r.status = 401 then Haltsql_cloud.Gcp_auth.invalidate auth;
+                    (if r.status = 401 then
+                       match auth with
+                       | Some a -> Haltsql_cloud.Gcp_auth.invalidate a
+                       | None -> ());
                     Lwt.return (Error (Printf.sprintf "GCS returned HTTP %d" r.status)))
           in
-          let list () =
+          let list ~start_after =
             let rec go acc token pages =
               let q =
                 [ ("prefix", [ prefix ]) ]
+                @ (match start_after with
+                  | Some k -> [ ("startOffset", [ k ]) ]
+                  | None -> [])
                 @ match token with Some k -> [ ("pageToken", [ k ]) ] | None -> []
               in
               let u =
@@ -287,54 +411,95 @@ let gcs_client ~env ~uri : obj =
                       in
                       let acc = List.rev_append names acc in
                       match Api.member "nextPageToken" j with
-                      | Some (`String k) when k <> "" && pages < 100_000 ->
-                          go acc (Some k) (pages + 1)
+                      | Some (`String k) when k <> "" && pages + 1 >= max_pages ->
+                          Lwt.return (page_cap uri)
+                      | Some (`String k) when k <> "" -> go acc (Some k) (pages + 1)
                       | _ -> Lwt.return (Ok (List.rev acc))))
             in
             go [] None 0
           in
           let get name =
-            authed_get ~max_body:max_object_bytes
+            authed_get ~max_body:limits.max_object_bytes
               (Uri.of_string
                  (Printf.sprintf "%s/storage/v1/b/%s/o/%s?alt=media" base
                     (Http.pct_encode bucket) (Http.pct_encode name)))
           in
-          { list; get })
+          Ok { list; get })
+
+(* The identity of the file named by [var], so a rotated key file is re-read. *)
+let file_stamp env var =
+  match env var with
+  | Some f when String.trim f <> "" -> (
+      match Unix.stat f with
+      | st -> Some (Printf.sprintf "%s:%.0f:%d" f st.Unix.st_mtime st.Unix.st_size)
+      | exception Unix.Unix_error _ -> Some (f ^ ":missing"))
+  | _ -> None
 
 (* ---- creating the state ---- *)
 
 let create ?(env = Sys.getenv_opt) (cfg : Config.t) =
+  let limits = limits_of cfg in
   let source (configured, src) =
     let kind, label =
       match src with
       | Config.Src_file f -> (File f, f)
       | Config.Src_s3 { uri; region; endpoint } ->
-          (Objects { uri; client = lazy (s3_client ~env ~uri ~region ~endpoint) }, uri)
+          ( Objects
+              {
+                uri;
+                make = (fun () -> s3_client ~env ~limits ~uri ~region ~endpoint);
+                stamp = (fun () -> None);
+              },
+            uri )
       | Config.Src_gcs { uri } ->
-          (Objects { uri; client = lazy (gcs_client ~env ~uri) }, uri)
+          ( Objects
+              {
+                uri;
+                make = (fun () -> gcs_client ~env ~limits ~uri);
+                stamp =
+                  (fun () ->
+                    Some
+                      (Option.value (env "STORAGE_EMULATOR_HOST") ~default:""
+                      ^ "|"
+                      ^ Option.value
+                          (file_stamp env "GOOGLE_APPLICATION_CREDENTIALS")
+                          ~default:""));
+              },
+            uri )
     in
     {
       configured;
       label;
       kind;
       files = Hashtbl.create 8;
+      tracked = [];
       seen = Hashtbl.create 64;
+      failures = Hashtbl.create 4;
+      skipped = [];
+      client = None;
+      last_full_list = neg_infinity;
+      failing = 0;
+      next_poll = neg_infinity;
+      overlaps = [];
       records = 0;
       last_read = None;
       error = None;
       verifiers_seen = [];
     }
   in
-  { sources = List.map source cfg.audit.sources; next_seq = Hashtbl.create 8 }
+  {
+    sources = List.map source cfg.audit.sources;
+    next_seq = Hashtbl.create 8;
+    gaps = Hashtbl.create 4;
+    claims = Hashtbl.create 16;
+    limits;
+  }
 
 (* ---- adding records ---- *)
 
-let next_seq t verifier =
-  let n = Option.value (Hashtbl.find_opt t.next_seq verifier) ~default:0 in
-  Hashtbl.replace t.next_seq verifier (n + 1);
-  n
-
-(** Parses one line and adds it to the index; returns true when it was an audit record. *)
+(** Parses one line and adds it to the index; returns true when it was a new audit record.
+    A record identical to one already indexed for the same verifier (a rotated copy read
+    again) is skipped and consumes no [seq]. *)
 let add_line (ctx : Ctx.t) t src ~verifier ~location line =
   let line = String.trim line in
   if line = "" || line.[0] <> '{' then false
@@ -343,17 +508,19 @@ let add_line (ctx : Ctx.t) t src ~verifier ~location line =
     | exception _ -> false
     | j -> (
         let now = Ctx.now () in
-        (* Only audit records consume a seq. *)
         let seq = Option.value (Hashtbl.find_opt t.next_seq verifier) ~default:0 in
         match Index.entry_of_json ~verifier ~location ~seq ~now j with
         | None -> false
-        | Some e ->
-            ignore (next_seq t verifier);
-            Index.add ctx.index e;
-            src.records <- src.records + 1;
-            if not (List.mem verifier src.verifiers_seen) then
-              src.verifiers_seen <- src.verifiers_seen @ [ verifier ];
-            true)
+        | Some e -> (
+            match Index.find ctx.index e.request_id with
+            | Some old when old.verifier = verifier && old.raw = e.raw -> false
+            | _ ->
+                Hashtbl.replace t.next_seq verifier (seq + 1);
+                Index.add ctx.index e;
+                src.records <- src.records + 1;
+                if not (List.mem verifier src.verifiers_seen) then
+                  src.verifiers_seen <- src.verifiers_seen @ [ verifier ];
+                true))
 
 (* ---- files ---- *)
 
@@ -380,9 +547,11 @@ let readdir_sorted d =
       Array.to_list a
   | exception Sys_error _ -> []
 
-(** The files a [file:] source names right now, sorted. *)
+(** The files a [file:] source names right now, sorted. Blocking: the poll calls it
+    through {!expand_files_lwt}. *)
 let expand_files path =
   let base = Filename.basename path in
+  let regular p = try not (Sys.is_directory p) with Sys_error _ -> false in
   if String.contains base '*' || String.contains base '?' then
     let dir = Filename.dirname path in
     if not (Sys.file_exists dir && Sys.is_directory dir) then
@@ -392,136 +561,321 @@ let expand_files path =
         (readdir_sorted dir
         |> List.filter (glob_match base)
         |> List.map (Filename.concat dir)
-        |> List.filter (fun p -> try not (Sys.is_directory p) with Sys_error _ -> false))
+        |> List.filter regular)
   else if not (Sys.file_exists path) then Error (Printf.sprintf "%s: no such file" path)
   else if Sys.is_directory path then
     Ok
       (readdir_sorted path |> List.filter is_audit_file
       |> List.map (Filename.concat path)
-      |> List.filter (fun p -> try not (Sys.is_directory p) with Sys_error _ -> false))
+      |> List.filter regular)
   else Ok [ path ]
 
-let chunk = 4 * 1024 * 1024
+(** {!expand_files} in a preemptive thread, off the event loop. *)
+let expand_files_lwt path =
+  Lwt.catch
+    (fun () -> Lwt_preemptive.detach expand_files path)
+    (fun e -> Lwt.return (Error (Printf.sprintf "%s: %s" path (Printexc.to_string e))))
 
-(** Reads the new complete lines of [path] from its last offset. *)
-let read_file (ctx : Ctx.t) t src path =
-  let st = Unix.stat path in
-  let pos =
-    match Hashtbl.find_opt src.files path with
-    | Some p -> p
-    | None ->
-        let p = { offset = 0; line = 0; inode = st.Unix.st_ino } in
-        Hashtbl.replace src.files path p;
-        p
+let chunk = 256 * 1024
+let head_bytes = 4096
+
+(* Index of the first '\n' in [buf] within [i, n). *)
+let find_nl buf i n =
+  let rec go j =
+    if j >= n then None else if Bytes.get buf j = '\n' then Some j else go (j + 1)
   in
-  if st.Unix.st_ino <> pos.inode || st.Unix.st_size < pos.offset then begin
-    (* Rotated (replaced) or truncated: start over. *)
-    pos.offset <- 0;
-    pos.line <- 0;
-    pos.inode <- st.Unix.st_ino
-  end;
-  let verifier = infer_verifier ~configured:src.configured path in
-  let fd = Unix.openfile path [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 in
-  Lwt.finalize
-    (fun () ->
-      let buf = Bytes.create chunk in
-      let rec loop carry =
-        ignore (Unix.lseek fd (pos.offset + String.length carry) Unix.SEEK_SET);
-        let n = Unix.read fd buf 0 chunk in
-        if n = 0 then Lwt.return_unit
-        else
-          let data = carry ^ Bytes.sub_string buf 0 n in
-          match String.rindex_opt data '\n' with
-          | None ->
-              (* No complete line yet; keep reading unless the line is absurdly long. *)
-              if String.length data > 64 * 1024 * 1024 then begin
-                pos.offset <- pos.offset + String.length data;
-                Lwt.return_unit
-              end
-              else loop data
-          | Some last ->
-              let complete = String.sub data 0 last in
-              List.iter
-                (fun l ->
-                  pos.line <- pos.line + 1;
-                  ignore
-                    (add_line ctx t src ~verifier
-                       ~location:(Printf.sprintf "%s#L%d" path pos.line)
-                       l))
-                (String.split_on_char '\n' complete);
-              pos.offset <- pos.offset + last + 1;
-              let rest = String.sub data (last + 1) (String.length data - last - 1) in
-              let* () = Lwt.pause () in
-              loop rest
-      in
-      loop "")
-    (fun () ->
-      (try Unix.close fd with _ -> ());
-      Lwt.return_unit)
+  go i
 
-let poll_files ctx t src path =
-  match expand_files path with
-  | Error m -> Lwt.return (Error m)
-  | Ok files ->
-      let rec go = function
-        | [] -> Lwt.return (Ok ())
-        | f :: rest ->
-            let* r =
-              Lwt.catch
-                (fun () ->
-                  let* () = read_file ctx t src f in
-                  Lwt.return (Ok ()))
-                (fun e ->
-                  Lwt.return
-                    (Error
-                       (match e with
-                       | Unix.Unix_error (err, _, _) ->
-                           Printf.sprintf "%s: %s" f (Unix.error_message err)
-                       | e -> Printf.sprintf "%s: %s" f (Printexc.to_string e))))
-            in
-            (match r with Error m -> src.error <- Some m | Ok () -> ());
-            go rest
+let rec really_read fd buf off len =
+  if len = 0 then Lwt.return off
+  else
+    let* n = Lwt_unix.read fd buf off len in
+    if n = 0 then Lwt.return off else really_read fd buf (off + n) (len - n)
+
+(* The first [n] bytes of the file. *)
+let read_head fd n =
+  let* _ = Lwt_unix.lseek fd 0 Unix.SEEK_SET in
+  let buf = Bytes.create n in
+  let* got = really_read fd buf 0 n in
+  Lwt.return (Bytes.sub_string buf 0 got)
+
+(** Reads the complete lines of [pos] after its offset, yielding after every [chunk]
+    bytes. A line longer than [max_line_bytes] is skipped (and still counted). *)
+let read_lines (ctx : Ctx.t) t src pos fd =
+  let max_line = t.limits.max_line_bytes in
+  let* _ = Lwt_unix.lseek fd pos.offset Unix.SEEK_SET in
+  let buf = Bytes.create chunk in
+  let carry = Buffer.create 256 in
+  let abs = ref pos.offset in
+  let rec loop () =
+    let* n = Lwt_unix.read fd buf 0 chunk in
+    if n = 0 then Lwt.return_unit
+    else begin
+      let i = ref 0 in
+      while !i < n do
+        match find_nl buf !i n with
+        | Some j ->
+            if pos.skipping then begin
+              pos.skipping <- false;
+              pos.line <- pos.line + 1
+            end
+            else begin
+              Buffer.add_subbytes carry buf !i (j - !i);
+              let l = Buffer.contents carry in
+              Buffer.clear carry;
+              if pos.offset = 0 && pos.line = 0 then
+                pos.head <- String.sub (l ^ "\n") 0 (min head_bytes (String.length l + 1));
+              pos.line <- pos.line + 1;
+              ignore
+                (add_line ctx t src ~verifier:pos.verifier
+                   ~location:(Printf.sprintf "%s#L%d" pos.path pos.line)
+                   l)
+            end;
+            abs := !abs + (j - !i) + 1;
+            pos.offset <- !abs;
+            i := j + 1
+        | None ->
+            abs := !abs + (n - !i);
+            if pos.skipping then pos.offset <- !abs
+            else begin
+              Buffer.add_subbytes carry buf !i (n - !i);
+              if Buffer.length carry > max_line then begin
+                log "warning" "%s: line %d is longer than %d bytes; skipped" pos.path
+                  (pos.line + 1) max_line;
+                pos.skipping <- true;
+                pos.offset <- !abs;
+                Buffer.clear carry
+              end
+            end;
+            i := n
+      done;
+      let* () = Lwt.pause () in
+      loop ()
+    end
+  in
+  loop ()
+
+(* Reads what was appended to a tracked file; starts over (and records a gap) when it
+   was truncated or rewritten in place. *)
+let drain ctx t src pos =
+  match pos.fd with
+  | None -> Lwt.return_unit
+  | Some fd ->
+      let* st = Lwt_unix.fstat fd in
+      let* rewritten =
+        if st.Unix.st_size < pos.offset then Lwt.return true
+        else if pos.offset > 0 && pos.head <> "" then
+          let* h = read_head fd (String.length pos.head) in
+          Lwt.return (h <> pos.head)
+        else Lwt.return false
       in
-      go files
+      if rewritten then begin
+        log "info" "%s was truncated or rewritten; reading it again from the start"
+          pos.path;
+        pos.offset <- 0;
+        pos.line <- 0;
+        pos.head <- "";
+        pos.skipping <- false;
+        mark_gap t pos.verifier
+      end;
+      if st.Unix.st_size > pos.offset then read_lines ctx t src pos fd
+      else Lwt.return_unit
+
+let close_pos t src pos =
+  (match pos.fd with
+  | Some fd ->
+      Lwt.async (fun () ->
+          Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit))
+  | None -> ());
+  pos.fd <- None;
+  Hashtbl.remove src.files pos.key;
+  (match Hashtbl.find_opt t.claims pos.key with
+  | Some l when l = src.label -> Hashtbl.remove t.claims pos.key
+  | _ -> ());
+  src.tracked <- List.filter (fun p -> p != pos) src.tracked
+
+let describe_exn path = function
+  | Unix.Unix_error (err, _, _) -> Printf.sprintf "%s: %s" path (Unix.error_message err)
+  | e -> Printf.sprintf "%s: %s" path (Printexc.to_string e)
+
+let poll_files ctx t src pattern =
+  let guard path f =
+    Lwt.catch f (fun e ->
+        if src.error = None then src.error <- Some (describe_exn path e);
+        Lwt.return_unit)
+  in
+  (* 1. Every tracked file, through its own descriptor, in name order. *)
+  let* () =
+    Lwt_list.iter_s
+      (fun pos -> guard pos.path (fun () -> drain ctx t src pos))
+      (List.stable_sort (fun a b -> compare a.path b.path) src.tracked)
+  in
+  (* 2. Files not seen before. *)
+  let* expanded = expand_files_lwt pattern in
+  match expanded with
+  | Error m -> Lwt.return (Error m)
+  | Ok paths ->
+      let present = Hashtbl.create 16 in
+      let* () =
+        Lwt_list.iter_s
+          (fun path ->
+            guard path (fun () ->
+                let* st = Lwt_unix.stat path in
+                let key = (st.Unix.st_dev, st.Unix.st_ino) in
+                Hashtbl.replace present key ();
+                if Hashtbl.mem src.files key then Lwt.return_unit
+                else
+                  match Hashtbl.find_opt t.claims key with
+                  | Some other when other <> src.label ->
+                      if not (List.mem path src.overlaps) then begin
+                        log "warning" "%s is already read by audit source %s; skipped"
+                          path other;
+                        src.overlaps <- src.overlaps @ [ path ]
+                      end;
+                      Lwt.return_unit
+                  | _ ->
+                      let* fd =
+                        Lwt_unix.openfile path [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0
+                      in
+                      let pos =
+                        {
+                          path;
+                          key;
+                          verifier = infer_verifier ~configured:src.configured path;
+                          fd = Some fd;
+                          offset = 0;
+                          line = 0;
+                          head = "";
+                          skipping = false;
+                          missing = 0;
+                        }
+                      in
+                      Hashtbl.replace src.files key pos;
+                      Hashtbl.replace t.claims key src.label;
+                      src.tracked <- src.tracked @ [ pos ];
+                      read_lines ctx t src pos fd))
+          paths
+      in
+      (* A file gone from every matching path for two polls (renamed away or deleted) is
+         closed; the extra poll catches writes that land just after a rotation. *)
+      List.iter
+        (fun pos ->
+          if Hashtbl.mem present pos.key then pos.missing <- 0
+          else begin
+            pos.missing <- pos.missing + 1;
+            if pos.missing >= 2 then close_pos t src pos
+          end)
+        src.tracked;
+      Lwt.return (Ok ())
 
 (* ---- objects ---- *)
 
+(** [prefix] followed by the [YYYY/MM/DD/HH/] partition of [time]: object-sink keys sort
+    by the hour they were written. [None] when the prefix does not end at a path segment
+    (the partition would not follow it directly). *)
+let partition_start ~prefix time =
+  if prefix <> "" && not (String.ends_with ~suffix:"/" prefix) then None
+  else
+    let tm = Unix.gmtime (Float.max 0. time) in
+    Some
+      (Printf.sprintf "%s%04d/%02d/%02d/%02d/" prefix (tm.tm_year + 1900) (tm.tm_mon + 1)
+         tm.tm_mday tm.tm_hour)
+
+(* Adds the lines of an object body, yielding every 1000 lines. *)
+let add_object_lines ctx t src ~verifier ~location_of body =
+  let n = String.length body in
+  let rec go i lineno =
+    if i >= n then Lwt.return_unit
+    else
+      let j = match String.index_from_opt body i '\n' with Some j -> j | None -> n in
+      ignore
+        (add_line ctx t src ~verifier ~location:(location_of lineno)
+           (String.sub body i (j - i)));
+      if lineno mod 1000 = 0 then
+        let* () = Lwt.pause () in
+        go (j + 1) (lineno + 1)
+      else go (j + 1) (lineno + 1)
+  in
+  go 0 1
+
+let object_origin k =
+  match host_of_object_name k with Some h -> h | None -> Filename.dirname k
+
 let poll_objects ctx t src ~uri (client : obj) =
-  let* keys = client.list () in
+  let now = Ctx.now () in
+  let full = now -. src.last_full_list >= t.limits.relist in
+  let bucket_root, prefix =
+    match String.index_from_opt uri 5 '/' with
+    | Some i ->
+        (String.sub uri 0 (i + 1), String.sub uri (i + 1) (String.length uri - i - 1))
+    | None -> (uri ^ "/", "")
+  in
+  let boundary =
+    partition_start ~prefix (if full then now -. t.limits.retention else now -. 3600.)
+  in
+  let* keys = client.list ~start_after:boundary in
   match keys with
   | Error m -> Lwt.return (Error m)
   | Ok keys ->
+      if full then begin
+        src.last_full_list <- now;
+        (* keys before the retention start are not listed again *)
+        match boundary with
+        | Some b ->
+            Hashtbl.filter_map_inplace
+              (fun k () -> if String.compare k b < 0 then None else Some ())
+              src.seen
+        | None -> ()
+      end;
       let fresh =
         List.filter
           (fun k -> Filename.check_suffix k ".jsonl" && not (Hashtbl.mem src.seen k))
           keys
         |> List.sort compare
       in
-      let bucket_root =
-        match String.index_from_opt uri 5 '/' with
-        | Some i -> String.sub uri 0 (i + 1)
-        | None -> uri ^ "/"
-      in
+      (* An object that fails holds back the later objects of the same host (to keep
+         each chain in order) but not those of other hosts. *)
+      let blocked = Hashtbl.create 4 in
+      let first_error = ref None in
       let rec go = function
-        | [] -> Lwt.return (Ok ())
+        | [] -> Lwt.return_unit
+        | k :: rest when Hashtbl.mem blocked (object_origin k) -> go rest
         | k :: rest -> (
+            let verifier = infer_verifier ~configured:src.configured k in
             let* body = client.get k in
             match body with
-            | Error m -> Lwt.return (Error (Printf.sprintf "reading %s: %s" k m))
             | Ok body ->
-                let verifier = infer_verifier ~configured:src.configured k in
-                List.iteri
-                  (fun i l ->
-                    ignore
-                      (add_line ctx t src ~verifier
-                         ~location:(Printf.sprintf "%s%s#L%d" bucket_root k (i + 1))
-                         l))
-                  (String.split_on_char '\n' body);
+                Hashtbl.remove src.failures k;
+                let* () =
+                  add_object_lines ctx t src ~verifier
+                    ~location_of:(Printf.sprintf "%s%s#L%d" bucket_root k)
+                    body
+                in
                 Hashtbl.replace src.seen k ();
                 let* () = Lwt.pause () in
+                go rest
+            | Error m ->
+                let n = 1 + Option.value (Hashtbl.find_opt src.failures k) ~default:0 in
+                if n >= t.limits.attempts then begin
+                  Hashtbl.remove src.failures k;
+                  Hashtbl.replace src.seen k ();
+                  src.skipped <- List.filteri (fun i _ -> i < 20) ((k, m) :: src.skipped);
+                  mark_gap t verifier;
+                  log "error" "skipping %s%s after %d failed reads: %s" bucket_root k n m;
+                  if !first_error = None then
+                    first_error :=
+                      Some (Printf.sprintf "skipped %s after %d failed reads: %s" k n m)
+                end
+                else begin
+                  Hashtbl.replace src.failures k n;
+                  Hashtbl.replace blocked (object_origin k) ();
+                  if !first_error = None then
+                    first_error := Some (Printf.sprintf "reading %s: %s" k m)
+                end;
                 go rest)
       in
-      go fresh
+      let* () = go fresh in
+      Lwt.return (match !first_error with Some m -> Error m | None -> Ok ())
 
 (* ---- status ---- *)
 
@@ -529,7 +883,8 @@ let poll_objects ctx t src ~uri (client : obj) =
 let status_key : Yojson.Safe.t Ctx.Key.t = Ctx.Key.create "ingest.status"
 
 (** Per-source ingestion state ([`List] of objects with [source], [verifier], [verifiers],
-    [records], [last_read], [error]); [`List []] before the loop starts. *)
+    [records], [last_read], [error], [skipped_objects], [overlaps], [next_poll]);
+    [`List []] before the loop starts. *)
 let status (ctx : Ctx.t) = Option.value (Ctx.get ctx status_key) ~default:(`List [])
 
 (** For tests only: replaces the published status without polling. *)
@@ -549,30 +904,86 @@ let status_json t : Yojson.Safe.t =
              ("records", `Int s.records);
              ("last_read", Api.opt_time s.last_read);
              ("error", Api.opt_string s.error);
+             ( "skipped_objects",
+               `List
+                 (List.map
+                    (fun (k, m) -> `Assoc [ ("key", `String k); ("error", `String m) ])
+                    s.skipped) );
+             ("overlaps", Api.strings s.overlaps);
+             ( "next_poll",
+               if s.failing > 0 then Api.opt_time (Some s.next_poll) else `Null );
            ])
        t.sources)
 
-(** One pass over every source; then expires old entries and publishes status. *)
-let poll_once (ctx : Ctx.t) t =
-  let* () =
-    Lwt_list.iter_s
-      (fun src ->
-        src.error <- None;
-        let* r =
-          Lwt.catch
-            (fun () ->
-              match src.kind with
-              | File path -> poll_files ctx t src path
-              | Objects { uri; client } -> poll_objects ctx t src ~uri (Lazy.force client))
-            (fun e -> Lwt.return (Error (Printexc.to_string e)))
+(* The object client, rebuilt when missing or when its credentials changed; a failure to
+   build one is not remembered. *)
+let client_of src ~make ~stamp =
+  let st = stamp () in
+  match src.client with
+  | Some (c, st') when st' = st -> Ok c
+  | _ -> (
+      match make () with
+      | Ok c ->
+          src.client <- Some (c, st);
+          Ok c
+      | Error m ->
+          src.client <- None;
+          Error m)
+
+let poll_source (ctx : Ctx.t) t ~period src =
+  if Ctx.now () < src.next_poll then Lwt.return_unit
+  else begin
+    src.error <- None;
+    let* r =
+      Lwt.catch
+        (fun () ->
+          match src.kind with
+          | File path -> poll_files ctx t src path
+          | Objects { uri; make; stamp } -> (
+              match client_of src ~make ~stamp with
+              | Error m -> Lwt.return (Error m)
+              | Ok client -> poll_objects ctx t src ~uri client))
+        (fun e -> Lwt.return (Error (Printexc.to_string e)))
+    in
+    (match r with
+    | Ok () when src.error = None ->
+        src.last_read <- Some (Ctx.now ());
+        src.failing <- 0;
+        src.next_poll <- neg_infinity
+    | Ok () -> ()
+    | Error m ->
+        if src.error = None then src.error <- Some m;
+        log "warning" "audit source %s: %s" src.label m;
+        (* exponential backoff, capped at 5 minutes *)
+        src.failing <- src.failing + 1;
+        let delay =
+          Float.min 300. (period *. (2. ** float_of_int (min 16 (src.failing - 1))))
         in
-        (match r with
-        | Ok () -> if src.error = None then src.last_read <- Some (Ctx.now ())
-        | Error m ->
-            if src.error = None then src.error <- Some m;
-            log "warning" "audit source %s: %s" src.label m);
-        Lwt.return_unit)
-      t.sources
+        src.next_poll <- Ctx.now () +. delay);
+    Lwt.return_unit
+  end
+
+let concurrency = 4
+
+(** One pass over every source; then expires old entries and publishes status. File
+    sources are read in order (so the earlier of two sources naming one file reads it);
+    object sources run concurrently with them, at most [concurrency] at a time. A source
+    that failed is skipped until its backoff ([period] doubled per failure, at most 5
+    minutes) has passed. *)
+let poll_once ?(period = 0.) (ctx : Ctx.t) t =
+  Ctx.set ctx gaps_key t.gaps;
+  let files, objects =
+    List.partition (fun s -> match s.kind with File _ -> true | _ -> false) t.sources
+  in
+  let pool = Lwt_pool.create concurrency (fun () -> Lwt.return_unit) in
+  let* () =
+    Lwt.join
+      [
+        Lwt_list.iter_s (poll_source ctx t ~period) files;
+        Lwt_list.iter_p
+          (fun s -> Lwt_pool.use pool (fun () -> poll_source ctx t ~period s))
+          objects;
+      ]
   in
   Index.expire ctx.index ~now:(Ctx.now ());
   Ctx.set ctx status_key (status_json t);
@@ -590,7 +1001,7 @@ let start (ctx : Ctx.t) : unit Lwt.t =
     let rec loop () =
       let* () =
         Lwt.catch
-          (fun () -> poll_once ctx t)
+          (fun () -> poll_once ~period ctx t)
           (fun e ->
             log "error" "ingest poll failed: %s" (Printexc.to_string e);
             Lwt.return_unit)

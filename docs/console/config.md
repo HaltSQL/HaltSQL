@@ -191,9 +191,10 @@ writing their sinks as configured.
 ```yaml
 audit:
   sources:
-    - { verifier: haltsql-1, file: /var/log/haltsql/audit.jsonl }
+    # one of these per location; a file is read by the first source that names it
+    - { verifier: haltsql-1, file: /var/log/haltsql-1/audit.jsonl }
     - { verifier: auto, file: /var/log/haltsql/ }            # every *.jsonl / *.log inside
-    - { verifier: auto, file: "/var/log/haltsql/audit-*.jsonl" }
+    - { verifier: auto, file: "/var/log/haltsql-proxy/audit-*.jsonl" }
     - { verifier: auto, s3: "s3://acme-audit/haltsql/", region: us-east-1 }
     - { verifier: auto, gcs: "gs://acme-audit/haltsql/" }
   retention_hours: 168
@@ -203,21 +204,30 @@ audit:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sources[]` | none | Exactly one of `file` (alias `path`), `s3` or `gcs`, plus `verifier`. |
+| `sources[]` | none | Exactly one of `file` (alias `path`), `s3` or `gcs`, plus `verifier`. The same file, directory, glob or URI listed twice is a configuration error. A file matched by two sources (a file and the directory holding it) is read only by the first, and the later source reports it under `overlaps` in the ingest status. |
 | `sources[].verifier` | `auto` | Verifier name the records belong to (matches `verifiers[].name`). With `auto`, the name comes from the object name (object sinks write `<host>-<run>-<seq>-<sha256>.jsonl`, so the host), else the file's basename without extension. |
-| `sources[].file` | | A file, a directory (every `*.jsonl` and `*.log` directly inside, in name order) or a glob with `*`/`?` in the last path segment. Files are tailed by byte offset; only complete lines are read. A file that shrinks or is replaced (new inode, as with rotation) is read again from the start. |
-| `sources[].s3` | | `s3://bucket/prefix`. Every `.jsonl` object under the prefix is read once, in key order. Credentials: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`), web identity (IRSA), ECS/EKS Pod Identity or the instance profile. Needs `s3:ListBucket` and `s3:GetObject` only. |
+| `sources[].file` | | A file, a directory (every `*.jsonl` and `*.log` directly inside, in name order) or a glob with `*`/`?` in the last path segment. Files are tracked by inode and tailed by byte offset through a descriptor kept open between polls; only complete lines are read. After a rename rotation the old file's unread tail is read first (record locations keep the path the file was first seen at), and a glob that also matches rotated names does not read a file twice. A file that shrinks, or whose first line changed (copytruncate), is read again from the start and the chain check reports a `gap` there instead of a break. A record identical to one already read for the same verifier is skipped. |
+| `sources[].s3` | | `s3://bucket/prefix`. Every `.jsonl` object under the prefix is read once, in key order. Only keys from the `YYYY/MM/DD/HH/` partition of the retention start on are listed (the object-sink layout; with a prefix that does not end in `/` the whole prefix is listed), and keys before it are forgotten. An object that cannot be read holds back the later objects of the same host and is retried on the next polls; after `object_attempts` failures it is skipped, listed under `skipped_objects` in the ingest status, and the chain check reports a `gap`. Credentials: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`), web identity (IRSA), ECS/EKS Pod Identity or the instance profile. Needs `s3:ListBucket` and `s3:GetObject` only. |
 | `sources[].region` | `AWS_REGION`, else `us-east-1` | S3 signing region. |
 | `sources[].endpoint` | AWS | S3-compatible endpoint (path-style; https, or http on loopback). |
-| `sources[].gcs` | | `gs://bucket/prefix`, read like S3 through the JSON API. Credentials: `GOOGLE_APPLICATION_CREDENTIALS` (service-account key file), else the metadata server (Workload Identity). Needs `storage.objects.list` and `storage.objects.get`. `STORAGE_EMULATOR_HOST` overrides the API base. |
+| `sources[].gcs` | | `gs://bucket/prefix`, read like S3 through the JSON API. Credentials: `GOOGLE_APPLICATION_CREDENTIALS` (service-account key file), else the metadata server (Workload Identity). Needs `storage.objects.list` and `storage.objects.get`. `STORAGE_EMULATOR_HOST` overrides the API base: it must be https, or http on a loopback host, and no credentials are sent to it. Credentials are not cached after a failure, and a changed key file is re-read. |
 | `retention_hours` | `168` | Records older than this are dropped from the in-memory index. |
 | `max_records` | `2000000` | Index size cap; the oldest records are evicted first. |
-| `poll_seconds` | `5` | How often every source is polled. |
+| `poll_seconds` | `5` | How often every source is polled. A source that fails is retried after `poll_seconds`, doubled per consecutive failure up to 5 minutes. |
+| `max_object_mb` | `256` | Largest S3/GCS object read; a larger one fails (and is skipped after `object_attempts`). |
+| `max_line_mb` | `64` | A file line longer than this is skipped (it still counts for line numbers). |
+| `request_timeout_seconds` | `60` | Timeout of each S3/GCS request. |
+| `relist_minutes` | `10` | How often objects are listed from the retention start; in between, listings start at the partition of an hour ago. Objects uploaded late under an older partition (a spool replay) are picked up by the next full listing. |
+| `object_attempts` | `5` | Failed reads before an object is skipped. |
+| `chain_check_seconds` | `300` | How often the published audit-chain status is refreshed (incrementally). |
 
 Each verifier's records are numbered (`seq`) in the order they are read; the chain of
 custody check walks that order. Per-source state (records read, last successful read,
-last error) is kept as the console's ingest status for the other views. Objects are listed in full on every poll, so
-prefer a prefix that holds only HaltSQL audit objects.
+last error, `skipped_objects`, `overlaps`, and `next_poll` while backing off) is kept as
+the console's ingest status for the other views. File I/O runs off the event loop, and
+object sources are polled concurrently (at most four at a time), so a slow mount or
+bucket does not hold up the others. Prefer a prefix that holds only HaltSQL audit
+objects.
 
 ## `policies` and `opa`
 

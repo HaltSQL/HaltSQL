@@ -105,7 +105,10 @@ type reason = {
   hint : string option;
 }
 
-let reasons ?reverified (r : Record.t) =
+(** One entry per recorded code, detailed from re-verification when available. With
+    [~redact:true], re-verified details keep only their rule: the message is the generic
+    {!describe} and there is no hint, since analyzer messages quote SQL literals. *)
+let reasons ?reverified ?(redact = false) (r : Record.t) =
   let details, verdict_reasons =
     match reverified with
     | Some rv -> (rv.record.details, rv.verdict.reasons @ rv.verdict.shadow_reasons)
@@ -115,6 +118,10 @@ let reasons ?reverified (r : Record.t) =
     (fun code ->
       match List.filter (fun (d : Record.reason) -> d.code = code) details with
       | [] -> [ { code; rule = None; message = describe code; hint = None } ]
+      | ds when redact && reverified <> None ->
+          List.sort_uniq compare (List.map (fun (d : Record.reason) -> d.rule) ds)
+          |> List.map (fun rule ->
+              { code; rule = Some rule; message = describe code; hint = None })
       | ds ->
           List.map
             (fun (d : Record.reason) ->
