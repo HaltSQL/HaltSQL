@@ -384,7 +384,9 @@ identity provider.
 
 Agents come from `agents:` in the config (name, team, via, stack, which
 callers belong to the agent) merged with every caller seen in the index;
-a caller seen in records but not configured becomes its own agent with
+only the configured `callers` belong to a configured agent (a caller whose id
+equals a configured agent's name is still its own agent). A caller seen in
+records but not configured becomes its own agent with
 `via` guessed from the record (`proxy` source → `proxy`, verifier kind `mcp`
 → `mcp`, else `sidecar`). In-process agents have `queries: null`.
 
@@ -408,8 +410,11 @@ SQL when it was logged, else the most frequent table of those records.
   "opa": true }
 ```
 
-`caller` (an agent name) picks the policy and context defaults when
-`targets` is omitted (its enforced and shadow policies). Response:
+When `targets` is omitted, `caller` (an agent name) picks the targets: its
+enforced and shadow policies (at most 10). It does not pick a context: the
+context is the request's `context`, or `{}`. `caller` is also sent to OPA as
+the input's `caller.name` (default `console:<user id>`). At most 10 `targets`
+per check (`400` above that), and a `draft` is at most 256 KiB. Response:
 
 ```json
 { "results": [ {
@@ -434,7 +439,10 @@ reports `false`). An invalid `draft` returns `400` with
 OPA is consulted only when the HaltSQL verdict allows, `opa` is configured
 in the console (same `opa:` block as the server) and the request does not set
 `"opa": false`. The input document is the server's (`caller.type` is
-`playground`); `timeout_ms` and `on_error` apply as on the server.
+`playground`); `timeout_ms` and `on_error` apply as on the server. The
+targets of one check are sent to OPA one after another; once those calls have
+taken 10 seconds, the remaining targets are not sent (`opa.asked: false`,
+`opa.error: "time budget spent"`, stage `opa` `not_run`).
 
 `test_case` is one case in the `haltsql test` suite format, from the first
 result (`expect` and, for a denial, `codes`); suite cases have no per-case
@@ -448,7 +456,7 @@ policy, so the policy is a comment. The activity log entry
 | `GET /api/v1/policies` | `{ "policies": [ { "name", "version", "mode": "enforce|shadow", "origin": "config|bundle|file", "file", "bundle", "verifiers": ["haltsql-1"], "owner", "shadow": ["<sibling>"], "loaded": true } ], "loaded": "<last successful load>", "errors": [], "notes": [] }` |
 | `GET /api/v1/policies/{name}` | Policy detail: the list fields plus `description`, `format`, `yaml` (the source; normalized YAML for inline and bundle policies), `statements`, `require_limit`, `tenancy`, `tables` (`[{table, columns, tenant_columns, writes}]`), `functions`. |
 | `GET /api/v1/policies/{name}/report?since=&compare=<shadow policy>` | Shadow comparison and suggestions. |
-| `POST /api/v1/policies/{name}/pull-request` | `propose_changes`. `{ "suggestions": ["<id>"], "tests": ["<yaml>"], "title"? }` opens or updates a PR in `integrations.github.repo`. `503 NOT_CONFIGURED` without GitHub. |
+| `POST /api/v1/policies/{name}/pull-request` | `propose_changes`. `{ "suggestions": ["<id>"], "tests": ["<yaml>"], "title"?, "create_file"? }` opens or updates a PR in `integrations.github.repo`. `503 NOT_CONFIGURED` without GitHub. |
 
 Report response:
 
@@ -471,10 +479,15 @@ denials and PII columns are never suggested.
 Details of the report:
 
 - Records are the index records of the policy since `since` (RFC 3339, a date
-  or a duration such as `7d`; default the whole retention window). Records
-  with raw SQL are re-verified to name the denied objects, like
-  `haltsql report`. The response also has `version`, `since`, `records` and
-  `missing_detail`.
+  or a duration such as `7d`; default the whole retention window), at most
+  the 50,000 most recent (`truncated: true` when older records were left
+  out). Records with raw SQL are re-verified to name the denied objects, like
+  `haltsql report` (each distinct SQL once per policy version). The response
+  also has `version`, `since`, `records`, `truncated` and `missing_detail`.
+- The analysis yields to other requests while it runs and is cached for 30
+  seconds per (policy, `since`, `compare`) while the loaded policies and the
+  record index are unchanged; concurrent identical reports share one
+  computation. A pull request reuses the analysis of the default report.
 - `compare` defaults to the first shadow sibling (`<name>-*`, `<name>_*`,
   `<name>.*` in shadow mode); `null` (and `comparison: null`) when there is
   none. `days_in_shadow` counts from the oldest record logged under the
@@ -495,7 +508,8 @@ Details of the report:
 - `pull_request` is `null` until a PR was opened from the console. Its live
   state (`open | closed | merged | missing | unknown`), check runs and
   approvals (each reviewer's latest decisive review) are read from GitHub and
-  cached for 30 seconds; a failed read gives `state: "unknown"` and `error`.
+  cached for 30 seconds; concurrent cache misses share one refresh. A failed
+  read gives `state: "unknown"` and `error`.
 
 `POST /api/v1/policies/{name}/pull-request` applies the chosen suggestions to
 the policy file in the repository with `Report.Patch` (validated before
@@ -503,8 +517,16 @@ committing; `409` when the patched policy does not validate or nothing
 applies), appends `tests` (each one case or a list of cases in the
 `haltsql test` format; `400` when invalid) to `<tests_path>/<name>.yaml`,
 commits both in one commit on `<branch_prefix><name>` and opens a PR, or
-updates the open PR it opened before for this policy. Response `201` (opened)
-or `200` (updated):
+updates the open PR for this policy: the one it stored, else an open PR
+GitHub has for that branch (also adopted when opening a PR fails with `422`
+because one exists). Proposals for one policy run one at a time. A branch
+with no open PR is reset to `base` only when its head is a commit the console
+made (each console commit carries a `HaltSQL-Console-Policy: <name>`
+trailer); otherwise `409`, so commits someone else pushed are never
+discarded. The policy file is found as described under
+`integrations.github.path` and `policy_paths` in the config reference; when
+no file matches, suggestions are `409` unless `create_file: true`. Response
+`201` (opened) or `200` (updated):
 
 ```json
 { "number": 212, "url": "...", "branch": "haltsql-console/analytics", "head_sha": "...", "state": "open",

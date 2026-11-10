@@ -114,6 +114,12 @@ let stages (p : Policy.t) (v : Verdict.t) ~haltsql_reasons opa_state =
 
 (* ---- targets ---- *)
 
+(* Limits of one check: targets compared, size of a draft policy, and the time all of the
+   check's OPA calls together may take (targets after that are not sent to OPA). *)
+let max_targets = 10
+let max_draft_bytes = 256 * 1024
+let opa_budget_seconds = 10.
+
 type target = { policy : Policy.t; where : string; label : string }
 
 let invalid_draft errs =
@@ -139,6 +145,9 @@ let target_of_json ctx j =
     | Some _ -> Api.bad_request "targets[].policy must be a string"
   in
   match Api.member "draft" j with
+  | Some (`String draft) when String.length draft > max_draft_bytes ->
+      Api.bad_request "targets[].draft is %d bytes; the limit is %d" (String.length draft)
+        max_draft_bytes
   | Some (`String draft) -> (
       match
         Haltsql.Policy_load.of_string ~file:"draft.yaml" Haltsql.Docload.Yaml draft
@@ -169,6 +178,7 @@ let default_targets ctx caller =
             Option.to_list (Agents.enforced_policy a) @ Agents.shadow_policies ctx a
           in
           if names = [] then Api.bad_request "agent %s has no known policy" name;
+          let names = List.filteri (fun i _ -> i < max_targets) names in
           List.map (fun n -> target_of_json ctx (`Assoc [ ("policy", `String n) ])) names)
 
 (* ---- columns ---- *)
@@ -251,11 +261,26 @@ let test_case ~sql ~context_json ~(target : target) (v : Verdict.t) =
 
 (* ---- check ---- *)
 
-let run_target ~opa_cfg ~use_opa ~caller ~context (t : target) sql =
+let run_target ~opa_cfg ~use_opa ~opa_deadline ~caller ~context (t : target) sql =
   let v = Haltsql.verify t.policy context sql in
   let haltsql_reasons = v.reasons @ v.shadow_reasons in
   let* v, opa_json, opa_state =
     match (opa_cfg, use_opa) with
+    | Some _, true when Unix.gettimeofday () > opa_deadline ->
+        Lwt.return
+          ( v,
+            `Assoc
+              [
+                ("asked", `Bool false);
+                ("allowed", `Null);
+                ("ms", `Null);
+                ("error", `String "time budget spent");
+              ],
+            `Not_asked
+              ( "not_run",
+                Printf.sprintf
+                  "OPA was not asked: this check's OPA calls already took %.0f s."
+                  opa_budget_seconds ) )
     | None, _ ->
         Lwt.return
           ( v,
@@ -346,6 +371,9 @@ let check (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   match
     match Api.member "targets" body with
     | None | Some `Null | Some (`List []) -> default_targets ctx caller
+    | Some (`List l) when List.compare_length_with l max_targets > 0 ->
+        Api.bad_request "at most %d targets per check (got %d)" max_targets
+          (List.length l)
     | Some (`List l) -> List.map (target_of_json ctx) l
     | Some _ -> Api.bad_request "targets must be a list"
   with
@@ -358,9 +386,11 @@ let check (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
           caller_type = "playground";
         }
       in
+      let opa_deadline = Unix.gettimeofday () +. opa_budget_seconds in
       let* results =
         Lwt_list.map_s
-          (fun t -> run_target ~opa_cfg ~use_opa ~caller:opa_caller ~context t sql)
+          (fun t ->
+            run_target ~opa_cfg ~use_opa ~opa_deadline ~caller:opa_caller ~context t sql)
           targets
       in
       let columns =

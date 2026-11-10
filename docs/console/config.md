@@ -225,11 +225,13 @@ The console loads the same policies as the verifiers, for the Playground, policy
 detail, shadow reports and suggestions. Loading runs at startup and every 60
 seconds; a load that fails anywhere keeps the last good set (like the server's
 hot reload), and the errors are shown in `GET /api/v1/policies` (`errors`, file
-basenames only).
+basenames only). A policy file is read and parsed once per change: a reload
+reuses the parsed policy while the file's modification time and size are
+unchanged.
 
 | Key | Meaning |
 |---|---|
-| `policies.server_config` | A haltsql-server config file, loaded with the server's loader (secret placeholders resolved through its own `secrets:` section). Supported: `policies[].path`, `policies[].inline`, and local signed bundles (`policies[].bundle` with `public_keys` and `name_prefix`; the signature is verified). **Not** fetched: remote `bundle_source` entries; their policies appear only through fleet status (`loaded: false`). |
+| `policies.server_config` | A haltsql-server config file. Only its `policies` section is decoded, with the server's loader: the console never resolves the server's other secrets (database, admin tokens, OPA headers), so its identity needs no access to them. A secret provider placeholder inside `policies` (for example a bundle key) is resolved through the file's own `secrets:` section, with one resolver kept for an hour across reloads. Supported: `policies[].path`, `policies[].inline`, and local signed bundles (`policies[].bundle` with `public_keys` and `name_prefix`; the signature is verified). **Not** fetched: remote `bundle_source` entries; their policies appear only through fleet status (`loaded: false`). |
 | `policies.files` | Policy files, or directories whose `*.yaml`/`*.yml`/`*.json` documents with `kind: Policy` are loaded (other documents, such as test suites, are skipped). They replace server-config policies of the same name, like the server's `--policy` flags. |
 
 Relative paths are resolved against the console config file's directory. A
@@ -384,11 +386,18 @@ policy reports). Without it that endpoint returns `503 NOT_CONFIGURED`.
 | `repo` | required | `owner/name` of the policy repository. |
 | `token` | required | Token with `contents: write` and `pull_requests: write` (and `checks: read`). Use a secret placeholder, e.g. `${env:GITHUB_TOKEN}`. Never returned or logged. |
 | `base` | `main` | Branch PRs target. |
-| `path` | `policies` | Directory of policy files in the repo. The file patched is `<path>/<basename of the loaded file>` (`<name>.yaml` for inline and bundle policies); when it is missing from the repo, the loaded source is used. |
+| `path` | `policies` | Directory of policy files in the repo. The file patched is `<path>/<basename of the loaded file>` (`<name>.yaml` for inline and bundle policies); when that is missing, the only file under `<path>` (any depth) with that basename, else the only one (of the first 25 policy documents) whose `metadata.name` is the policy's name. Several matches are `409`; no match is `409` unless the request sets `create_file: true` (the loaded source is then added at the default path). |
+| `policy_paths` | none | Mapping of policy name to its file in the repo (for example `analytics: teams/data/analytics.yaml`), used instead of the lookup above. |
 | `tests_path` | `tests` | Directory of test suites; tests are appended to `<tests_path>/<policy>.yaml` (created, pointing at the policy file, when absent). |
-| `branch_prefix` | `haltsql-console/` | PR branch is `<branch_prefix><policy>`; an open PR for the policy is updated instead of opening another. |
+| `branch_prefix` | `haltsql-console/` | PR branch is `<branch_prefix><policy>`; an open PR for the policy (the one the console stored, else any open PR GitHub has for that branch) is updated instead of opening another. A leftover branch with no open PR is reset to `base` only when its head is a commit the console made; otherwise the request is `409`. |
 | `required_approvals` | `1` | Shown next to the approvals in the PR state. |
 | `api` | `https://api.github.com` | API base URL (GitHub Enterprise: `https://ghe.example.com/api/v3`). https, or http for loopback only. |
+
+Reads (GETs) are retried up to three times on a network error, a 5xx, a 429
+or a rate-limit 403, honouring `Retry-After` and `x-ratelimit-reset` (a wait
+over 5 seconds is not taken: the call fails instead). Writes are never
+retried. Reviews and check runs are read 100 per page, following `Link:
+rel="next"` for up to 10 pages.
 
 ```yaml
 integrations:
