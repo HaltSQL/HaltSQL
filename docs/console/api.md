@@ -14,16 +14,45 @@ The machine-readable contract is [openapi.yaml](openapi.yaml).
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `BAD_REQUEST` | Malformed JSON, missing or invalid field or parameter. |
-| 401 | `UNAUTHENTICATED` | No or invalid credentials. |
+| 400 | `BAD_REQUEST` | Malformed JSON, missing or invalid field or parameter, or a path parameter that decodes to `/`, `\`, NUL, `.` or `..`. |
+| 401 | `UNAUTHENTICATED` | No or invalid credentials. Checked before routing, so unknown endpoints also answer `401` to unauthenticated callers. |
 | 403 | `FORBIDDEN` | Authenticated, but the role lacks the permission. |
 | 403 | `REASON_REQUIRED` | The permission is "with a reason" and none was given. |
-| 404 | `NOT_FOUND` | Unknown route or object. |
+| 403 | `CSRF` | A state-changing request came from another site (see *Requests* below). |
+| 403 | `HOST_NOT_ALLOWED` | Dev mode only: the `Host` header is not a loopback name or address (see *Requests* below). |
+| 404 | `NOT_FOUND` | Unknown route or object (authenticated callers only). |
+| 405 | `METHOD_NOT_ALLOWED` | The route exists but not for this method. |
 | 409 | `CONFLICT` | State conflict (for example a case already resolved). |
+| 413 | `TOO_LARGE` | The request body is over 1 MiB. |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | A request body that is not `application/json`. |
 | 429 | `RATE_LIMITED` | Too soon to repeat the action (for example `POST /data/refresh`). |
+| 500 | `INTERNAL` | Unexpected server error (details are only logged). |
 | 501 | `NOT_IMPLEMENTED` | The action needs verifier support that does not exist yet. |
 | 502 | `UPSTREAM` | A verifier, catalog, GitHub or Kubernetes call failed. Message has no secrets. |
 | 503 | `NOT_CONFIGURED` | The feature needs configuration that is missing (for example no GitHub integration). |
+| 503 | `OVERLOADED` | More than 512 requests are in flight; retry later. |
+| 503 | `TIMEOUT` | The request took longer than 30 seconds and was abandoned. |
+
+**Requests.** Every `/api/` request is authenticated first, then routed. For
+methods other than `GET`, `HEAD` and `OPTIONS`:
+
+- a non-empty body must be sent as `content-type: application/json`
+  (parameters such as `; charset=utf-8` are fine), else `415`;
+- an `Origin` header, when present, must be allowed, and
+  `Sec-Fetch-Site: cross-site` is refused, else `403 CSRF`. When `public_url`
+  or `allowed_origins` is configured, the Origin (scheme, host and port) must
+  be one of those and `Host` is not looked at, so a reverse proxy may rewrite
+  `Host`. Otherwise the Origin must name the same host and port as the `Host`
+  header (a missing port means the Origin scheme's default), and a reverse
+  proxy in front of the console must preserve `Host`.
+
+In dev mode every `/api/` request, `GET` included, must carry a `Host` header
+naming a loopback host (`localhost`, `127.0.0.0/8` or `[::1]`, any port), else
+`403 HOST_NOT_ALLOWED`. This stops a web page from reaching a local dev
+console through DNS rebinding.
+
+Bodies are read as a stream and refused with `413` as soon as they pass
+1 MiB (or immediately when `Content-Length` says so).
 
 **Reasons.** Permissions marked *Reason* need a non-empty reason, sent as the
 `x-haltsql-reason` header or a `"reason"` field in the body (the body wins).
@@ -45,14 +74,22 @@ In order:
 2. **Trusted auth proxy** (`auth.proxy`, off by default): an identity-aware
    proxy in front of the console (oauth2-proxy, AWS ALB OIDC, Google IAP,
    Azure App Service auth) sets the user and groups headers named in config.
-   Only enable it when the console is reachable solely through that proxy.
+   The headers are only trusted from a peer inside `auth.proxy.trusted_proxies`
+   and/or when `auth.proxy.secret_header` carries the shared secret (one of the
+   two is required); otherwise the request gets `401`. `auth.proxy.group_prefix`
+   is prepended to proxy groups.
 3. **Service token**: `Authorization: Bearer <token>` matched (constant time)
    against `auth.tokens[].sha256`; the token carries a fixed role.
 4. **Dev mode** (`auth.dev`, never in production): every request is the
-   configured dev user and role.
+   configured dev user and role (default `dev`). Dev mode must be the only auth
+   method and `listen` must be a loopback address; the console refuses to start
+   otherwise. `--dev ROLE` clears the other methods and applies the same check.
 
-Groups map to roles through `auth.roles` (`admin` wins over `owner`, then
-`audit`, `analyst`, `dev`). A user with no mapped group gets `401`.
+OIDC sign-ins older than `auth.session_hours` (from `auth_time`, else `iat`)
+are rejected with `401`.
+
+Groups map to roles through `auth.roles`. A user gets every role their groups
+map to (see *Several roles* below). A user with no mapped group gets `401`.
 
 ## Roles
 
@@ -71,10 +108,25 @@ Groups map to roles through `auth.roles` (`admin` wins over `owner`, then
 | Build evidence packs | `build_evidence` | no | yes | yes | yes | no |
 | Restart verifiers | `restart_verifiers` | no | no | no | no | reason |
 | Manage roles and integrations | `manage_access` | no | no | no | no | yes |
+| Open and update cases | `write_cases` | no | yes | yes | no | yes |
+| See the activity log | `view_activity` | no | yes | yes | yes | yes |
 
-Every role can read Overview, Signals, Agents, Fleet, Data classification,
-Policies and the activity log. Cases are readable by everyone and writable by
-`analyst`, `owner` and `admin`.
+`yes` is allowed, `reason` is allowed with a reason (`x-haltsql-reason` header
+or a `reason` body field; the reason is written to the activity log), `no` is
+`403 FORBIDDEN`. The matrix is `Rbac.grant` in `bin/console/lib/rbac.ml`;
+`test/console/test_rbac.ml` checks it against this table.
+
+**Several roles.** A person whose groups map to several roles has every one of
+them, and each permission is the best grant any of those roles has (`yes`
+beats `reason` beats `no`). For example `owner` + `admin` can both approve a
+policy change and restart verifiers, and `analyst` + `audit` can pause a
+caller with a reason and write cases. Role precedence (`admin`, `owner`,
+`audit`, `analyst`, `dev`) only picks the primary role shown in the UI
+(`role` in `/me`); it never decides access.
+
+Every role can read Overview, Signals, Agents, Fleet, Data classification and
+Policies. The activity log needs `view_activity`. Cases are readable by
+everyone and writable with `write_cases`.
 
 ## Endpoints
 
@@ -83,18 +135,24 @@ Policies and the activity log. Cases are readable by everyone and writable by
 | | |
 |---|---|
 | `GET /healthz` | `200 {"status":"ok"}` while the process runs. No auth. |
-| `GET /readyz` | `200 {"status":"ready"}` once config is loaded and `state_dir` is writable; `503` otherwise. No auth. |
+| `GET /readyz` | `200 {"status":"ready"}` when `state_dir` was writable at the last probe (at startup, then every 30 s; the probe result is cached) and no background loop is in crash backoff; `503` with `reasons` and per-loop `loops` status otherwise. No auth. |
 
 ### `GET /api/v1/me`
 
 ```json
 {
   "user": { "id": "dana.reyes@acme.com", "name": "Dana Reyes", "auth": "oidc:okta", "groups": ["haltsql-analysts"] },
+  "roles": ["analyst"],
   "role": "analyst",
+  "role_label": "Security analyst",
   "permissions": { "use_playground": "yes", "see_raw_sql": "reason", "restart_verifiers": "no", "...": "..." },
   "environment": { "org": "Acme Corp", "name": "Production", "region": "us-east-1" }
 }
 ```
+
+`roles` lists every role the user's groups map to; `permissions` is the union
+of their grants (see [Roles](#roles)). `role` and `role_label` are the primary
+role, for display only.
 
 ### Overview: `GET /api/v1/overview?range=24h`
 
@@ -197,6 +255,10 @@ Permission `search_queries`.
     "has_raw_sql": true
   } ], "next_cursor": null, "total": 37 }
 ```
+
+Newest first. The cursor is an offset into that order (records have no global,
+monotonic key to page on), so a page fetched while new records arrive can
+repeat records from the page before.
 
 `GET /api/v1/records/{request_id}`:
 
@@ -573,22 +635,66 @@ The pack states plainly that HaltSQL holds no certification and lists gaps
 
 ### Activity log: `GET /api/v1/activity?actor=&action=&since=&limit=&cursor=`
 
+Needs `view_activity` (see [Roles](#roles)). Newest first.
+
 ```json
-{ "entries": [ { "at": "...", "actor": "dana.reyes@acme.com", "role": "analyst", "action": "record.view_sql",
-                 "target": "01930c4e-...", "reason": "CASE-1042 triage", "detail": {} } ], "next_cursor": null }
+{ "entries": [ { "seq": 48213, "at": "...", "actor": "dana.reyes@acme.com", "role": "analyst", "action": "record.view_sql",
+                 "target": "01930c4e-...", "reason": "CASE-1042 triage", "detail": {} } ],
+  "next_cursor": null, "total": 1, "window_oldest_seq": 1 }
 ```
+
+`actor` matches exactly, `action` is a prefix, `since` is RFC 3339. Every
+entry has a `seq`: a persisted integer that only grows (it resumes after a
+restart). Paging is keyset on `seq`: the cursor is the last `seq` returned, so
+entries logged between two requests never shift or repeat a page; they appear
+on a fresh first page.
+
+Queries cover the **in-memory window**: the most recent 50,000 entries, loaded
+from the tail of the log at startup. `window_oldest_seq` is the oldest `seq`
+in it (`null` when the log is empty); older entries are only in the files.
+Evidence packs read every file, not the window.
+
+Storage: each entry is one JSON line appended (and fsynced) to
+`activity.jsonl` in `state_dir`. When that file reaches 64 MiB it is renamed
+to `activity-<first seq>.jsonl` and a new file is started. Rotated files are
+never deleted by the console: the log is an audit trail, so retention and
+archival (for example moving old files to object storage) are an operator
+concern.
 
 ### Access and integrations
 
 | | |
 |---|---|
-| `GET /api/v1/access/roles` | `{ "roles": [...], "permissions": [ { "id", "name", "grants": { "dev": "yes", ... } } ], "mapping": { "admin": ["okta:haltsql-admins"] }, "safeguards": [...] }` |
-| `GET /api/v1/integrations` | `{ "groups": [ { "name": "Caller identity", "items": [ { "id", "name", "detail", "state": "connected | degraded | not_set_up | error", "error" } ] } ] }` |
+| `GET /api/v1/access/roles` | Any role. `{ "roles": [ { "id", "label" } ], "permissions": [ { "id", "name", "grants": { "dev": "yes", ... } } ], "mapping": { "admin": ["okta:haltsql-admins"] }, "safeguards": [ { "id", "title", "detail", "verified" } ], "dev_mode" }` |
+| `GET /api/v1/integrations` | `{ "groups": [ { "name": "Caller identity", "items": [ { "id", "name", "detail", "state": "configured | not_set_up | connected | error", "error" } ] } ] }` |
 
-Integrations are derived from configuration and live checks: OIDC providers
-(JWKS reachable, checked at most every 5 minutes: `degraded` when the JWKS has no
-usable key, `error` when unreachable), bundle sources (from fleet; `degraded` when
-verifiers serve different versions), OPA, catalogs (`error` when the last load failed),
-audit sources (`error` when ingestion reports one), audit sinks (from fleet; `degraded`
-unless healthy), Slack, PagerDuty, Jira, GitHub. Credentials are never returned; URLs
-are shown without user info or query.
+`mapping` (the group-to-role mapping from `auth.roles`) is included only when
+the caller has `manage_access`; for everyone else the field is omitted. Roles,
+the matrix and the safeguards are visible to every role.
+
+Each safeguard says whether the console itself checks it (`verified`):
+
+| id | detail | verified |
+|---|---|---|
+| `two_person_rule` | Policy changes need two owners, never the requester. Expected to be enforced by branch protection on the policy repository; the console cannot see that setting. | `false` |
+| `sessions` | OIDC sign-ins older than `auth.session_hours` are rejected (from the token's `auth_time`, else `iat`). | `true` |
+
+Integration `state` values:
+
+| state | meaning |
+|---|---|
+| `configured` | Present in the console configuration; no live check has run (or none exists for it). |
+| `not_set_up` | Not in the configuration. |
+| `connected` | A live check succeeded. |
+| `degraded` | A live check succeeded partially; `error` says what is wrong. |
+| `error` | A live check failed; `error` says why. |
+
+Live checks: OIDC providers (JWKS reachable, checked at most every 5 minutes:
+`degraded` when the JWKS has no usable key, `error` when unreachable), bundle
+sources (from the fleet snapshot; `degraded` when verifiers serve different
+versions), catalogs (`connected` after a load, `error` when the last load failed,
+`configured` before the first load), audit sources (`connected` once ingestion has
+read them, `error` when it reports one, `configured` before it reports), audit sinks
+(from the fleet snapshot; `degraded` unless healthy). OPA, Slack, PagerDuty, Jira and
+GitHub are `configured` or `not_set_up`. Credentials are never returned; URLs are
+shown without user info or query.

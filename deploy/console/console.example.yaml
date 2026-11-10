@@ -1,8 +1,15 @@
 # haltsql-console configuration. Reference: docs/console/config.md.
 # Any string may use ${env:NAME}, ${vault:path#key}, ${aws-sm:id#key} or ${gcp-sm:name}
 # placeholders; providers are configured in `secrets:` exactly as in the server config.
+# Placeholders in opa, integrations and signals are checked at startup but fetched only
+# when used (cached at most 5 minutes, so rotation needs no restart).
 
 listen: 0.0.0.0:8090
+# The URL users open. State-changing browser requests must come from this origin (or one
+# in allowed_origins); the Host header is then not compared, so the reverse proxy in
+# front may rewrite it. Without either key the Origin must match the Host header.
+public_url: https://console.acme.example
+# allowed_origins: ["http://localhost:5173"]   # e.g. a frontend dev server
 environment: { org: Acme Corp, name: Production, region: us-east-1 }
 state_dir: /var/lib/haltsql-console      # persistent volume: cases, activity log, packs
 # frontend_dir: /usr/share/haltsql-console/web
@@ -14,8 +21,19 @@ auth:
       issuer: https://acme.okta.com/oauth2/default
       audience: haltsql-console
       groups_claim: groups              # group names become "okta:<group>"
-  # Or trust an identity-aware proxy that is the only way to reach the console:
-  # proxy: { user_header: X-Auth-Request-Email, groups_header: X-Auth-Request-Groups, label: oauth2-proxy }
+  # Or trust an identity-aware proxy that is the only way to reach the console. Headers
+  # are accepted only from trusted_proxies and/or with the shared secret header:
+  # proxy:
+  #   user_header: X-Auth-Request-Email
+  #   groups_header: X-Auth-Request-Groups
+  #   group_prefix: "proxy:"            # keeps proxy groups apart from OIDC groups
+  #   label: oauth2-proxy
+  #   trusted_proxies: [10.0.0.0/8, "fd00::/8"]
+  #   secret_header: X-Proxy-Secret     # set by the proxy
+  #   secret_sha256: "<hex sha256 of the shared secret>"
+  # Dev mode (dev: true, role dev by default) is for local development only: it must be
+  # the only auth method, listen must be loopback (127.0.0.1, ::1, localhost), and
+  # /api requests must carry a loopback Host header (blocks DNS rebinding).
   tokens:                               # automation (CI, evidence jobs)
     - { name: evidence-job, sha256: "0000000000000000000000000000000000000000000000000000000000000000", role: audit }
   roles:
@@ -24,7 +42,8 @@ auth:
     analyst: [okta:security]
     audit:   [okta:compliance]
     dev:     [okta:engineering]
-  session_hours: 8
+  session_hours: 8                      # OIDC sign-ins older than this are refused (1-720)
+  require_auth_time: false              # true: refuse OIDC tokens without auth_time
 
 verifiers:                              # each verifier needs server.admin enabled
   - name: haltsql-1

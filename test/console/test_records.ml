@@ -63,9 +63,7 @@ let poll ?env (r : running) =
   fun () -> C.Ingest.poll_once r.ctx st
 
 let status_field (r : running) i name =
-  match r.ctx.C.Ctx.ingest_status with
-  | `List l -> member name (List.nth l i)
-  | _ -> `Null
+  match C.Ingest.status r.ctx with `List l -> member name (List.nth l i) | _ -> `Null
 
 (* ---- ingestion ---- *)
 
@@ -463,7 +461,7 @@ let chain_tests =
             Alcotest.(check string)
               "still broken" "\"broken\""
               (Yojson.Safe.to_string (member "chain_state" c));
-            (match member "chains" r.ctx.chain_status with
+            (match member "chains" (C.Chain.status r.ctx) with
             | `List [ ch ] ->
                 Alcotest.(check string)
                   "chain_status" "\"broken\""
@@ -495,7 +493,7 @@ let chain_tests =
               ];
             C.Chain.check_all r.ctx;
             let state v =
-              match member "chains" r.ctx.chain_status with
+              match member "chains" (C.Chain.status r.ctx) with
               | `List l ->
                   List.find_map
                     (fun c ->
@@ -609,7 +607,7 @@ let trail_tests =
       `Quick,
       fun () ->
         with_console ~background:false (config ()) (fun r ->
-            r.ctx.policies <- [ ("shop", shop_policy ()) ];
+            C.Policy_set.set r.ctx @@ [ ("shop", shop_policy ()) ];
             load_records r
               [
                 server_record ~request_id:"col" ~policy:"shop" ~allowed:false

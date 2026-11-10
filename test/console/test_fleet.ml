@@ -555,7 +555,7 @@ let poll_tests =
            Lwt.finalize
              (fun () ->
                let rec wait n =
-                 match r.ctx.fleet with
+                 match C.Fleet.snapshot r.ctx with
                  | Some _ -> Lwt.return_unit
                  | None when n = 0 -> Alcotest.fail "no fleet snapshot after 5 s"
                  | None ->

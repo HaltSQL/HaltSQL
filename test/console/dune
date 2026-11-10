@@ -23,6 +23,11 @@
 (tests
  (names
   test_console
+  test_auth
+  test_server
+  test_rbac
+  test_store
+  test_index
   test_fleet
   test_records
   test_comply
@@ -30,6 +35,11 @@
   test_build)
  (modules
   test_console
+  test_auth
+  test_server
+  test_rbac
+  test_store
+  test_index
   test_fleet
   test_records
   test_comply

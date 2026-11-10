@@ -122,12 +122,25 @@ let chain_json r : Yojson.Safe.t =
       ("checked_at", `String (Api.iso8601 r.checked_at));
     ]
 
-(** Replaces (or adds) these verifiers' entries in [ctx.chain_status]. With [~all:true],
-    entries for verifiers not in [results] are dropped. *)
+(* The last published verification ([{checked_at, chains}]); private, read through
+   [status]. *)
+let status_key : Yojson.Safe.t Ctx.Key.t = Ctx.Key.create "chain.status"
+
+(** The last audit-chain verification of every verifier ([{checked_at, chains: [...]}]),
+    [`Null] before the first check. *)
+let status (ctx : Ctx.t) = Option.value (Ctx.get ctx status_key) ~default:`Null
+
+(** For tests only: replaces the published status without checking chains. *)
+module Testing = struct
+  let set_status (ctx : Ctx.t) j = Ctx.set ctx status_key j
+end
+
+(** Replaces (or adds) these verifiers' entries in [status]. With [~all:true], entries for
+    verifiers not in [results] are dropped. *)
 let publish ?(all = false) (ctx : Ctx.t) results =
   let old =
     if all then []
-    else match Api.member "chains" ctx.chain_status with Some (`List l) -> l | _ -> []
+    else match Api.member "chains" (status ctx) with Some (`List l) -> l | _ -> []
   in
   let names = List.map (fun r -> r.verifier) results in
   let kept =
@@ -143,9 +156,9 @@ let publish ?(all = false) (ctx : Ctx.t) results =
       (fun a b -> compare (Api.member "verifier" a) (Api.member "verifier" b))
       (kept @ List.map chain_json results)
   in
-  ctx.chain_status <-
-    `Assoc
-      [ ("checked_at", `String (Api.iso8601 (Ctx.now ()))); ("chains", `List chains) ]
+  Ctx.set ctx status_key
+    (`Assoc
+       [ ("checked_at", `String (Api.iso8601 (Ctx.now ()))); ("chains", `List chains) ])
 
 let check_all (ctx : Ctx.t) =
   let results = List.map (get ~force:true ctx.index) (Index.verifiers ctx.index) in

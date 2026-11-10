@@ -125,13 +125,13 @@ runs a complete stack from this checkout:
 |---|---|
 | `postgres` | PostgreSQL 17 with a small `app` schema ([`local/seed.sql`](../../deploy/console/local/seed.sql)). |
 | `haltsql` | `haltsql-server` with [`local/haltsql.yaml`](../../deploy/console/local/haltsql.yaml): two policies (`saas-analytics` enforced, `support-bot` in shadow mode), `server.admin` enabled for the console's token, a file audit sink on the shared `audit` volume, `log_raw_sql: true`. Port `127.0.0.1:18080`. |
-| `console` | `haltsql-console --dev admin` with [`console.local.yaml`](../../deploy/console/console.local.yaml): reads the audit file read-only, polls the server's admin API, loads the server's config. Port `127.0.0.1:8090`. |
+| `console` | `haltsql-console` with [`console.local.yaml`](../../deploy/console/console.local.yaml) (demo tokens: `demo-admin-token` is an admin, `demo-automation-token` an auditor): reads the audit file read-only, polls the server's admin API, loads the server's config. Port `127.0.0.1:8090`. |
 
 ```sh
 make console-up        # docker compose -f deploy/console/docker-compose.yaml up -d --build
 make console-demo      # deploy/console/demo-traffic.sh
-curl -s localhost:8090/api/v1/me
-curl -s 'localhost:8090/api/v1/overview?range=24h'
+curl -s -H 'authorization: Bearer demo-admin-token' localhost:8090/api/v1/me
+curl -s -H 'authorization: Bearer demo-admin-token' 'localhost:8090/api/v1/overview?range=24h'
 make console-down      # stops the stack and deletes its volumes
 ```
 
@@ -143,9 +143,10 @@ tenants, no tenant predicate) and shadow-mode would-be denials.
 signal; `EXECUTE=1` also runs each allowed query on the stack's Postgres as a
 read-only role, the way an agent uses HaltSQL (verify, then execute).
 
-The stack is a demo: the tokens in `local/haltsql.yaml` are well-known
-strings, the console authenticates every request as a local admin
-(`--dev admin`), and both ports are bound to `127.0.0.1`. All containers run
+The stack is a demo: the tokens in `local/haltsql.yaml` and
+`console.local.yaml` are well-known strings, and both ports are bound to
+`127.0.0.1`. It does not use dev mode: dev mode only runs on a loopback listen
+address, and inside the container the console listens on `0.0.0.0`. All containers run
 read-only with every capability dropped.
 
 ## Local: the bare binary
@@ -157,8 +158,10 @@ mkdir -p console-state
 _build/default/bin/console/main.exe --config console.yaml --listen 127.0.0.1:8090 --dev admin
 ```
 
-`--dev ROLE` authenticates every request as a local user with that role; the
-config still needs one real `auth` entry (for example an automation token).
+`--dev ROLE` authenticates every request as a local user with that role. It
+replaces every other auth method in the config, and the console refuses to
+start with it unless `listen` is a loopback address (see
+[Dev mode](config.md#dev-mode)).
 Release builds are static (`HALTSQL_STATIC=1 dune build --profile release
 ./bin/console`, on musl). For a VM, run it under systemd with the same
 hardening as [`deploy/systemd/haltsql-server.service`](../../deploy/systemd/haltsql-server.service)

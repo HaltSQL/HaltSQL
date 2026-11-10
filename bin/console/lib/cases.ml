@@ -73,13 +73,16 @@ let list_cases (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
     | Some "" | None -> None
     | Some a -> Some a
   in
+  (* newest first: folding in insertion order and prepending reverses it *)
   let cases =
-    Store.list ctx.store collection
-    |> List.map snd
-    |> List.filter (fun c ->
-        (status = "all" || get_str "status" c <> Some "resolved")
-        && match assignee with None -> true | Some a -> get_str "assignee" c = Some a)
-    |> List.rev
+    Store.fold ctx.store collection
+      (fun _ c acc ->
+        if
+          (status = "all" || get_str "status" c <> Some "resolved")
+          && match assignee with None -> true | Some a -> get_str "assignee" c = Some a
+        then c :: acc
+        else acc)
+      []
   in
   Api.json (`Assoc [ ("cases", `List (List.map normalize cases)) ])
 

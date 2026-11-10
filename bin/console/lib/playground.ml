@@ -13,10 +13,14 @@ module Opa = Haltsql_opa.Opa
 
 (* ---- OPA configuration (same block as the server's) ---- *)
 
+(* Placeholders in the [opa] block (e.g. a bearer token) are resolved on every check
+   ({!Console_config.resolve}, cached for at most five minutes). *)
 let opa_config (ctx : Ctx.t) =
   match ctx.config.opa with
-  | None -> None
+  | None -> Lwt.return_none
   | Some j -> (
+      let+ j = Console_config.resolve_json ctx.config j in
+      let j = match j with Ok j -> j | Error m -> Api.not_configured "opa: %s" m in
       let base_dir =
         match ctx.config.file with Some f -> Filename.dirname f | None -> Sys.getcwd ()
       in
@@ -170,7 +174,7 @@ let default_targets ctx caller =
 (* ---- columns ---- *)
 
 let catalog_entry (ctx : Ctx.t) column =
-  match ctx.catalog_columns with
+  match Data.columns_doc ctx with
   | None -> None
   | Some j -> (
       match Api.member "columns" j with
@@ -347,7 +351,7 @@ let check (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   with
   | exception Draft_invalid errs -> invalid_draft errs
   | targets ->
-      let opa_cfg = opa_config ctx in
+      let* opa_cfg = opa_config ctx in
       let opa_caller =
         {
           Opa.caller_name = Option.value caller ~default:("console:" ^ p.id);

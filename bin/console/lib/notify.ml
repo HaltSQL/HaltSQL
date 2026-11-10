@@ -24,6 +24,16 @@ let str name j =
   | Some (`String s) when String.trim s <> "" -> Some s
   | _ -> None
 
+(* Expands ${...} placeholders in a value from [integrations] ({!Console_config.resolve},
+   cached for at most five minutes). A failure is logged without the value. *)
+let resolved (cfg : Console_config.t) ~what v =
+  let+ r = Console_config.resolve cfg v in
+  match r with
+  | Ok v -> Some v
+  | Error m ->
+      log "warn" "%s: %s" what m;
+      None
+
 let post_json ~what ?(headers = []) url (body : Yojson.Safe.t) =
   match Http.check_endpoint ~what url with
   | Error _ ->
@@ -64,15 +74,19 @@ type alert = {
 let slack cfg (a : alert) =
   match Option.bind (section cfg "slack") (str "webhook") with
   | None -> Lwt.return_unit
-  | Some url ->
-      let text =
-        Printf.sprintf "*HaltSQL %s signal* (%s): %s\n%s\nSignal id: %s" a.severity
-          cfg.environment.env_name a.title a.body a.id
-      in
-      let* _ =
-        post_json ~what:"slack notification" url (`Assoc [ ("text", `String text) ])
-      in
-      Lwt.return_unit
+  | Some url -> (
+      let* url = resolved cfg ~what:"integrations.slack.webhook" url in
+      match url with
+      | None -> Lwt.return_unit
+      | Some url ->
+          let text =
+            Printf.sprintf "*HaltSQL %s signal* (%s): %s\n%s\nSignal id: %s" a.severity
+              cfg.environment.env_name a.title a.body a.id
+          in
+          let* _ =
+            post_json ~what:"slack notification" url (`Assoc [ ("text", `String text) ])
+          in
+          Lwt.return_unit)
 
 let pagerduty_default_url = "https://events.pagerduty.com/v2/enqueue"
 
@@ -82,29 +96,38 @@ let pagerduty cfg (a : alert) =
   | Some pd -> (
       match str "routing_key" pd with
       | None -> Lwt.return_unit
-      | Some key ->
-          let url = Option.value (str "events_url" pd) ~default:pagerduty_default_url in
-          let body =
-            `Assoc
-              [
-                ("routing_key", `String key);
-                ("event_action", `String "trigger");
-                ("dedup_key", `String a.id);
-                ( "payload",
-                  `Assoc
-                    [
-                      ("summary", `String a.title);
-                      ("source", `String ("haltsql-console/" ^ cfg.environment.env_name));
-                      ( "severity",
-                        `String (if a.severity = "high" then "critical" else "warning") );
-                      ("component", `String a.subject);
-                      ("class", `String a.kind);
-                      ("custom_details", `Assoc [ ("body", `String a.body) ]);
-                    ] );
-              ]
+      | Some key -> (
+          let* key = resolved cfg ~what:"integrations.pagerduty.routing_key" key in
+          let* url =
+            resolved cfg ~what:"integrations.pagerduty.events_url"
+              (Option.value (str "events_url" pd) ~default:pagerduty_default_url)
           in
-          let* _ = post_json ~what:"pagerduty event" url body in
-          Lwt.return_unit)
+          match (key, url) with
+          | None, _ | _, None -> Lwt.return_unit
+          | Some key, Some url ->
+              let body =
+                `Assoc
+                  [
+                    ("routing_key", `String key);
+                    ("event_action", `String "trigger");
+                    ("dedup_key", `String a.id);
+                    ( "payload",
+                      `Assoc
+                        [
+                          ("summary", `String a.title);
+                          ( "source",
+                            `String ("haltsql-console/" ^ cfg.environment.env_name) );
+                          ( "severity",
+                            `String
+                              (if a.severity = "high" then "critical" else "warning") );
+                          ("component", `String a.subject);
+                          ("class", `String a.kind);
+                          ("custom_details", `Assoc [ ("body", `String a.body) ]);
+                        ] );
+                  ]
+              in
+              let* _ = post_json ~what:"pagerduty event" url body in
+              Lwt.return_unit))
 
 (** Sends a new signal to every configured channel, concurrently. *)
 let signal cfg a = Lwt.join [ slack cfg a; pagerduty cfg a ]
@@ -136,50 +159,60 @@ let jira_issue cfg ~summary ~description =
   | Some j -> (
       match (str "url" j, str "project" j, str "token" j) with
       | Some url, Some project, Some token -> (
-          let url =
-            if String.ends_with ~suffix:"/" url then
-              String.sub url 0 (String.length url - 1)
-            else url
-          in
-          let auth =
+          let* url = resolved cfg ~what:"integrations.jira.url" url in
+          let* token = resolved cfg ~what:"integrations.jira.token" token in
+          let* email =
             match str "email" j with
-            | Some email -> "Basic " ^ base64 (email ^ ":" ^ token)
-            | None -> "Bearer " ^ token
+            | None -> Lwt.return_none
+            | Some e -> resolved cfg ~what:"integrations.jira.email" e
           in
-          let body =
-            `Assoc
-              [
-                ( "fields",
-                  `Assoc
-                    [
-                      ("project", `Assoc [ ("key", `String project) ]);
-                      ("summary", `String summary);
-                      ("description", `String description);
-                      ( "issuetype",
-                        `Assoc
-                          [
-                            ( "name",
-                              `String (Option.value (str "issue_type" j) ~default:"Task")
-                            );
-                          ] );
-                    ] );
-              ]
-          in
-          let* r =
-            post_json ~what:"jira issue"
-              ~headers:[ ("authorization", auth) ]
-              (url ^ "/rest/api/2/issue") body
-          in
-          match r with
-          | None -> Lwt.return_none
-          | Some resp -> (
-              match Yojson.Safe.from_string resp.body with
-              | `Assoc l -> (
-                  match List.assoc_opt "key" l with
-                  | Some (`String k) -> Lwt.return_some k
-                  | _ -> Lwt.return_none)
-              | _ -> Lwt.return_none
-              | exception _ -> Lwt.return_none))
+          match (url, token) with
+          | None, _ | _, None -> Lwt.return_none
+          | Some url, Some token -> (
+              let url =
+                if String.ends_with ~suffix:"/" url then
+                  String.sub url 0 (String.length url - 1)
+                else url
+              in
+              let auth =
+                match email with
+                | Some email -> "Basic " ^ base64 (email ^ ":" ^ token)
+                | None -> "Bearer " ^ token
+              in
+              let body =
+                `Assoc
+                  [
+                    ( "fields",
+                      `Assoc
+                        [
+                          ("project", `Assoc [ ("key", `String project) ]);
+                          ("summary", `String summary);
+                          ("description", `String description);
+                          ( "issuetype",
+                            `Assoc
+                              [
+                                ( "name",
+                                  `String
+                                    (Option.value (str "issue_type" j) ~default:"Task") );
+                              ] );
+                        ] );
+                  ]
+              in
+              let* r =
+                post_json ~what:"jira issue"
+                  ~headers:[ ("authorization", auth) ]
+                  (url ^ "/rest/api/2/issue") body
+              in
+              match r with
+              | None -> Lwt.return_none
+              | Some resp -> (
+                  match Yojson.Safe.from_string resp.body with
+                  | `Assoc l -> (
+                      match List.assoc_opt "key" l with
+                      | Some (`String k) -> Lwt.return_some k
+                      | _ -> Lwt.return_none)
+                  | _ -> Lwt.return_none
+                  | exception _ -> Lwt.return_none)))
       | _ ->
           log "warn" "integrations.jira needs url, project and token";
           Lwt.return_none)

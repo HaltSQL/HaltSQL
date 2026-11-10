@@ -7,8 +7,11 @@ module C = Haltsql_console
 
 let dev_token = "dev-token-0123456789"
 let analyst_token = "analyst-token-0123456789"
+let admin_token = "admin-token-0123456789"
 
-(* Dev auth as admin plus service tokens for the dev and analyst roles. *)
+(* Service tokens for the admin, dev and analyst roles. Dev mode cannot be combined with
+   tokens, so requests without an explicit token use the admin token (the principal
+   [token:tester], standing in for the former dev user). *)
 let cfg ?(extra = []) () =
   let tok name t role =
     `Assoc
@@ -23,15 +26,25 @@ let cfg ?(extra = []) () =
       (( "auth",
          `Assoc
            [
-             ( "dev",
-               `Assoc [ ("user", `String "tester@acme.test"); ("role", `String "admin") ]
-             );
              ( "tokens",
-               `List [ tok "dev" dev_token "dev"; tok "analyst" analyst_token "analyst" ]
-             );
+               `List
+                 [
+                   tok "tester" admin_token "admin";
+                   tok "dev" dev_token "dev";
+                   tok "analyst" analyst_token "analyst";
+                 ] );
            ] )
       :: extra)
     ()
+
+let get ?(token = admin_token) ?reason ?headers r path =
+  Helpers.get ~token ?reason ?headers r path
+
+let post ?(token = admin_token) ?reason ?headers r path json =
+  Helpers.post ~token ?reason ?headers r path json
+
+let patch ?(token = admin_token) ?reason ?headers r path json =
+  Helpers.patch ~token ?reason ?headers r path json
 
 let run f = with_console ~background:false (cfg ()) f
 let now () = Unix.gettimeofday ()
@@ -154,58 +167,60 @@ let overview_tests =
             ()
         in
         with_console ~background:false c (fun r ->
-            r.ctx.fleet <-
-              Some
-                (`Assoc
-                   [
-                     ( "verifiers",
-                       `List
-                         [
-                           `Assoc
-                             [ ("name", `String "haltsql-1"); ("state", `String "ready") ];
-                           `Assoc
-                             [
-                               ("name", `String "haltsql-2");
-                               ("state", `String "restart_pending");
-                               ("restart_pending", `Bool true);
-                             ];
-                           `Assoc
-                             [
-                               ("name", `String "haltsql-3");
-                               ("state", `String "unreachable");
-                             ];
-                         ] );
-                     ( "bundles",
-                       `List
-                         [
-                           `Assoc
-                             [
-                               ("source", `String "prod");
-                               ("version", `String "1.4.0");
-                               ("verifiers", `Int 3);
-                               ("in_sync", `Bool true);
-                             ];
-                         ] );
-                   ]);
-            r.ctx.chain_status <-
-              `Assoc
-                [
-                  ("checked_at", `String "2026-11-07T14:00:00.000Z");
-                  ( "chains",
-                    `List
-                      [
-                        `Assoc
+            C.Fleet.Testing.set_snapshot r.ctx
+            @@ Some
+                 (`Assoc
+                    [
+                      ( "verifiers",
+                        `List
                           [
-                            ("verifier", `String "haltsql-1"); ("state", `String "intact");
-                          ];
-                        `Assoc
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-1"); ("state", `String "ready");
+                              ];
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-2");
+                                ("state", `String "restart_pending");
+                                ("restart_pending", `Bool true);
+                              ];
+                            `Assoc
+                              [
+                                ("name", `String "haltsql-3");
+                                ("state", `String "unreachable");
+                              ];
+                          ] );
+                      ( "bundles",
+                        `List
                           [
-                            ("verifier", `String "haltsql-2"); ("state", `String "broken");
-                          ];
-                      ] );
-                ];
-            r.ctx.catalog_columns <-
-              Some (`Assoc [ ("totals", `Assoc [ ("needs_review", `Int 2) ]) ]);
+                            `Assoc
+                              [
+                                ("source", `String "prod");
+                                ("version", `String "1.4.0");
+                                ("verifiers", `Int 3);
+                                ("in_sync", `Bool true);
+                              ];
+                          ] );
+                    ]);
+            C.Chain.Testing.set_status r.ctx
+            @@ `Assoc
+                 [
+                   ("checked_at", `String "2026-11-07T14:00:00.000Z");
+                   ( "chains",
+                     `List
+                       [
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-1"); ("state", `String "intact");
+                           ];
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-2"); ("state", `String "broken");
+                           ];
+                       ] );
+                 ];
+            C.Data.Testing.set_columns_doc r.ctx
+            @@ Some (`Assoc [ ("totals", `Assoc [ ("needs_review", `Int 2) ]) ]);
             let* _, o = get r "/api/v1/overview" in
             Alcotest.(check int)
               "reporting from fleet" 2
@@ -302,7 +317,7 @@ let detector_tests =
         in
         with_console ~background:false c (fun r ->
             (match Haltsql.Policy_load.of_string Haltsql.Docload.Yaml support_policy with
-            | Ok p -> r.ctx.policies <- [ ("support", p) ]
+            | Ok p -> C.Policy_set.set r.ctx @@ [ ("support", p) ]
             | Error _ -> Alcotest.fail "policy");
             let t = now () in
             let others = [| "globex"; "initech"; "globex"; "umbrella" |] in
@@ -525,26 +540,26 @@ let detector_tests =
                     `Assoc [ ("decisions", `Assoc [ ("error_denied", `Int errors) ]) ] );
                 ]
             in
-            r.ctx.fleet <- Some (fleet 5);
-            r.ctx.chain_status <-
-              `Assoc
-                [
-                  ( "chains",
-                    `List
-                      [
-                        `Assoc
-                          [
-                            ("verifier", `String "haltsql-2");
-                            ("state", `String "broken");
-                            ("records", `Int 812);
-                            ("first_break", `Assoc [ ("seq", `Int 412) ]);
-                          ];
-                        `Assoc
-                          [
-                            ("verifier", `String "haltsql-1"); ("state", `String "intact");
-                          ];
-                      ] );
-                ];
+            C.Fleet.Testing.set_snapshot r.ctx @@ Some (fleet 5);
+            C.Chain.Testing.set_status r.ctx
+            @@ `Assoc
+                 [
+                   ( "chains",
+                     `List
+                       [
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-2");
+                             ("state", `String "broken");
+                             ("records", `Int 812);
+                             ("first_break", `Assoc [ ("seq", `Int 412) ]);
+                           ];
+                         `Assoc
+                           [
+                             ("verifier", `String "haltsql-1"); ("state", `String "intact");
+                           ];
+                       ] );
+                 ];
             ignore (C.Signals.run_once ~now:t r.ctx);
             let sb = one_of_kind r "sink_buffering" in
             Alcotest.(check (option string))
@@ -562,7 +577,7 @@ let detector_tests =
             Alcotest.(check int)
               "no opa yet (first sample)" 0
               (List.length (of_kind r "opa_errors"));
-            r.ctx.fleet <- Some (fleet 9);
+            C.Fleet.Testing.set_snapshot r.ctx @@ Some (fleet 9);
             ignore (C.Signals.run_once ~now:(t +. 30.) r.ctx);
             let op = one_of_kind r "opa_errors" in
             check_contains "opa body" ~sub:"Verifiers counted 4 errors calling OPA"
@@ -664,7 +679,7 @@ let lifecycle_tests =
             Alcotest.(check string)
               "stored by" "token:analyst"
               (str (member "updated_by" w));
-            let acts = C.Activity.entries r.ctx in
+            let acts = List.rev (C.Activity.recent r.ctx) in
             Alcotest.(check bool)
               "logged" true
               (List.exists (fun a -> member "action" a = `String "signal.update") acts);
@@ -716,14 +731,14 @@ let case_tests =
             Alcotest.(check string) "id" "CASE-1000" (str (member "id" j));
             Alcotest.(check string) "open" "open" (str (member "status" j));
             Alcotest.(check string)
-              "created_by" "tester@acme.test"
+              "created_by" "token:tester"
               (str (member "created_by" j));
             let* _, j2 =
               post r "/api/v1/cases"
                 (`Assoc
                    [
                      ("title", `String "Second");
-                     ("assignee", `String "tester@acme.test");
+                     ("assignee", `String "token:tester");
                      ("request_ids", `List [ `String "a"; `String "a"; `String "b" ]);
                    ])
             in
@@ -793,7 +808,9 @@ let case_tests =
             in
             Alcotest.(check int) "bad status" 400 c;
             let acts =
-              List.map (fun a -> str (member "action" a)) (C.Activity.entries r.ctx)
+              List.map
+                (fun a -> str (member "action" a))
+                (List.rev (C.Activity.recent r.ctx))
             in
             List.iter
               (fun a -> Alcotest.(check bool) a true (List.mem a acts))
@@ -912,7 +929,7 @@ let pause_tests =
             let e =
               List.find
                 (fun a -> member "action" a = `String "caller.pause_requested")
-                (C.Activity.entries r.ctx)
+                (List.rev (C.Activity.recent r.ctx))
             in
             Alcotest.(check string) "target" "token:support-bot" (str (member "target" e));
             Alcotest.(check string) "reason" "CASE-1000 triage" (str (member "reason" e));

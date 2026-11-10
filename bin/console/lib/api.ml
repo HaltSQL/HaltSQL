@@ -114,55 +114,100 @@ let range ?(default = "24h") ?(now = Unix.gettimeofday ()) req =
 let range_to_json r =
   `Assoc [ ("since", `String (iso8601 r.since)); ("until", `String (iso8601 r.until)) ]
 
-(* Opaque cursors are base64url offsets. *)
+(* Opaque cursors are base64url-encoded keys (see [page_desc]). *)
 let encode_cursor n = Haltsql_auth.B64url.encode (string_of_int n)
 
-let cursor req =
-  match query req "cursor" with
-  | None | Some "" -> 0
-  | Some c -> (
-      match Haltsql_auth.B64url.decode c with
-      | Ok s -> (
-          match int_of_string_opt s with
-          | Some n when n >= 0 -> n
-          | _ -> bad_request "invalid cursor")
-      | Error _ -> bad_request "invalid cursor")
-
-(** A page of [items] from the request's cursor and limit. *)
-let page req items =
-  let off = cursor req and lim = limit req in
-  let total = List.length items in
-  let rec drop n l =
-    if n <= 0 then l else match l with [] -> [] | _ :: t -> drop (n - 1) t
+(** Keyset paging over [items] sorted by strictly descending, unique [key] (e.g. a
+    sequence number). The cursor is the key of the last item returned; the next page holds
+    the items whose key is below it, so new items never shift a page. Returns the page,
+    the next cursor ([`Null] at the end) and the total number of [items]. *)
+let page_desc req ~(key : 'a -> int) (items : 'a list) =
+  let lim = limit req in
+  let after =
+    match query req "cursor" with
+    | None | Some "" -> None
+    | Some c -> (
+        match Haltsql_auth.B64url.decode c with
+        | Ok s -> (
+            match int_of_string_opt s with
+            | Some n -> Some n
+            | None -> bad_request "invalid cursor")
+        | Error _ -> bad_request "invalid cursor")
   in
-  let rec take n l =
-    if n <= 0 then [] else match l with [] -> [] | x :: t -> x :: take (n - 1) t
+  let rest =
+    match after with None -> items | Some k -> List.filter (fun x -> key x < k) items
   in
-  let items = take lim (drop off items) in
-  let next = if off + lim < total then `String (encode_cursor (off + lim)) else `Null in
-  (items, next, total)
+  let rec take n acc = function
+    | x :: t when n > 0 -> take (n - 1) (x :: acc) t
+    | l -> (List.rev acc, l)
+  in
+  let page, more = take lim [] rest in
+  let next =
+    match (more, List.rev page) with
+    | _ :: _, last :: _ -> `String (encode_cursor (key last))
+    | _ -> `Null
+  in
+  (page, next, List.length items)
 
 (* ---- bodies ---- *)
 
 let max_body_bytes = 1024 * 1024
 
-let read_body body =
-  let open Lwt.Syntax in
-  let* s = Cohttp_lwt.Body.to_string body in
-  if String.length s > max_body_bytes then
-    fail `Request_entity_too_large "TOO_LARGE" "request body exceeds %d bytes"
-      max_body_bytes
-  else Lwt.return s
+let too_large max =
+  fail `Request_entity_too_large "TOO_LARGE" "request body exceeds %d bytes" max
 
-let json_body body =
+(** Reads [body] as a stream and fails with 413 TOO_LARGE as soon as it passes [max] bytes
+    (default {!max_body_bytes}), without buffering the rest. *)
+let read_body ?(max = max_body_bytes) body =
+  let open Lwt.Syntax in
+  let stream = Cohttp_lwt.Body.to_stream body in
+  let buf = Buffer.create 1024 in
+  let rec go () =
+    let* chunk = Lwt_stream.get stream in
+    match chunk with
+    | None -> Lwt.return (Buffer.contents buf)
+    | Some s ->
+        if Buffer.length buf + String.length s > max then too_large max
+        else (
+          Buffer.add_string buf s;
+          go ())
+  in
+  go ()
+
+(** True when the request announces a body: a non-zero Content-Length or a
+    Transfer-Encoding. *)
+let request_has_body (req : Cohttp.Request.t) =
+  let h = Cohttp.Request.headers req in
+  match Cohttp.Header.get h "content-length" with
+  | Some l -> Int64.of_string_opt (String.trim l) <> Some 0L
+  | None -> Cohttp.Header.get h "transfer-encoding" <> None
+
+(** [Content-Type: application/json], with optional parameters (e.g. charset). *)
+let is_json_content_type (req : Cohttp.Request.t) =
+  match Cohttp.Header.get (Cohttp.Request.headers req) "content-type" with
+  | None -> false
+  | Some ct ->
+      let media =
+        match String.index_opt ct ';' with Some i -> String.sub ct 0 i | None -> ct
+      in
+      String.lowercase_ascii (String.trim media) = "application/json"
+
+(** Parses a JSON object body (empty body = [{}]). With [req], a non-empty body must be
+    sent as [application/json] (415 otherwise). *)
+let json_body ?req body =
   let open Lwt.Syntax in
   let* s = read_body body in
   if String.trim s = "" then Lwt.return (`Assoc [])
-  else
+  else (
+    (match req with
+    | Some r when not (is_json_content_type r) ->
+        fail `Unsupported_media_type "UNSUPPORTED_MEDIA_TYPE"
+          "request body must be application/json"
+    | _ -> ());
     match Yojson.Safe.from_string s with
     | `Assoc _ as j -> Lwt.return j
     | _ -> bad_request "body must be a JSON object"
-    | exception Yojson.Json_error m -> bad_request "invalid JSON: %s" m
+    | exception Yojson.Json_error m -> bad_request "invalid JSON: %s" m)
 
 let member name (j : Yojson.Safe.t) =
   match j with `Assoc l -> List.assoc_opt name l | _ -> None

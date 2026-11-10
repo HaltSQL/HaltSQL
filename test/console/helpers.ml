@@ -37,30 +37,17 @@ let config ?(role = "admin") ?(extra = []) () =
 
 type running = { ctx : Console.Ctx.t; port : int; stop : unit Lwt.u }
 
-(** Starts a console for [cfg]. Background loops run unless [~background:false]. *)
+(** Starts a console for [cfg] on an ephemeral loopback port (through
+    [Console_server.serve]). Background loops run unless [~background:false]. *)
 let start ?(background = true) ?fetch (cfg : Console.Console_config.t) =
+  let cfg = { cfg with listen = "127.0.0.1:0" } in
   let store = Console.Store.create cfg.state_dir in
   let index = Console.Index.create () in
   let ctx = Console.Ctx.create ~config:cfg ~store ~index in
   let stop_p, stop = Lwt.wait () in
-  if background then Console.Console_server.start_background ctx;
-  let t = Console.Console_server.create ?fetch ctx in
-  let* addrs =
-    Lwt_unix.getaddrinfo "127.0.0.1" "0" [ Unix.AI_SOCKTYPE Unix.SOCK_STREAM ]
-  in
-  let addr = (List.hd addrs).Unix.ai_addr in
-  let fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
-  let* () = Lwt_unix.bind fd addr in
-  Lwt_unix.listen fd 64;
-  let port =
-    match Lwt_unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | _ -> assert false
-  in
-  let server =
-    Cohttp_lwt_unix.Server.make ~callback:(Console.Console_server.callback t) ()
-  in
-  Lwt.async (fun () ->
-      Cohttp_lwt_unix.Server.create ~stop:stop_p ~mode:(`TCP (`Socket fd)) server);
+  let background = if background then None else Some [] in
+  let* port, serving = Console.Console_server.serve ?fetch ?background ~stop:stop_p ctx in
+  Lwt.async (fun () -> serving);
   Lwt.return { ctx; port; stop }
 
 let stop r = Lwt.wakeup_later r.stop ()

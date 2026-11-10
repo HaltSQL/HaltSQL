@@ -1,6 +1,8 @@
 (* Method + path-pattern routing. Patterns are split on '/', and a segment starting with
    ':' captures that segment (percent-decoded) as a parameter. Features build their
-   routes with [get], [post], [patch]; [Routes] collects them all. *)
+   routes with [get], [post], [patch]; [Routes] collects them all. [lookup] is pure and
+   returns the decoded captures as they are; Console_server rejects (400) any capture
+   that fails [safe_param] before a handler runs. *)
 
 type req = {
   http : Cohttp.Request.t;
@@ -24,7 +26,7 @@ let param (r : req) name =
   | None -> invalid_arg ("Router.param: no parameter " ^ name)
 
 let query (r : req) name = Api.query r.http name
-let json_body (r : req) = Api.json_body r.body
+let json_body (r : req) = Api.json_body ~req:r.http r.body
 
 let match_pattern pattern segments =
   let rec go acc p s =
@@ -36,6 +38,13 @@ let match_pattern pattern segments =
     | _ -> None
   in
   go [] pattern segments
+
+(** False for captures that decode to a path separator, NUL or a dot segment (e.g. from
+    [%2F]): handlers may use parameters as names. *)
+let safe_param v =
+  not
+    (v = "." || v = ".." || String.contains v '/' || String.contains v '\\'
+   || String.contains v '\000')
 
 type lookup = Found of route * (string * string) list | Method_not_allowed | No_route
 

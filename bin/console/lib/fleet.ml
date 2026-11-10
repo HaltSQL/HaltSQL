@@ -3,7 +3,7 @@
    verifiers through the Kubernetes API. Owner: PR console/03-fleet. See
    docs/console/api.md#fleet.
 
-   The latest document ([GET /api/v1/fleet] shape) is stored in [ctx.fleet]. A short
+   The latest document ([GET /api/v1/fleet] shape) is read with [snapshot]. A short
    in-memory history of metric samples per verifier (the last [history_size] polls) gives
    request rates, OPA decision and error counts, and buffered-record peaks. *)
 
@@ -145,19 +145,30 @@ let sample_of ~at samples =
     connections = Prom.sum samples "haltsql_http_open_connections";
   }
 
-(* Per-console state: history by verifier name, newest first. Keyed by the context
-   (physical equality) so in-process test consoles do not share history. *)
-type state = { history : (string, sample list) Hashtbl.t }
+(* Per-console state, in the Ctx registry under a private key: history by verifier
+   name, newest first, and the last fleet document. *)
+type state = {
+  history : (string, sample list) Hashtbl.t;
+  mutable doc : Yojson.Safe.t option;
+}
 
-let states : (Ctx.t * state) list ref = ref []
+let key : state Ctx.Key.t = Ctx.Key.create "fleet"
 
 let state_of (ctx : Ctx.t) =
-  match List.find_opt (fun (c, _) -> c == ctx) !states with
-  | Some (_, s) -> s
+  match Ctx.get ctx key with
+  | Some s -> s
   | None ->
-      let s = { history = Hashtbl.create 8 } in
-      states := (ctx, s) :: !states;
+      let s = { history = Hashtbl.create 8; doc = None } in
+      Ctx.set ctx key s;
       s
+
+(** The last fleet document ([GET /api/v1/fleet] shape), [None] before the first poll. *)
+let snapshot (ctx : Ctx.t) = (state_of ctx).doc
+
+(** For tests only: replaces the stored fleet document without polling. *)
+module Testing = struct
+  let set_snapshot (ctx : Ctx.t) doc = (state_of ctx).doc <- doc
+end
 
 let rec take n = function
   | [] -> []
@@ -683,12 +694,12 @@ let empty () =
       ("verifiers", `List []);
       ("bundles", `List []);
       ("sinks", `List []);
-      ("opa", opa_json { history = Hashtbl.create 1 } []);
+      ("opa", opa_json { history = Hashtbl.create 1; doc = None } []);
     ]
 
 (* ---- polling ---- *)
 
-(** Polls every verifier once and stores the document in [ctx.fleet]. *)
+(** Polls every verifier once and stores the document (read with [snapshot]). *)
 let poll_once ?now (ctx : Ctx.t) =
   let st = state_of ctx in
   let* polled = Lwt_list.map_p poll_verifier ctx.config.verifiers in
@@ -727,7 +738,7 @@ let poll_once ?now (ctx : Ctx.t) =
         ("opa", opa_json st polled);
       ]
   in
-  ctx.fleet <- Some doc;
+  st.doc <- Some doc;
   Lwt.return doc
 
 let start (ctx : Ctx.t) : unit Lwt.t =
@@ -832,6 +843,6 @@ let restart ctx (p : Ctx.principal) (r : Router.req) =
 let routes : Router.route list =
   [
     Router.get "/api/v1/fleet" (fun ctx _p _r ->
-        Api.json (match ctx.fleet with Some f -> f | None -> empty ()));
+        Api.json (match snapshot ctx with Some f -> f | None -> empty ()));
     Router.post "/api/v1/fleet/:name/restart" restart;
   ]

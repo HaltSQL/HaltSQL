@@ -89,7 +89,7 @@ rbac: { create: true, deployments: [haltsql] }
 | `console.port` | `8090` | Listen port (`--listen`). |
 | `console.config` | see `values.yaml` | The console config ([config.md](../../../docs/console/config.md)), rendered into a ConfigMap. Do not set `listen` or `state_dir` (the chart sets them; the schema refuses them). With `oauth2Proxy.enabled` the chart sets `auth.proxy`; with `rbac.create`, `fleet.kubernetes.namespace`. |
 | `console.existingConfigMap` | `""` | Your own ConfigMap with key `console.yaml` instead. Set `state_dir` to `persistence.mountPath` in it. |
-| `console.devRole` | `""` | `--dev ROLE`: every request is a local user with that role. Development only. The config still needs one `auth` entry. |
+| `console.devRole` | `""` | `--dev ROLE`: every request is a local user with that role. Development only. The console refuses to start with it unless it listens on a loopback address, so it is not reachable through the Service. |
 | `console.frontendDir` | `""` | `frontend_dir`; the image reserves `/usr/share/haltsql-console/web`. |
 | `existingSecret` | `""` | Secret whose keys become environment variables (`envFrom`) for `${env:NAME}` placeholders: admin tokens, GitHub token, webhook URLs. |
 | `secretEnv` | `{}` | Testing only: key/values rendered into a chart Secret. They end up in the Helm release; prefer `existingSecret`. |

@@ -162,7 +162,7 @@ let loading_tests =
             write_file (Filename.concat dir "analytics.yaml") "kind: Policy\nnot: valid\n";
             let* res = C.Policies.reload r.ctx in
             Alcotest.(check bool) "reload failed" true (Result.is_error res);
-            Alcotest.(check int) "still loaded" 3 (List.length r.ctx.policies);
+            Alcotest.(check int) "still loaded" 3 (List.length (C.Policy_set.get r.ctx));
             let* _, j = get r "/api/v1/policies" in
             Alcotest.(check bool) "errors" true (list (member "errors" j) <> []);
             Alcotest.(check bool)
@@ -259,10 +259,10 @@ let loading_tests =
       `Quick,
       fun () ->
         with_policies (fun r _ ->
-            r.ctx.fleet <-
-              Some
-                (Yojson.Safe.from_string
-                   {|{"verifiers":[{"name":"haltsql-1","kind":"server","policies":[{"name":"analytics","version":"sha256:x","mode":"enforce","origin":"config"},{"name":"remote-only","version":"sha256:y","mode":"enforce","origin":"bundle_source"}]}]}|});
+            C.Fleet.Testing.set_snapshot r.ctx
+            @@ Some
+                 (Yojson.Safe.from_string
+                    {|{"verifiers":[{"name":"haltsql-1","kind":"server","policies":[{"name":"analytics","version":"sha256:x","mode":"enforce","origin":"config"},{"name":"remote-only","version":"sha256:y","mode":"enforce","origin":"bundle_source"}]}]}|});
             let* _, j = get r "/api/v1/policies" in
             let ps = list (member "policies" j) in
             let a = List.find (fun p -> member "name" p = `String "analytics") ps in
@@ -827,10 +827,10 @@ let playground_tests =
       `Quick,
       fun () ->
         with_policies (fun r _ ->
-            r.ctx.catalog_columns <-
-              Some
-                (Yojson.Safe.from_string
-                   {|{"columns":[{"column":"app.orders.region","tags":["location"],"sources":["dbt"]}]}|});
+            C.Data.Testing.set_columns_doc r.ctx
+            @@ Some
+                 (Yojson.Safe.from_string
+                    {|{"columns":[{"column":"app.orders.region","tags":["location"],"sources":["dbt"]}]}|});
             let* code, j =
               post r "/api/v1/playground/check"
                 (check_body

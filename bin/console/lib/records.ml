@@ -60,10 +60,34 @@ let filter_of_request req : Index.filter =
     until;
   }
 
+(* /api/v1/queries pages by offset, not with [Api.page_desc]: index entries have no
+   globally unique, monotonic key ([seq] is per verifier), so there is no stable keyset
+   cursor. The cursor is a base64url offset into the newest-first result; a page fetched
+   while records arrive can repeat entries from the previous page. *)
+let offset_cursor req =
+  match Api.query req "cursor" with
+  | None | Some "" -> 0
+  | Some c -> (
+      match Haltsql_auth.B64url.decode c with
+      | Ok s -> (
+          match int_of_string_opt s with
+          | Some n when n >= 0 -> n
+          | _ -> Api.bad_request "invalid cursor")
+      | Error _ -> Api.bad_request "invalid cursor")
+
+let rec drop n l =
+  if n <= 0 then l else match l with [] -> [] | _ :: t -> drop (n - 1) t
+
 let queries ctx p (r : Router.req) =
   let _ = Ctx.require p r.http Rbac.Search_queries in
   let f = filter_of_request r.http in
-  let items, next, total = Api.page r.http (Index.search ctx.Ctx.index f) in
+  let off = offset_cursor r.http and lim = Api.limit r.http in
+  let index = ctx.Ctx.index in
+  let items = drop off (Index.search ~limit:(off + lim) index f) in
+  let total = Index.count index f in
+  let next =
+    if off + lim < total then `String (Api.encode_cursor (off + lim)) else `Null
+  in
   Api.json
     (`Assoc
        [
@@ -83,7 +107,7 @@ let policy_json (ctx : Ctx.t) (e : Index.entry) : Yojson.Safe.t =
   let r = e.record in
   (* The bundle the record's verifier serves, from the last fleet snapshot. *)
   let bundle =
-    match ctx.fleet with
+    match Fleet.snapshot ctx with
     | None -> `Null
     | Some f -> (
         match Api.member "verifiers" f with
@@ -106,7 +130,7 @@ let policy_json (ctx : Ctx.t) (e : Index.entry) : Yojson.Safe.t =
             | None -> `Null)
         | _ -> `Null)
   in
-  let loaded = List.assoc_opt r.policy ctx.policies in
+  let loaded = Policy_set.find ctx r.policy in
   `Assoc
     [
       ("name", `String r.policy);
@@ -117,9 +141,9 @@ let policy_json (ctx : Ctx.t) (e : Index.entry) : Yojson.Safe.t =
     ]
 
 let record_detail (ctx : Ctx.t) ?(force = false) (e : Index.entry) =
-  let reverified = Trail.reverify ctx.policies e in
+  let reverified = Trail.reverify (Policy_set.get ctx) e in
   let reasons = Trail.reasons ?reverified e.record in
-  let policy = List.assoc_opt e.record.policy ctx.policies in
+  let policy = Policy_set.find ctx e.record.policy in
   let trail = Trail.compute ?policy ?reverified e.record reasons in
   `Assoc
     [
@@ -190,8 +214,8 @@ let routes : Router.route list =
     Router.post "/api/v1/records/:id/verify-chain" verify_chain;
   ]
 
-(** Recomputes [ctx.chain_status] for every verifier every 5 minutes (the first check
-    shortly after startup, once ingestion has had a chance to run). *)
+(** Recomputes [Chain.status] for every verifier every 5 minutes (the first check shortly
+    after startup, once ingestion has had a chance to run). *)
 let start (ctx : Ctx.t) : unit Lwt.t =
   let rec loop delay =
     let* () = Lwt_unix.sleep delay in

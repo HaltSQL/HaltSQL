@@ -23,53 +23,83 @@ let me (ctx : Ctx.t) (p : Ctx.principal) _r =
                ("auth", `String p.auth);
                ("groups", Api.strings p.groups);
              ] );
+         ("roles", `List (List.map (fun r -> `String (Rbac.role_to_string r)) p.roles));
          ("role", `String (Rbac.role_to_string p.role));
          ("role_label", `String (Rbac.role_label p.role));
-         ("permissions", Rbac.permissions_json p.role);
+         ("permissions", Rbac.permissions_json_union p.roles);
          ("environment", environment_json ctx.config);
        ])
 
-let roles (ctx : Ctx.t) _p _r =
+(* The sessions safeguard holds for every sign-in only when OIDC is the sole method and
+   every token must carry auth_time. *)
+let sessions_verified (a : C.auth) =
+  a.oidc <> [] && a.proxy = None && a.tokens = [] && a.dev = None && a.require_auth_time
+
+(* Roles, the matrix and the safeguards are visible to everyone; the group-to-role
+   [mapping] only to callers with [manage_access] (the field is omitted otherwise). *)
+let roles (ctx : Ctx.t) (p : Ctx.principal) _r =
   let a = ctx.config.auth in
+  let mapping =
+    if Rbac.grant_union p.roles Rbac.Manage_access = Rbac.Yes then
+      [
+        ( "mapping",
+          `Assoc
+            (List.map (fun (r, gs) -> (Rbac.role_to_string r, Api.strings gs)) a.roles) );
+      ]
+    else []
+  in
   Api.json
     (`Assoc
-       [
-         ( "roles",
-           `List
-             (List.map
-                (fun r ->
-                  `Assoc
-                    [
-                      ("id", `String (Rbac.role_to_string r));
-                      ("label", `String (Rbac.role_label r));
-                    ])
-                Rbac.all_roles) );
-         ("permissions", Rbac.matrix_json ());
-         ( "mapping",
-           `Assoc
-             (List.map (fun (r, gs) -> (Rbac.role_to_string r, Api.strings gs)) a.roles)
-         );
-         ( "safeguards",
-           `List
-             [
-               `Assoc
-                 [
-                   ("id", `String "two_person_rule");
-                   ("title", `String "Two-person rule");
-                   ( "detail",
-                     `String
-                       "Policy changes need two owners, never the requester. Enforced by \
-                        branch protection on the policy repository." );
-                 ];
-               `Assoc
-                 [
-                   ("id", `String "sessions");
-                   ("title", `String "Sessions");
-                   ("detail", `String (Printf.sprintf "%d hours." a.session_hours));
-                 ];
-             ] );
-         ("dev_mode", `Bool (a.dev <> None));
-       ])
+       ([
+          ( "roles",
+            `List
+              (List.map
+                 (fun r ->
+                   `Assoc
+                     [
+                       ("id", `String (Rbac.role_to_string r));
+                       ("label", `String (Rbac.role_label r));
+                     ])
+                 Rbac.all_roles) );
+          ("permissions", Rbac.matrix_json ());
+        ]
+       @ mapping
+       @ [
+           ( "safeguards",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("id", `String "two_person_rule");
+                     ("title", `String "Two-person rule");
+                     ( "detail",
+                       `String
+                         "Policy changes need two owners, never the requester. Expected \
+                          to be enforced by branch protection on the policy repository; \
+                          not verified by the console." );
+                     ("verified", `Bool false);
+                   ];
+                 `Assoc
+                   [
+                     ("id", `String "sessions");
+                     ("title", `String "Sessions");
+                     ( "detail",
+                       `String
+                         (Printf.sprintf
+                            "OIDC sign-ins older than %d hours are rejected (by \
+                             auth_time, else iat)%s; proxy and service-token sessions \
+                             are not limited by the console."
+                            a.session_hours
+                            (if a.require_auth_time then
+                               "; tokens without auth_time are rejected"
+                             else
+                               "; tokens with neither claim are accepted until they \
+                                expire")) );
+                     ("verified", `Bool (sessions_verified a));
+                   ];
+               ] );
+           ("dev_mode", `Bool (a.dev <> None));
+         ]))
 
 let item ?error ~id ~name ~detail state =
   `Assoc
@@ -90,13 +120,22 @@ let jwks_fetch : Haltsql_auth.Oidc_client.fetch option ref = ref None
 
 let jwks_cache_seconds = 300.
 
-(* (state dir, provider) -> (checked at, result). Cached so the page never hammers the
+(* provider -> (checked at, result), per console. Cached so the page never hammers the
    identity provider. *)
-let jwks_cache : (string * string, float * (int, string) result) Hashtbl.t =
-  Hashtbl.create 4
+let jwks_key : (string, float * (int, string) result) Hashtbl.t Ctx.Key.t =
+  Ctx.Key.create "access.jwks"
+
+let jwks_cache ctx =
+  match Ctx.get ctx jwks_key with
+  | Some h -> h
+  | None ->
+      let h = Hashtbl.create 4 in
+      Ctx.set ctx jwks_key h;
+      h
 
 let jwks_check (ctx : Ctx.t) (o : C.oidc) =
-  let key = (Store.dir ctx.store, o.provider.oidc_name) in
+  let jwks_cache = jwks_cache ctx in
+  let key = o.provider.oidc_name in
   let now = Ctx.now () in
   match Hashtbl.find_opt jwks_cache key with
   | Some (at, r) when now -. at < jwks_cache_seconds -> Lwt.return r
@@ -137,7 +176,7 @@ let jstr k j = match Api.member k j with Some (`String s) -> Some s | _ -> None
 let jlist k j = match Api.member k j with Some (`List l) -> l | _ -> []
 
 let fleet_bundles (ctx : Ctx.t) =
-  match ctx.fleet with
+  match Fleet.snapshot ctx with
   | None -> []
   | Some f ->
       List.map
@@ -160,7 +199,7 @@ let fleet_bundles (ctx : Ctx.t) =
         (jlist "bundles" f)
 
 let fleet_sinks (ctx : Ctx.t) =
-  match ctx.fleet with
+  match Fleet.snapshot ctx with
   | None -> []
   | Some f ->
       List.map
@@ -174,25 +213,31 @@ let fleet_sinks (ctx : Ctx.t) =
           else item ~id ~name ~detail:target ~error:("sink is " ^ state) "degraded")
         (jlist "sinks" f)
 
-(* Ingest status entries matching an audit source, by any of the usual keys. *)
-let ingest_error (ctx : Ctx.t) detail =
-  match ctx.ingest_status with
-  | `List l ->
-      List.find_map
-        (fun s ->
-          let names =
-            List.filter_map
-              (fun k -> jstr k s)
-              [ "source"; "name"; "id"; "location"; "uri"; "path" ]
-          in
-          if List.mem detail names then
-            match (jstr "error" s, jstr "state" s) with
-            | Some e, _ when e <> "" -> Some e
-            | _, Some (("error" | "failing") as st) -> Some st
-            | _ -> None
-          else None)
-        l
-  | _ -> None
+(* The ingest status entry matching an audit source, by any of the usual keys:
+   [`Error e] when its last read failed, [`Ok] when it was read, [`Unknown] when
+   ingestion has not reported on it yet (so it is only "configured"). *)
+let ingest_state (ctx : Ctx.t) detail =
+  match Ingest.status ctx with
+  | `List l -> (
+      match
+        List.find_map
+          (fun s ->
+            let names =
+              List.filter_map
+                (fun k -> jstr k s)
+                [ "source"; "name"; "id"; "location"; "uri"; "path" ]
+            in
+            if List.mem detail names then
+              match (jstr "error" s, jstr "state" s) with
+              | Some e, _ when e <> "" -> Some (`Error e)
+              | _, Some (("error" | "failing") as st) -> Some (`Error st)
+              | _ -> if jstr "last_read" s <> None then Some `Ok else Some `Unknown
+            else None)
+          l
+      with
+      | Some r -> r
+      | None -> `Unknown)
+  | _ -> `Unknown
 
 let catalog_items (ctx : Ctx.t) =
   let c = ctx.config in
@@ -212,7 +257,7 @@ let catalog_items (ctx : Ctx.t) =
     List.map
       (fun (k : C.catalog) ->
         let label = Option.value k.c_label ~default:k.c_kind in
-        item ~id:("catalog:" ^ label) ~name:label ~detail:"not loaded yet" "connected")
+        item ~id:("catalog:" ^ label) ~name:label ~detail:"not loaded yet" "configured")
       c.catalogs
 
 (* Derived from configuration plus cheap live checks: OIDC JWKS reachability (cached 5
@@ -229,7 +274,7 @@ let integrations (ctx : Ctx.t) _p _r =
     | Some p ->
         [
           item ~id:"proxy" ~name:p.proxy_label ~detail:"Identity-aware proxy headers"
-            "connected";
+            "configured";
         ]
     | None -> []
   in
@@ -240,11 +285,11 @@ let integrations (ctx : Ctx.t) _p _r =
         let path =
           match Api.member "decision" o with Some (`String s) -> s | _ -> "configured"
         in
-        [ item ~id:"opa" ~name:"Open Policy Agent" ~detail:path "connected" ]
+        [ item ~id:"opa" ~name:"Open Policy Agent" ~detail:path "configured" ]
   in
   let alert key name =
     match integrations_member key c with
-    | Some (`Assoc _) -> [ item ~id:key ~name ~detail:"" "connected" ]
+    | Some (`Assoc _) -> [ item ~id:key ~name ~detail:"" "configured" ]
     | _ -> [ item ~id:key ~name ~detail:"" "not_set_up" ]
   in
   let sources =
@@ -257,9 +302,10 @@ let integrations (ctx : Ctx.t) _p _r =
           | C.Src_gcs { uri } -> uri
         in
         let id = "audit:" ^ d and name = "Audit records (" ^ v ^ ")" in
-        match ingest_error ctx d with
-        | Some e -> item ~id ~name ~detail:d ~error:e "error"
-        | None -> item ~id ~name ~detail:d "connected")
+        match ingest_state ctx d with
+        | `Error e -> item ~id ~name ~detail:d ~error:e "error"
+        | `Ok -> item ~id ~name ~detail:d "connected"
+        | `Unknown -> item ~id ~name ~detail:d "configured")
       c.audit.sources
   in
   Api.json

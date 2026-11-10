@@ -25,17 +25,16 @@ type state = {
       (** (time, fleet OPA error total), newest first *)
 }
 
-(* Detector output lives in memory, per console (keyed by state dir so several consoles
-   in one process, as in tests, do not share it). *)
-let states : (string, state) Hashtbl.t = Hashtbl.create 2
+(* Detector output lives in memory, per console, in the Ctx registry under a private
+   key. *)
+let key : state Ctx.Key.t = Ctx.Key.create "signals"
 
 let state (ctx : Ctx.t) =
-  let k = Store.dir ctx.store in
-  match Hashtbl.find_opt states k with
+  match Ctx.get ctx key with
   | Some s -> s
   | None ->
       let s = { sigs = Hashtbl.create 16; opa_samples = [] } in
-      Hashtbl.replace states k s;
+      Ctx.set ctx key s;
       s
 
 let settings (ctx : Ctx.t) = Detectors.settings_of_json ctx.config.signals
@@ -94,16 +93,19 @@ let find_active ctx st (d : Detectors.detection) =
 (* After a restart detector output is gone; reuse the id of an unresolved signal whose
    workflow state was persisted, so assignee and case stay attached. *)
 let persisted_id ctx (d : Detectors.detection) =
-  List.find_map
-    (fun (id, w) ->
-      let w = Some w in
-      if
-        wstr "kind" w = Some d.kind
-        && wstr "subject" w = Some d.subject
-        && wstr "status" w <> Some "resolved"
-      then Some id
-      else None)
-    (Store.list ctx.Ctx.store collection)
+  Store.fold ctx.Ctx.store collection
+    (fun id w acc ->
+      match acc with
+      | Some _ -> acc
+      | None ->
+          let w = Some w in
+          if
+            wstr "kind" w = Some d.kind
+            && wstr "subject" w = Some d.subject
+            && wstr "status" w <> Some "resolved"
+          then Some id
+          else None)
+    None
 
 let merge (old : Detectors.detection) (d : Detectors.detection) =
   { d with first_seen = Float.min old.first_seen d.first_seen; bucket = old.bucket }
@@ -141,11 +143,12 @@ let run_once ?(now = Ctx.now ()) (ctx : Ctx.t) =
       Detectors.now;
       recent = Index.between ctx.index ~since:horizon ~until:(now +. 1.);
       index = ctx.index;
-      fleet = ctx.fleet;
-      chain_status = ctx.chain_status;
+      fleet = Fleet.snapshot ctx;
+      chain_status = Chain.status ctx;
       agents = ctx.config.agents;
-      policies = ctx.policies;
-      opa_error_delta = opa_delta s st ~now (Detectors.opa_error_total ctx.fleet);
+      policies = Policy_set.get ctx;
+      opa_error_delta =
+        opa_delta s st ~now (Detectors.opa_error_total (Fleet.snapshot ctx));
     }
   in
   let created = ref [] in

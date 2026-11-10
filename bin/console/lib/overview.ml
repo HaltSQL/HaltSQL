@@ -69,7 +69,7 @@ let verifiers_of fleet = match fleet with Some f -> J.jlist "verifiers" f | None
 
 let bundle_in_sync (ctx : Ctx.t) =
   let title = "Policy bundles in sync" in
-  match ctx.fleet with
+  match Fleet.snapshot ctx with
   | None -> check "bundle_in_sync" "unknown" title "No fleet snapshot yet."
   | Some f -> (
       match J.jlist "bundles" f with
@@ -103,14 +103,14 @@ let bundle_in_sync (ctx : Ctx.t) =
 
 let audit_chains (ctx : Ctx.t) =
   let title = "Audit chains intact" in
-  match J.jlist "chains" ctx.chain_status with
+  match J.jlist "chains" (Chain.status ctx) with
   | [] -> check "audit_chains" "unknown" title "No chain verification has run yet."
   | chains ->
       let st s = List.filter (fun c -> J.jstr "state" c = Some s) chains in
       let names l = String.concat ", " (List.filter_map (J.jstr "verifier") l) in
       let broken = st "broken" and intact = st "intact" in
       let when_ =
-        match J.jstr "checked_at" ctx.chain_status with
+        match J.jstr "checked_at" (Chain.status ctx) with
         | Some t -> " Last checked " ^ t ^ "."
         | None -> ""
       in
@@ -130,7 +130,7 @@ let audit_chains (ctx : Ctx.t) =
 
 let pii_exposure (ctx : Ctx.t) =
   let title = "No tagged column allowed without an exception" in
-  match ctx.catalog_columns with
+  match Data.columns_doc ctx with
   | None -> check "pii_exposure" "unknown" title "No data catalog has been read."
   | Some cols ->
       let review =
@@ -169,7 +169,7 @@ let in_process_agents (ctx : Ctx.t) =
 
 let restart_pending (ctx : Ctx.t) =
   let title = "No verifier waiting for a restart" in
-  match ctx.fleet with
+  match Fleet.snapshot ctx with
   | None -> check "restart_pending" "unknown" title "No fleet snapshot yet."
   | Some f -> (
       match
@@ -210,7 +210,7 @@ let overview (ctx : Ctx.t) (req : Cohttp.Request.t) =
   in
   let shadow = count J.is_shadow in
   let reporting =
-    match ctx.fleet with
+    match Fleet.snapshot ctx with
     | Some _ ->
         List.length
           (List.filter
@@ -218,7 +218,7 @@ let overview (ctx : Ctx.t) (req : Cohttp.Request.t) =
                match J.jstr "state" v with
                | Some s -> List.mem s reporting_states
                | None -> false)
-             (verifiers_of ctx.fleet))
+             (verifiers_of (Fleet.snapshot ctx)))
     | None ->
         List.length
           (List.sort_uniq compare

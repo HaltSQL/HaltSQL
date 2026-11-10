@@ -5,7 +5,7 @@
    path policies and its local signed bundles, loaded with the same libraries as the
    server) and [policies.files] (policy files or directories). They are reloaded every 60
    seconds; a load that fails anywhere keeps the previous set, like the server's reload.
-   [ctx.policies] holds the compiled policies by name; this module also keeps, per policy,
+   [Policy_set] holds the compiled policies by name; this module also keeps, per policy,
    where it came from and its source text for detail views. *)
 
 open Lwt.Syntax
@@ -28,21 +28,27 @@ type state = {
   mutable loaded_at : float option;
   mutable errors : string list;
   mutable notes : string list;
+  pr_cache : (string, float * Yojson.Safe.t) Hashtbl.t;
+      (** policy name -> (fetched at, live PR state from GitHub) *)
 }
 
-(* Feature state per console context (tests run several consoles in one process). *)
-let states : (Ctx.t * state) list ref = ref []
+(* Feature state per console, in the Ctx registry under a private key. *)
+let key : state Ctx.Key.t = Ctx.Key.create "policies"
 
 let state (ctx : Ctx.t) =
-  match List.find_opt (fun (c, _) -> c == ctx) !states with
-  | Some (_, s) -> s
+  match Ctx.get ctx key with
+  | Some s -> s
   | None ->
-      let s = { infos = []; loaded_at = None; errors = []; notes = [] } in
-      let rec keep n = function
-        | [] -> []
-        | x :: t -> if n = 0 then [] else x :: keep (n - 1) t
+      let s =
+        {
+          infos = [];
+          loaded_at = None;
+          errors = [];
+          notes = [];
+          pr_cache = Hashtbl.create 8;
+        }
       in
-      states := (ctx, s) :: keep 15 !states;
+      Ctx.set ctx key s;
       s
 
 let log level fmt =
@@ -253,7 +259,7 @@ let reload (ctx : Ctx.t) =
       st.notes <- notes;
       st.errors <- [];
       st.loaded_at <- Some (Ctx.now ());
-      ctx.policies <- List.map (fun i -> (i.name, i.policy)) infos;
+      Policy_set.set ctx (List.map (fun i -> (i.name, i.policy)) infos);
       Lwt.return (Ok ())
   | Error errs ->
       let errs = List.map sanitize errs in
@@ -286,7 +292,7 @@ let start (ctx : Ctx.t) : unit Lwt.t =
 (* ---- fleet ---- *)
 
 let fleet_verifiers (ctx : Ctx.t) =
-  match ctx.fleet with
+  match Fleet.snapshot ctx with
   | Some j -> ( match Api.member "verifiers" j with Some (`List l) -> l | _ -> [])
   | None -> []
 
@@ -452,7 +458,7 @@ let enrich ~policies ~verify (records : R.Record.t list) =
 (* Columns the data catalogs tag are never suggested. *)
 let catalog_pii (ctx : Ctx.t) : R.Pii.lookup =
   let tagged = Hashtbl.create 64 in
-  (match ctx.catalog_columns with
+  (match Data.columns_doc ctx with
   | Some j -> (
       match Api.member "columns" j with
       | Some (`List cols) ->
@@ -474,11 +480,12 @@ let catalog_pii (ctx : Ctx.t) : R.Pii.lookup =
          (String.lowercase_ascii (schema ^ "." ^ table ^ "." ^ column)))
 
 let compute_suggest (ctx : Ctx.t) ~verify records =
-  let records = enrich ~policies:ctx.policies ~verify records in
+  let policies = Policy_set.get ctx in
+  let records = enrich ~policies ~verify records in
   R.Suggest.compute
     {
       R.Suggest.default_config with
-      policies = ctx.policies;
+      policies;
       pii = R.Pii.union [ catalog_pii ctx; R.Pii.name_heuristic () ];
       verify = Some verify;
     }
@@ -566,7 +573,6 @@ let comparison ~verify (cp : Policy.t) (records : R.Record.t list) =
 (* ---- pull request state ---- *)
 
 let pr_collection = "pull_requests"
-let pr_cache : (string, float * Yojson.Safe.t) Hashtbl.t = Hashtbl.create 8
 let pr_cache_seconds = 30.
 let stored_pr (ctx : Ctx.t) name = Store.get ctx.store pr_collection name
 let stored_int k j = match Api.member k j with Some (`Int n) -> Some n | _ -> None
@@ -591,7 +597,8 @@ let pr_state (ctx : Ctx.t) name =
           ("head_sha", Api.opt_string (str "head_sha" doc));
         ]
       in
-      match Github.config ctx with
+      let* gh = Github.config ctx in
+      match gh with
       | None | Some (Error _) ->
           Lwt.return
             (`Assoc
@@ -605,7 +612,7 @@ let pr_state (ctx : Ctx.t) name =
                  ]))
       | Some (Ok gh) -> (
           let key = Printf.sprintf "%s|%s|%d" gh.api gh.repo number in
-          match Hashtbl.find_opt pr_cache key with
+          match Hashtbl.find_opt (state ctx).pr_cache key with
           | Some (at, j) when Ctx.now () -. at < pr_cache_seconds -> Lwt.return j
           | _ ->
               let live =
@@ -657,7 +664,7 @@ let pr_state (ctx : Ctx.t) name =
                 `Assoc
                   (base @ fields @ [ ("required_approvals", `Int gh.required_approvals) ])
               in
-              Hashtbl.replace pr_cache key (Ctx.now (), j);
+              Hashtbl.replace (state ctx).pr_cache key (Ctx.now (), j);
               Lwt.return j))
 
 let suggestion_json ~pr (s : R.Suggest.suggestion) =
@@ -897,8 +904,9 @@ let open_pull_request (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   let* body = Router.json_body r in
   let _ = Ctx.require ~body p r.http Rbac.Propose_changes in
   let name = Router.param r "name" in
+  let* gh = Github.config ctx in
   let gh =
-    match Github.config ctx with
+    match gh with
     | None ->
         Api.not_configured "pull requests need integrations.github in the console config"
     | Some (Error m) -> Api.not_configured "integrations.github is invalid: %s" m
@@ -1060,7 +1068,7 @@ let open_pull_request (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
       ]
   in
   let* () = Store.put ctx.store pr_collection name doc in
-  Hashtbl.remove pr_cache (Printf.sprintf "%s|%s|%d" gh.api gh.repo pr.number);
+  Hashtbl.remove (state ctx).pr_cache (Printf.sprintf "%s|%s|%d" gh.api gh.repo pr.number);
   let* () =
     Activity.log ctx p ~action:"policy.pull_request" ~target:name
       ~detail:

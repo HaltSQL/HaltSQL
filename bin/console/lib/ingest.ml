@@ -525,6 +525,18 @@ let poll_objects ctx t src ~uri (client : obj) =
 
 (* ---- status ---- *)
 
+(* The per-source status published by the loop; private, read through [status]. *)
+let status_key : Yojson.Safe.t Ctx.Key.t = Ctx.Key.create "ingest.status"
+
+(** Per-source ingestion state ([`List] of objects with [source], [verifier], [verifiers],
+    [records], [last_read], [error]); [`List []] before the loop starts. *)
+let status (ctx : Ctx.t) = Option.value (Ctx.get ctx status_key) ~default:(`List [])
+
+(** For tests only: replaces the published status without polling. *)
+module Testing = struct
+  let set_status (ctx : Ctx.t) j = Ctx.set ctx status_key j
+end
+
 let status_json t : Yojson.Safe.t =
   `List
     (List.map
@@ -563,7 +575,7 @@ let poll_once (ctx : Ctx.t) t =
       t.sources
   in
   Index.expire ctx.index ~now:(Ctx.now ());
-  ctx.ingest_status <- status_json t;
+  Ctx.set ctx status_key (status_json t);
   Lwt.return_unit
 
 let routes : Router.route list = []
@@ -573,7 +585,7 @@ let start (ctx : Ctx.t) : unit Lwt.t =
   if ctx.config.audit.sources = [] then Lwt.return_unit
   else
     let t = create ctx.config in
-    ctx.ingest_status <- status_json t;
+    Ctx.set ctx status_key (status_json t);
     let period = float_of_int (max 1 ctx.config.audit.poll_seconds) in
     let rec loop () =
       let* () =

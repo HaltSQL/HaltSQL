@@ -45,12 +45,12 @@ disagree about what a record means or what a policy allows:
 | Module | Role |
 |---|---|
 | `Console_config` | YAML config: listen, environment, auth, verifiers, audit sources, policies, catalogs, integrations. |
-| `Rbac` | The five roles and the permission matrix (see [api.md](api.md#roles)). |
+| `Rbac` | The five roles and the permission matrix, an exhaustive `grant : role -> permission -> grant` (see [api.md](api.md#roles)). A principal's access is `grant_union` over all of its roles; `precedence` only picks the display role. |
 | `Console_auth` | Authenticates a request: OIDC bearer, trusted auth-proxy headers, static service tokens, or dev mode. |
 | `Store` | Durable JSON documents in `state_dir` (one JSONL file per collection, rewritten atomically). |
 | `Activity` | Append-only activity log ("who saw or did what, and why"). |
 | `Index` | In-memory index of audit records for the retention window, with search and aggregation. |
-| `Ctx` | The shared runtime context passed to every handler. |
+| `Ctx` | The shared runtime context passed to every handler: config, store, index, a typed per-feature state registry, and `require` for permission checks. |
 | `Api` | JSON responses, errors, query parameters, body parsing. |
 | `Router` | Method and path-pattern routing; collects every feature's routes. |
 | feature modules | `Overview`, `Signals`, `Records`, `Cases`, `Agents`, `Playground`, `Policies`, `Fleet`, `Data`, `Evidence`, `Access`. Each exports `routes` and, when it needs one, a background `start` loop. |
@@ -75,6 +75,34 @@ disagree about what a record means or what a policy allows:
    trails and compute exposure of tagged columns. Shadow reports come from the
    index (and, when configured, each verifier's `/v1/admin/report`).
 
+## Feature state
+
+`Ctx.t` carries only what every feature shares (config, store, index, start
+time). It has no per-feature fields. Runtime state a feature derives (the
+fleet snapshot, loaded policies, catalog tags, ingestion and audit-chain
+status) lives in a typed, heterogeneous registry on the context:
+
+```ocaml
+module Key : sig type 'a t val create : string -> 'a t end
+val get : Ctx.t -> 'a Key.t -> 'a option
+val set : Ctx.t -> 'a Key.t -> 'a -> unit
+```
+
+Each feature declares its key privately and exports read accessors only:
+
+```ocaml
+(* fleet.ml *)
+let state : Fleet_state.t Ctx.Key.t = Ctx.Key.create "fleet"
+let snapshot ctx = Ctx.get ctx state       (* exported *)
+(* the poll loop calls Ctx.set ctx state s *)
+```
+
+Because the key isn't exported, only the owning module can write its state;
+other features read it through the owner's accessors, with the owner's types.
+Adding a feature never edits `Ctx`. Keys are built on `Type.Id`, so two keys
+never collide even with the same name, and `get` before the first `set` is
+`None`.
+
 ## Persistence
 
 Everything the console derives (index, fleet snapshots, signals) is rebuilt
@@ -96,6 +124,29 @@ seam: a Postgres-backed `Store` is a later change and needs no API change.
 - The console never writes to verifiers. Actions that change enforcement
   (policy changes) go through a pull request; restarts go through the
   Kubernetes API with a namespaced service account.
+
+## Deployment
+
+The console's HTTP server bounds its own resources:
+
+- a request is abandoned after 30 seconds (`503 TIMEOUT`) and at most 512
+  requests are handled at once (`503 OVERLOADED`; `/healthz` and `/readyz` are
+  exempt);
+- at most 1024 client connections are open at once; a connection over the cap
+  is closed as soon as it is accepted;
+- a connection with no request in progress is closed 15 seconds after it was
+  opened or after its last response was produced. This bounds how long a
+  client may take to send request headers and how long a keep-alive
+  connection may sit idle.
+
+The idle timer is per connection, not per header byte, and the server has no
+limit on concurrent TLS handshakes because it doesn't terminate TLS. Run the
+console behind a reverse proxy or load balancer (an ingress controller, an
+ALB, Cloud Load Balancing, Application Gateway, nginx, Envoy) that terminates
+TLS and enforces its own header-read and idle timeouts and connection limits.
+Set `public_url` to the URL users open, so the CSRF check compares origins
+with it instead of relying on the proxy to preserve `Host` (see
+[config.md](config.md#origins)).
 
 See [api.md](api.md) for the HTTP contract and [deploy.md](deploy.md) for
 running it locally and on AWS, GCP and Azure.

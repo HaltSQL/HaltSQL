@@ -39,10 +39,10 @@ let controls_handler (_ : Ctx.t) _p (r : Router.req) =
 let gap kind name detail =
   `Assoc [ ("kind", `String kind); ("name", `String name); ("detail", `String detail) ]
 
-(* ctx.ingest_status is written by Ingest: a list of per-source objects. A source with a
-   non-null [error] (or state error/failing) could not be read. *)
+(* Ingest.status is a list of per-source objects. A source with a non-null [error] (or
+   state error/failing) could not be read. *)
 let ingest_errors (ctx : Ctx.t) =
-  match ctx.ingest_status with
+  match Ingest.status ctx with
   | `List l ->
       List.filter_map
         (fun s ->
@@ -177,18 +177,26 @@ let policies_json (ctx : Ctx.t) (entries : Index.entry list) =
                    ("owner", Api.opt_string p.owner);
                    ("document", Haltsql.Policy_load.to_json p);
                  ])
-             ctx.policies) );
+             (Policy_set.get ctx)) );
     ]
 
+(* Every activity entry of the period, streamed from every activity file (rotated ones
+   included) off the event loop. *)
 let activity_lines (ctx : Ctx.t) ~since ~until =
-  Activity.entries ctx
-  |> List.filter (fun j ->
-      match Api.member "at" j with
-      | Some (`String s) -> (
-          match Api.parse_time s with Some t -> t >= since && t < until | None -> false)
-      | _ -> false)
-  |> List.map (fun j -> Yojson.Safe.to_string j ^ "\n")
-  |> String.concat ""
+  let b = Buffer.create 4096 in
+  let+ () =
+    Activity.iter_all ctx (fun j ->
+        (match Api.member "at" j with
+        | Some (`String s) -> (
+            match Api.parse_time s with
+            | Some t when t >= since && t < until ->
+                Buffer.add_string b (Yojson.Safe.to_string j);
+                Buffer.add_char b '\n'
+            | _ -> ())
+        | _ -> ());
+        Lwt.return_unit)
+  in
+  Buffer.contents b
 
 let readme ~id ~framework ~since ~until ~builder ~created ~records ~chains ~gaps ~files =
   let b = Buffer.create 2048 in
@@ -227,7 +235,7 @@ let sha256 s = Digestif.SHA256.(to_hex (digest_string s))
 type built = { tgz : string; manifest_sha256 : string; records : int; chains : int * int }
 
 let build_pack (ctx : Ctx.t) ~id ~framework ~since ~until ~(builder : Ctx.principal)
-    ~created ~gaps =
+    ~created ~gaps ~activity =
   let entries = Index.between ctx.index ~since ~until in
   let by_verifier =
     List.sort_uniq compare (List.map (fun (e : Index.entry) -> e.verifier) entries)
@@ -260,7 +268,7 @@ let build_pack (ctx : Ctx.t) ~id ~framework ~since ~until ~(builder : Ctx.princi
                  ("chains", `List (List.map snd chain_results));
                ]) );
         ("policies.json", pretty (policies_json ctx entries));
-        ("activity.jsonl", activity_lines ctx ~since ~until);
+        ("activity.jsonl", activity);
         ( "exceptions.json",
           pretty
             (`Assoc
@@ -319,6 +327,9 @@ let build_pack (ctx : Ctx.t) ~id ~framework ~since ~until ~(builder : Ctx.princi
               ("id", `String builder.id);
               ("name", `String builder.name);
               ("role", `String (Rbac.role_to_string builder.role));
+              ( "roles",
+                `List (List.map (fun r -> `String (Rbac.role_to_string r)) builder.roles)
+              );
               ("auth", `String builder.auth);
             ] );
         ("generator", `String ("haltsql-console " ^ Haltsql.version));
@@ -421,14 +432,36 @@ let public (doc : Yojson.Safe.t) =
   | `Assoc l -> `Assoc (List.filter (fun (k, _) -> List.mem k public_fields) l)
   | j -> j
 
+(* Writes the pack durably off the event loop: a temporary file, fsynced, renamed into
+   place, then the directory fsynced. *)
+let write_pack path contents =
+  let tmp = path ^ ".tmp" in
+  let* fd =
+    Lwt_unix.openfile tmp
+      [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC; Unix.O_CLOEXEC ]
+      0o600
+  in
+  let* () =
+    Lwt.finalize
+      (fun () ->
+        let* () = Store.write_all fd contents in
+        Store.fsync fd)
+      (fun () -> Lwt_unix.close fd)
+  in
+  let* () = Lwt_unix.rename tmp path in
+  Store.fsync_dir (Filename.dirname path)
+
 let build_async (ctx : Ctx.t) ~id ~framework ~since ~until ~builder ~created ~gaps =
   Lwt.async (fun () ->
       Lwt.catch
         (fun () ->
           (* Let the 202 response go out first. *)
           let* () = Lwt.pause () in
-          let b = build_pack ctx ~id ~framework ~since ~until ~builder ~created ~gaps in
-          Store.write_atomic (pack_path ctx id) b.tgz;
+          let* activity = activity_lines ctx ~since ~until in
+          let b =
+            build_pack ctx ~id ~framework ~since ~until ~builder ~created ~gaps ~activity
+          in
+          let* () = write_pack (pack_path ctx id) b.tgz in
           set_fields ctx id
             [
               ("state", `String "ready");
@@ -512,7 +545,7 @@ let create_handler (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
 
 let list_handler (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
   ignore (Ctx.require p r.http Rbac.Build_evidence);
-  let packs = List.rev_map (fun (_, d) -> public d) (Store.list ctx.store "packs") in
+  let packs = Store.fold ctx.store "packs" (fun _ d acc -> public d :: acc) [] in
   Api.json (`Assoc [ ("packs", `List packs) ])
 
 let download_handler (ctx : Ctx.t) (p : Ctx.principal) (r : Router.req) =
@@ -560,17 +593,19 @@ let routes : Router.route list =
 let start (ctx : Ctx.t) : unit Lwt.t =
   Lwt.catch
     (fun () ->
+      let building =
+        Store.fold ctx.store "packs"
+          (fun id doc acc ->
+            match Api.member "state" doc with
+            | Some (`String "building") -> id :: acc
+            | _ -> acc)
+          []
+      in
       Lwt_list.iter_s
-        (fun (id, doc) ->
-          match Api.member "state" doc with
-          | Some (`String "building") ->
-              set_fields ctx id
-                [
-                  ("state", `String "failed");
-                  ("error", `String "interrupted by a restart");
-                ]
-          | _ -> Lwt.return_unit)
-        (Store.list ctx.store "packs"))
+        (fun id ->
+          set_fields ctx id
+            [ ("state", `String "failed"); ("error", `String "interrupted by a restart") ])
+        (List.rev building))
     (fun e ->
       log "error" "evidence startup check failed: %s" (Printexc.to_string e);
       Lwt.return_unit)

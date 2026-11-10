@@ -123,7 +123,7 @@ let data_tests =
         with_console ~background:false
           (config ~extra:(catalogs_extra ()) ())
           (fun r ->
-            r.ctx.policies <- [ support (); finance () ];
+            C.Policy_set.set r.ctx @@ [ support (); finance () ];
             load_records r
               [
                 server_record ~request_id:"shadow-1" ~policy:"support" ~allowed:true
@@ -197,7 +197,7 @@ let data_tests =
               (member "totals.blocked" doc = `Int 1
               && member "totals.exception" doc = `Int 1
               && member "totals.needs_review" doc = `Int 2);
-            Alcotest.(check bool) "stored in ctx" true (r.ctx.catalog_columns <> None);
+            Alcotest.(check bool) "stored in ctx" true (C.Data.columns_doc r.ctx <> None);
             (* filters *)
             let* res = get r "/api/v1/data/columns" in
             Alcotest.(check int)
@@ -242,10 +242,15 @@ let data_tests =
             Alcotest.(check string)
               "code" "RATE_LIMITED"
               (str (member "error.code" (snd res)));
+            (* dev lacks view_activity, so read the log directly *)
             let* res = get r "/api/v1/activity?action=data.refresh" in
+            check_status "dev cannot read activity" 403 res;
             Alcotest.(check int)
               "logged once" 1
-              (List.length (list (member "entries" (snd res))));
+              (List.length
+                 (List.filter
+                    (fun a -> member "action" a = `String "data.refresh")
+                    (C.Activity.recent r.ctx)));
             Lwt.return_unit) );
     ( "catalog errors are reported, not fatal",
       `Quick,
@@ -532,17 +537,17 @@ let pack_tests =
           ]
         in
         with_console ~background:false (config ~role:"audit" ~extra ()) (fun r ->
-            r.ctx.policies <- [ support () ];
-            r.ctx.ingest_status <-
-              `List
-                [
-                  `Assoc
-                    [
-                      ("source", `String "s3://acme-audit/haltsql/");
-                      ("error", `String "AccessDenied");
-                    ];
-                  `Assoc [ ("source", `String "/var/log/ok.jsonl"); ("error", `Null) ];
-                ];
+            C.Policy_set.set r.ctx @@ [ support () ];
+            C.Ingest.Testing.set_status r.ctx
+            @@ `List
+                 [
+                   `Assoc
+                     [
+                       ("source", `String "s3://acme-audit/haltsql/");
+                       ("error", `String "AccessDenied");
+                     ];
+                   `Assoc [ ("source", `String "/var/log/ok.jsonl"); ("error", `Null) ];
+                 ];
             load_records ~verifier:"haltsql-1" r (chain ~prefix:"a" 3);
             load_records ~verifier:"haltsql-2" r (chain ~prefix:"b" ~tamper:1 3);
             let now = Unix.gettimeofday () in
@@ -814,10 +819,18 @@ let integration_tests =
             ( "auth",
               `Assoc
                 [
-                  ( "dev",
-                    `Assoc
-                      [ ("user", `String "tester@acme.test"); ("role", `String "admin") ]
-                  );
+                  (* dev mode cannot be combined with oidc: sign in with a token *)
+                  ( "tokens",
+                    `List
+                      [
+                        `Assoc
+                          [
+                            ("name", `String "tester");
+                            ( "sha256",
+                              `String (Haltsql.sha256_hex "admin-token-0123456789") );
+                            ("role", `String "admin");
+                          ];
+                      ] );
                   ( "oidc",
                     `List
                       [
@@ -868,50 +881,57 @@ let integration_tests =
           ~finally:(fun () -> C.Access.jwks_fetch := saved)
           (fun () ->
             with_console ~background:false (config ~extra ()) (fun r ->
-                r.ctx.fleet <-
-                  Some
-                    (`Assoc
-                       [
-                         ( "bundles",
-                           `List
-                             [
-                               `Assoc
-                                 [
-                                   ("source", `String "s3://bundles/prod");
-                                   ("version", `String "1.4.0");
-                                   ("verifiers", `Int 2);
-                                   ("in_sync", `Bool false);
-                                 ];
-                             ] );
-                         ( "sinks",
-                           `List
-                             [
-                               `Assoc
-                                 [
-                                   ("type", `String "kafka");
-                                   ( "target",
-                                     `String
-                                       "https://user:pw@kafka.example.test/topic?key=1" );
-                                   ("state", `String "buffering");
-                                 ];
-                               `Assoc
-                                 [
-                                   ("type", `String "file");
-                                   ("target", `String "/var/log/a");
-                                   ("state", `String "healthy");
-                                 ];
-                             ] );
-                       ]);
-                r.ctx.ingest_status <-
-                  `List
-                    [
-                      `Assoc
+                C.Fleet.Testing.set_snapshot r.ctx
+                @@ Some
+                     (`Assoc
                         [
-                          ("source", `String "s3://acme-audit/haltsql/");
-                          ("error", `String "AccessDenied");
-                        ];
-                    ];
-                let* res = get r "/api/v1/integrations" in
+                          ( "bundles",
+                            `List
+                              [
+                                `Assoc
+                                  [
+                                    ("source", `String "s3://bundles/prod");
+                                    ("version", `String "1.4.0");
+                                    ("verifiers", `Int 2);
+                                    ("in_sync", `Bool false);
+                                  ];
+                              ] );
+                          ( "sinks",
+                            `List
+                              [
+                                `Assoc
+                                  [
+                                    ("type", `String "kafka");
+                                    ( "target",
+                                      `String
+                                        "https://user:pw@kafka.example.test/topic?key=1"
+                                    );
+                                    ("state", `String "buffering");
+                                  ];
+                                `Assoc
+                                  [
+                                    ("type", `String "file");
+                                    ("target", `String "/var/log/a");
+                                    ("state", `String "healthy");
+                                  ];
+                              ] );
+                        ]);
+                C.Ingest.Testing.set_status r.ctx
+                @@ `List
+                     [
+                       `Assoc
+                         [
+                           ("source", `String "s3://acme-audit/haltsql/");
+                           ("error", `String "AccessDenied");
+                         ];
+                       `Assoc
+                         [
+                           ("source", `String "/var/log/ok.jsonl");
+                           ("last_read", `String "2026-11-09T00:00:00Z");
+                           ("error", `Null);
+                         ];
+                     ];
+                let* res = get ~token:"admin-token-0123456789" r "/api/v1/integrations" in
                 check_status "integrations" 200 res;
                 let body = Yojson.Safe.to_string (snd res) in
                 let items =

@@ -48,7 +48,8 @@ let dev =
     & info [ "dev" ] ~docv:"ROLE"
         ~doc:
           "Development only: authenticate every request as a local user with $(docv). \
-           Never use in production.")
+           Disables every other auth method and requires a loopback $(b,listen) address \
+           (exit 2 otherwise). Never use in production.")
 
 (* A dependency-free HTTP/1.0 probe: connect, send one request, read the status line. *)
 let probe listen =
@@ -93,10 +94,16 @@ let run config listen dev healthcheck =
           "haltsql-console: --config FILE (or HALTSQL_CONSOLE_CONFIG) is required";
         2
     | Some config -> (
-        try Haltsql_console.Console_server.main ~config_file:config ?listen ?dev ()
-        with Failure m | Sys_error m ->
-          prerr_endline ("haltsql-console: " ^ m);
-          2)
+        try Haltsql_console.Console_server.main ~config_file:config ?listen ?dev () with
+        | Failure m | Sys_error m ->
+            prerr_endline ("haltsql-console: " ^ m);
+            2
+        | Unix.Unix_error (e, fn, arg) ->
+            (* e.g. bind: Address already in use (0.0.0.0:8090) *)
+            prerr_endline
+              (Printf.sprintf "haltsql-console: %s: %s%s" fn (Unix.error_message e)
+                 (if arg = "" then "" else Printf.sprintf " (%s)" arg));
+            2)
 
 let cmd =
   Cmd.v

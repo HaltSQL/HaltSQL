@@ -54,9 +54,9 @@ let keys =
     "required_approvals";
   ]
 
-(** [None] when [integrations.github] is absent; [Some (Error why)] when it is unusable.
-*)
-let config (ctx : Ctx.t) : (cfg, string) result option =
+(* [config] before the token is resolved: [token] is the value as written (it may hold
+   ${...} placeholders). *)
+let parse (ctx : Ctx.t) : (cfg, string) result option =
   match Api.member "github" ctx.config.integrations with
   | None | Some `Null -> None
   | Some (`Assoc kv as j) -> (
@@ -101,6 +101,19 @@ let config (ctx : Ctx.t) : (cfg, string) result option =
                            | _ -> 1);
                        }))))
   | Some _ -> Some (Error "must be a mapping")
+
+(** [None] when [integrations.github] is absent; [Some (Error why)] when it is unusable,
+    including when its token cannot be resolved. Placeholders in [token] are resolved on
+    every call ({!Console_config.resolve}, cached for at most five minutes), so a rotated
+    token is picked up without a restart. *)
+let config (ctx : Ctx.t) : (cfg, string) result option Lwt.t =
+  match parse ctx with
+  | (None | Some (Error _)) as r -> Lwt.return r
+  | Some (Ok c) -> (
+      let+ token = Console_config.resolve ctx.config c.token in
+      match token with
+      | Ok token -> Some (Ok { c with token })
+      | Error m -> Some (Error ("token: " ^ m)))
 
 (* ---- requests ---- *)
 

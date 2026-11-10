@@ -13,7 +13,7 @@
    For each tagged column the console derives which loaded policies allow reading it
    (directly from the compiled allowlist: SELECT allowed, table listed, column listed or
    all columns), whether an approved exception covers it, and how many shadow-denied
-   records read it. The resulting document is [ctx.catalog_columns]. *)
+   records read it. The resulting document is read with [columns_doc]. *)
 
 open Lwt.Syntax
 module C = Console_config
@@ -50,14 +50,15 @@ type state = {
   derived_columns : (string, string list) Hashtbl.t;
       (** request id -> columns re-derived from raw SQL (cache) *)
   lock : Lwt_mutex.t;
+  mutable doc : Yojson.Safe.t option;
+      (** the last [GET /api/v1/data/columns] document, read through [columns_doc] *)
 }
 
-(* One state per console (keyed by state dir), so tests can run several consoles. *)
-let states : (string, state) Hashtbl.t = Hashtbl.create 4
+(* One state per console, in the Ctx registry under a private key. *)
+let key : state Ctx.Key.t = Ctx.Key.create "data"
 
 let state (ctx : Ctx.t) =
-  let k = Store.dir ctx.store in
-  match Hashtbl.find_opt states k with
+  match Ctx.get ctx key with
   | Some s -> s
   | None ->
       let s =
@@ -68,9 +69,10 @@ let state (ctx : Ctx.t) =
           last_manual = neg_infinity;
           derived_columns = Hashtbl.create 64;
           lock = Lwt_mutex.create ();
+          doc = None;
         }
       in
-      Hashtbl.replace states k s;
+      Ctx.set ctx key s;
       s
 
 (** Live catalog providers by name. Tests register fakes here. *)
@@ -349,7 +351,7 @@ let record_columns (ctx : Ctx.t) st (e : Index.entry) =
     | Some cols -> cols
     | None ->
         let cols =
-          match (e.record.sql, List.assoc_opt e.record.policy ctx.policies) with
+          match (e.record.sql, Policy_set.find ctx e.record.policy) with
           | Some sql, Some p -> (
               try
                 (Haltsql.verify p (Haltsql_report.Suggest.probe_context p) sql)
@@ -384,8 +386,8 @@ let source_to_json s =
     ]
 
 (** Builds the [GET /api/v1/data/columns] document from the loaded catalogs, the loaded
-    policies, the configured exceptions and the index, and stores it in
-    [ctx.catalog_columns]. *)
+    policies, the configured exceptions and the index, and stores it in the state read by
+    [columns_doc]. *)
 let compute (ctx : Ctx.t) =
   let st = state ctx in
   let now = Ctx.now () in
@@ -398,7 +400,7 @@ let compute (ctx : Ctx.t) =
         let allowed_by =
           List.filter_map
             (fun (name, p) -> if policy_allows p col then Some name else None)
-            ctx.policies
+            (Policy_set.get ctx)
           |> List.sort_uniq compare
         in
         let matching =
@@ -462,8 +464,17 @@ let compute (ctx : Ctx.t) =
         ("columns", `List columns);
       ]
   in
-  ctx.catalog_columns <- Some doc;
+  st.doc <- Some doc;
   doc
+
+(** The last computed [GET /api/v1/data/columns] document, [None] before the first. *)
+let columns_doc (ctx : Ctx.t) = (state ctx).doc
+
+(** For tests only: replaces the stored classification document without loading catalogs.
+*)
+module Testing = struct
+  let set_columns_doc (ctx : Ctx.t) doc = (state ctx).doc <- doc
+end
 
 (** Catalog sources and their load errors (for integrations). *)
 let sources (ctx : Ctx.t) = (state ctx).catalog_sources
