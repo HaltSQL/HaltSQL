@@ -69,7 +69,7 @@ Groups map to roles through `auth.roles` (`admin` wins over `owner`, then
 | Approve a policy change | `approve_change` | no | no | yes | no | no |
 | Approve a PII exception | `approve_exception` | no | no | yes | no | no |
 | Build evidence packs | `build_evidence` | no | yes | yes | yes | no |
-| Restart verifiers | `restart_verifiers` | no | no | no | no | yes |
+| Restart verifiers | `restart_verifiers` | no | no | no | no | reason |
 | Manage roles and integrations | `manage_access` | no | no | no | no | yes |
 
 Every role can read Overview, Signals, Agents, Fleet, Data classification,
