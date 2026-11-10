@@ -9,7 +9,7 @@
   --ifm-color-primary-lighter: #557aee;
   --ifm-color-primary-lightest: #7a97f1;
   --ifm-code-font-size: 92%;
-  --ifm-font-family-base: 'Archivo', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --ifm-font-family-monospace: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
   --ifm-heading-font-weight: 800;
   --ifm-navbar-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
@@ -109,14 +109,13 @@
   color: var(--ifm-color-primary);
 }
 
-/* Page titles use Archivo's wide cut, like the landing page. */
+/* Page titles: tighter tracking, like the landing page. */
 .markdown h1,
 .navbar__title {
-  font-stretch: 125%;
   letter-spacing: -0.02em;
 }
 .navbar__title {
-  font-weight: 900;
+  font-weight: 800;
 }
 
 /* "Get started" button in the navbar. */

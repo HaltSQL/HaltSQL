@@ -58,7 +58,7 @@ const config = {
   ],
   stylesheets: [
     {
-      href: 'https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Fira+Code:wght@400;500&display=swap',
+      href: 'https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=Fira+Code:wght@400;500&display=swap',
       type: 'text/css',
     },
   ],
