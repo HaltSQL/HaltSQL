@@ -149,6 +149,17 @@ let require_tests =
           "dev cannot view activity" "FORBIDDEN"
           (error_code (fun () ->
                C.Ctx.require (principal [ Dev ]) (request ()) View_activity)) );
+    ( "restart always needs a reason",
+      `Quick,
+      fun () ->
+        (* Fleet.restart relies on the matrix alone for its reason: no role, and no
+           combination of roles, may hold restart_verifiers as a plain yes. *)
+        Alcotest.check grant_t "union of every role" With_reason
+          (grant_union all_roles Restart_verifiers);
+        let p = principal all_roles in
+        Alcotest.(check string)
+          "every role without a reason" "REASON_REQUIRED"
+          (error_code (fun () -> C.Ctx.require p (request ()) Restart_verifiers)) );
   ]
 
 let make_ctx ?(role = "admin") ?(extra = []) () =

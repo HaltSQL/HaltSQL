@@ -4,35 +4,65 @@
 
 Uses the same HaltSQLTools object the MCP server exposes to clients (query tool), with
 a real HaltSQLClient and the lab Postgres. Prints one JSON line with counts.
+
+Only the query tool's structured result decides the outcome: "allowed" true is an
+allow, "allowed" false a denial. A ToolFailure (refused request, bad token, verifier or
+database down) is an "error", which is always unexpected.
 """
 
 import asyncio
 import json
 import sys
 
-import psycopg
-from haltsql import HaltSQLClient
-from haltsql_mcp.core import HaltSQLTools, ToolFailure
+CASES = [
+    ("SELECT o.id, o.status FROM app.orders o WHERE o.tenant_id = $1 LIMIT 10", "allowed"),
+    ("SELECT o.id, o.currency FROM app.orders o WHERE o.tenant_id = $1 LIMIT 10", "allowed"),
+    ("SELECT c.email FROM app.customers c WHERE c.tenant_id = $1 LIMIT 5", "denied"),
+    ("SELECT o.id FROM app.orders o WHERE o.tenant_id = 'globex' LIMIT 5", "denied"),
+]
 
-url, token, dsn = sys.argv[1:4]
-counts = {"allowed": 0, "denied": 0, "unexpected": []}
-with HaltSQLClient(url, token=token) as client:
-    tools = HaltSQLTools(client, lambda: {"tenant_id": "acme"}, connect=lambda: psycopg.AsyncConnection.connect(dsn))  # awaited by the tools
-    cases = [
-        ("SELECT o.id, o.status FROM app.orders o WHERE o.tenant_id = $1 LIMIT 10", "allowed"),
-        ("SELECT o.id, o.currency FROM app.orders o WHERE o.tenant_id = $1 LIMIT 10", "allowed"),
-        ("SELECT c.email FROM app.customers c WHERE c.tenant_id = $1 LIMIT 5", "denied"),
-        ("SELECT o.id FROM app.orders o WHERE o.tenant_id = 'globex' LIMIT 5", "denied"),
-    ]
+
+def classify(out):
+    """'allowed' | 'denied' | 'error' for one query tool result."""
+    if isinstance(out, dict):
+        if out.get("allowed") is True:
+            return "allowed"
+        if out.get("allowed") is False:
+            return "denied"
+    return "error"
+
+
+def drive(query, failure_type, cases=CASES):
+    """Runs [cases] (twice) through [query]; returns the counts per outcome."""
+    counts = {"allowed": 0, "denied": 0, "error": 0, "unexpected": [], "errors": []}
     for sql, expect in cases * 2:
         try:
-            out = asyncio.run(tools.query(sql))
-            got = "denied" if (isinstance(out, dict) and (out.get("status") == "denied" or out.get("denied") or out.get("allowed") is False)) else "allowed"
-        except ToolFailure as e:
-            got = "denied" if "denied" in str(e).lower() or "E_" in str(e) else "error"
-            counts.setdefault("errors", []).append(str(e)[:200])
-        counts[got] = counts.get(got, 0) + 1
+            out = query(sql)
+            got = classify(out)
+            if got == "error":
+                counts["errors"].append(f"unexpected result: {out!r}"[:200])
+        except failure_type as e:
+            got = "error"
+            counts["errors"].append(str(e)[:200])
+        counts[got] += 1
         if got != expect:
             counts["unexpected"].append(sql)
-print(json.dumps({"adapter": "mcp", **counts}))
-sys.exit(1 if counts["unexpected"] else 0)
+    return counts
+
+
+def main():
+    import psycopg
+    from haltsql import HaltSQLClient
+    from haltsql_mcp.core import HaltSQLTools, ToolFailure
+
+    url, token, dsn = sys.argv[1:4]
+    with HaltSQLClient(url, token=token) as client:
+        tools = HaltSQLTools(client, lambda: {"tenant_id": "acme"},
+                             connect=lambda: psycopg.AsyncConnection.connect(dsn))  # awaited by the tools
+        counts = drive(lambda sql: asyncio.run(tools.query(sql)), ToolFailure)
+    print(json.dumps({"adapter": "mcp", **counts}))
+    sys.exit(1 if counts["unexpected"] else 0)
+
+
+if __name__ == "__main__":
+    main()
