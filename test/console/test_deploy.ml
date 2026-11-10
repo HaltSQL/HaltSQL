@@ -369,26 +369,39 @@ let manifest_tests =
         Alcotest.(check string)
           "oauth2Proxy.image.digest default" o2p_digest
           (str (path [ "oauth2Proxy"; "image"; "digest" ] v)) );
-    ( "release builds the console after the server image, from its cache (DEP-09)",
+    ( "release builds the console natively per arch, from the builder caches (DEP-09)",
       `Quick,
       fun () ->
         match repo_root () with
         | None -> print_endline "SKIP: .github not found from the build directory"
         | Some root ->
             let wf = yaml_file (Filename.concat root ".github/workflows/release.yml") in
-            let job = path [ "jobs"; "console-image" ] wf in
+            let job = path [ "jobs"; "console-image-build" ] wf in
+            (* one native runner per architecture: no OCaml compile under QEMU *)
+            let arches =
+              List.map
+                (fun m -> (str (field "arch" m), str (field "runner" m)))
+                (list (path [ "strategy"; "matrix"; "include" ] job))
+            in
+            Alcotest.(check (list string))
+              "architectures" [ "amd64"; "arm64" ]
+              (List.sort compare (List.map fst arches));
             Alcotest.(check bool)
-              "needs image" true
-              (List.mem "image" (List.map str (list (field "needs" job))));
+              "arm64 on an arm runner" true
+              (contains (List.assoc "arm64" arches) "arm");
             let push =
               List.find (fun s -> str (field "id" s) = "build") (list (field "steps" job))
             in
             let cache = str (path [ "with"; "cache-from" ] push) in
             Alcotest.(check bool)
-              "reads the image job's cache" true (contains cache "type=gha");
+              "reads the static-<arch> and image-<arch> builder caches" true
+              (contains cache "scope=static-${{ matrix.arch }}"
+              && contains cache "scope=image-${{ matrix.arch }}");
+            (* the signed multi-arch index is assembled from both builds *)
+            let index = path [ "jobs"; "console-image" ] wf in
             Alcotest.(check bool)
-              "and the native static-<arch> caches" true
-              (contains cache "scope=static-amd64" && contains cache "scope=static-arm64")
+              "index needs the per-arch builds" true
+              (List.mem "console-image-build" (List.map str (list (field "needs" index))))
     );
   ]
 

@@ -585,7 +585,7 @@ action logged as `policy.pull_request`.
   "verifiers": [ {
     "name": "haltsql-1", "kind": "server | proxy | mcp", "location": "shared service, zone a", "url": "...",
     "state": "ready | buffering | restart_pending | not_ready | unreachable",
-    "version": "0.1.0", "uptime_seconds": 345600,
+    "version": "0.0.1", "uptime_seconds": 345600,
     "policies": [ { "name", "version", "mode", "origin" } ],
     "bundle": { "source", "bundle", "version", "signed_by", "revision", "checks", "last_success", "last_error" },
     "bundles": [ { same fields as bundle, one per bundle source } ],
