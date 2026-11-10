@@ -19,7 +19,9 @@ permissions:
 
 concurrency:
   group: integration-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Superseded PR pushes and main merges cancel; tags (releases), schedules and
+  # manual runs always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 env:
   HALTSQL_PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
