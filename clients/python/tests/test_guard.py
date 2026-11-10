@@ -325,3 +325,105 @@ def test_psycopg_runs_under_the_policy_search_path(pg_dsn, haltsql_cli):
         assert r.rows == [(2, "open"), (4, "open"), (6, "open")]
         # transaction-local: the session's own setting is back afterwards
         assert conn.execute("SELECT id FROM orders LIMIT 1").fetchone() == (999,)
+
+
+# ---- tests added after mutation testing: each fails if the named property is removed ----
+
+def _pinned_verdict(sql, ctx, _policy):
+    d = make_verdict_dict(sql, allowed=True, bind=[ctx["tenant_id"]])
+    d["policy"]["search_path"] = ["app"]
+    return d
+
+
+def _decoy(conn_execute):
+    return [
+        "CREATE TABLE IF NOT EXISTS public.orders (id int8, tenant_id text, status text)",
+        "TRUNCATE public.orders",
+        "INSERT INTO public.orders VALUES (999, 'acme', 'decoy')",
+    ]
+
+
+@pytest.mark.integration
+def test_psycopg_sends_the_verified_string_byte_for_byte(pg_dsn):
+    """Leading/trailing whitespace and comments are part of the verified string."""
+    import psycopg
+
+    sql = "  SELECT current_query() AS q FROM orders WHERE tenant_id = $1 LIMIT 1 /* x */  \n"
+    with psycopg.connect(pg_dsn) as conn:
+        r = guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+    assert r.rows == [(sql,)]
+
+
+@pytest.mark.integration
+async def test_async_drivers_send_the_verified_string_byte_for_byte(pg_dsn):
+    import psycopg
+
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "  SELECT current_query() AS q FROM orders WHERE tenant_id = $1 LIMIT 1 /* x */  \n"
+    async with await psycopg.AsyncConnection.connect(pg_dsn) as conn:
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+        assert r.rows == [(sql,)]
+    conn = await asyncpg.connect(f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+    try:
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(decide))
+        assert r.rows == [(sql,)]
+    finally:
+        await conn.close()
+
+
+@pytest.mark.integration
+async def test_asyncpg_runs_under_the_policy_search_path(pg_dsn):
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 2"
+    conn = await asyncpg.connect(f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+    try:
+        for stmt in _decoy(None):
+            await conn.execute(stmt)
+        await conn.execute("SET search_path = public, app")
+        assert await conn.fetchval("SELECT id FROM orders LIMIT 1") == 999
+        r = await guard.execute_async(conn, sql, {"tenant_id": "acme"}, verifier=FakeVerifier(_pinned_verdict))
+        assert r.rows == [(2,), (4,)]
+    finally:
+        await conn.execute("DROP TABLE public.orders")
+        await conn.close()
+
+
+@pytest.mark.integration
+async def test_pin_overrides_a_search_path_passed_in_settings(pg_dsn):
+    """On every driver: a caller-supplied search_path setting cannot redirect the query."""
+    import psycopg
+
+    asyncpg = pytest.importorskip("asyncpg")
+    sql = "SELECT id FROM orders WHERE tenant_id = $1 ORDER BY id LIMIT 2"
+    fv = FakeVerifier(_pinned_verdict)
+    bad = {"search_path": "public, app"}
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        for stmt in _decoy(None):
+            conn.execute(stmt)
+        try:
+            assert guard.execute(conn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad).rows == [(2,), (4,)]
+            async with await psycopg.AsyncConnection.connect(pg_dsn) as aconn:
+                r = await guard.execute_async(aconn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad)
+                assert r.rows == [(2,), (4,)]
+            pconn = await asyncpg.connect(
+                f"postgresql://postgres:{_PW}@127.0.0.1:5417/" + pg_dsn.split("dbname=")[1])
+            try:
+                r = await guard.execute_async(pconn, sql, {"tenant_id": "acme"}, verifier=fv, settings=bad)
+                assert r.rows == [(2,), (4,)]
+            finally:
+                await pconn.close()
+        finally:
+            conn.execute("DROP TABLE public.orders")
+
+
+def test_execute_on_engine_rechecks_a_supplied_verdict_before_taking_a_connection():
+    class NoPool:
+        def raw_connection(self):
+            raise AssertionError("pool used before the verdict was checked")
+
+    other = make_verdict("SELECT 1", allowed=True)
+    with pytest.raises(HaltSQLUnavailable, match="sql_sha256"):
+        guard.execute_on_engine(NoPool(), SQL_OK, {"tenant_id": "a"}, verdict=other)
+    denied = make_verdict(SQL_OK, allowed=False, codes=["E_X"])
+    with pytest.raises(QueryDenied):
+        guard.execute_on_engine(NoPool(), SQL_OK, {"tenant_id": "a"}, verdict=denied)
