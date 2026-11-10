@@ -5,6 +5,7 @@
 
 (executable
  (name fuzz)
+ (modules fuzz)
  (libraries haltsql unix yojson))
 
 (rule
@@ -15,3 +16,28 @@
   (source_tree ../fixtures))
  (action
   (run %{exe:fuzz.exe} --root ..)))
+
+; Mutation fuzzer for haltsql-server's caller authentication: Jwt.decode, the
+; JWK / JWK Set parser and full token verification. Seeds are the committed
+; vectors in test/auth/vectors (valid tokens for all seven algorithms).
+;   HALTSQL_FUZZ_ITERS=2000000 dune test --force test/fuzz
+
+(executable
+ (name fuzz_jwt)
+ (modules fuzz_jwt)
+ (libraries
+  haltsql
+  haltsql-server.auth
+  unix
+  yojson
+  base64
+  digestif
+  zarith
+  mirage-crypto-pk))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree ../auth/vectors))
+ (action
+  (run %{exe:fuzz_jwt.exe} --vectors ../auth/vectors)))
