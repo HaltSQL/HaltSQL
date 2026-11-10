@@ -915,6 +915,66 @@ let validate_dev (c : t) : (unit, string) result =
                   localhost), not %S"
                  h))
 
+(* [signals]: detector thresholds and loop settings, read by Detectors.settings_of_json.
+   Every key is optional; unknown keys, non-numbers and out-of-range values are errors.
+   Each entry is (key, integer only, min, max). *)
+let signal_sections =
+  let window = ("window_minutes", false, 1., 1440.) in
+  let min_records = ("min_records", true, 1., 1_000_000.) in
+  [
+    ("cross_tenant", [ window; min_records ]);
+    ( "deny_spike",
+      [
+        window;
+        ("factor", false, 1., 1000.);
+        min_records;
+        ("min_baseline_rate", false, 0., 1.);
+      ] );
+    ("opa_errors", [ window; min_records ]);
+    ("shadow_ready", [ min_records ]);
+    ("new_caller", [ ("hours", false, 1., 720.) ]);
+  ]
+
+let signal_settings =
+  [
+    ("interval_seconds", false, 5., 3600.);
+    ("resolve_after_minutes", false, 1., 10080.);
+    ("forget_after_days", false, 1., 365.);
+    ("max_reverify", true, 0., 10_000.);
+    ("notify_timeout_seconds", false, 1., 60.);
+  ]
+
+let check_signals (j : Yojson.Safe.t) =
+  let numbers ctx spec j =
+    List.iter
+      (fun (k, int, lo, hi) ->
+        match field_opt k j with
+        | None | Some `Null -> ()
+        | Some v ->
+            let x =
+              match v with
+              | `Int i -> float_of_int i
+              | `Float f when not int -> f
+              | _ ->
+                  invalid "%s.%s must be %s" ctx k
+                    (if int then "an integer" else "a number")
+            in
+            if not (x >= lo && x <= hi) then invalid "%s.%s must be in %g..%g" ctx k lo hi)
+      spec
+  in
+  let names spec = List.map (fun (k, _, _, _) -> k) spec in
+  check_keys "signals" (List.map fst signal_sections @ names signal_settings) j;
+  numbers "signals" signal_settings j;
+  List.iter
+    (fun (name, spec) ->
+      match field_opt name j with
+      | None | Some `Null -> ()
+      | Some s ->
+          let ctx = "signals." ^ name in
+          check_keys ctx (names spec) s;
+          numbers ctx spec s)
+    signal_sections
+
 (** Builds a configuration from a document whose typed sections are already substituted.
     [raw] (default [j]) is the document as written; [resolver] serves {!resolve} (default:
     [${env:...}] only). *)
@@ -934,6 +994,7 @@ let of_json ?file ?raw ?(resolver = env_only_resolver ()) (j : Yojson.Safe.t) : 
     fleet;
   let data = sub "data" in
   check_keys "data" [ "exceptions" ] data;
+  check_signals (sub "signals");
   let public_url = string_opt "config" "public_url" j in
   let origin_of ctx s =
     match parse_origin s with

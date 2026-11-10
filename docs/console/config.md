@@ -17,8 +17,10 @@ When placeholders are resolved depends on the section:
   `environment`, `state_dir`, `frontend_dir`, `auth`, `verifiers`, `fleet`,
   `audit`, `policies`, `data`, `agents`). A placeholder that cannot
   be resolved is a startup error.
-- **On demand:** `opa`, `integrations`, `signals` and `catalogs` (resolved on
-  every catalog load, so a rotated catalog `token` is used by the next load). At load each placeholder
+- **On demand:** `opa`, `integrations`, `signals` and `catalogs` (catalogs are
+  resolved on every catalog load, so a rotated catalog `token` is used by the
+  next load; `signals` takes only numbers, so it has no placeholders in
+  practice). At load each placeholder
   is only checked: valid syntax, a known scheme, the provider configured in
   `secrets:`, and for `${env:...}` the variable set. Errors stop startup. The
   value is fetched only when a feature needs it (for example when it posts to
@@ -285,9 +287,10 @@ opa:
 
 ## `signals`
 
-Detectors run every 30 seconds over the record index, the fleet snapshot and the
-last audit-chain verification. Every key is optional; numbers may be integers or
-decimals.
+Detectors run every 30 seconds (`interval_seconds`) over the record index, the
+fleet snapshot and the last audit-chain verification. Every key is optional;
+numbers may be integers or decimals unless the table says integer. Unknown keys,
+non-numbers and values outside the range are configuration errors at startup.
 
 ```yaml
 signals:
@@ -296,27 +299,41 @@ signals:
   opa_errors:   { window_minutes: 15, min_records: 10 }
   shadow_ready: { min_records: 1 }
   new_caller:   { hours: 24 }
+  interval_seconds: 30
+  resolve_after_minutes: 30
+  forget_after_days: 7
+  max_reverify: 500
+  notify_timeout_seconds: 5
 ```
 
-| Key | Default | Meaning |
-|---|---|---|
-| `cross_tenant.window_minutes` | `10` | Sliding window for `E_TENANT_MISMATCH` records per caller. |
-| `cross_tenant.min_records` | `10` | Records in the window that open a high `cross_tenant` signal. |
-| `deny_spike.window_minutes` | `15` | Window whose deny rate is compared with the caller's previous 24 hours. |
-| `deny_spike.factor` | `3.0` | The window's deny rate must be at least this many times the baseline. |
-| `deny_spike.min_records` | `50` | Minimum records from the caller in the window. |
-| `deny_spike.min_baseline_rate` | `0.01` | Baseline deny rate used when the real one is lower, so one denial after a quiet day is not a spike. |
-| `opa_errors.window_minutes` | `15` | Window for `E_EXTERNAL_POLICY` denials and for the fleet's OPA error counter delta. |
-| `opa_errors.min_records` | `10` | `E_EXTERNAL_POLICY` denials in the window that open a signal (any increase of the fleet's OPA error counter also does). |
-| `shadow_ready.min_records` | `1` | Shadow-denied records in 24 hours that open a `shadow_ready` signal for a policy. |
-| `new_caller.hours` | `24` | A caller first seen this recently and not listed under `agents` opens a low signal. Only checked once the index holds older records, so a fresh console does not flag every caller. |
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `cross_tenant.window_minutes` | `10` | 1-1440 | Sliding window for `E_TENANT_MISMATCH` records per caller. |
+| `cross_tenant.min_records` | `10` | integer 1-1000000 | Records in the window that open a high `cross_tenant` signal. |
+| `deny_spike.window_minutes` | `15` | 1-1440 | Window whose deny rate is compared with the caller's previous 24 hours. |
+| `deny_spike.factor` | `3.0` | 1-1000 | The window's deny rate must be at least this many times the baseline. |
+| `deny_spike.min_records` | `50` | integer 1-1000000 | Minimum records from the caller in the window. |
+| `deny_spike.min_baseline_rate` | `0.01` | 0-1 | Baseline deny rate used when the real one is lower, so one denial after a quiet day is not a spike. |
+| `opa_errors.window_minutes` | `15` | 1-1440 | Window for `E_EXTERNAL_POLICY` denials and for the fleet's OPA error counter delta. |
+| `opa_errors.min_records` | `10` | integer 1-1000000 | `E_EXTERNAL_POLICY` denials in the window that open a signal (any increase of the fleet's OPA error counter also does). |
+| `shadow_ready.min_records` | `1` | integer 1-1000000 | Shadow-denied records in 24 hours that open a `shadow_ready` signal for a policy. |
+| `new_caller.hours` | `24` | 1-720 | A caller first seen this recently and not listed under `agents` opens a low signal. Only checked once the index holds older records, so a fresh console does not flag every caller. |
+| `interval_seconds` | `30` | 5-3600 | Time between detector passes. |
+| `resolve_after_minutes` | `30` | 1-10080 | A signal whose condition has cleared this long is resolved automatically (unless someone set its status). |
+| `forget_after_days` | `7` | 1-365 | A resolved signal leaves memory this long after it cleared; its workflow and snapshot stay in `state_dir`. |
+| `max_reverify` | `500` | integer 0-10000 | `cross_tenant`: statements per signal re-verified to extract tenant values (results are cached per record). |
+| `notify_timeout_seconds` | `5` | 1-60 | Timeout of each Slack or PagerDuty request. |
 
 `sink_buffering`, `restart_pending` and `bundle_drift` come from the fleet
 snapshot and `chain_broken` from the last chain verification; they have no
-settings. A signal whose condition has cleared for 30 minutes is resolved
-automatically unless someone set its status. Detector output is kept in memory
-and rebuilt after a restart; status, assignee and linked case are stored in
-`state_dir` (`signals.json`).
+settings. Detector output is kept in memory and rebuilt after a restart. When
+someone sets a status, an assignee or a case, that workflow state and a snapshot
+of the signal are stored in `state_dir` (`signals.json`); after a restart a
+re-detected condition re-attaches to its workflow while the workflow is still
+open, and `GET /api/v1/signals/{id}` serves the snapshot until then. Each pass
+yields to the HTTP server between detectors, groups records by caller once, and
+scans the whole index for first-seen callers only on the first pass, hourly, or
+when older records appear.
 
 ## `agents`
 
@@ -450,10 +467,17 @@ integrations:
 | `pagerduty.routing_key` | PagerDuty Events API v2 integration (routing) key. |
 | `pagerduty.events_url` | Default `https://events.pagerduty.com/v2/enqueue`; override for a proxy or EU endpoint. |
 
-Each new **high** signal is posted once to every configured channel (PagerDuty:
+Each new **high** signal is posted to every configured channel (PagerDuty:
 `event_action: trigger`, `dedup_key` = the signal id, severity `critical`).
-Delivery is best effort: failures are logged with the HTTP status only, never the
-URL or key. URLs must be `https` (plain `http` only on a loopback host).
+When a high signal resolves (automatically, or a person sets `resolved`), the
+PagerDuty incident is resolved with `event_action: resolve` and the same
+`dedup_key`. Delivery is best effort: a request that gets HTTP 429, a 5xx or a
+transport error is retried twice (0.5 s, then 1 s later); other failures are
+logged with the HTTP status only, never the URL or key. Placeholders in these
+keys are resolved on each use; one that cannot be resolved is logged and the
+channel is skipped. Slack text escapes `&`, `<` and `>` in every field, so a
+caller name cannot mention `@channel` or disguise a link. URLs must be `https`
+(plain `http` only on a loopback host).
 
 ### `integrations.jira`
 
