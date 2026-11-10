@@ -1,6 +1,40 @@
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 
+/** The lab Postgres (make -C lab up), or the one named by HALTSQL_PG*. */
+export const PG = {
+  host: process.env.HALTSQL_PGHOST ?? "localhost",
+  port: Number(process.env.HALTSQL_PGPORT ?? 5417),
+  user: process.env.HALTSQL_PGUSER ?? "postgres",
+  password: process.env.HALTSQL_PGPASSWORD ?? "haltlab",
+};
+
+let reachable;
+
+/**
+ * Whether Postgres answers. Tests that need it skip when it does not, unless
+ * HALTSQL_REQUIRE_POSTGRES=1 (set in CI): then this throws, which fails the
+ * test file instead of skipping its Postgres tests.
+ */
+export async function pgReachable() {
+  if (reachable === undefined) {
+    const { default: pg } = await import("pg");
+    const c = new pg.Client({ ...PG, database: "postgres", connectionTimeoutMillis: 1500 });
+    try {
+      await c.connect();
+      await c.end();
+      reachable = true;
+    } catch (e) {
+      reachable = false;
+      console.log(`# skipping Postgres tests: ${PG.host}:${PG.port} not reachable (run: make -C lab up)`);
+      if (process.env.HALTSQL_REQUIRE_POSTGRES === "1") {
+        throw new Error(`HALTSQL_REQUIRE_POSTGRES=1 but Postgres at ${PG.host}:${PG.port} is not reachable: ${e}`);
+      }
+    }
+  }
+  return reachable;
+}
+
 export const vectors = JSON.parse(
   readFileSync(new URL("../testdata/vectors.json", import.meta.url), "utf8"),
 );
