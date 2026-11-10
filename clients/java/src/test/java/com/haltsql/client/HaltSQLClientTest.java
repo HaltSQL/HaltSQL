@@ -268,7 +268,18 @@ class HaltSQLClientTest {
     cases.put("allowed null", mutate(ok, o -> o.putNull("allowed")));
     cases.put("missing allowed", mutate(ok, o -> o.remove("allowed")));
     cases.put("allowed with reasons", mutate(ok, o -> o.putArray("reasons").addObject().put("code", "E_TABLE_DENIED").put("message", "m").put("rule", "r")));
-    cases.put("bad reason code", mutate(denied, o -> ((ObjectNode) ((ArrayNode) o.get("reasons")).get(0)).put("code", "nope")));
+    // The body must be valid in every other respect (also its hash), so only the code is wrong.
+    String okHash = ok.get("sql_sha256").asText();
+    cases.put("bad reason code", mutate(denied, o -> {
+      ((ObjectNode) ((ArrayNode) o.get("reasons")).get(0)).put("code", "nope");
+      o.put("sql_sha256", okHash);
+    }));
+    cases.put("bad shadow reason code", mutate(ok, o -> o.putArray("shadow_reasons").addObject().put("code", "e_lower").put("message", "m").put("rule", "r")));
+    cases.put("missing reasons", mutate(ok, o -> o.remove("reasons")));
+    cases.put("missing shadow_reasons", mutate(ok, o -> o.remove("shadow_reasons")));
+    cases.put("shadow_reasons null", mutate(ok, o -> o.putNull("shadow_reasons")));
+    cases.put("bind value array with a number", mutate(ok, o -> o.putArray("bind_params").addObject().put("param", 1).putArray("value").add("acme").add(7)));
+    cases.put("bind value array with null", mutate(ok, o -> o.putArray("bind_params").addObject().put("param", 1).putArray("value").addNull()));
     cases.put("bind param 0", mutate(ok, o -> o.putArray("bind_params").addObject().put("param", 0).put("value", "a")));
     cases.put("bind value number", mutate(ok, o -> o.putArray("bind_params").addObject().put("param", 1).put("value", 7)));
     cases.put("sql hash mismatch", mutate(ok, o -> o.put("sql_sha256", badHash)));
@@ -288,6 +299,123 @@ class HaltSQLClientTest {
                         assertFalse(ex.allowed());
                       }
                     }));
+  }
+
+  /** With the hash check off, sql_sha256 must still have the documented shape. */
+  @ParameterizedTest
+  @ValueSource(strings = {"", "abc", "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789", "g"})
+  void hashShapeIsCheckedWithoutTheHashCheck(String bad) throws Exception {
+    JsonNode v = FakeServer.vector("allowed_bound_single_tenant");
+    String body = mutate(v.get("response"), o -> o.put("sql_sha256", bad));
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, body))) {
+      HaltSQLClient c = HaltSQLClient.builder(srv.url()).withoutSqlHashCheck().build();
+      HaltSQLException e =
+          assertThrows(HaltSQLException.class, () -> c.verify(v.get("request").get("sql").asText(), Map.of("tenant_id", "acme")));
+      assertEquals(HaltSQLException.Kind.PROTOCOL, e.kind());
+    }
+  }
+
+  /** Everything an application might log about an error: message, toString and the cause chain. */
+  static String errorText(Throwable e) {
+    StringBuilder b = new StringBuilder();
+    for (Throwable t = e; t != null; t = t.getCause()) b.append(t).append('|').append(t.getMessage()).append('\n');
+    return b.toString();
+  }
+
+  @Test
+  void tokenNeverInTransportOrTimeoutErrors() throws Exception {
+    String token = "super-secret-token-value";
+    int port;
+    try (ServerSocket s = new ServerSocket(0)) {
+      port = s.getLocalPort();
+    }
+    HaltSQLClient refused =
+        HaltSQLClient.builder("http://127.0.0.1:" + port).token(token).retries(0, Duration.ZERO, Duration.ZERO).build();
+    HaltSQLException e = assertThrows(HaltSQLException.class, () -> refused.verify("SELECT 1"));
+    assertEquals(HaltSQLException.Kind.TRANSPORT, e.kind());
+    assertFalse(errorText(e).contains(token), errorText(e));
+    try (FakeServer srv = new FakeServer((n, r) -> new FakeServer.Response(200, "{}", Map.of(), 400))) {
+      HaltSQLClient slow =
+          HaltSQLClient.builder(srv.url()).token(token).timeout(Duration.ofMillis(100)).retries(0, Duration.ZERO, Duration.ZERO).build();
+      HaltSQLException t = assertThrows(HaltSQLException.class, () -> slow.verify("SELECT 1"));
+      assertEquals(HaltSQLException.Kind.TIMEOUT, t.kind());
+      assertFalse(errorText(t).contains(token), errorText(t));
+    }
+  }
+
+  /** Only 503, connection errors and timeouts are retried: an unusable answer is final. */
+  @Test
+  void unusableResponseIsNotRetried() throws Exception {
+    JsonNode v = FakeServer.vector("allowed_bound_single_tenant");
+    String big = mutate(v.get("response"), o -> o.put("pad", "x".repeat(5000)));
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(200, big))) {
+      HaltSQLClient c = fast(srv.url()).maxResponseBytes(1024).build();
+      HaltSQLException e =
+          assertThrows(HaltSQLException.class, () -> c.verify(v.get("request").get("sql").asText(), Map.of("tenant_id", "acme")));
+      assertEquals(HaltSQLException.Kind.PROTOCOL, e.kind());
+      assertEquals(1, srv.count());
+    }
+  }
+
+  /** A declared Content-Length above the cap is refused without waiting for the body. */
+  @Test
+  void declaredLengthOverTheCapIsRefusedBeforeTheBody() throws Exception {
+    String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n{\"allowed\":";
+    try (FakeServer.Raw srv = new FakeServer.Raw(head, null)) {
+      HaltSQLClient c =
+          HaltSQLClient.builder(srv.url()).maxResponseBytes(1024).timeout(Duration.ofSeconds(3)).retries(0, Duration.ZERO, Duration.ZERO).build();
+      long t0 = System.nanoTime();
+      HaltSQLException e = assertThrows(HaltSQLException.class, () -> c.verify("SELECT 1"));
+      assertEquals(HaltSQLException.Kind.PROTOCOL, e.kind());
+      assertTrue(e.getMessage().contains("response larger than 1024 bytes"), e.getMessage());
+      assertTrue(System.nanoTime() - t0 < 2_000_000_000L, "waited for a body that was already too large");
+    }
+  }
+
+  /** The cap holds without a Content-Length: an endless chunked body is cut off at the cap. */
+  @Test
+  void endlessChunkedBodyIsCutOffAtTheCap() throws Exception {
+    String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+    String chunk = "400\r\n" + "x".repeat(1024) + "\r\n";
+    try (FakeServer.Raw srv = new FakeServer.Raw(head, chunk)) {
+      HaltSQLClient c =
+          HaltSQLClient.builder(srv.url()).maxResponseBytes(4096).timeout(Duration.ofSeconds(3)).retries(0, Duration.ZERO, Duration.ZERO).build();
+      long t0 = System.nanoTime();
+      HaltSQLException e = assertThrows(HaltSQLException.class, () -> c.verify("SELECT 1"));
+      assertEquals(HaltSQLException.Kind.PROTOCOL, e.kind());
+      assertTrue(e.getMessage().contains("response larger than 4096 bytes"), e.getMessage());
+      assertTrue(System.nanoTime() - t0 < 2_000_000_000L, "the body was read past the cap");
+    }
+  }
+
+  /** health() and policies() succeed only on 200; ready() is true only on 200 + "ready". */
+  @Test
+  void operationsFailClosedOnStatus() throws Exception {
+    String policies = FakeServer.vectors().get("policies").toString();
+    java.util.concurrent.atomic.AtomicReference<FakeServer.Response> next = new java.util.concurrent.atomic.AtomicReference<>();
+    try (FakeServer srv = new FakeServer((n, r) -> next.get())) {
+      HaltSQLClient c = HaltSQLClient.builder(srv.url()).token("tok").retries(0, Duration.ZERO, Duration.ZERO).build();
+      next.set(FakeServer.Response.of(500, "{\"status\":\"ok\"}"));
+      assertEquals(500, assertThrows(HaltSQLHttpException.class, c::health).status());
+      next.set(FakeServer.Response.of(403, policies));
+      assertEquals(403, assertThrows(HaltSQLHttpException.class, c::policies).status());
+      next.set(FakeServer.Response.of(503, "{\"status\":\"ready\",\"policies\":2}"));
+      assertEquals(new ReadyStatus(false, "ready", 2), c.ready());
+      next.set(FakeServer.Response.of(200, "{\"status\":\"not_ready\",\"policies\":0}"));
+      assertEquals(new ReadyStatus(false, "not_ready", 0), c.ready());
+      next.set(FakeServer.Response.of(500, "{\"status\":\"ready\",\"policies\":2}"));
+      assertEquals(500, assertThrows(HaltSQLHttpException.class, c::ready).status());
+    }
+  }
+
+  @Test
+  void emptyPolicyNameIsAUsageErrorAndNothingIsSent() throws Exception {
+    try (FakeServer srv = new FakeServer((n, r) -> FakeServer.Response.of(500, "{}"))) {
+      HaltSQLClient c = fast(srv.url()).build();
+      HaltSQLException e = assertThrows(HaltSQLException.class, () -> c.verify("SELECT 1", Map.of(), VerifyOptions.policy("")));
+      assertEquals(HaltSQLException.Kind.USAGE, e.kind());
+      assertEquals(0, srv.count());
+    }
   }
 
   @Test
