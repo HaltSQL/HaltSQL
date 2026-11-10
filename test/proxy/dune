@@ -42,6 +42,12 @@
   lwt
   lwt.unix
   threads.posix
+  tls
+  tls-lwt
+  x509
+  ptime
+  ptime.clock.os
+  domain-name
   unix)
  (deps
   (source_tree fixtures)))

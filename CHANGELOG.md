@@ -123,6 +123,15 @@ even before 1.0.
   `haltsql.rlsgen`.
 
 ### Fixed
+- **haltsql-proxy: TLS clients now receive the error that ends their
+  session.** When the proxy ended a session from outside the client's own
+  message loop (a reload that changed it or `limits.max_session_lifetime_seconds`,
+  both `FATAL 57P01`; an upstream that entered COPY mode or changed
+  `client_encoding`, `standard_conforming_strings` or `search_path`; the
+  authentication timeout), a client connected over TLS got no error at all:
+  the connection was dropped without a TLS close, and drivers reported an
+  unexpected EOF instead of the documented SQLSTATE. Plaintext connections
+  were not affected. The session was always ended; only the message was lost.
 - `docs/how-it-works/proxy-internals.md` claimed that the proxy's audit log
   is not hash-chained, that a failed audit write does not block the
   statement and that there is no hot reload. All three were wrong; the page

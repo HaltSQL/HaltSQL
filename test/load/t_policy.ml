@@ -59,7 +59,20 @@ let happy =
     tc "partial limits keep defaults" (fun () ->
         let p = pol_ok "limits: {max_joins: 3}" in
         Alcotest.(check int) "joins" 3 p.limits.max_joins;
-        Alcotest.(check int) "bytes" 16384 p.limits.max_bytes);
+        Alcotest.(check int) "bytes" 16384 p.limits.max_bytes;
+        Alcotest.(check int) "depth" 64 p.limits.max_depth;
+        Alcotest.(check int) "nodes" 20_000 p.limits.max_nodes;
+        let p = pol_ok "limits: {max_bytes: 100}" in
+        Alcotest.(check bool)
+          "every other limit" true
+          (p.limits = { Policy.default_limits with max_bytes = 100 }));
+    tc "tenancy mode defaults to bound" (fun () ->
+        let p = pol_ok "tenancy: {keys: {workspace: '${ctx.ws}'}}" in
+        Alcotest.(check bool) "mode" true (p.tenancy.mode = Policy.Bound);
+        Alcotest.(check (list (pair string string)))
+          "keys"
+          [ ("workspace", "ws") ]
+          p.tenancy.keys);
     tc "statements canonical order and dedup" (fun () ->
         let p = pol_ok "statements: {allow: [delete, select, select, insert]}" in
         Alcotest.(check bool) "s" true (p.statements = [ Policy.Select; Insert; Delete ]));
@@ -333,6 +346,12 @@ let error_table =
       \  t: {columns: [x], tenant_columns: {x: nope}}",
       "tables.t.tenant_columns.x",
       "unknown tenancy key" );
+    ( "tenant_columns duplicate after case folding",
+      "tenancy: {keys: {ws: '${ctx.ws}', org: '${ctx.org}'}}\n\
+       tables:\n\
+      \  t: {columns: [ws_id], tenant_columns: {ws_id: ws, WS_ID: org}}",
+      "tables.t.tenant_columns.WS_ID",
+      "duplicate tenant column" );
     ( "tenant column not readable",
       "tenancy: {value: '${ctx.a}'}\ntables:\n  t: {columns: [x], tenant_column: tid}",
       "tables.t.tenant_column",

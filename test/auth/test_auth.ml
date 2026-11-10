@@ -28,6 +28,11 @@ let keys =
     jwk "ed1" (Jwk.Ed25519 ed_pub);
   ]
 
+let contains s sub =
+  let n = String.length s and m = String.length sub in
+  let rec go i = i + m <= n && (String.sub s i m = sub || go (i + 1)) in
+  go 0
+
 let issuer = "https://idp.example.com"
 let now = 1_800_000_000.
 
@@ -137,6 +142,21 @@ let jwk_parsing () =
       ("unknown kty", `Assoc [ ("kty", `String "XYZ") ]);
     ]
   in
+  (* The same valid point, split one byte early: x || y still decodes to a point on the
+     curve, so only the per-coordinate length check refuses it. *)
+  let o = Mirage_crypto_ec.P256.Dsa.pub_to_octets p256_pub in
+  let shifted =
+    `Assoc
+      [
+        ("kty", `String "EC");
+        ("crv", `String "P-256");
+        ("x", `String (B64url.encode (String.sub o 1 31)));
+        ("y", `String (B64url.encode (String.sub o 32 33)));
+      ]
+  in
+  Alcotest.(check (result reject string))
+    "EC coordinates of the wrong length" (Error "EC coordinate has the wrong length")
+    (Jwk.of_json shifted);
   List.iter
     (fun (name, j) ->
       Alcotest.(check bool) ("rejected: " ^ name) true (Result.is_error (Jwk.of_json j)))
@@ -485,6 +505,14 @@ let stale_while_error () =
   | Error (Jwt.Keys_unavailable _) -> ()
   | Ok _ -> Alcotest.fail "stale keys used past the bound"
   | Error e -> Alcotest.failf "unexpected %s" (Jwt.error_to_string e));
+  (* ... and it stays closed while the failed refresh is not retried (5 s) *)
+  let fetches = count f jwks_url in
+  f.clock <- now +. 602.;
+  (match v f.clock with
+  | Error (Jwt.Keys_unavailable _) -> ()
+  | Ok _ -> Alcotest.fail "stale keys used past the bound right after a failed refresh"
+  | Error e -> Alcotest.failf "unexpected %s" (Jwt.error_to_string e));
+  Alcotest.(check int) "no retry within 5 s" fetches (count f jwks_url);
   (* IdP back: recovers *)
   f.routes <- [ (jwks_url, Ok (jwks_json keys)) ];
   f.clock <- now +. 700.;
@@ -515,7 +543,7 @@ let discovery () =
      run (Oidc_client.verify p2 (rs (claims ~exp:(Unix.gettimeofday () +. 600.) [])))
    with
   | Error (Jwt.Keys_unavailable m) ->
-      Alcotest.(check bool) "mentions issuer" true (String.length m > 0);
+      Alcotest.(check bool) "mentions issuer" true (contains m "issuer");
       Alcotest.(check int) "jwks never fetched" 0 (count f2 jw)
   | _ -> Alcotest.fail "discovery issuer mismatch must fail");
   (* http jwks_uri without allow_insecure_http *)
@@ -545,9 +573,31 @@ let discovery () =
       );
     ];
   let p5 = Oidc_client.provider ~fetch:(fetch_of f5) cfg in
-  match run (Oidc_client.refresh p5) with
+  (match run (Oidc_client.refresh p5) with
   | Error _ -> Alcotest.(check int) "only discovery fetched" 1 (List.length f5.calls)
-  | Ok _ -> Alcotest.fail "discovered loopback jwks_uri accepted"
+  | Ok _ -> Alcotest.fail "discovered loopback jwks_uri accepted");
+  (* a URL carrying credentials is never fetched: configured or discovered *)
+  let with_creds = "https://user:secret@keys.idp.example.com/k" in
+  let f6 = fake () in
+  f6.routes <- [ (with_creds, Ok (jwks_json keys)) ];
+  let p6 =
+    Oidc_client.provider ~fetch:(fetch_of f6) { cfg with jwks_uri = Some with_creds }
+  in
+  (match run (Oidc_client.refresh p6) with
+  | Error m ->
+      Alcotest.(check int) "nothing fetched" 0 (List.length f6.calls);
+      Alcotest.(check bool) "secret not echoed" false (contains m "secret")
+  | Ok _ -> Alcotest.fail "jwks_uri with credentials accepted");
+  let f7 = fake () in
+  f7.routes <-
+    [
+      (disc, Ok (Printf.sprintf {|{"issuer":%S,"jwks_uri":%S}|} issuer with_creds));
+      (with_creds, Ok (jwks_json keys));
+    ];
+  let p7 = Oidc_client.provider ~fetch:(fetch_of f7) cfg in
+  match run (Oidc_client.refresh p7) with
+  | Error _ -> Alcotest.(check (list string)) "only discovery fetched" [ disc ] f7.calls
+  | Ok _ -> Alcotest.fail "discovered jwks_uri with credentials accepted"
 
 let registry () =
   let f = fake () in
@@ -618,6 +668,62 @@ let mtls_mapping () =
     "subject spiffe" "spiffe://x/y"
     (Mtls.subject (peer ~spiffe:"spiffe://x/y" ~cn:"c" ()));
   Alcotest.(check string) "subject fp" "sha256:ab" (Mtls.subject (peer ()))
+
+(* The SPIFFE ID of a certificate is its URI SAN only when there is exactly one and it
+   has the spiffe scheme (X.509-SVID): with several, picking "the" identity would be a
+   guess an attacker-influenced issuer could steer. *)
+let mtls_spiffe_extraction () =
+  let module Dn = X509.Distinguished_name in
+  let cert uris =
+    let key = X509.Private_key.generate `P256 in
+    let now = Ptime_clock.now () in
+    let dn =
+      Dn.[ Relative_distinguished_name.singleton (CN (Common_name.v "workload")) ]
+    in
+    let csr = Result.get_ok (X509.Signing_request.create dn key) in
+    let valid_until = Option.get (Ptime.add_span now (Ptime.Span.of_int_s 3600)) in
+    let extensions =
+      X509.Extension.(
+        singleton Subject_alt_name (false, X509.General_name.(singleton URI uris)))
+    in
+    match
+      X509.Signing_request.sign csr ~valid_from:now ~valid_until ~extensions key dn
+    with
+    | Ok c -> Result.get_ok (X509.Certificate.decode_der (X509.Certificate.encode_der c))
+    | Error _ -> Alcotest.fail "sign"
+  in
+  let id = "spiffe://corp.example/ns/a/sa/analytics" in
+  let ids : Config.mtls_identity list =
+    [
+      {
+        mtls_match = Config.Spiffe_id id;
+        mtls_policy = "shop";
+        mtls_context = [];
+        mtls_request_context_fields = [];
+      };
+    ]
+  in
+  let matched p = Mtls.find_identity ids p <> None in
+  let one = Mtls.peer_of_certificate (cert [ id ]) in
+  Alcotest.(check (option string)) "single spiffe URI" (Some id) one.Mtls.spiffe_id;
+  Alcotest.(check bool) "single spiffe URI matches" true (matched one);
+  List.iter
+    (fun (name, uris) ->
+      let p = Mtls.peer_of_certificate (cert uris) in
+      Alcotest.(check (option string)) (name ^ ": no SPIFFE ID") None p.Mtls.spiffe_id;
+      Alcotest.(check (list string)) (name ^ ": SANs kept") uris p.Mtls.uri_sans;
+      Alcotest.(check bool) (name ^ ": no identity") false (matched p);
+      Alcotest.(check string) (name ^ ": subject is the CN") "workload" (Mtls.subject p))
+    [
+      ("configured id first of two", [ id; "spiffe://corp.example/ns/a/sa/other" ]);
+      ("configured id second of two", [ "https://corp.example/x"; id ]);
+      ("one URI, not spiffe", [ "https://corp.example/ns/a/sa/analytics" ]);
+    ];
+  (* the mapping itself only ever looks at the extracted SPIFFE ID *)
+  Alcotest.(check bool)
+    "URI SANs alone never match" false
+    (matched
+       { Mtls.spiffe_id = None; uri_sans = [ id ]; subject_cn = None; fingerprint = "ab" })
 
 let mtls_cn_text () =
   let module Dn = X509.Distinguished_name in
@@ -796,6 +902,11 @@ let () =
           tc "registry" registry;
           tc "http_fetch size cap and status" http_fetch_limits;
         ] );
-      ("mtls", [ tc "identity mapping" mtls_mapping; tc "CN decoding" mtls_cn_text ]);
+      ( "mtls",
+        [
+          tc "identity mapping" mtls_mapping;
+          tc "SPIFFE ID from the certificate" mtls_spiffe_extraction;
+          tc "CN decoding" mtls_cn_text;
+        ] );
       ("context", [ tc "merge rules" context_merge ]);
     ]
