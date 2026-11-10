@@ -236,6 +236,34 @@ def test_verify_check_verify_many(saas):
     assert saas.verify_many([]) == []
 
 
+def test_library_results_are_validated(native_env, monkeypatch):
+    """Whatever libhaltsql hands back is checked like any other engine's answer."""
+    import json
+
+    from haltsql.testing import make_verdict_dict
+
+    with NativeVerifier(SAAS, backend="library") as v:
+        assert v.verify(SQL_OK, CTX).allowed
+        real = v._impl.lib.verify
+        allow_other = json.dumps(make_verdict_dict("SELECT 1", allowed=True))
+        cases = [
+            (None, "no result"),
+            ("this is not json", "non-JSON"),
+            ("[]", "non-object"),
+            ('{"allowed": true}', "malformed verdict"),
+            (allow_other, "different SQL"),
+        ]
+        for raw, match in cases:
+            monkeypatch.setattr(v._impl.lib, "verify", lambda *a, _raw=raw: _raw)
+            with pytest.raises(HaltSQLUnavailable, match=match):
+                v.verify(SQL_OK, CTX)
+        monkeypatch.setattr(v._impl.lib, "verify", lambda *a: '{"error": "bad request"}')
+        with pytest.raises(HaltSQLRequestError, match="bad request"):
+            v.verify(SQL_OK, CTX)
+        monkeypatch.setattr(v._impl.lib, "verify", real)
+        assert v.verify(SQL_OK, CTX).allowed
+
+
 @pytest.mark.parametrize(
     "ctx",
     [{"tenant_id": True}, {"tenant_id": 1.5}, {"": "x"}, {1: "x"}, ["tenant_id"], {"t": [None]}],
@@ -670,8 +698,9 @@ for line in sys.stdin:
     sql, rid = req["sql"], req["id"]
     sha = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     probe = sql == "\x00"
-    out = {"id": rid, "allowed": not probe,
-           "reasons": [{"code": "E_PARSE", "message": "nul", "rule": "parse"}] if probe else [],
+    denied = probe and "ALLOWS_PROBE" not in policy
+    out = {"id": rid, "allowed": not denied,
+           "reasons": [{"code": "E_PARSE", "message": "nul", "rule": "parse"}] if denied else [],
            "shadow_reasons": [], "policy": {"name": "fake", "version": "sha256:00"},
            "statement_kind": None if probe else "select", "tables": [], "columns": [],
            "bind_params": [], "fingerprint": None, "sql_sha256": sha, "elapsed_us": 1}
@@ -690,7 +719,10 @@ for line in sys.stdin:
     if "DIE" in sql:
         sys.exit(3)
     if "TWO_LINES" in sql:
-        sys.stdout.write(json.dumps(out) + "\n")
+        # One write: both lines reach the pipe together even with PYTHONUNBUFFERED=1.
+        sys.stdout.write(json.dumps(out) + "\n" + json.dumps(out) + "\n"); sys.stdout.flush(); continue
+    if "LATE_LINE" in sql:
+        sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush(); time.sleep(0.2)
     if "PARTIAL" in sql:
         sys.stdout.write(json.dumps(out)[:20]); sys.stdout.flush(); time.sleep(3600)
     sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
@@ -746,6 +778,30 @@ def test_fake_child_misbehaves_fails_closed_and_recovers(fake_bin, tmp_path, sql
             assert v._impl.child_pid() != before
 
 
+def test_fake_child_late_extra_line_is_never_the_next_answer(fake_bin, tmp_path):
+    """An extra line that arrives after the answer was read cannot be detected at
+    once. It must not be taken as the answer to the next request: that request
+    fails closed, the child is replaced, and the one after works."""
+    with _fake(fake_bin, tmp_path) as v:
+        assert v.verify("LATE_LINE").allowed
+        before = v._impl.child_pid()
+        with pytest.raises(HaltSQLUnavailable, match="different request|more than one line"):
+            v.verify("SELECT 2")
+        assert v._impl.child_pid() is None
+        assert v.verify("SELECT 2").allowed
+        assert v._impl.child_pid() != before
+
+
+def test_fake_child_line_without_end_is_capped(fake_bin, tmp_path, monkeypatch):
+    """Output that never ends its line is cut off at the cap, not buffered without limit."""
+    monkeypatch.setattr(native, "_MAX_LINE", 8)
+    with _fake(fake_bin, tmp_path, timeout=5.0) as v:
+        t0 = time.monotonic()
+        with pytest.raises(HaltSQLUnavailable, match="oversized line"):
+            v.verify("PARTIAL")
+        assert time.monotonic() - t0 < 3  # refused at the cap, well before the timeout
+
+
 def test_fake_child_error_object(fake_bin, tmp_path):
     with _fake(fake_bin, tmp_path) as v:
         pid = v._impl.child_pid()
@@ -778,6 +834,12 @@ def test_fake_child_hangs_at_startup(fake_bin, tmp_path):
 def test_fake_child_bad_policy_is_value_error(fake_bin, tmp_path):
     with pytest.raises(ValueError, match="cannot load policy:\nfake: broken"):
         NativeVerifier(_policy(tmp_path, "STARTUP_BAD.yaml"), backend="process", binary=fake_bin)
+
+
+def test_fake_child_that_allows_the_probe_is_refused(fake_bin, tmp_path):
+    """An engine that allows SQL containing a NUL byte is not a HaltSQL engine."""
+    with pytest.raises(HaltSQLUnavailable, match="allowed a SQL string containing a NUL byte"):
+        NativeVerifier(_policy(tmp_path, "ALLOWS_PROBE.yaml"), backend="process", binary=fake_bin)
 
 
 def test_fake_child_crash_at_startup(fake_bin, tmp_path):
