@@ -298,8 +298,11 @@ jobs:
       - name: Binaries (from the cache filled by the binaries job)
         uses: ./.github/actions/haltsql-binaries
 
-      # LocalVerifier tests (test/local.test.mjs) must run, not skip.
-      - run: echo "HALTSQL_REQUIRE_NATIVE=1" >> "$GITHUB_ENV"
+      # LocalVerifier tests (test/local.test.mjs) must run, not skip; so must
+      # the node-postgres tests (the service container above).
+      - run: |
+          echo "HALTSQL_REQUIRE_NATIVE=1" >> "$GITHUB_ENV"
+          echo "HALTSQL_REQUIRE_POSTGRES=1" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -338,6 +341,9 @@ jobs:
         run: go vet ./... && go test -race -count=1 ./...
       - name: pgx integration
         working-directory: clients/go/pgxtest
+        # The service container above must be used: unreachable is a failure.
+        env:
+          HALTSQL_REQUIRE_POSTGRES: "1"
         run: go test -count=1 ./...
 
   java-sdk:
@@ -366,6 +372,9 @@ jobs:
           cache: maven
       - name: Test
         working-directory: clients/java
+        # The service container above must be used: unreachable is a failure.
+        env:
+          HALTSQL_REQUIRE_POSTGRES: "1"
         run: mvn -B test
 
   policy-ci-action:
