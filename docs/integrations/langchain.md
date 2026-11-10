@@ -13,13 +13,13 @@ the model.
 |---|---|---|
 | `HaltSQLQueryTool(runner=...)` | LangChain `BaseTool` | A tool named `haltsql_query` whose only argument is `query`. Returns JSON rows, or the reason codes and hints when nothing ran. Needs `langchain-core`. |
 | `HaltSQLQueryRunner(verifier, context, ...)` | Class | The framework-free core: verifies and runs SQL. `run(sql)` returns text for the model; `execute(sql)` returns a `GuardedResult` and raises on denial. |
-| `guard_sql_database(db, verifier, context, ...)` | Function | Returns a copy of a `langchain_community` `SQLDatabase` whose `run` and `run_no_throw` verify every statement first. The copy is still an `SQLDatabase`. |
+| `guard_sql_database(db, verifier, context, ...)` | Function | Returns a copy of a `langchain_community` `SQLDatabase` whose `run` and `run_no_throw` verify every statement first, and that never reads table rows outside HaltSQL. The copy is still an `SQLDatabase`. |
 
 This package does not use `HaltSQLToolRunner` from the
 [agent frameworks](../agent-frameworks.md) packages; its runner and result
 format are described on this page. It is a thin layer over the
 [Python SDK](../sdk-python.md): every query goes through
-`haltsql.guard.authorize`, then `guard.execute` or `guard.execute_on_engine`.
+`haltsql.integration.authorize_guarded`, then `guard.execute` or `guard.execute_on_engine`.
 
 ## Install
 
@@ -79,7 +79,6 @@ from haltsql_langchain import guard_sql_database
 db = SQLDatabase.from_uri(
     "postgresql+psycopg://agent_ro@db/app",
     include_tables=["orders"],
-    sample_rows_in_table_info=0,                     # see the warning below
 )
 guarded = guard_sql_database(db, HaltSQLClient.from_env(),
                              lambda: {"tenant_id": current_tenant.get()})
@@ -89,13 +88,17 @@ agent = create_sql_agent(llm, toolkit=toolkit)
 
 The engine must use psycopg 3 (`postgresql+psycopg://`).
 
-> **Warning:** `SQLDatabase` reads sample rows of each table for the table
-> descriptions it gives the model (`sample_rows_in_table_info`, default 3).
-> Those reads go straight to the engine, not through `run`, so HaltSQL does not
-> check them, and they can include other tenants' rows. Set
-> `sample_rows_in_table_info=0`, and limit the tables with `include_tables`.
-> The table descriptions also list every column of those tables, including
-> columns the policy denies.
+The guarded copy never reads table rows outside HaltSQL. A plain
+`SQLDatabase` adds sample rows of each table to the table descriptions it gives
+the model (`sample_rows_in_table_info`, default 3), read straight from the
+engine; on the guarded copy that setting is forced to 0, so `get_table_info`,
+`table_info` and `get_context` show the schema only. The internal `_execute`,
+which runs SQL on the engine without `run`, refuses. The original `db` is
+unchanged, so give the agent only the guarded copy.
+
+> **Note:** the table descriptions still list every column of the tables, read
+> by schema reflection, including columns the policy denies. Limit the tables
+> with `include_tables`.
 
 ## Where the tenant comes from
 
@@ -109,12 +112,12 @@ as `tenant_id`, LangChain drops it before the tool runs.
 | `context` | Result |
 |---|---|
 | A mapping, or a callable that returns one | The query is verified with that context. |
-| A callable that returns `None`, or `{}` | Verified with an empty context. Tenant tables are then denied by the policy, typically with `E_CONTEXT_MISSING`. |
-| A callable that raises | Nothing is verified or run. `HaltSQLQueryTool` returns `Database error: <exception type>: ...` to the model (see [Troubleshooting](#troubleshooting)). |
+| A callable that returns `None` | Refused: nothing is verified or run. `execute` and the guarded `run` raise `haltsql.integration.ContextUnavailable`; the tool returns `No trusted HaltSQL context is configured for this request; the query was not executed.` |
+| `{}`, or a callable that returns it | Verified with an empty context. Tenant tables are then denied by the policy, typically with `E_CONTEXT_MISSING`. |
+| A callable that raises | Nothing is verified or run. `execute` raises `haltsql.HaltSQLUnavailable`; the tool returns `SQL verification is unavailable; the query was not executed.`, without the exception's details. |
 
-Unlike the [agent-framework packages](../agent-frameworks.md), a missing
-context is not refused before verification here. Make sure the callable
-returns the context, or raises.
+As in the [agent-framework packages](../agent-frameworks.md), a missing
+context is refused before verification.
 
 ## What the model sees
 
@@ -137,8 +140,9 @@ Other failures:
 
 | Text | Meaning |
 |---|---|
-| `SQL verification is unavailable; the query was not executed.` | The sidecar or CLI failed, timed out, rejected the request, or returned a verdict for a different string. |
-| `The query was not executed: <reason>` | The guarded executor refused, for example an unsupported connection. |
+| `No trusted HaltSQL context is configured for this request; the query was not executed.` | The context callable returned `None`. |
+| `SQL verification is unavailable; the query was not executed.` | The sidecar or CLI failed, timed out, rejected the request, or returned a verdict for a different string, or the context callable raised. |
+| `The query was not executed: <reason>` | The guard refused, for example a statement other than `SELECT` with `read_only=True`, or an unsupported connection. |
 | `Database error: <class>: <first line>` | HaltSQL allowed the query but the database rejected it, or another error occurred. |
 
 The guarded `SQLDatabase` behaves like a normal one:
@@ -167,7 +171,7 @@ retry after a denial. See [reason-codes.md](../reason-codes.md) for every code.
 | `max_rows` | `200` | Row cap. `None` means no cap. |
 | `statement_timeout_ms` | `5000` | `statement_timeout` for the query. `None` means none is set. |
 | `settings` | `None` | A mapping of transaction-local settings, for example `{"app.region": "eu"}`. Fixed for the runner; it cannot depend on the context. |
-| `read_only` | `True` | Run in a `READ ONLY` transaction. With `False`, statements the policy allows, including writes, run in a read-write transaction. |
+| `read_only` | `True` | Run only statements whose verdict `statement_kind` is `select`, in a `READ ONLY` transaction. With `False`, see [Read-only and writes](#read-only-and-writes). |
 
 `HaltSQLQueryTool` fields (keyword arguments):
 
@@ -181,10 +185,18 @@ retry after a denial. See [reason-codes.md](../reason-codes.md) for every code.
 `max_rows`, `statement_timeout_ms`, `settings` and `read_only`, as above. It
 uses the database's own engine; do not pass `engine` or `connect`.
 
-> **Note:** this package does not check the statement kind itself. With the
-> default `read_only=True`, a write that the policy allows reaches Postgres
-> and fails there, in the read-only transaction. Keep `statements.allow` to
-> `select` in the policy for agent use.
+### Read-only and writes
+
+With the default `read_only=True`, a statement runs only when the verdict's
+`statement_kind` is `select`. Anything else is refused before a connection is
+taken, even when the policy allows it, with `GuardError: only SELECT statements
+run in read-only mode (this is DELETE)`.
+
+With `read_only=False`, the policy alone decides: a statement runs when HaltSQL
+allows it, whatever its kind. Writes run in a read-write transaction, and
+`SELECT` statements still run `READ ONLY`. A verdict without a
+`statement_kind` never runs. Allow writes in the policy (`statements.allow`)
+only for the agents and tables that need them.
 
 ## Async support
 
@@ -238,9 +250,11 @@ suites.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every query on a tenant table is denied with `E_CONTEXT_MISSING` | The context callable returned `None` or `{}`, or misses a key the policy needs. | Check the callable. It is evaluated on every query. |
-| "Database error: KeyError: ..." or another unexpected type, and nothing ran | The context callable raised. The runner reports every exception this way. | Test the callable on its own. |
-| "SQL verification is unavailable" | The sidecar or CLI failed, timed out, rejected the token, or returned a verdict for a different string. | Check `HALTSQL_URL` and `HALTSQL_TOKEN`, or the `haltsql` binary. |
+| Every query on a tenant table is denied with `E_CONTEXT_MISSING` | The context callable returned `{}`, or misses a key the policy needs. | Check the callable. It is evaluated on every query. |
+| "No trusted HaltSQL context is configured", or `ContextUnavailable` | The context callable returned `None`. | Return the context for the current request, for example from a `ContextVar` your handler sets. |
+| "SQL verification is unavailable" | The sidecar or CLI failed, timed out, rejected the token, or returned a verdict for a different string; or the context callable raised. | Check `HALTSQL_URL` and `HALTSQL_TOKEN`, or the `haltsql` binary, and test the callable on its own. With `execute`, the original exception is in `__cause__`. |
+| `GuardError: only SELECT statements run in read-only mode` | The policy allowed a write, but `read_only=True`. | Ask for a `SELECT`, or pass `read_only=False` if the agent should write. |
+| `GuardError: unverified SQL is not run` | Code called the guarded copy's internal `_execute`. | Use `run` or `run_no_throw`. |
 | `ValueError: pass exactly one of engine= or connect=` | Both or neither were given. | Pass one. With `guard_sql_database`, pass neither. |
 | `GuardError: caller-supplied parameters are not allowed` | Code called the guarded `run` with `parameters=`. | HaltSQL binds the parameters; pass the SQL alone. |
 | `GuardError: fetch='cursor' is not supported` | Code called `run(fetch="cursor")`. | Use `fetch="all"` or `"one"`. |
@@ -256,8 +270,9 @@ suites.
   rows were cut at `max_rows`. `HaltSQLQueryTool` reports it as `truncated`.
 - `fetch="one"` still fetches up to `max_rows` rows and returns the first.
   `execution_options` is accepted and ignored.
-- Only `run` and `run_no_throw` are guarded. Other `SQLDatabase` methods, such
-  as `get_table_info`, use the engine directly.
+- `run` and `run_no_throw` are verified; `_execute` refuses, and
+  `get_table_info` reads no rows. Schema reflection (table and column names,
+  indexes) still uses the engine.
 - The engine or connection must use psycopg 3. psycopg2 cannot send `$n` SQL
   unchanged and is refused.
 - HaltSQL verifies the PostgreSQL dialect only.

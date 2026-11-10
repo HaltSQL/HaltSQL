@@ -96,6 +96,7 @@ it never supplies the context.
 | `metadata["haltsql_context"]` is a mapping | The query is verified with that context. |
 | No user, no `metadata`, or no `haltsql_context` mapping | `PermissionError("no HaltSQL context for this user")`. Nothing is verified or run. |
 | `haltsql_context` is `{}` | Verified with an empty context. Tenant tables are then denied by the policy. |
+| A custom `context_from_user` returns `None` | `haltsql.integration.ContextUnavailable`. Nothing is verified or run. |
 
 To derive the context differently, pass `context_from_user`:
 
@@ -105,9 +106,10 @@ runner = HaltSQLSqlRunner(verifier, dsn=DSN,
 ```
 
 **Vanna 0.x.** `context` is a mapping or a zero-argument callable, evaluated on
-every `run_sql`. A callable that returns `None` gives an empty context, which
-the policy denies for tenant tables. A callable that raises stops the query
-before verification.
+every `run_sql`. A callable that returns `None` raises
+`haltsql.integration.ContextUnavailable`, and nothing is verified or run. An
+explicit `{}` is verified as an empty context, which the policy denies for
+tenant tables. A callable that raises stops the query before verification.
 
 ## What the model sees
 
@@ -220,6 +222,7 @@ suites.
 |---|---|---|
 | `PermissionError: no HaltSQL context for this user` | The resolved user has no `metadata["haltsql_context"]` mapping. | Set it in your `UserResolver`, or pass `context_from_user`. |
 | Every query on a tenant table is denied with `E_CONTEXT_MISSING` | The context is empty or misses a key the policy needs. | Check the context your resolver or callable returns. |
+| `ContextUnavailable` | The context callable or `context_from_user` returned `None`. | Return the context for the current request. |
 | `ValueError: pass exactly one of dsn= or connect=` | Both or neither were given. | Pass one. |
 | `ValueError: RunSqlToolArgs.sql must be a string` | The tool arguments had no SQL string. | Check how the runner is called. |
 | `GuardError: an async verifier was passed to a sync execute()` | The legacy `run_sql` got `AsyncHaltSQLClient` or `AsyncLocalVerifier`. | Use `HaltSQLClient` or `LocalVerifier` with `install_legacy_run_sql`. |
