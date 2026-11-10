@@ -526,9 +526,14 @@ jobs:
     timeout-minutes: 15
     environment:
       name: npm
+    # Authentication: npm trusted publishing (OIDC) once each package has a
+    # trusted publisher (workflow native-packages.yml, environment npm). Trusted
+    # publishers can only be added to packages that exist, so the very first
+    # publish uses a short-lived NPM_TOKEN environment secret; delete it once
+    # trusted publishing is configured. With no NPM_TOKEN, npm uses OIDC alone.
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing and provenance
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -537,6 +542,11 @@ jobs:
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - name: npm with trusted-publishing support
+        run: |
+          npm install -g npm@11.21.1
+          npm --version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: npm-*

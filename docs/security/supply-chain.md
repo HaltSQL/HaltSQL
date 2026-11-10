@@ -35,7 +35,7 @@ and provenance step but publish only a draft release and packages under
 | Artifact | Where | Notes |
 |---|---|---|
 | `haltsql` wheels and sdist, `haltsql-mcp` wheel and sdist | PyPI | Trusted publishing (OIDC, no long-lived PyPI token), through the `pypi` and `pypi-mcp` environments |
-| `@haltsql/client` and `@haltsql/native-<platform>` | npm | Published with `npm publish --provenance`, through the `npm` environment, authenticated with an `NPM_TOKEN` secret |
+| `@haltsql/client` and `@haltsql/native-<platform>` | npm | Published with `npm publish --provenance`, through the `npm` environment, by npm trusted publishing (OIDC); the first publish only uses a short-lived `NPM_TOKEN` |
 
 Not published by these workflows: the Kubernetes operator image (you build it from
 `deploy/operator`, see [kubernetes-operator.md](../kubernetes-operator.md)),

@@ -87,7 +87,9 @@ These are not configured yet. Each is a setting only a maintainer can create.
 |---|---|---|
 | PyPI trusted publisher for `haltsql` | pypi.org, "Publishing" (pending publisher, the project does not exist yet) | Owner `HaltSQL`, repository `HaltSQL`, workflow `native-packages.yml`, environment `pypi` |
 | PyPI trusted publisher for `haltsql-mcp` | pypi.org, same | Same, but environment `pypi-mcp`. PyPI refuses two pending publishers with the same repository, workflow and environment, so each project has its own environment and publish job |
-| `NPM_TOKEN` secret | Repository or `npm` environment secret | An npm automation (or granular) token with publish rights to the `@haltsql` scope; the scope must exist on npm |
+| npm org `haltsql` | npmjs.com | Free plan; owns the `@haltsql` scope |
+| `NPM_TOKEN`, first publish only | `npm` environment secret | Granular token, read and write on `@haltsql`, 2FA bypass, shortest expiry. Needed once: npm trusted publishers can only be added to packages that already exist |
+| npm trusted publishers, after the first publish | npmjs.com, each package's settings, for `@haltsql/client` and the three `@haltsql/native-*` | Owner `HaltSQL`, repository `HaltSQL`, workflow `native-packages.yml`, environment `npm`; then delete `NPM_TOKEN` and the npm token itself |
 | `pypi`, `pypi-mcp` and `npm` environments | Repository settings, Environments | Add required reviewers so a tag alone cannot publish |
 | GHCR package visibility | Organisation packages, after the first real run | Make `haltsql`, `haltsql-mcp` and `charts/haltsql` public; new packages are created private |
 | Optional: TestPyPI | test.pypi.org trusted publishers for `haltsql` (workflow `native-packages.yml`, environment `testpypi`) and `haltsql-mcp` (environment `testpypi-mcp`), then repository variable `TESTPYPI_PUBLISH=true` | TestPyPI accepts each version once; rc runs re-uploading `X.Y.Z` are skipped |
