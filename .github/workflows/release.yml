@@ -205,7 +205,8 @@ jobs:
           out="haltsql-${TAG}-darwin-arm64"
           mkdir -p "$out" dist
           for b in haltsql haltsql-server haltsql-proxy; do
-            cp "_build/install/default/bin/$b" "$out/"
+            # dune installs read-only files; strip needs to write.
+            install -m 0755 "_build/install/default/bin/$b" "$out/$b"
             strip "$out/$b"
             otool -L "$out/$b"
             if otool -L "$out/$b" | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
@@ -281,8 +282,9 @@ jobs:
             docker exec haltsql-release-pg pg_isready -U postgres > /dev/null 2>&1 && break
             sleep 1
           done
-          HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 SCRATCH_IMAGE=haltsql-local:scratch \
-            scripts/docker-smoke.sh
+          # IMAGE is also this job's registry name; the smoke test runs the local build.
+          IMAGE=haltsql-local:dev HALTSQL_PGPASSWORD="ci-${{ github.run_id }}" REQUIRE_PROXY=1 \
+            SCRATCH_IMAGE=haltsql-local:scratch scripts/docker-smoke.sh
           docker rm -f haltsql-release-pg
 
       - name: Build metadata
@@ -385,7 +387,7 @@ jobs:
           docker pull --platform linux/amd64 "$HALTSQL_IMAGE"
           docker buildx build --platform linux/amd64 --load -f clients/mcp/Dockerfile \
             --build-arg HALTSQL_IMAGE="$HALTSQL_IMAGE" -t haltsql-mcp:dev .
-          HALTSQL_IMAGE="$HALTSQL_IMAGE" scripts/mcp-docker-smoke.sh
+          MCP_IMAGE=haltsql-mcp:dev HALTSQL_IMAGE="$HALTSQL_IMAGE" scripts/mcp-docker-smoke.sh
 
       - name: Build metadata
         id: buildinfo
