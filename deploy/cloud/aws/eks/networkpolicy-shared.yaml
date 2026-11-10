@@ -28,6 +28,14 @@ spec:
               haltsql.dev/client: "true"
       ports:
         - { port: 8080, protocol: TCP }
+    # haltsql-console in this namespace (deploy/cloud/aws/console/eks.values.yaml)
+    # polls the admin API and /readyz.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: haltsql-console
+      ports:
+        - { port: 8080, protocol: TCP }
     # Prometheus / ADOT scrape /metrics (same port).
     - from:
         - namespaceSelector:

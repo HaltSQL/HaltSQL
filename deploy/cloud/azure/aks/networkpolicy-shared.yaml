@@ -1,7 +1,8 @@
 # Companion to values-aks.yaml (shared service). Replaces the chart's
 # NetworkPolicy, which denies all egress and would block the Entra JWKS fetch.
 #
-# Ingress: agents namespace (verify, TLS port 8080) and kube-system
+# Ingress: agents namespace (verify, TLS port 8080), haltsql-console (admin
+# API) and kube-system
 # (Managed Prometheus scrape; kubelet probes hit the plain health port 8081).
 # Egress: DNS, HTTPS (Entra ID JWKS), and the OTLP collector.
 #
@@ -31,6 +32,13 @@ spec:
       ports:
         - { port: 8080, protocol: TCP }
         - { port: 8081, protocol: TCP }
+    # haltsql-console in this namespace (deploy/cloud/azure/console/aks.values.yaml)
+    # polls the admin API and /readyz.
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: haltsql-console }
+      ports:
+        - { port: 8080, protocol: TCP }
   egress:
     - to:
         - namespaceSelector:

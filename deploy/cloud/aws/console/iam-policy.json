@@ -29,7 +29,9 @@
       "Sid": "ReadConsoleSecrets",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
-      "Resource": "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/*"
+      "Resource": [
+        "arn:aws:secretsmanager:eu-west-1:111122223333:secret:haltsql-console/admin-token-??????"
+      ]
     }
   ]
 }

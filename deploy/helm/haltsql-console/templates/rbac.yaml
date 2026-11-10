@@ -1,6 +1,12 @@
 {{- if .Values.rbac.create }}
-{{- /* Restarts only: `patch` (the restartedAt annotation) on the named
-       workloads in the verifiers' namespace. No get/list/watch, no other
+{{- /* Verifier restarts: `patch` on the named workloads in the verifiers'
+       namespace. RBAC cannot narrow a patch to the restartedAt annotation the
+       console sets, so this grants a full patch of those Deployments and
+       StatefulSets (image, command, env included); a compromised console
+       container could change them. The token is projected into the console
+       container only. Add an admission policy (ValidatingAdmissionPolicy,
+       Kyverno, Gatekeeper) if patches must be limited to the restart
+       annotation; see docs/console/deploy.md. No get/list/watch, no other
        resources, no cluster scope. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

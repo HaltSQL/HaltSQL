@@ -31,7 +31,9 @@ console:
       # IAP sends x-goog-authenticated-user-email but no groups, so roles come
       # from the oauth2-proxy sidecar (Google provider + Workspace groups),
       # which sets X-Forwarded-Email/-Groups; the chart adds auth.proxy.
-      tokens: []
+      # Automation tokens ({name, sha256, role}) go in auth.tokens; this
+      # overlay does not set the key, so tokens from an earlier values file
+      # (or the Terraform example's automation_tokens) are kept.
       roles:
         admin: [haltsql-admins@acme.example]
         owner: [haltsql-policy-owners@acme.example]
@@ -46,6 +48,8 @@ console:
         token: ${gcp-sm:haltsql-console-admin-token}   # in secrets.gcp.project
         workload: deployment/haltsql
     audit:
+      # About 2.4 KB per record in memory: 400k fits the 2Gi limit below.
+      max_records: 400000
       sources:
         # The GCS audit sink of values-gke.yaml.
         - { verifier: auto, gcs: "gs://REPLACE_ME_PROJECT-haltsql-audit/haltsql/audit/shared/" }
@@ -118,6 +122,14 @@ networkPolicy:
     - ipBlock: { cidr: 10.129.0.0/23 }
   egress:
     allowHTTPS: true               # Google APIs (GCS, Secret Manager, OAuth), GKE API
+    extraRules:
+      # GKE metadata server: Workload Identity tokens for GCS audit reads and
+      # ${gcp-sm:...}. 169.254.169.252:988 on GKE 1.21+, 169.254.169.254:80 on
+      # Dataplane V2 clusters (same rules as values-gke.yaml for the verifiers).
+      - to: [{ ipBlock: { cidr: 169.254.169.252/32 } }]
+        ports: [{ port: 988, protocol: TCP }]
+      - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+        ports: [{ port: 80, protocol: TCP }]
 
 resources:
   requests: { cpu: 200m, memory: 512Mi }

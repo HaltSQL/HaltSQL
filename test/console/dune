@@ -32,7 +32,8 @@
   test_records
   test_comply
   test_signals
-  test_build)
+  test_build
+  test_deploy)
  (modules
   test_console
   test_auth
@@ -44,11 +45,19 @@
   test_records
   test_comply
   test_signals
-  test_build)
+  test_build
+  test_deploy)
  (package haltsql-server)
  (deps
   (glob_files fixtures/*)
-  ../../deploy/console/console.example.yaml)
+  ../../deploy/console/console.example.yaml
+  ; test_deploy: the chart, overlays, templates and docs it checks.
+  (source_tree ../../deploy/helm/haltsql-console)
+  (source_tree ../../deploy/helm/haltsql)
+  (source_tree ../../deploy/cloud)
+  (source_tree ../../deploy/console)
+  (source_tree ../../deploy/terraform/examples/console-kubernetes)
+  ../../docs/console/deploy.md)
  (libraries
   console_helpers
   haltsql_console
@@ -65,4 +74,5 @@
   lwt
   lwt.unix
   yojson
+  str
   unix))

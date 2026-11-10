@@ -38,7 +38,9 @@ console:
       # Browser users sign in through the oauth2-proxy sidecar (below), which
       # sets X-Forwarded-Email/-Groups; the chart adds auth.proxy for them.
       # Group names arrive as the IdP sends them (no prefix).
-      tokens: []                 # automation: {name, sha256, role}
+      # Automation tokens ({name, sha256, role}) go in auth.tokens. Not set
+      # here, so tokens from an earlier values file (or the Terraform
+      # example's automation_tokens) are kept: Helm replaces lists.
       roles:
         admin: [haltsql-admins]
         owner: [haltsql-policy-owners]
@@ -54,6 +56,8 @@ console:
         token: ${env:HALTSQL_ADMIN_TOKEN}
         workload: deployment/haltsql
     audit:
+      # About 2.4 KB per record in memory: 400k fits the 2Gi limit below.
+      max_records: 400000
       sources:
         # The S3 audit sink of values-eks.yaml (bucket and prefix).
         - { verifier: auto, s3: "s3://corp-haltsql-audit/haltsql/audit/", region: eu-west-1 }

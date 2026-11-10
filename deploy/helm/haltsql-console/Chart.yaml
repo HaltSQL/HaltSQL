@@ -19,4 +19,4 @@ annotations:
     - name: haltsql-console
       image: ghcr.io/haltsql/haltsql-console:0.1.0
     - name: oauth2-proxy
-      image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+      image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1@sha256:d62e2d81c6f5048f652f67c302083be1272c181b971fad80e5a30ebe2b8b75d8

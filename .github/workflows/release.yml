@@ -341,6 +341,12 @@ jobs:
 
   console-image:
     name: haltsql-console image (GHCR, signed)
+    # The console binary is built by the same builder stage as the haltsql
+    # image. Waiting for `image` means its gha cache (both architectures, mode
+    # max) is complete, so this job reuses the builder layers instead of
+    # compiling OCaml again (arm64 under QEMU). The linux-static per-arch caches
+    # are read too.
+    needs: [image]
     runs-on: ubuntu-latest
     timeout-minutes: 240
     permissions:
@@ -382,7 +388,8 @@ jobs:
       - name: Build and smoke-test the amd64 image before pushing
         run: |
           docker buildx build --platform linux/amd64 --target console --load \
-            -t haltsql-console-local:dev --cache-from type=gha .
+            -t haltsql-console-local:dev --cache-from type=gha \
+            --cache-from type=gha,scope=static-amd64 .
           scripts/console-docker-smoke.sh
 
       - name: Build metadata
@@ -408,7 +415,10 @@ jobs:
           # SLSA provenance (max) and an SPDX SBOM, as for the haltsql image.
           provenance: mode=max
           sbom: true
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=gha,scope=static-amd64
+            type=gha,scope=static-arm64
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
