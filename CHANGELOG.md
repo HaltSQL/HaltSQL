@@ -127,8 +127,20 @@ even before 1.0.
   is not hash-chained, that a failed audit write does not block the
   statement and that there is no hot reload. All three were wrong; the page
   now describes the code.
+- **haltsql-mcp: a tokens-file entry whose `context` is not an object is
+  refused.** `"context": null`, `""`, `[]` or `0` (an unset template variable,
+  for example) was read as an empty context and the server started. It is now
+  a configuration error; leave the key out for an empty context.
 
 ### Security
+- **Python integrations no longer quote connection failures to the model.**
+  `haltsql.integration.feedback_for_model` (LangChain's `run` /
+  `run_no_throw`, LlamaIndex's `HaltSQLSQLError`, the agent-framework tools)
+  returned `Database error: <class>: <first line>` for every exception. For a
+  failed connection that line names the database host, port and role, and an
+  exception raised by a custom `connect()` could carry a whole connection
+  string. The message is now quoted only for errors the database server
+  reported (they have an SQLSTATE); anything else is `Database error: <class>`.
 - **haltsql-proxy limits unauthenticated connections per source address**
   (`limits.max_unauthenticated_per_ip`, default 20, `0` disables). One
   address can no longer occupy every `max_connections` slot with connections
