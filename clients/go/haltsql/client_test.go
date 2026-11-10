@@ -413,12 +413,25 @@ func TestFailClosedOnBadBodies(t *testing.T) {
 		}),
 		"bad code": mutate(t, findVector(t, "denied_parse_error").Response, func(m map[string]any) {
 			m["reasons"] = []any{map[string]any{"code": "nope", "message": "m", "rule": "r"}}
+			// Keep the hash valid for the SQL that is sent, so only the code is wrong.
+			m["sql_sha256"] = shaHex(v.Request.SQL)
 		}),
-		"param 0":        mutate(t, v.Response, func(m map[string]any) { m["bind_params"] = []any{map[string]any{"param": 0, "value": "a"}} }),
-		"value number":   mutate(t, v.Response, func(m map[string]any) { m["bind_params"] = []any{map[string]any{"param": 1, "value": 7}} }),
-		"hash mismatch":  mutate(t, v.Response, func(m map[string]any) { m["sql_sha256"] = shaHex("SELECT 2") }),
-		"missing tables": mutate(t, v.Response, func(m map[string]any) { delete(m, "tables") }),
-		"missing kind":   mutate(t, v.Response, func(m map[string]any) { delete(m, "statement_kind") }),
+		"bad shadow code": mutate(t, v.Response, func(m map[string]any) {
+			m["shadow_reasons"] = []any{map[string]any{"code": "e_lower", "message": "m", "rule": "r"}}
+		}),
+		"missing reasons":        mutate(t, v.Response, func(m map[string]any) { delete(m, "reasons") }),
+		"missing shadow_reasons": mutate(t, v.Response, func(m map[string]any) { delete(m, "shadow_reasons") }),
+		"shadow_reasons null":    mutate(t, v.Response, func(m map[string]any) { m["shadow_reasons"] = nil }),
+		"reason without code": mutate(t, v.Response, func(m map[string]any) {
+			m["shadow_reasons"] = []any{map[string]any{"message": "m", "rule": "r"}}
+		}),
+		"value [7]":        mutate(t, v.Response, func(m map[string]any) { m["bind_params"] = []any{map[string]any{"param": 1, "value": []any{7}}} }),
+		"negative elapsed": mutate(t, v.Response, func(m map[string]any) { m["elapsed_us"] = -1 }),
+		"param 0":          mutate(t, v.Response, func(m map[string]any) { m["bind_params"] = []any{map[string]any{"param": 0, "value": "a"}} }),
+		"value number":     mutate(t, v.Response, func(m map[string]any) { m["bind_params"] = []any{map[string]any{"param": 1, "value": 7}} }),
+		"hash mismatch":    mutate(t, v.Response, func(m map[string]any) { m["sql_sha256"] = shaHex("SELECT 2") }),
+		"missing tables":   mutate(t, v.Response, func(m map[string]any) { delete(m, "tables") }),
+		"missing kind":     mutate(t, v.Response, func(m map[string]any) { delete(m, "statement_kind") }),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -499,7 +512,9 @@ func TestOptionValidation(t *testing.T) {
 
 func TestContextValidation(t *testing.T) {
 	c := mustNew(t, "http://127.0.0.1:1")
-	for _, vctx := range []Context{{"t": 1.5}, {"t": true}, {"t": nil}, {"t": []any{1, map[string]any{}}}, {"t": int64(1) << 60}, {"t": []float32{1}}} {
+	for _, vctx := range []Context{{"t": 1.5}, {"t": true}, {"t": nil}, {"t": []any{1, map[string]any{}}}, {"t": int64(1) << 60}, {"t": []float32{1}},
+		// Invalid UTF-8 would be replaced by U+FFFD on the wire: a different tenant id.
+		{"t": "acme\xff"}, {"t": []string{"acme", "\xff"}}} {
 		if _, err := c.Verify(context.Background(), "SELECT 1", vctx); !IsKind(err, KindUsage) {
 			t.Errorf("context %v: err = %v, want usage error", vctx, err)
 		}
@@ -643,6 +658,57 @@ func TestGuardedQueryDenied(t *testing.T) {
 	}
 	if verdict == nil || verdict.Allowed || len(d.calls) != 0 {
 		t.Fatalf("denied query reached the database: %d calls", len(d.calls))
+	}
+	if de.Allowed() || !IsDenied(err) {
+		t.Fatal("a denial must never read as an allow")
+	}
+}
+
+// GuardedExec shares the guard: a denied write, a shadow would-deny and a
+// sidecar failure must not reach the database, and an allowed statement runs
+// as exactly the verified string (here with significant surrounding space).
+func TestGuardedExecRunsExactSQLOrNothing(t *testing.T) {
+	denied := findVector(t, "denied_multi_statement")
+	f := newFake(t, replay(200, denied.Response))
+	c := mustNew(t, f.srv.URL, WithToken(*denied.Token))
+	db, d := recDB(t)
+	res, verdict, err := GuardedExec(context.Background(), c, db, denied.Request.SQL, Context(denied.Request.Context))
+	if res != nil || !IsDenied(err) || verdict == nil || verdict.Allowed || len(d.calls) != 0 {
+		t.Fatalf("denied exec: res=%v err=%v calls=%d", res, err, len(d.calls))
+	}
+
+	ok := findVector(t, "allowed_bound_single_tenant")
+	sqlText := "  " + ok.Request.SQL + " \n"
+	exact := func(m map[string]any) { m["sql_sha256"] = shaHex(sqlText) }
+	shadow := mutate(t, ok.Response, func(m map[string]any) {
+		exact(m)
+		m["shadow_reasons"] = []any{map[string]any{"code": "E_TENANT_MISSING", "message": "m", "rule": "r"}}
+	})
+	c = mustNew(t, newFake(t, replay(200, shadow)).srv.URL)
+	if res, _, err := GuardedExec(context.Background(), c, db, sqlText, Context{"tenant_id": "acme"}); res != nil || !IsDenied(err) || len(d.calls) != 0 {
+		t.Fatalf("shadow would-deny exec: res=%v err=%v calls=%d", res, err, len(d.calls))
+	}
+	c = mustNew(t, newFake(t, replay(500, []byte(`{"error":{"code":"INTERNAL","message":"boom"}}`))).srv.URL, WithRetries(0, 0, 0))
+	if res, _, err := GuardedExec(context.Background(), c, db, sqlText, Context{"tenant_id": "acme"}); res != nil || !IsKind(err, KindHTTP) || len(d.calls) != 0 {
+		t.Fatalf("sidecar error exec: res=%v err=%v calls=%d", res, err, len(d.calls))
+	}
+
+	c = mustNew(t, newFake(t, replay(200, mutate(t, ok.Response, exact))).srv.URL)
+	if _, _, err := GuardedExec(context.Background(), c, db, sqlText, Context{"tenant_id": "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := GuardedQuery(context.Background(), c, db, sqlText, Context{"tenant_id": "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if len(d.calls) != 2 {
+		t.Fatalf("calls = %d", len(d.calls))
+	}
+	for _, call := range d.calls {
+		if call.query != sqlText || len(call.args) != 1 || call.args[0].Value != "acme" {
+			t.Fatalf("the database got %q %v, want the verified string %q with [acme]", call.query, call.args, sqlText)
+		}
 	}
 }
 
