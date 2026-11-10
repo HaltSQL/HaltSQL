@@ -32,7 +32,8 @@ let empty_analysis reasons : Analyzer.analysis =
    exception (a bug, or Stack_overflow / Out_of_memory on hostile input) becomes
    an [E_INTERNAL] denial. [Pg_parse.parse] and [Analyzer.analyze] are already
    total; this is the last line of defence. *)
-let verify (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t =
+let verify_with ~analyze (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t
+    =
   let t0 = Unix.gettimeofday () in
   let parsed = ref false in
   let analysis =
@@ -41,7 +42,7 @@ let verify (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t =
       | Error r -> empty_analysis [ r ]
       | Ok [ stmt ] ->
           parsed := true;
-          Analyzer.analyze policy ctx stmt
+          analyze policy ctx stmt
       | Ok [] ->
           empty_analysis
             [
@@ -79,3 +80,5 @@ let verify (policy : Policy.t) (ctx : Context.t) (sql : string) : Verdict.t =
     sql_sha256 = sha256_hex sql;
     elapsed_us = int_of_float ((Unix.gettimeofday () -. t0) *. 1e6);
   }
+
+let verify policy ctx sql = verify_with ~analyze:Analyzer.analyze policy ctx sql

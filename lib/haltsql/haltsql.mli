@@ -61,5 +61,17 @@ val verify : Policy.t -> Context.t -> string -> Verdict.t
     a shadow denial). Pure apart from reading the clock for [elapsed_us]; safe to call
     concurrently from several domains with the same policy. *)
 
+val verify_with :
+  analyze:(Policy.t -> Context.t -> Ast.stmt -> Analyzer.analysis) ->
+  Policy.t ->
+  Context.t ->
+  string ->
+  Verdict.t
+(** {!verify} with the analysis step supplied by the caller ([verify] is
+    [verify_with ~analyze:Analyzer.analyze]). It exists so that tests can check the last
+    line of defence: whatever [analyze] does, including raising [Stack_overflow] or
+    [Out_of_memory], the result is a denial ([E_INTERNAL]) with no [bind_params], never an
+    exception and never an allow. Not for production use. *)
+
 val sha256_hex : string -> string
 (** Lower-case hex SHA-256 of a string (the verdict's [sql_sha256]). *)
