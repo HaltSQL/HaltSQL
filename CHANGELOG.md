@@ -11,6 +11,15 @@ even before 1.0.
 ## [Unreleased]
 
 ### Changed
+- **haltsql-proxy: policy and credential changes reach live sessions.** After
+  a reload, sessions whose user, SCRAM verifier, client CA, policy, context or
+  upstream changed are ended at their next transaction boundary with
+  `FATAL 57P01` (`reload.terminate_changed_sessions`, default `true`; `false`
+  restores the old behaviour). Sessions are also ended
+  `limits.max_session_lifetime_seconds` after authentication (default 3600,
+  `0` disables). `limits.termination_grace_seconds` (default 30) bounds how
+  long an open transaction can delay either. Clients must be able to
+  reconnect, as they already must for a PostgreSQL restart.
 - **haltsql-proxy no longer verifies or writes audit records on its event
   loop.** `Haltsql.verify` and writes to `stdout`/`file` audit sinks run on a
   bounded thread pool (`limits.worker_threads`, default: CPUs, 2 to 8), so one

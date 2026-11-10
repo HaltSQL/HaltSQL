@@ -11,6 +11,7 @@ type t = {
   sock : Lwt_unix.file_descr;
   bound_port : int;
   conns : (int, Lwt_unix.file_descr) Hashtbl.t;
+  live : (int, Session.live) Hashtbl.t;  (** authenticated sessions, by connection *)
   mutable next_conn : int;
   mutable stopping : bool;
   stopped : unit Lwt.t;
@@ -60,6 +61,19 @@ let tls_server_config (c : client_tls) =
   match Tls.Config.server ~certificates:(`Single c.certificates) ?authenticator () with
   | Ok cfg -> cfg
   | Error (`Msg m) -> failwith ("invalid TLS configuration: " ^ m)
+
+(* Ends a session the current configuration no longer covers. *)
+let end_if_stale t (l : Session.live) =
+  let cfg = t.gen.cfg in
+  if not cfg.reload.terminate_changed_sessions then false
+  else
+    match Session.stale cfg l with
+    | None -> false
+    | Some why ->
+        Plog.log Plog.Info "ending session: the reloaded configuration changed it"
+          [ ("session", `String l.live_id); ("reason", `String why) ];
+        l.terminate "the proxy configuration for this session changed";
+        true
 
 let too_many fd =
   let io = Io.of_fd fd in
@@ -114,12 +128,19 @@ let rec accept_loop t =
           t.next_conn <- n + 1;
           Hashtbl.replace t.conns n fd;
           let id = Sec.random_hex 6 in
-          (* the session keeps this snapshot for its whole life *)
+          (* The session keeps this snapshot for its whole life; a reload that changes
+             what the session depends on ends it (end_if_stale). *)
           let shared = t.gen in
+          let on_authenticated (l : Session.live) =
+            Hashtbl.replace t.live n l;
+            (* a reload may have happened between accept and authentication *)
+            if shared.generation <> t.gen.generation then ignore (end_if_stale t l)
+          in
           Lwt.async (fun () ->
               Lwt.finalize
-                (fun () -> Session.handle shared ~id fd)
+                (fun () -> Session.handle ~on_authenticated shared ~id fd)
                 (fun () ->
+                  Hashtbl.remove t.live n;
                   Hashtbl.remove t.conns n;
                   Lwt_condition.broadcast t.idle ();
                   Lwt.return_unit));
@@ -182,10 +203,15 @@ let apply_reload t ~trigger (cfg : Proxy_config.t) =
       t.reloads <- t.reloads + 1;
       t.last_reload_error <- None;
       t.watched <- fingerprints cfg.source_files;
+      let ended =
+        Hashtbl.fold (fun _ l n -> if end_if_stale t l then n + 1 else n) t.live 0
+      in
       Plog.log Plog.Info "config reloaded"
         ([
            ("trigger", `String trigger);
            ("policies", `List (List.map (fun (n, _) -> `String n) cfg.policies));
+           ("sessions", `Int (Hashtbl.length t.live));
+           ("sessions_ending", `Int ended);
          ]
         @ reload_fields t);
       Ok ()
@@ -283,6 +309,7 @@ let start ?reload cfg =
       sock;
       bound_port;
       conns = Hashtbl.create 64;
+      live = Hashtbl.create 64;
       next_conn = 0;
       stopping = false;
       stopped;

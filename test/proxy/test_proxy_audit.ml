@@ -557,7 +557,10 @@ let t_sighup_reload () =
   let tmp = get_tmp () in
   let policy = Filename.concat tmp "hup-policy.yaml" in
   write_file policy (read_file fixture_policy);
-  with_proxy ~tmp "sighup" (config ~policy ()) (fun p ->
+  (* old sessions keeping their snapshot is the reload.terminate_changed_sessions: false
+     behaviour; the default (they are ended) is covered by test_proxy_session *)
+  let keep = ("reload", `Assoc [ ("terminate_changed_sessions", `Bool false) ]) in
+  with_proxy ~tmp "sighup" (config ~policy ~extra:[ keep ] ()) (fun p ->
       let old = Raw.login p.port in
       Alcotest.(check string) "policy A" "ok:2" (Raw.query old q_currencies);
       (* policy B: app.currencies is no longer allowed *)
@@ -600,7 +603,12 @@ let t_watch_reload () =
       ~extra:
         [
           ( "reload",
-            `Assoc [ ("watch", `Bool true); ("poll_interval_seconds", `Float 0.2) ] );
+            `Assoc
+              [
+                ("watch", `Bool true);
+                ("poll_interval_seconds", `Float 0.2);
+                ("terminate_changed_sessions", `Bool false);
+              ] );
         ]
       ()
   in

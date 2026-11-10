@@ -181,14 +181,21 @@ let fresh_audit_file () =
   Sys.remove f;
   f
 
-let with_env ?(prepare = fun (_ : Fake_pg.t) -> ()) ?reload ?(cfg = fun c -> c)
+(* [make] builds the configuration; it is called again on every [reload], so a test
+   changes what it returns and then reloads. *)
+let with_env ?(prepare = fun (_ : Fake_pg.t) -> ())
+    ?(make = fun ~up_port ~audit_file -> config ~up_port ~audit_file ())
     ?(audit_file = fresh_audit_file ()) (f : env -> unit Lwt.t) =
   Lwt_main.run
     (let* pg = Fake_pg.start () in
      prepare pg;
-     let initial = load (cfg (config ~up_port:pg.port ~audit_file ())) in
-     let reload = Option.map (fun r () -> r ~up_port:pg.port ~audit_file) reload in
-     let* srv = Server.start ?reload initial in
+     let build () = make ~up_port:pg.port ~audit_file in
+     let reload () =
+       match Proxy_config.of_json ~base_dir:(Sys.getcwd ()) (build ()) with
+       | Ok c -> Ok c
+       | Error es -> Error (List.map Haltsql.Load_error.to_string es)
+     in
+     let* srv = Server.start ~reload (load (build ())) in
      Lwt.finalize
        (fun () -> f { pg; srv; port = Server.port srv; audit_file })
        (fun () ->
@@ -196,6 +203,12 @@ let with_env ?(prepare = fun (_ : Fake_pg.t) -> ()) ?reload ?(cfg = fun c -> c)
          let* () = Fake_pg.stop pg in
          (try Sys.remove audit_file with _ -> ());
          Lwt.return_unit))
+
+let reload e =
+  let* r = Server.reload e.srv ~trigger:"test" in
+  match r with
+  | Ok () -> Lwt.return_unit
+  | Error es -> Alcotest.failf "reload: %s" (String.concat "; " es)
 
 let wait_until ?(timeout = 5.) what f =
   let t0 = Unix.gettimeofday () in
@@ -484,6 +497,240 @@ let test_audit_fail_closed () =
                   (Fake_pg.received e.pg)));
           Io.close io))
 
+(* ------------------------------------------------- lifetime and reload *)
+
+let limits kvs ~up_port ~audit_file = config ~up_port ~audit_file ~limits:kvs ()
+
+let expect_terminated ?(within = 5.) name io =
+  let t0 = Unix.gettimeofday () in
+  let* ms = read_until_ready io in
+  let dt = Unix.gettimeofday () -. t0 in
+  check_str (name ^ ": admin_shutdown") "57P01" (sqlstate ms);
+  check_bool (name ^ ": FATAL") true (List.exists is_fatal ms);
+  check_bool (Printf.sprintf "%s: in time (%.2fs)" name dt) true (dt < within);
+  let* rest = read_until_ready io in
+  check_str (name ^ ": connection closed") "!" (tags rest);
+  Lwt.return (message ms)
+
+let still_alive name io =
+  let* ms = simple io "ROLLBACK" in
+  check_str (name ^ ": still served") "CZ" (tags ms);
+  Lwt.return_unit
+
+(* An idle session is ended when its lifetime is over; pools reconnect on 57P01. *)
+let test_lifetime_idle () =
+  with_env
+    ~make:(limits [ ("max_session_lifetime_seconds", `Float 0.4) ])
+    (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io q_ok in
+      check_str "served before the limit" "CZ" (tags ms);
+      let* m = expect_terminated "lifetime" io in
+      check_bool "names the limit" true (contains m "max_session_lifetime_seconds");
+      let* () = wait_until "upstream connection closed" (fun () -> e.pg.closed = 1) in
+      (* a new connection gets a fresh lifetime *)
+      let* io2 = login_ok e.port in
+      let* ms = simple io2 q_ok in
+      check_str "reconnect works" "CZ" (tags ms);
+      let* () = Io.close io2 in
+      Io.close io)
+
+(* Inside a transaction the session lives on until the transaction ends. *)
+let test_lifetime_transaction () =
+  with_env
+    ~make:
+      (limits
+         [
+           ("max_session_lifetime_seconds", `Float 0.3);
+           ("termination_grace_seconds", `Float 20.);
+         ])
+    (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io "BEGIN" in
+      check_str "BEGIN" "CZ" (tags ms);
+      let* () = Lwt_unix.sleep 0.6 in
+      let* ms = simple io q_ok in
+      check_str "statement inside the transaction, past the limit" "CZ" (tags ms);
+      let* () = Io.write io (Wire.frame 'Q' "COMMIT\000") in
+      let* ms = read_until_ready io in
+      check_str "COMMIT answered first" "CZ" (tags ms);
+      let* _ = expect_terminated "after the transaction" io in
+      check_bool "COMMIT reached the upstream" true
+        (List.mem "COMMIT" (Fake_pg.queries e.pg));
+      Io.close io)
+
+(* A client that never ends its transaction is closed after the grace period. *)
+let test_lifetime_grace () =
+  with_env
+    ~make:
+      (limits
+         [
+           ("max_session_lifetime_seconds", `Float 0.2);
+           ("termination_grace_seconds", `Float 0.3);
+         ])
+    (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io "BEGIN" in
+      check_str "BEGIN" "CZ" (tags ms);
+      let t0 = Unix.gettimeofday () in
+      let* _ = expect_terminated "grace" io in
+      let dt = Unix.gettimeofday () -. t0 in
+      check_bool (Printf.sprintf "not before lifetime + grace (%.2fs)" dt) true (dt >= 0.4);
+      let* () = wait_until "upstream connection closed" (fun () -> e.pg.closed = 1) in
+      Io.close io)
+
+let test_lifetime_disabled () =
+  with_env
+    ~make:(limits [ ("max_session_lifetime_seconds", `Int 0) ])
+    (fun e ->
+      let* io = login_ok e.port in
+      let* () = Lwt_unix.sleep 0.5 in
+      let* ms = simple io q_ok in
+      check_str "no limit" "CZ" (tags ms);
+      Io.close io)
+
+(* The fixture policy without app.currencies: q_ok is denied under it. *)
+let policy_b =
+  lazy
+    (let text = In_channel.with_open_bin "fixtures/policy.yaml" In_channel.input_all in
+     let cut = "  app.currencies:\n    columns: \"*\"\n" in
+     if not (contains text cut) then Alcotest.fail "fixture policy changed";
+     let i =
+       let m = String.length cut in
+       let rec go i = if String.sub text i m = cut then i else go (i + 1) in
+       go 0
+     in
+     let text =
+       String.sub text 0 i
+       ^ String.sub text
+           (i + String.length cut)
+           (String.length text - i - String.length cut)
+     in
+     let f = Filename.temp_file "haltsql_policy_b" ".yaml" in
+     Out_channel.with_open_bin f (fun oc -> Out_channel.output_string oc text);
+     f)
+
+let other_verifier =
+  lazy
+    (Scram.verifier_to_string (Scram.make_verifier ~iterations:4096 "rotated-password"))
+
+(* Each case: two users log in, the configuration is changed and reloaded, and "agent"
+   must be ended (or not) while "other" is never touched. *)
+let reload_case ?(expect_end = true) ?(reload_extra = []) change () =
+  let changed = ref false in
+  let make ~up_port ~audit_file =
+    let policy, agent =
+      if !changed then change () else ("fixtures/policy.yaml", Some (user_json ()))
+    in
+    config ~up_port ~audit_file ~policy
+      ~users:(Option.to_list agent @ [ user_json ~name:"other" () ])
+      ~extra:(if reload_extra = [] then [] else [ ("reload", `Assoc reload_extra) ])
+      ()
+  in
+  with_env ~make (fun e ->
+      let* agent = login_ok e.port in
+      let* other = login_ok ~user:"other" e.port in
+      changed := true;
+      let* () = reload e in
+      let* () =
+        if expect_end then (
+          let* m = expect_terminated "changed session" agent in
+          check_bool "says why" true (contains m "configuration");
+          Lwt.return_unit)
+        else still_alive "session" agent
+      in
+      let* () = Io.close agent in
+      Io.close other)
+
+let same_policy = "fixtures/policy.yaml"
+
+let test_reload_policy_changed =
+  reload_case (fun () -> (Lazy.force policy_b, Some (user_json ())))
+
+let test_reload_credentials_changed =
+  reload_case (fun () ->
+      (same_policy, Some (user_json ~verifier:(Lazy.force other_verifier) ())))
+
+let test_reload_user_removed = reload_case (fun () -> (same_policy, None))
+
+let test_reload_context_changed =
+  reload_case (fun () -> (same_policy, Some (user_json ~tenant:"globex" ())))
+
+let test_reload_opt_out =
+  reload_case ~expect_end:false
+    ~reload_extra:[ ("terminate_changed_sessions", `Bool false) ]
+    (fun () -> (Lazy.force policy_b, Some (user_json ())))
+
+(* The other half of every case above, spelled out once: a reload that changes one
+   user leaves the others alone, new sessions get the new policy, and rotated
+   credentials are what authenticates from then on. *)
+let test_reload_scope () =
+  let stage = ref 0 in
+  let make ~up_port ~audit_file =
+    let agent =
+      if !stage = 0 then user_json ()
+      else user_json ~verifier:(Lazy.force other_verifier) ()
+    in
+    config ~up_port ~audit_file
+      ~policy:(if !stage = 2 then Lazy.force policy_b else same_policy)
+      ~users:[ agent; user_json ~name:"other" () ]
+      ()
+  in
+  with_env ~make (fun e ->
+      let* agent = login_ok e.port in
+      let* other = login_ok ~user:"other" e.port in
+      stage := 1;
+      let* () = reload e in
+      let* _ = expect_terminated "rotated user" agent in
+      let* ms = simple other q_ok in
+      check_str "the other user's session is untouched" "CZ" (tags ms);
+      let* io, ms = login e.port in
+      check_str "the old password no longer works" "28P01" (sqlstate ms);
+      let* () = Io.close io in
+      let* agent2 = login_ok ~password:"rotated-password" e.port in
+      (* an unrelated reload (same content) ends nobody *)
+      let* () = reload e in
+      let* ms = simple agent2 q_ok in
+      check_str "unchanged session survives a reload" "CZ" (tags ms);
+      (* the policy changes for everyone *)
+      stage := 2;
+      let* () = reload e in
+      let* _ = expect_terminated "policy change (agent)" agent2 in
+      let* _ = expect_terminated "policy change (other)" other in
+      let* fresh = login_ok ~user:"other" e.port in
+      let* ms = simple fresh q_ok in
+      check_str "new sessions run under the new policy" "42501" (sqlstate ms);
+      let* () = Lwt_list.iter_s Io.close [ agent; other; agent2; fresh ] in
+      Lwt.return_unit)
+
+(* A session inside a transaction keeps its policy (it is never rebound) and is ended
+   when the transaction is. *)
+let test_reload_in_transaction () =
+  let changed = ref false in
+  let make ~up_port ~audit_file =
+    config ~up_port ~audit_file
+      ~policy:(if !changed then Lazy.force policy_b else same_policy)
+      ()
+  in
+  with_env ~make (fun e ->
+      let* io = login_ok e.port in
+      let* ms = simple io "BEGIN" in
+      check_str "BEGIN" "CZ" (tags ms);
+      changed := true;
+      let* () = reload e in
+      let* ms = simple io q_ok in
+      check_str "still verified under the policy it started with" "CZ" (tags ms);
+      let* () = Io.write io (Wire.frame 'Q' "COMMIT\000") in
+      let* ms = read_until_ready io in
+      check_str "COMMIT answered" "CZ" (tags ms);
+      let* _ = expect_terminated "after COMMIT" io in
+      let versions =
+        List.sort_uniq compare (List.map (jstr "policy_version") (events e "statement"))
+      in
+      check_int "every statement of the session has one policy version" 1
+        (List.length versions);
+      Io.close io)
+
 let () =
   Sec.init_rng ();
   (try Sys.set_signal Sys.sigpipe Sys.Signal_ignore with _ -> ());
@@ -500,6 +747,32 @@ let () =
             test_concurrent_sessions;
           Alcotest.test_case "audit failure still refuses the statement" `Quick
             test_audit_fail_closed;
+        ] );
+      ( "lifetime",
+        [
+          Alcotest.test_case "idle session ended at the limit (57P01)" `Quick
+            test_lifetime_idle;
+          Alcotest.test_case "ended at the transaction boundary" `Quick
+            test_lifetime_transaction;
+          Alcotest.test_case "grace period bounds an open transaction" `Quick
+            test_lifetime_grace;
+          Alcotest.test_case "0 disables the limit" `Quick test_lifetime_disabled;
+        ] );
+      ( "reload",
+        [
+          Alcotest.test_case "policy changed: session ended" `Quick
+            test_reload_policy_changed;
+          Alcotest.test_case "credentials changed: session ended" `Quick
+            test_reload_credentials_changed;
+          Alcotest.test_case "user removed: session ended" `Quick test_reload_user_removed;
+          Alcotest.test_case "context changed: session ended" `Quick
+            test_reload_context_changed;
+          Alcotest.test_case "terminate_changed_sessions: false" `Quick
+            test_reload_opt_out;
+          Alcotest.test_case "only changed sessions, new sessions get the new policy"
+            `Quick test_reload_scope;
+          Alcotest.test_case "in a transaction: old policy until it ends" `Quick
+            test_reload_in_transaction;
         ] );
       ( "search_path",
         [

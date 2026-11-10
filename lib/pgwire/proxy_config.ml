@@ -36,6 +36,8 @@ type limits = {
   idle_timeout : float;
   auth_timeout : float;
   worker_threads : int;
+  max_session_lifetime : float;
+  termination_grace : float;
 }
 
 type audit_sink = Audit_stdout | Audit_file of string | Audit_none
@@ -47,7 +49,7 @@ type audit_sink_spec = {
   max_buffer_records : int;
 }
 
-type reload = { watch : bool; poll_interval : float }
+type reload = { watch : bool; poll_interval : float; terminate_changed_sessions : bool }
 
 type t = {
   listen_host : string;
@@ -1057,6 +1059,8 @@ let decode ctx (j : Yojson.Safe.t) =
                  idle_timeout = 0.;
                  auth_timeout = 30.;
                  worker_threads = Offload.default_threads ();
+                 max_session_lifetime = 3600.;
+                 termination_grace = 30.;
                })
           ""
           (fun p j ->
@@ -1069,6 +1073,8 @@ let decode ctx (j : Yojson.Safe.t) =
                     "idle_timeout_seconds";
                     "auth_timeout_seconds";
                     "worker_threads";
+                    "max_session_lifetime_seconds";
+                    "termination_grace_seconds";
                   ]
                 j
             with
@@ -1096,12 +1102,22 @@ let decode ctx (j : Yojson.Safe.t) =
                     p
                     (fun p j -> int ctx p ~min:1 ~max:64 j)
                 in
-                match (mc, mm, it, at, wt) with
+                let ml =
+                  optional lk "max_session_lifetime_seconds" ~default:(Some 3600.) p
+                    (fun p j -> number ctx p ~min:0. ~max:2_592_000. j)
+                in
+                let tg =
+                  optional lk "termination_grace_seconds" ~default:(Some 30.) p
+                    (fun p j -> number ctx p ~min:0. ~max:3600. j)
+                in
+                match (mc, mm, it, at, wt, ml, tg) with
                 | ( Some max_connections,
                     Some max_message_bytes,
                     Some idle_timeout,
                     Some auth_timeout,
-                    Some worker_threads ) ->
+                    Some worker_threads,
+                    Some max_session_lifetime,
+                    Some termination_grace ) ->
                     Some
                       {
                         max_connections;
@@ -1109,6 +1125,8 @@ let decode ctx (j : Yojson.Safe.t) =
                         idle_timeout;
                         auth_timeout;
                         worker_threads;
+                        max_session_lifetime;
+                        termination_grace;
                       }
                 | _ -> None))
       in
@@ -1141,10 +1159,15 @@ let decode ctx (j : Yojson.Safe.t) =
       in
       let reload =
         optional kvs "reload"
-          ~default:(Some { watch = false; poll_interval = 2. })
+          ~default:
+            (Some { watch = false; poll_interval = 2.; terminate_changed_sessions = true })
           ""
           (fun p j ->
-            match obj ctx p ~keys:[ "watch"; "poll_interval_seconds" ] j with
+            match
+              obj ctx p
+                ~keys:[ "watch"; "poll_interval_seconds"; "terminate_changed_sessions" ]
+                j
+            with
             | None -> None
             | Some rk -> (
                 let watch =
@@ -1154,8 +1177,13 @@ let decode ctx (j : Yojson.Safe.t) =
                   optional rk "poll_interval_seconds" ~default:(Some 2.) p (fun p j ->
                       number ctx p ~min:0.1 ~max:3600. j)
                 in
-                match (watch, poll) with
-                | Some watch, Some poll_interval -> Some { watch; poll_interval }
+                let term =
+                  optional rk "terminate_changed_sessions" ~default:(Some true) p
+                    (fun p j -> bool ctx p j)
+                in
+                match (watch, poll, term) with
+                | Some watch, Some poll_interval, Some terminate_changed_sessions ->
+                    Some { watch; poll_interval; terminate_changed_sessions }
                 | _ -> None))
       in
       let log_level =
@@ -1398,6 +1426,8 @@ let to_json_redacted c : Yojson.Safe.t =
             ("idle_timeout_seconds", `Float c.limits.idle_timeout);
             ("auth_timeout_seconds", `Float c.limits.auth_timeout);
             ("worker_threads", `Int c.limits.worker_threads);
+            ("max_session_lifetime_seconds", `Float c.limits.max_session_lifetime);
+            ("termination_grace_seconds", `Float c.limits.termination_grace);
           ] );
       ("deny_sqlstate", `String c.deny_sqlstate);
       ("allow_transaction_control", `Bool c.allow_transaction_control);
@@ -1418,6 +1448,7 @@ let to_json_redacted c : Yojson.Safe.t =
           [
             ("watch", `Bool c.reload.watch);
             ("poll_interval_seconds", `Float c.reload.poll_interval);
+            ("terminate_changed_sessions", `Bool c.reload.terminate_changed_sessions);
           ] );
       ("logging", `Assoc [ ("level", `String c.log_level) ]);
       ("shutdown_grace_seconds", `Float c.shutdown_grace);

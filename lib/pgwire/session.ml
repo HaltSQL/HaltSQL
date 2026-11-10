@@ -12,7 +12,19 @@ type shared = {
   cancel_table : (int, int * int * int * Proxy_config.upstream) Hashtbl.t;
 }
 
+type principal = User of string | Identity of Proxy_config.identity_match
+
+type live = {
+  live_id : string;
+  principal : principal;
+  credential : string;
+  live_binding : Proxy_config.binding;
+  live_cfg : Proxy_config.t;
+  terminate : string -> unit;
+}
+
 let audit_sqlstate = "58030"
+let shutdown_sqlstate = "57P01"
 let sentinel_prefix = "haltsql_deny_"
 let max_startup_packet = 10_000
 let max_sasl_message = 4096
@@ -39,6 +51,14 @@ type s = {
   changed : unit Lwt_condition.t;
   mutable finished : bool;
   mutable proxy_pid : int option;
+  mutable tx_status : char;
+      (** transaction status of the upstream's last ReadyForQuery: 'I', 'T' or 'E' *)
+  mutable ending : string option;
+      (** why the session has to end at its next transaction boundary, once requested *)
+  end_requested : unit Lwt.t * unit Lwt.u;
+  boundary : unit Lwt.t * unit Lwt.u;
+      (** resolved once the session is at a transaction boundary with [ending] set *)
+  on_authenticated : live -> unit;
 }
 
 let fatal code msg = Lwt.fail (Fatal (code, msg))
@@ -314,7 +334,10 @@ let authenticate s =
                     match (Scram.Server.finish st final, u) with
                     | Ok server_final, Some u ->
                         let* () = Io.write s.client (Wire.auth_sasl_final server_final) in
-                        Lwt.return u.user_binding
+                        Lwt.return
+                          ( User u.user_name,
+                            Scram.verifier_to_string u.verifier,
+                            u.user_binding )
                     | Ok _, None | Error _, _ ->
                         log s Plog.Warn "authentication failed"
                           [
@@ -331,7 +354,7 @@ let authenticate s =
           | None -> fatal "28000" "a TLS client certificate is required"
           | Some cert -> (
               match match_identity ids cert with
-              | Some id -> Lwt.return id.id_binding
+              | Some id -> Lwt.return (Identity id.id_match, "", id.id_binding)
               | None ->
                   log s Plog.Warn "certificate identity not authorized" [];
                   fatal "28000" "certificate identity is not authorized")))
@@ -644,10 +667,62 @@ let read_client s =
     in
     wait ()
 
+(* ------------------------------------------------------------------ *)
+(* Ending a session at a transaction boundary                           *)
+
+(* Nothing in flight and no open transaction: ending the session here loses no work the
+   upstream acknowledged and leaves no statement half-answered. *)
+let at_boundary s = s.tx_status = 'I' && Stmt_state.in_flight s.st = 0
+let wake (p, u) = if Lwt.is_sleeping p then Lwt.wakeup_later u ()
+
+let request_end s reason =
+  if s.ending = None && not s.finished then (
+    s.ending <- Some reason;
+    log s Plog.Info "session will end at its next transaction boundary"
+      [ ("reason", `String reason) ];
+    wake s.end_requested;
+    if at_boundary s then wake s.boundary)
+
+(* Ends the session (FATAL 57P01, so pools and drivers reconnect) once it was asked to
+   end and reached a transaction boundary, or [limits.termination_grace_seconds] later
+   at the latest: a client that keeps a transaction open must not keep an outdated
+   policy or revoked credentials alive. *)
+let terminator s =
+  let* () = fst s.end_requested in
+  let* in_time =
+    Lwt.pick
+      [
+        Lwt.map (fun () -> true) (fst s.boundary);
+        Lwt.map (fun () -> false) (Lwt_unix.sleep s.sh.cfg.limits.termination_grace);
+      ]
+  in
+  let reason = Option.value ~default:"" s.ending in
+  if not in_time then
+    log s Plog.Warn
+      "session did not reach a transaction boundary in time; closing it anyway"
+      [ ("reason", `String reason) ];
+  fatal shutdown_sqlstate
+    (Printf.sprintf "terminating connection: %s (haltsql-proxy); reconnect" reason)
+
+let never () = fst (Lwt.task ())
+
+let lifetime_timer s =
+  let l = s.sh.cfg.limits.max_session_lifetime in
+  if l <= 0. then never ()
+  else
+    let* () = Lwt_unix.sleep l in
+    request_end s "session reached limits.max_session_lifetime_seconds";
+    never ()
+
 let rec client_loop s =
   let* tag, payload = read_client s in
-  let* () = handle_client_message s tag payload in
-  client_loop s
+  if s.ending <> None && at_boundary s then (
+    (* the session is ending: this message is neither verified nor forwarded *)
+    wake s.boundary;
+    never ())
+  else
+    let* () = handle_client_message s tag payload in
+    client_loop s
 
 let rec upstream_loop s up =
   let* tag, payload = Io.read_message up ~max:max_upstream_message in
@@ -677,7 +752,10 @@ let rec upstream_loop s up =
         | _ -> Lwt.return_unit)
     | 'Z' ->
         Stmt_state.on_ready s.st;
-        raw ()
+        if String.length payload = 1 then s.tx_status <- payload.[0];
+        let* () = raw () in
+        if s.ending <> None && at_boundary s then wake s.boundary;
+        Lwt.return_unit
     | 'G' | 'H' | 'W' | 'd' | 'c' ->
         fatal "08P01"
           "upstream entered COPY mode; COPY is not allowed through haltsql-proxy"
@@ -746,8 +824,17 @@ let run s =
               | Some a when valid_app_name a -> Some a
               | _ -> None
             in
-            let* b = authenticate s in
+            let* principal, credential, b = authenticate s in
             s.binding <- Some b;
+            s.on_authenticated
+              {
+                live_id = s.id;
+                principal;
+                credential;
+                live_binding = b;
+                live_cfg = cfg;
+                terminate = request_end s;
+              };
             let* () = Io.write s.client Wire.auth_ok in
             log s Plog.Info "client authenticated"
               [
@@ -801,9 +888,59 @@ let run s =
                 fatal "08006" "haltsql-proxy: the upstream database did not respond"
             | e -> Lwt.fail e)
       in
-      Lwt.pick [ client_loop s; upstream_loop s up ]
+      Lwt.pick [ client_loop s; upstream_loop s up; terminator s; lifetime_timer s ]
 
-let handle sh ~id fd =
+(* ------------------------------------------------------------------ *)
+(* What a reload changed for a live session                             *)
+
+let der certs = List.map X509.Certificate.encode_der certs
+
+let same_upstream (a : Proxy_config.upstream) (b : Proxy_config.upstream) =
+  a.host = b.host && a.port = b.port && a.database = b.database && a.user = b.user
+  && a.password = b.password && a.tls_mode = b.tls_mode
+  && der a.tls_ca = der b.tls_ca
+
+let client_ca (c : Proxy_config.t) =
+  match c.tls with Some t -> der t.client_ca | None -> []
+
+let stale (cfg : Proxy_config.t) (l : live) =
+  let found =
+    match (cfg.auth, l.principal) with
+    | Scram_users users, User name -> (
+        match List.find_opt (fun u -> u.user_name = name) users with
+        | Some u -> Ok (Scram.verifier_to_string u.verifier, u.user_binding)
+        | None -> Error "its user was removed")
+    | Cert_identities ids, Identity m -> (
+        match List.find_opt (fun i -> i.id_match = m) ids with
+        | Some i -> Ok ("", i.id_binding)
+        | None -> Error "its certificate identity was removed")
+    | Scram_users _, Identity _ | Cert_identities _, User _ ->
+        Error "the authentication method changed"
+  in
+  match found with
+  | Error r -> Some r
+  | Ok (credential, b) ->
+      let old = l.live_binding in
+      if credential <> l.credential then Some "its credentials changed"
+      else if
+        (match l.principal with Identity _ -> true | User _ -> false)
+        && client_ca cfg <> client_ca l.live_cfg
+      then Some "the client certificate authorities changed"
+      else if b.policy_name <> old.policy_name then Some "it is bound to another policy"
+      else if b.policy.version <> old.policy.version then Some "its policy changed"
+      else if
+        not
+          (Yojson.Safe.equal
+             (Haltsql.Context.to_json b.context)
+             (Haltsql.Context.to_json old.context))
+      then Some "its context changed"
+      else if not (same_upstream cfg.upstream l.live_cfg.upstream) then
+        Some "the upstream changed"
+      else if cfg.allow_transaction_control <> l.live_cfg.allow_transaction_control then
+        Some "allow_transaction_control changed"
+      else None
+
+let handle ?(on_authenticated = fun (_ : live) -> ()) sh ~id fd =
   let peer =
     match Lwt_unix.getpeername fd with
     | Unix.ADDR_INET (a, p) -> Printf.sprintf "%s:%d" (Unix.string_of_inet_addr a) p
@@ -825,6 +962,11 @@ let handle sh ~id fd =
       changed = Lwt_condition.create ();
       finished = false;
       proxy_pid = None;
+      tx_status = 'I';
+      ending = None;
+      end_requested = Lwt.wait ();
+      boundary = Lwt.wait ();
+      on_authenticated;
     }
   in
   (try Lwt_unix.setsockopt fd Unix.TCP_NODELAY true with _ -> ());

@@ -50,6 +50,12 @@ type limits = {
   worker_threads : int;
       (** threads that run verification and audit file writes off the event loop
           ({!Offload}); 1..64, default {!Offload.default_threads} *)
+  max_session_lifetime : float;
+      (** seconds from authentication after which a session is ended at its next
+          transaction boundary (FATAL 57P01); default 3600, 0 = unlimited *)
+  termination_grace : float;
+      (** seconds a session that has to end (lifetime, reload) may take to reach a
+          transaction boundary before it is closed anyway; default 30 *)
 }
 
 type audit_sink =
@@ -82,6 +88,9 @@ type audit_sink_spec = {
 type reload = {
   watch : bool;  (** default false: poll {!t.source_files} and reload on change *)
   poll_interval : float;  (** seconds, default 2, 0.1..3600 *)
+  terminate_changed_sessions : bool;
+      (** default true: after a reload, end (at the next transaction boundary) the
+          sessions whose credentials, policy, context or upstream it changed *)
 }
 
 type t = {

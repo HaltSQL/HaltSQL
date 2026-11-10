@@ -154,9 +154,10 @@ let run_cmd =
          shutdown_grace_seconds.";
       `P
         "SIGHUP reloads the config file and its policies (also on file changes with \
-         reload.watch). New connections use the new configuration, existing sessions \
-         keep theirs; an invalid configuration is logged and the current one stays in \
-         force.";
+         reload.watch). New connections use the new configuration; sessions whose \
+         credentials, policy, context or upstream changed are ended at their next \
+         transaction boundary (FATAL 57P01, see reload.terminate_changed_sessions). An \
+         invalid configuration is logged and the current one stays in force.";
       `P
         "Every statement is audited to the configured sinks (hash-chained JSON lines, \
          see haltsql audit verify). With on_error: fail_closed (the default) a statement \

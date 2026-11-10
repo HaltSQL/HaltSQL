@@ -182,6 +182,25 @@ let t_reload_section () =
   in
   Alcotest.(check bool) "watch" true c.reload.watch;
   Alcotest.(check (float 0.)) "poll" 0.5 c.reload.poll_interval;
+  Alcotest.(check bool)
+    "changed sessions are ended by default" true c.reload.terminate_changed_sessions;
+  Alcotest.(check bool)
+    "default without a reload section" true
+    (ok (base ())).reload.terminate_changed_sessions;
+  Alcotest.(check bool)
+    "opt out" false
+    (ok
+       (base
+          ~extra:[ ("reload", `Assoc [ ("terminate_changed_sessions", `Bool false) ]) ]
+          ()))
+      .reload
+      .terminate_changed_sessions;
+  has_error "terminate_changed_sessions type" "reload.terminate_changed_sessions"
+    (base
+       ~extra:[ ("reload", `Assoc [ ("terminate_changed_sessions", `String "no") ]) ]
+       ());
+  has_error "unknown reload key" "reload"
+    (base ~extra:[ ("reload", `Assoc [ ("terminate_sessions", `Bool true) ]) ] ());
   has_error "poll range" "out of range"
     (base ~extra:[ ("reload", `Assoc [ ("poll_interval_seconds", `Float 0.01) ]) ] ())
 

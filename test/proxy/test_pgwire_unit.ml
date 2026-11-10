@@ -577,6 +577,23 @@ let test_config_new_keys () =
   has_error "worker_threads high" "limits.worker_threads: 65 is out of range"
     (limits [ ("worker_threads", `Int 65) ]);
   has_error "unknown limits key" "limits" (limits [ ("verify_threads", `Int 2) ]);
+  Alcotest.(check (float 0.))
+    "max_session_lifetime default: one hour" 3600. c.limits.max_session_lifetime;
+  Alcotest.(check (float 0.)) "termination_grace default" 30. c.limits.termination_grace;
+  let c' =
+    ok
+      (limits
+         [
+           ("max_session_lifetime_seconds", `Int 0);
+           ("termination_grace_seconds", `Float 1.5);
+         ])
+  in
+  Alcotest.(check (float 0.)) "lifetime 0 = unlimited" 0. c'.limits.max_session_lifetime;
+  Alcotest.(check (float 0.)) "grace set" 1.5 c'.limits.termination_grace;
+  has_error "lifetime negative" "limits.max_session_lifetime_seconds"
+    (limits [ ("max_session_lifetime_seconds", `Int (-1)) ]);
+  has_error "grace too long" "limits.termination_grace_seconds"
+    (limits [ ("termination_grace_seconds", `Int 3601) ]);
   let red = Yojson.Safe.to_string (Proxy_config.to_json_redacted c) in
   check_bool "worker_threads in the effective config" true
     (Astring_like.contains red "\"worker_threads\"")

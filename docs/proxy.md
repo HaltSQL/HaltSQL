@@ -108,6 +108,8 @@ configured value, so key material does not end up in logs.
 | `limits.max_message_bytes` | `1048576` | Largest client message; larger is FATAL 08P01. |
 | `limits.idle_timeout_seconds` | `0` (off) | Close sessions idle this long with nothing in flight (FATAL 57P05). |
 | `limits.auth_timeout_seconds` | `30` | Startup + authentication must finish within this (FATAL 08006). |
+| `limits.max_session_lifetime_seconds` | `3600` | A session is ended this long after it authenticated: at its next transaction boundary the client gets `FATAL 57P01` and reconnects. `0` disables the limit. See [Session lifetime](#session-lifetime). |
+| `limits.termination_grace_seconds` | `30` | How long a session that has to end (lifetime, reload) may take to finish its transaction before it is closed anyway (0 to 3600). |
 | `limits.worker_threads` | CPUs, 2 to 8 | Threads (1 to 64) that run policy verification and audit writes to stdout/file off the event loop, so a slow statement or a slow disk in one session does not stall the others. |
 | `deny_sqlstate` | `42501` | SQLSTATE of policy denials. |
 | `allow_transaction_control` | `true` | Let plain `BEGIN`/`START TRANSACTION [modes]`, `COMMIT`, `END`, `ROLLBACK`, `ABORT` through without a policy check, so drivers work outside autocommit. Matching is exact, token by token: comments, quotes, savepoints, `AND CHAIN` and `PREPARE TRANSACTION` are not matched and go to the policy. |
@@ -117,6 +119,7 @@ configured value, so key material does not end up in logs.
 | `audit.log_raw_sql` | `false` | Include the SQL text in audit records (otherwise only its SHA-256). |
 | `reload.watch` | `false` | Poll the config file and every file it pulled in (policies, TLS material, `${file:...}`) and reload on change. |
 | `reload.poll_interval_seconds` | `2` | Watch interval (0.1 to 3600). |
+| `reload.terminate_changed_sessions` | `true` | After a reload, end the sessions whose credentials, policy, context or upstream it changed (see [Hot reload](#hot-reload)). `false`: they keep running under the configuration they started with. |
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error`. Logs are JSON lines on stderr. |
 | `shutdown_grace_seconds` | `10` | On SIGTERM/SIGINT, how long to let sessions finish before closing them. |
 
@@ -335,8 +338,32 @@ one changes (write files atomically, e.g. write then rename).
 
 - **New connections** use the new configuration (policies, users, identities,
   contexts, upstream, limits, `deny_sqlstate`, TLS certificates,
-  `log_raw_sql`, log level). **Existing sessions keep the snapshot** they
-  were accepted under until they close.
+  `log_raw_sql`, log level).
+- **Sessions the reload changed are ended**, the others keep running. A
+  session is never switched to another policy while it is open (its upstream
+  `search_path` was pinned for the policy it started with); it is told to
+  reconnect instead. A session is ended when the new configuration
+  - no longer has its user or certificate identity,
+  - has another SCRAM verifier for its user (a rotated or revoked password),
+    or, for certificate sessions, another `tls.client_ca` bundle,
+  - binds it to another policy, or the policy's content changed (its
+    `policy_version` differs), or its `context` changed,
+  - points at another upstream (host, port, database, user, password, TLS
+    mode or CA), or changes `allow_transaction_control`.
+
+  An idle session gets `FATAL 57P01` (`admin_shutdown`) at once. A session
+  inside a transaction or with statements in flight keeps its old policy until
+  the transaction ends, then gets the error after the last `ReadyForQuery`;
+  after `limits.termination_grace_seconds` it is closed regardless (the
+  upstream rolls the open transaction back). Until then its statements are
+  still verified, under the old policy, and audited with the old
+  `policy_version`. `57P01` is what PostgreSQL sends on
+  `pg_terminate_backend`: drivers and pools drop the connection and open a new
+  one. Set `reload.terminate_changed_sessions: false` to keep the earlier
+  behaviour (sessions run under their snapshot until they close or reach
+  `limits.max_session_lifetime_seconds`).
+- Other changes (limits, `deny_sqlstate`, `log_raw_sql`, TLS server
+  certificate) apply to new connections only.
 - **Any error keeps the last good configuration**: a parse or validation
   error, an unreadable policy or certificate, unusable TLS material. The
   error is logged (`config reload failed; keeping the current configuration`)
@@ -345,15 +372,28 @@ one changes (write files atomically, e.g. write then rename).
 - The listen address and the audit sinks need a restart: a reload that
   changes them is applied without that part, with a warning.
 - Each reload logs `trigger` (`sighup` or `watch`), `generation` (1 at start,
-  +1 per successful reload), `reloads` and `reload_failures`. Session logs
+  +1 per successful reload), `reloads`, `reload_failures`, and how many
+  authenticated `sessions` there were and how many are `sessions_ending`. Session logs
   carry `config_generation`. Cancel requests reach the upstream their session
   runs on, across reloads.
 
 ```bash
 kill -HUP "$(pidof haltsql-proxy)"
 # {"level":"info","msg":"config reloaded","trigger":"sighup","policies":["analytics-agent"],
-#  "generation":2,"reloads":1,"reload_failures":0}
+#  "sessions":3,"sessions_ending":3,"generation":2,"reloads":1,"reload_failures":0}
 ```
+
+### Session lifetime
+
+Not everything a session depends on is in the configuration (a role's
+privileges, the upstream's own state), and a reload may be missed. Every
+session is therefore ended `limits.max_session_lifetime_seconds` after it
+authenticated, the same way as after a reload: `FATAL 57P01` at the next
+transaction boundary, or after `limits.termination_grace_seconds`. The default
+of one hour is in the range connection pools already use for their own
+maximum connection age (HikariCP 30 minutes, PgBouncer `server_lifetime` one
+hour), so a pool in front of the proxy sees nothing unusual; `0` turns the
+limit off. `limits.idle_timeout_seconds` is separate and off by default.
 
 ## Operations
 
