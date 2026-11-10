@@ -4,6 +4,13 @@ name: Native packages (wheels, npm)
 # (`@haltsql/native-<platform>`) that bundle the compiled engine, tests them as a user
 # would install them, and publishes them on release tags.
 #
+# Publishing follows release.yml's real/dry-run split:
+#   vX.Y.Z tag          publish-pypi (haltsql + haltsql-mcp) and publish-npm
+#   vX.Y.Z-rc.N tag,    publish-dry-run: twine check --strict and npm publish --dry-run
+#   or a manual run     on the exact files; plus publish-testpypi when the repository
+#   with dry_run=true   variable TESTPYPI_PUBLISH is "true" (needs a TestPyPI trusted
+#                       publisher, see docs/operations/releasing.md)
+#
 #   artifact            Linux (x86_64, aarch64)                 macOS arm64
 #   libhaltsql.so       manylinux_2_28 container (glibc 2.28)   macos-15, deployment target 11.0
 #   haltsql (CLI)       static musl, Dockerfile `dist` stage    macos-15
@@ -20,6 +27,8 @@ on:
       - "vendor/libpg_query/**"
       - "clients/python/**"
       - "clients/typescript/**"
+      - "clients/mcp/**"
+      - "scripts/check-versions.sh"
       - "Dockerfile"
       - "dune-project"
       - ".github/workflows/native-packages.yml"
@@ -27,6 +36,11 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Also run the publish dry run (twine check, npm publish --dry-run)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -338,10 +352,113 @@ jobs:
           name: python-sdist
           path: clients/python/dist/*
           if-no-files-found: error
+      # haltsql-mcp is pure Python; it is published next to haltsql.
+      - name: Build haltsql-mcp
+        working-directory: clients/mcp
+        run: |
+          python -m build --sdist --wheel
+          ls -la dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-mcp-dist
+          path: clients/mcp/dist/*
+          if-no-files-found: error
+
+  # Dry run of both publish jobs below on the exact files they would upload.
+  publish-dry-run:
+    name: Publish dry run (twine check, npm --dry-run)
+    if: (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    needs: [package, wheel-pythons, sdist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Version check
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            scripts/check-versions.sh --tag "$GITHUB_REF_NAME"
+          else
+            scripts/check-versions.sh
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: twine check --strict
+        run: |
+          set -eu
+          ls -la dist
+          python -m pip install twine==6.1.0
+          python -m twine check --strict dist/*
+          # One sdist and one pure wheel per project, and the three platform wheels.
+          v=$(scripts/check-versions.sh --print)
+          for f in "haltsql-$v.tar.gz" "haltsql_mcp-$v.tar.gz" "haltsql_mcp-$v-py3-none-any.whl" \
+                   "haltsql-$v-py3-none-any.whl"; do
+            test -f "dist/$f" || { echo "missing dist/$f"; exit 1; }
+          done
+          platform=(dist/haltsql-"$v"-py3-none-manylinux*.whl dist/haltsql-"$v"-py3-none-macosx*.whl)
+          [ "${#platform[@]}" -eq 3 ] && [ -f "${platform[0]}" ] || { echo "expected 3 platform wheels"; exit 1; }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: npm-*
+          path: npm-out
+          merge-multiple: true
+      # No token: a dry run never contacts the registry for auth. --provenance is
+      # left out because npm generates provenance only on a real publish.
+      - name: npm publish --dry-run (platform packages)
+        run: |
+          set -eu
+          ls -la npm-out
+          tgz=(npm-out/*.tgz)
+          [ "${#tgz[@]}" -eq 3 ] || { echo "expected 3 platform packages"; exit 1; }
+          for t in npm-out/*.tgz; do npm publish --dry-run --access public "$t"; done
+      - name: npm publish --dry-run (@haltsql/client)
+        working-directory: clients/typescript
+        run: |
+          npm ci
+          npm run build
+          npm publish --dry-run --access public
+
+  # Real upload to TestPyPI, only when the maintainer has set it up: repository
+  # variable TESTPYPI_PUBLISH=true and a trusted publisher on test.pypi.org for
+  # haltsql and haltsql-mcp (workflow native-packages.yml, environment testpypi).
+  # TestPyPI never accepts the same version twice, so re-runs skip existing files.
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: vars.TESTPYPI_PUBLISH == 'true' && ((startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run))
+    needs: [publish-dry-run]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/haltsql/
+    permissions:
+      id-token: write # TestPyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish-pypi:
     name: Publish to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A release-candidate tag is a dry run (publish-dry-run above).
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc.')
     needs: [package, wheel-pythons, sdist]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -353,7 +470,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: "{wheel-*,python-sdist}"
+          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
           path: dist
           merge-multiple: true
       - run: ls -la dist
@@ -361,7 +478,7 @@ jobs:
 
   publish-npm:
     name: Publish npm packages
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc.')
     needs: [package]
     runs-on: ubuntu-latest
     timeout-minutes: 15

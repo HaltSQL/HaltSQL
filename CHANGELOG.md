@@ -270,7 +270,7 @@ even before 1.0.
   `HaltSQL/haltsql.github.io` repository; and `cosign verify` must use the new
   repository's workflow identity. Old `ghcr.io/ardada2468/...` images are not
   republished.
-- Helm chart 0.2.0: values schema, startup probe, `server.extraConfig`,
+- Helm chart: values schema, startup probe, `server.extraConfig`,
   configurable NetworkPolicy egress, extra env/volumes/containers, zone
   spreading, `podMonitoring` for GKE managed Prometheus, and `server.port` is
   honored. Requires Kubernetes 1.27+.

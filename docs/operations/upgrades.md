@@ -66,7 +66,7 @@ Read these before you plan an upgrade cadence:
 | Release archives | `haltsql-<tag>-linux-{amd64,arm64}.tar.gz`, `haltsql-<tag>-darwin-arm64.tar.gz`; each holds `haltsql`, `haltsql-server` and `haltsql-proxy`. |
 | Running CLI | `haltsql version` (or `--json`): HaltSQL, PostgreSQL grammar and OCaml versions. |
 | Running server | `haltsql_build_info{version,pg}` on `/metrics`; `version` in `GET /v1/admin/status`. |
-| Helm chart | Chart `version` and `appVersion` (the default image tag) in `deploy/helm/haltsql/Chart.yaml`. Chart 0.2.0 requires Kubernetes 1.27+. |
+| Helm chart | Chart `version` and `appVersion` (the default image tag) in `deploy/helm/haltsql/Chart.yaml`. The chart versions in lockstep with HaltSQL and requires Kubernetes 1.27+. |
 
 ## Verifying a release
 
