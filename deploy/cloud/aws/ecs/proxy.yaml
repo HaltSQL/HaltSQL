@@ -35,6 +35,13 @@ auth:
       policy: analytics-agent
       context: { tenant_id: acme }
 limits:
+  # Defaults worth knowing (haltsql newer than 0.0.2; see docs/proxy.md):
+  # max_session_lifetime_seconds 3600 ends every session at a transaction
+  # boundary after an hour (clients must reconnect; keep it at or below the
+  # lifetime of the credentials behind this config), and
+  # max_unauthenticated_per_ip 20 counts by TCP peer address. Behind a
+  # load balancer that hides client addresses every client shares that one
+  # budget: preserve client addresses, or raise the cap.
   max_connections: 200
   idle_timeout_seconds: 300
 deny_sqlstate: "42501"

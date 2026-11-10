@@ -70,6 +70,12 @@ data:
       database: app
       user: haltsql_service                # read-only role, SELECT on the policy's tables
       password: ${file:/etc/haltsql/secrets/upstream-password}
+      # Loopback only: `disable` to any other host sends the password and
+      # every row in clear text (the proxy logs INSECURE UPSTREAM TRANSPORT).
+      # The proxy refuses MD5 password authentication without TLS, loopback
+      # included, so the role's password must be SCRAM-SHA-256
+      # (password_encryption = scram-sha-256, then set the password again);
+      # sessions fail with FATAL 08006 otherwise.
       tls: { mode: disable }
     policies:
       - path: /etc/haltsql/policies/analytics-agent.yaml
@@ -81,6 +87,13 @@ data:
           policy: analytics-agent
           context: { tenant_id: acme }
     limits:
+      # Defaults worth knowing (haltsql newer than 0.0.2; see docs/proxy.md):
+      # max_session_lifetime_seconds 3600 ends every session at a transaction
+      # boundary after an hour (clients must reconnect; keep it at or below the
+      # lifetime of the credentials behind this config), and
+      # max_unauthenticated_per_ip 20 counts by TCP peer address. Behind a
+      # load balancer that hides client addresses every client shares that one
+      # budget: preserve client addresses, or raise the cap.
       max_connections: 200
       idle_timeout_seconds: 300
     audit: { type: stdout }                # one JSON line per statement, to Cloud Logging

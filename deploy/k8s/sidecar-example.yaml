@@ -23,6 +23,11 @@ data:
           - name: analytics-agent
             token_sha256: ${env:HALTSQL_TOKEN_SHA256}
             policy: analytics-agent
+            # Unbound token: the agent names the tenant in the request body. That
+            # is right only while the agent takes the tenant from its own
+            # authenticated session. If this agent serves one tenant, bind the
+            # token (haltsql newer than 0.0.2) and drop tenant_id from the body:
+            # context: { tenant_id: acme }
     policies:
       - path: /etc/haltsql/policies/analytics-agent.yaml
     reload: { watch: true }
