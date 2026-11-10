@@ -50,7 +50,7 @@ the Java SDK and the Go SDK (Go modules are fetched from the repository).
 | Pinned OCaml dependencies | The Linux release build resolves opam packages against a fixed opam-repository commit (`OPAM_REPOSITORY_COMMIT`), so tarballs and image ship the same dependency versions. The resolved list is written to `/usr/share/doc/haltsql/opam-packages.txt` in the image. | `Dockerfile` |
 | Vendored parser | `libpg_query` is vendored in `vendor/libpg_query` and compiled from source | `Dockerfile`, `vendor/` |
 | Static linking check | The build fails unless every binary is statically linked, runs, and runs on an empty (`scratch`) filesystem | `Dockerfile`, `release.yml` |
-| Smoke test before push | The amd64 image is built, run against PostgreSQL 17 by `scripts/docker-smoke.sh` (including the proxy), and only then pushed | `release.yml` |
+| Smoke test before push | Each architecture's image is built on a native runner (amd64 and arm64, no emulation), run against PostgreSQL 17 by `scripts/docker-smoke.sh` (including the proxy), and only then pushed by digest and merged into the multi-arch index | `release.yml` |
 | Least-privilege workflow tokens | Workflows default to `permissions: contents: read`; jobs that publish add only `packages: write`, `id-token: write`, `attestations: write` or `contents: write` as needed | `.github/workflows/*.yml` |
 | No persisted checkout credentials | `actions/checkout` runs with `persist-credentials: false` | `.github/workflows/*.yml` |
 | Workflow linting | `actionlint`, from a digest-pinned image, on every PR | `security.yml` |
