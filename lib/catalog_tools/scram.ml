@@ -14,18 +14,7 @@ let equal_ct a b =
   !acc = 0
 
 let pbkdf2_sha256 ~password ~salt ~iterations =
-  (* One block is enough: dkLen = hLen = 32. *)
-  let u1 = hmac ~key:password (salt ^ "\000\000\000\001") in
-  let acc = Bytes.of_string u1 in
-  let u = ref u1 in
-  for _ = 2 to iterations do
-    u := hmac ~key:password !u;
-    let s = !u in
-    for i = 0 to 31 do
-      Bytes.set acc i (Char.chr (Char.code (Bytes.get acc i) lxor Char.code s.[i]))
-    done
-  done;
-  Bytes.to_string acc
+  Pbkdf.pbkdf2 ~prf:`SHA256 ~password ~salt ~count:(max 1 iterations) ~dk_len:32l
 
 type client_first = { message : string; bare : string }
 

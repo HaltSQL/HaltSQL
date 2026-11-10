@@ -15,20 +15,8 @@ let xor a b =
   String.init (String.length a) (fun i -> Char.chr (Char.code a.[i] lxor Char.code b.[i]))
 
 let hi h ~password ~salt ~iterations =
-  let u1 = hmac h ~key:password (salt ^ "\000\000\000\001") in
-  let len = String.length u1 in
-  let acc = Bytes.of_string u1 in
-  let prev = ref u1 in
-  for _ = 2 to iterations do
-    let u = hmac h ~key:password !prev in
-    for j = 0 to len - 1 do
-      Bytes.unsafe_set acc j
-        (Char.chr
-           (Char.code (Bytes.unsafe_get acc j) lxor Char.code (String.unsafe_get u j)))
-    done;
-    prev := u
-  done;
-  Bytes.unsafe_to_string acc
+  let prf, dk_len = match h with Sha256 -> (`SHA256, 32l) | Sha512 -> (`SHA512, 64l) in
+  Pbkdf.pbkdf2 ~prf ~password ~salt ~count:(max 1 iterations) ~dk_len
 
 let escape_user u =
   let b = Buffer.create (String.length u) in

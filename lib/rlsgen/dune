@@ -5,6 +5,8 @@
   haltsql.core
   yojson
   digestif
+  base64
+  kdf.pbkdf
   lwt
   lwt.unix
   tls

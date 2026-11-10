@@ -75,6 +75,8 @@
    (>= 0.4))
   (ipaddr
    (>= 5.0))
+  (kdf
+   (>= 1.0))
   (eqaf
    (>= 0.9))
   (mirage-crypto-pk
@@ -117,6 +119,8 @@
    (>= 5.6))
   (uri
    (>= 4.0))
+  (base64
+   (>= 3.5))
   (zarith
    (>= 1.12))
   (tls
@@ -131,6 +135,8 @@
    (>= 5.0))
   (eqaf
    (>= 0.9))
+  (kdf
+   (>= 1.0))
   (mirage-crypto-pk
    (>= 1.0))
   (mirage-crypto-ec
@@ -155,6 +161,8 @@
   (yojson
    (>= 2.0))
   (digestif
+   (>= 1.0))
+  (kdf
    (>= 1.0))
   (lwt
    (>= 5.6))

@@ -1,76 +1,20 @@
-(** Strict unpadded base64url. *)
+(** Strict unpadded base64url, on the [base64] package. *)
 
-let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+let alphabet = Base64.uri_safe_alphabet
+let encode s = Base64.encode_string ~pad:false ~alphabet s
 
-let encode s =
-  let n = String.length s in
-  let b = Buffer.create ((n + 2) / 3 * 4) in
-  let get i = Char.code s.[i] in
-  let rec go i =
-    if i + 3 <= n then begin
-      let v = (get i lsl 16) lor (get (i + 1) lsl 8) lor get (i + 2) in
-      Buffer.add_char b alphabet.[(v lsr 18) land 63];
-      Buffer.add_char b alphabet.[(v lsr 12) land 63];
-      Buffer.add_char b alphabet.[(v lsr 6) land 63];
-      Buffer.add_char b alphabet.[v land 63];
-      go (i + 3)
-    end
-    else if n - i = 2 then begin
-      let v = (get i lsl 16) lor (get (i + 1) lsl 8) in
-      Buffer.add_char b alphabet.[(v lsr 18) land 63];
-      Buffer.add_char b alphabet.[(v lsr 12) land 63];
-      Buffer.add_char b alphabet.[(v lsr 6) land 63]
-    end
-    else if n - i = 1 then begin
-      let v = get i lsl 16 in
-      Buffer.add_char b alphabet.[(v lsr 18) land 63];
-      Buffer.add_char b alphabet.[(v lsr 12) land 63]
-    end
-  in
-  go 0;
-  Buffer.contents b
+let is_alphabet_char = function
+  | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '-' | '_' -> true
+  | _ -> false
 
-let value = function
-  | 'A' .. 'Z' as c -> Some (Char.code c - 65)
-  | 'a' .. 'z' as c -> Some (Char.code c - 97 + 26)
-  | '0' .. '9' as c -> Some (Char.code c - 48 + 52)
-  | '-' -> Some 62
-  | '_' -> Some 63
-  | _ -> None
-
-exception Bad of string
-
+(* [Base64.decode] tolerates padding and non-zero trailing bits. Re-encoding the result
+   and comparing it with the input restores "exactly one accepted encoding per byte
+   string". *)
 let decode s =
-  let n = String.length s in
-  if n mod 4 = 1 then Error "invalid base64url length"
+  if String.length s mod 4 = 1 then Error "invalid base64url length"
+  else if not (String.for_all is_alphabet_char s) then Error "invalid base64url"
   else
-    try
-      let v i =
-        match value s.[i] with Some x -> x | None -> raise (Bad "invalid base64url")
-      in
-      let b = Buffer.create (n * 3 / 4) in
-      let rec go i =
-        if i + 4 <= n then begin
-          let x =
-            (v i lsl 18) lor (v (i + 1) lsl 12) lor (v (i + 2) lsl 6) lor v (i + 3)
-          in
-          Buffer.add_char b (Char.chr ((x lsr 16) land 255));
-          Buffer.add_char b (Char.chr ((x lsr 8) land 255));
-          Buffer.add_char b (Char.chr (x land 255));
-          go (i + 4)
-        end
-        else if n - i = 3 then begin
-          let x = (v i lsl 18) lor (v (i + 1) lsl 12) lor (v (i + 2) lsl 6) in
-          if x land 0xff <> 0 then raise (Bad "non-canonical base64url");
-          Buffer.add_char b (Char.chr ((x lsr 16) land 255));
-          Buffer.add_char b (Char.chr ((x lsr 8) land 255))
-        end
-        else if n - i = 2 then begin
-          let x = (v i lsl 18) lor (v (i + 1) lsl 12) in
-          if x land 0xffff <> 0 then raise (Bad "non-canonical base64url");
-          Buffer.add_char b (Char.chr ((x lsr 16) land 255))
-        end
-      in
-      go 0;
-      Ok (Buffer.contents b)
-    with Bad m -> Error m
+    match Base64.decode ~pad:false ~alphabet s with
+    | Ok v when String.equal (encode v) s -> Ok v
+    | Ok _ -> Error "non-canonical base64url"
+    | Error _ -> Error "invalid base64url"

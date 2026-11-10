@@ -34,6 +34,15 @@ even before 1.0.
   to another type now get `E_CAST_DENIED`; add the type with
   `casts: { extend: [...] }`. Every policy's `version` hash changes because the
   canonical policy now includes `casts`.
+- **PBKDF2 and base64 use maintained libraries.** The SCRAM key derivation
+  (`Hi()`) in the proxy, the Kafka audit sink, `haltsql rls` and the catalog
+  tools now calls `kdf` (`Pbkdf.pbkdf2`) instead of four hand-written loops,
+  and the base64 codecs in `lib/auth`, `lib/bundle` and `lib/rlsgen` are
+  built on the `base64` package with the same strictness (canonical
+  encodings only). No behaviour change. New direct dependency: `kdf`
+  (already a transitive dependency of `tls` and `x509`).
+- JWT verification stays in-tree; `docs/authentication.md` records why the
+  `jose` package was not adopted.
 
 ## [0.0.2] - 2026-11-10
 

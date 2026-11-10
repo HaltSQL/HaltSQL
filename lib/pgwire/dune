@@ -9,6 +9,7 @@
   haltsql.cloud
   yojson
   digestif
+  kdf.pbkdf
   lwt
   lwt.unix
   tls

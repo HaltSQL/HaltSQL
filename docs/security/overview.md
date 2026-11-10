@@ -257,7 +257,7 @@ checked ([proxy.md](../proxy.md#authentication)).
 | AWS requests | SigV4 | `lib/cloud/sigv4.ml` |
 
 The TLS and cryptography implementations are OCaml libraries (`tls`,
-`x509`, `mirage-crypto`, `digestif`), statically linked into the release
+`x509`, `mirage-crypto`, `digestif`, `kdf`), statically linked into the release
 binaries; the release builds do not link OpenSSL. HaltSQL makes no FIPS 140
 claim.
 

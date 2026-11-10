@@ -24,14 +24,7 @@ let constant_time_equal a b =
   !acc = 0
 
 let pbkdf2_sha256 ~password ~salt ~iterations =
-  let u1 = hmac ~key:password (salt ^ "\000\000\000\001") in
-  let rec go i u acc =
-    if i >= iterations then acc
-    else
-      let u' = hmac ~key:password u in
-      go (i + 1) u' (xor acc u')
-  in
-  go 1 u1 u1
+  Pbkdf.pbkdf2 ~prf:`SHA256 ~password ~salt ~count:(max 1 iterations) ~dk_len:32l
 
 (* RFC 5802 saslname: ',' -> =2C, '=' -> =3D *)
 let saslname s =

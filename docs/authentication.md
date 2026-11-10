@@ -320,3 +320,32 @@ context and `context_source` (`authenticated` or `request`) either way.
   groups claim is missing or malformed, or whose groups match no rule
   without a `default`, is rejected. Group membership is read only from the
   signed token, never from the request.
+
+## Implementation notes
+
+Signatures, hashes, HMAC, PBKDF2 and base64 come from maintained OCaml
+libraries (`mirage-crypto`, `digestif`, `kdf`, `base64`). The compact-JWS
+decoder, JWK parsing and the claim checks in `lib/auth` are HaltSQL's own
+code on top of those primitives.
+
+### Why JWT verification is in-tree
+
+Replacing `lib/auth/jwt.ml` and `jwk.ml` with the `jose` opam package was
+evaluated against `jose` 0.11.0 and not adopted. In that version:
+
+- RS384, RS512 and PS256 are not verifiable (three of the seven algorithms
+  HaltSQL accepts), and there is no RSA-PSS support.
+- `Jws.validate` chooses the verification routine from the key type and
+  does not compare it with the header `alg`, so the algorithm is not bound
+  to the key.
+- `Jwk.of_pub_json` and `Jwks.of_json` accept `kty: oct` keys from a JWKS,
+  which then verify by HMAC-SHA256. HaltSQL never accepts symmetric keys.
+- A non-JSON header, an unknown `enc`, a JWKS that is not an object and a
+  short ECDSA signature raise exceptions instead of returning errors.
+- Padded and non-canonical base64url, `crit` headers, sub-2048-bit RSA keys
+  and JWKs carrying private members are accepted.
+
+Keeping the checks listed under [Threat notes](#threat-notes) would have
+required HaltSQL's decoder, key checks and three algorithms to stay, with
+the library wrapping the same `mirage-crypto` calls for the other four. The
+`oidc` package depends on `jose` and was not adopted for the same reason.

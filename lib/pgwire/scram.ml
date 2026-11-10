@@ -4,18 +4,7 @@ let mechanism = "SCRAM-SHA-256"
 let ( let* ) = Result.bind
 
 let pbkdf2_sha256 ~password ~salt ~iterations =
-  let hmac = Sec.hmac_sha256 ~key:password in
-  let u1 = hmac (salt ^ "\000\000\000\001") in
-  let acc = Bytes.of_string u1 in
-  let u = ref u1 in
-  for _ = 2 to iterations do
-    u := hmac !u;
-    let s = !u in
-    for j = 0 to 31 do
-      Bytes.set acc j (Char.chr (Char.code (Bytes.get acc j) lxor Char.code s.[j]))
-    done
-  done;
-  Bytes.to_string acc
+  Pbkdf.pbkdf2 ~prf:`SHA256 ~password ~salt ~count:(max 1 iterations) ~dk_len:32l
 
 type verifier = {
   iterations : int;
