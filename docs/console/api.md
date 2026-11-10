@@ -157,8 +157,20 @@ and most severe first.
 }
 ```
 
+`timeline.series` items also carry `shadow_denied`. `shapes` group the signal's
+records by fingerprint; `example_shape` is the raw SQL with literals replaced by
+`?` when the producer logged SQL, else the fingerprint. Viewing a signal's
+investigation is written to the activity log (`signal.view`).
+
 `POST /api/v1/signals/{id}` with `{ "status": "investigating", "assignee": "dana.reyes@acme.com" }`
-(either field) updates workflow state. `acknowledged` is for low signals.
+(either field; `assignee: null` clears it) updates workflow state. Needs
+`write_cases`. `acknowledged` is for low signals (`400` otherwise). Returns the
+signal.
+
+A signal's id is its kind, subject and the start of the window bucket the
+episode began in; re-detections update the same signal. A signal whose
+condition has cleared for 30 minutes becomes `resolved` unless someone set its
+status.
 
 The `cross_tenant` signal needs the tenant values a query compared against.
 Records only carry codes, so the detector counts `E_TENANT_MISMATCH` records
@@ -276,6 +288,14 @@ posture check and the `chain_broken` signal.
 ```
 
 Case ids are `CASE-<n>` from a counter in the store, starting at 1000.
+`status=open` (the default) lists every case that is not resolved. A case
+created with `signal_id` links both ways (the signal gets `case_id`), adds the
+signal's request ids, and for `cross_tenant` signals starts with default steps;
+an unknown signal is `400`, a signal already linked to a case `409`. `{n}` in
+`/steps/{n}` is the step's 0-based index. A resolved case only accepts
+`PATCH { "status": "open" }` (reopen); other changes are `409 CONFLICT`. When
+`integrations.jira` is set the case also has `"jira": { "key", "url" }` (or
+`null` if the issue could not be created).
 
 ### Pause a caller: `POST /api/v1/callers/{caller}/pause`
 
