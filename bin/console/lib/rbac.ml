@@ -26,8 +26,16 @@ let role_label = function
   | Audit -> "Compliance"
   | Admin -> "Platform admin"
 
-(* When a person is in several mapped groups the most privileged role wins. *)
+(* Display precedence only: picks the primary [role] shown for a person in several mapped
+   groups. It never decides access; permissions are the union of every mapped role's
+   grants ([grant_union]). *)
 let precedence = function Admin -> 5 | Owner -> 4 | Audit -> 3 | Analyst -> 2 | Dev -> 1
+
+(** The highest-precedence role of a non-empty list (display only). *)
+let primary = function
+  | [] -> invalid_arg "Rbac.primary: no roles"
+  | r :: rs ->
+      List.fold_left (fun a b -> if precedence b > precedence a then b else a) r rs
 
 type grant = No | Yes | With_reason
 
@@ -45,6 +53,7 @@ type permission =
   | Restart_verifiers
   | Manage_access
   | Write_cases
+  | View_activity
 
 let all_permissions =
   [
@@ -59,6 +68,7 @@ let all_permissions =
     Restart_verifiers;
     Manage_access;
     Write_cases;
+    View_activity;
   ]
 
 let permission_id = function
@@ -73,6 +83,7 @@ let permission_id = function
   | Restart_verifiers -> "restart_verifiers"
   | Manage_access -> "manage_access"
   | Write_cases -> "write_cases"
+  | View_activity -> "view_activity"
 
 let permission_name = function
   | Use_playground -> "Use the Playground"
@@ -86,31 +97,61 @@ let permission_name = function
   | Restart_verifiers -> "Restart verifiers"
   | Manage_access -> "Manage roles and integrations"
   | Write_cases -> "Open and update cases"
+  | View_activity -> "See the activity log"
 
-(* Columns: dev, analyst, owner, audit, admin. 'y' yes, 'r' with a reason, 'n' no. *)
+(* The matrix, one record per permission. Every permission and every role is named
+   explicitly, so the compiler checks the matrix is total. *)
+type row = { dev : grant; analyst : grant; owner : grant; audit : grant; admin : grant }
+
 let row = function
-  | Use_playground -> "yyyny"
-  | Search_queries -> "yyyyy"
-  | See_raw_sql -> "nrrrn"
-  | Pause_caller -> "nrnnr"
-  | Propose_changes -> "yyyny"
-  | Approve_change -> "nnynn"
-  | Approve_exception -> "nnynn"
-  | Build_evidence -> "nyyyn"
-  | Restart_verifiers -> "nnnny"
-  | Manage_access -> "nnnny"
-  | Write_cases -> "nyyny"
-
-let column = function Dev -> 0 | Analyst -> 1 | Owner -> 2 | Audit -> 3 | Admin -> 4
+  | Use_playground -> { dev = Yes; analyst = Yes; owner = Yes; audit = No; admin = Yes }
+  | Search_queries -> { dev = Yes; analyst = Yes; owner = Yes; audit = Yes; admin = Yes }
+  | See_raw_sql ->
+      {
+        dev = No;
+        analyst = With_reason;
+        owner = With_reason;
+        audit = With_reason;
+        admin = No;
+      }
+  | Pause_caller ->
+      { dev = No; analyst = With_reason; owner = No; audit = No; admin = With_reason }
+  | Propose_changes -> { dev = Yes; analyst = Yes; owner = Yes; audit = No; admin = Yes }
+  | Approve_change -> { dev = No; analyst = No; owner = Yes; audit = No; admin = No }
+  | Approve_exception -> { dev = No; analyst = No; owner = Yes; audit = No; admin = No }
+  | Build_evidence -> { dev = No; analyst = Yes; owner = Yes; audit = Yes; admin = No }
+  | Restart_verifiers -> { dev = No; analyst = No; owner = No; audit = No; admin = Yes }
+  | Manage_access -> { dev = No; analyst = No; owner = No; audit = No; admin = Yes }
+  | Write_cases -> { dev = No; analyst = Yes; owner = Yes; audit = No; admin = Yes }
+  | View_activity -> { dev = No; analyst = Yes; owner = Yes; audit = Yes; admin = Yes }
 
 let grant role perm =
-  match (row perm).[column role] with 'y' -> Yes | 'r' -> With_reason | _ -> No
+  let r = row perm in
+  match role with
+  | Dev -> r.dev
+  | Analyst -> r.analyst
+  | Owner -> r.owner
+  | Audit -> r.audit
+  | Admin -> r.admin
 
-let permissions_json role =
+let grant_rank = function No -> 0 | With_reason -> 1 | Yes -> 2
+
+(** The best grant any of [roles] has for [perm]: [Yes] beats [With_reason] beats [No]. A
+    person in several mapped groups gets the union of those roles' permissions. *)
+let grant_union roles perm =
+  List.fold_left
+    (fun acc r ->
+      let g = grant r perm in
+      if grant_rank g > grant_rank acc then g else acc)
+    No roles
+
+let permissions_json_union roles =
   `Assoc
     (List.map
-       (fun p -> (permission_id p, `String (grant_to_string (grant role p))))
+       (fun p -> (permission_id p, `String (grant_to_string (grant_union roles p))))
        all_permissions)
+
+let permissions_json role = permissions_json_union [ role ]
 
 let matrix_json () =
   `List

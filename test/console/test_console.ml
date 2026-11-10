@@ -40,8 +40,8 @@ let config_tests =
         Alcotest.(check string) "listen" "127.0.0.1:8090" c.listen;
         Alcotest.(check int) "retention" 168 c.audit.retention_hours;
         Alcotest.(check bool)
-          "dev admin" true
-          (match c.auth.dev with Some d -> d.dev_role = C.Rbac.Admin | None -> false) );
+          "dev role" true
+          (match c.auth.dev with Some d -> d.dev_role = C.Rbac.Dev | None -> false) );
     ( "placeholders",
       `Quick,
       fun () ->
@@ -259,6 +259,8 @@ let http_tests =
                            [
                              ("user_header", `String "X-Auth-Request-Email");
                              ("groups_header", `String "X-Auth-Request-Groups");
+                             ("secret_header", `String "X-Proxy-Secret");
+                             ("secret_sha256", `String (Haltsql.sha256_hex "proxy-secret"));
                            ] );
                        ( "roles",
                          `Assoc
@@ -276,6 +278,7 @@ let http_tests =
                   [
                     ("x-auth-request-email", "lee@acme.test");
                     ("x-auth-request-groups", "eng, policy-owners");
+                    ("x-proxy-secret", "proxy-secret");
                   ]
                 r "/api/v1/me"
             in
@@ -284,7 +287,13 @@ let http_tests =
               "highest role wins" "\"owner\""
               (Yojson.Safe.to_string (member "role" me));
             let* nogroup =
-              get ~headers:[ ("x-auth-request-email", "x@acme.test") ] r "/api/v1/me"
+              get
+                ~headers:
+                  [
+                    ("x-auth-request-email", "x@acme.test");
+                    ("x-proxy-secret", "proxy-secret");
+                  ]
+                r "/api/v1/me"
             in
             check_status "no mapped group" 401 nogroup;
             Lwt.return_unit) );
@@ -302,6 +311,7 @@ let http_tests =
                 name = "a";
                 auth = "dev";
                 groups = [];
+                roles = [ C.Rbac.Admin ];
                 role = C.Rbac.Admin;
               }
             in
