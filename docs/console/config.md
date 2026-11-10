@@ -38,7 +38,7 @@ At least one of `oidc`, `proxy`, `tokens`, `dev`.
 | Key | Meaning |
 |---|---|
 | `name` | Unique; matches the `verifier` of audit sources. |
-| `url` | Base URL of the verifier's HTTP API. |
+| `url` | Base URL of the verifier's HTTP API (for `kind: proxy`, its PostgreSQL address; see [`fleet`](#fleet)). |
 | `kind` | `server` (default), `proxy`, `mcp`. |
 | `location` | Free text shown in Fleet. |
 | `token` | Admin bearer token; the verifier must list it in `server.admin.callers`. |
@@ -47,7 +47,68 @@ At least one of `oidc`, `proxy`, `tokens`, `dev`.
 
 ## `fleet`
 
-<!-- Documented by the fleet PR (console/03-fleet). -->
+```yaml
+fleet:
+  poll_seconds: 30
+  kubernetes:                     # optional: enables POST /api/v1/fleet/{name}/restart
+    namespace: haltsql
+    # api: https://kubernetes.default.svc
+    # token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    # ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `poll_seconds` | `30` | How often every verifier is polled. Each poll reads `<url>/v1/admin/status` (with `token`), `<url>/readyz` and `metrics_url`, concurrently, with a 5 second timeout each. |
+| `kubernetes.namespace` | required | Namespace of the verifier workloads. |
+| `kubernetes.api` | `https://kubernetes.default.svc` | API server URL. `http://` is accepted (tests, `kubectl proxy`); with `https://` the server is verified against `ca_file`. |
+| `kubernetes.token_file` | in-cluster service-account token | Re-read on every restart, so projected tokens rotate. |
+| `kubernetes.ca_file` | in-cluster CA | Cluster CA bundle (PEM). |
+
+What each verifier kind exposes:
+
+- `server`: everything. `/v1/admin/status` needs `server.admin` enabled with the
+  console's token in `server.admin.callers`; without it (404) the state comes from
+  `/readyz` and `/metrics` only. A 401/403 is shown as the verifier's `error`.
+- `mcp`: polled the same way; a 404 on any endpoint is not an error.
+- `proxy`: `haltsql-proxy` has no HTTP endpoints. Give its PostgreSQL address as `url`
+  (`postgres://host:6432` or `tcp://host:6432`) and the console checks that it accepts
+  TCP connections. An `http(s)://` url is polled like a server.
+
+The admin `token` is sent to `metrics_url` only when it has the same scheme, host and
+port as `url`.
+
+Rates (`verifies_per_second`), OPA decision counts, OPA errors (`timeouts`) and
+buffered-record peaks are computed from the last 120 polls kept in memory, so they
+restart from zero when the console restarts.
+
+### RBAC for restarts
+
+A restart is the patch `kubectl rollout restart` sends (a new
+`kubectl.kubernetes.io/restartedAt` pod-template annotation) on the verifier's
+`workload` (`deployment/<name>` or `statefulset/<name>`). The console's service account
+needs only `patch` on those workloads in that namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: haltsql-console-restart, namespace: haltsql }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    # optionally pin resourceNames: ["haltsql-1", "haltsql-2"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: haltsql-console-restart, namespace: haltsql }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: haltsql-console-restart }
+subjects:
+  - { kind: ServiceAccount, name: haltsql-console, namespace: haltsql }
+```
+
+Restarts need the `restart_verifiers` permission (admin) **and** a reason, and are
+written to the activity log as `fleet.restart` (also when the Kubernetes call fails).
 
 ## `audit`
 
