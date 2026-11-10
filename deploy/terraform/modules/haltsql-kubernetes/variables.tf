@@ -297,7 +297,7 @@ variable "tokens" {
   }
   validation {
     condition = alltrue([
-      for t in var.tokens : alltrue([for f in (t.request_context_fields == null ? [] : t.request_context_fields) : can(regex("^[A-Za-z_][A-Za-z0-9_]*$", f))])
+      for t in var.tokens : alltrue([for f in(t.request_context_fields == null ? [] : t.request_context_fields) : can(regex("^[A-Za-z_][A-Za-z0-9_]*$", f))])
     ])
     error_message = "tokens[*].request_context_fields must be context field names (letters, digits and '_', not starting with a digit)."
   }
