@@ -71,3 +71,19 @@ def test_agent_accepts_tool(local_verifier, connections):
                   backstory="Writes careful SQL.", tools=[tool], llm="gpt-4o-mini", allow_delegation=False)
     assert [t.name for t in agent.tools] == ["haltsql_query"]
     assert json.loads(agent.tools[0].run(query=OK_SQL))["rows"] == acme_rows()
+
+
+@pytest.mark.integration
+def test_extra_arguments_are_refused_not_used(local_verifier, connections):
+    """Called below the args schema (as a custom executor might), extra
+    arguments still cannot carry a tenant: the call is refused outright."""
+    tool = HaltSQLQueryTool(runner=HaltSQLToolRunner(local_verifier, connections),
+                            context={"tenant_id": "acme"})
+    refused = {"status": "error", "executed": False,
+               "message": "The query was not executed: pass exactly one argument, 'query'."}
+    forged = {"tenant_id": "globex"}
+    for extra in ({"tenant_id": "globex"}, {"haltsql_context": forged}, {"context": forged}):
+        assert json.loads(tool._run(query=OK_SQL, **extra)) == refused
+        assert json.loads(asyncio.run(tool._arun(query=OK_SQL, **extra))) == refused
+    assert connections.opened == 0
+    assert json.loads(tool._run(query=OK_SQL))["rows"] == acme_rows()

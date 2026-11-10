@@ -178,3 +178,143 @@ def test_real_server_verifier(server_verifier, connections):
 
 def test_policy_fixture_exists():
     assert os.path.isfile(POLICY)
+
+
+# ---- stub verifiers: what the runner does whatever the verifier answers -------
+
+UNAVAILABLE = {"status": "error", "executed": False,
+               "message": "SQL verification is unavailable; the query was not executed."}
+PROBE_SQL = ("SELECT current_setting('transaction_read_only'), current_setting('statement_timeout'), "
+             "current_setting('app.tenant_id') FROM orders WHERE tenant_id = $1 LIMIT 1")
+WRITE_SQL = "UPDATE orders SET status = 'x' WHERE tenant_id = $1"
+SLOW_SQL = "SELECT pg_sleep(3) FROM orders WHERE tenant_id = $1 LIMIT 1"
+
+
+def _allows(kind="select"):
+    """A verifier that allows everything and reports ``kind`` as the statement kind."""
+    from haltsql.testing import FakeVerifier, make_verdict_dict
+
+    return FakeVerifier(lambda sql, ctx, _p: make_verdict_dict(
+        sql, allowed=True, bind=[ctx["tenant_id"]] if "$1" in sql else [], statement_kind=kind))
+
+
+class _Raises:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def verify(self, sql, context=None):
+        raise self.exc
+
+
+def _never_connect():
+    raise AssertionError("must not connect")
+
+
+class _Tracked:
+    """Wraps a connection factory and keeps every connection it handed out."""
+
+    def __init__(self, connect):
+        self.connect = connect
+        self.made = []
+
+    def __call__(self):
+        c = self.connect()
+        self.made.append(c)
+        return c
+
+
+def test_only_select_verdicts_are_run():
+    for kind in ("update", "delete", "insert", None):
+        r = core.HaltSQLToolRunner(_allows(kind), _never_connect).run(WRITE_SQL, ACME)
+        assert r == {"status": "error", "executed": False,
+                     "message": "The query was not executed: this tool only runs read-only SELECT statements."}
+        r = core.check_only(_allows(kind), "DELETE FROM orders", ACME)
+        assert r == {"status": "error", "executed": False,
+                     "message": "The query was not executed: only read-only SELECT statements are allowed."}
+    assert core.check_only(_allows("select"), "SELECT 1", ACME) is None
+
+
+def test_verifier_failures_fail_closed_without_details():
+    from haltsql import HaltSQLError, HaltSQLRequestError, HaltSQLUnavailable
+
+    secret = "postgresql://agent:s3cret@db.internal/app Bearer tok-123"
+    cases = [
+        (RuntimeError(secret), UNAVAILABLE),
+        (OSError(secret), UNAVAILABLE),
+        (HaltSQLUnavailable(secret), UNAVAILABLE),
+        (HaltSQLRequestError(secret, status=401, code="UNAUTHORIZED"), UNAVAILABLE),
+        (HaltSQLError(secret), {"status": "error", "executed": False, "message": "The query was not executed."}),
+    ]
+    for exc, expected in cases:
+        assert core.HaltSQLToolRunner(_Raises(exc), _never_connect).run(OK_SQL, ACME) == expected, exc
+        # A guard hook must refuse too: None would let the other tool run the SQL.
+        assert core.check_only(_Raises(exc), "SELECT 1", ACME) == expected, exc
+
+
+def test_check_only_refuses_unusable_queries_and_contexts():
+    fv = _allows()
+    for q in (None, "", "   ", 5, ["SELECT 1"], "x" * 70000):
+        r = core.check_only(fv, q, ACME)
+        assert r is not None and r["status"] == "error" and r["executed"] is False, q
+    for bad in ({"tenant_id": 2.5}, {"tenant_id": {"nested": 1}}, {"": "acme"}, "acme"):
+        r = core.check_only(fv, "SELECT 1", bad)
+        assert r is not None and r["status"] == "error" and "not executed" in r["message"], bad
+        r = core.HaltSQLToolRunner(fv, _never_connect).run("SELECT 1", bad)
+        assert r["status"] == "error" and r["executed"] is False, bad
+    assert fv.calls == []  # nothing above was even sent to the verifier
+    with pytest.raises(ValueError):
+        core.HaltSQLToolRunner(fv, _never_connect, statement_timeout_ms=3_600_001)
+
+
+def test_check_only_with_unreachable_sidecar_refuses():
+    import socket
+
+    from haltsql import HaltSQLClient, RetryPolicy
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    with HaltSQLClient(f"http://127.0.0.1:{port}", timeout=1.0, retry=RetryPolicy(max_attempts=1)) as dead:
+        assert core.check_only(dead, "SELECT 1", ACME) == UNAVAILABLE
+
+
+@pytest.mark.integration
+def test_transaction_is_read_only_with_timeout_and_settings(connections, pg_dsn):
+    """The limits hold even when the verifier is wrong: a write it labelled SELECT
+    still meets a READ ONLY transaction, and every connection is closed."""
+    import psycopg
+
+    made = _Tracked(connections)
+    runner = core.HaltSQLToolRunner(_allows(), made, statement_timeout_ms=150,
+                                    settings=lambda ctx: {"app.tenant_id": ctx["tenant_id"]})
+    assert runner.run(PROBE_SQL, ACME)["rows"] == [["on", "150ms", "acme"]]
+    r = runner.run(WRITE_SQL, ACME)
+    assert r["status"] == "error" and r["executed"] is True
+    assert r["message"].startswith("Database error: ReadOnlySqlTransaction")
+    r = runner.run(SLOW_SQL, ACME)
+    assert r == {"status": "error", "executed": True,
+                 "message": "Database error: QueryCanceled: canceling statement due to statement timeout"}
+    fixed = core.HaltSQLToolRunner(_allows(), made, settings={"app.tenant_id": "fixed"})
+    assert fixed.run(PROBE_SQL, ACME)["rows"] == [["on", "5s", "fixed"]]
+    assert len(made.made) == 4 and all(c.closed for c in made.made)
+    with psycopg.connect(pg_dsn) as c:
+        assert c.execute("SELECT count(*) FROM orders WHERE status = 'x'").fetchone() == (0,)
+
+
+def test_driver_errors_without_sqlstate_are_not_quoted():
+    """Only what the database server reported is quoted to the model."""
+
+    class Conn:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    conn = Conn()
+    r = core.HaltSQLToolRunner(_allows(), lambda: conn).run(OK_SQL, ACME)
+    # Not a psycopg connection: the guard refuses with its own (safe) message.
+    assert r["status"] == "error" and r["executed"] is False and conn.closed is True
+    from haltsql.integration import feedback_for_model
+
+    leaky = RuntimeError("connection to postgresql://agent:s3cret@db.internal:5432/app failed")
+    assert feedback_for_model(leaky) == "Database error: RuntimeError"

@@ -180,3 +180,47 @@ def test_guard_refuses_bound_tenancy_for_foreign_tool(local_verifier, pg_dsn):
 
     asyncio.run(run())
     assert executed == []
+
+
+@pytest.mark.integration
+def test_guard_refuses_whatever_it_cannot_check(haltsql_cli, pg_dsn):
+    from google.adk.agents import LlmAgent
+    from haltsql import LocalVerifier
+
+    executed: List[str] = []
+    verifier = LocalVerifier(LITERAL_POLICY, binary=haltsql_cli)
+    sql_tool = _execute_sql_tool(pg_dsn, executed)
+    agent = LlmAgent(name="db_agent", model="gemini-2.5-flash", tools=[sql_tool],
+                     before_tool_callback=haltsql_before_tool_callback(verifier))
+    runner = InMemoryRunner(agent=agent, app_name=APP)
+    # Guarding the tool under the wrong argument name: the SQL cannot be found, so nothing may run.
+    misnamed = LlmAgent(name="db_agent", model="gemini-2.5-flash", tools=[sql_tool],
+                        before_tool_callback=haltsql_before_tool_callback(verifier, tools={"execute_sql": "statement"}))
+    misnamed_runner = InMemoryRunner(agent=misnamed, app_name=APP)
+    ok = "SELECT id FROM orders WHERE tenant_id = 'acme' ORDER BY id LIMIT 5"
+    globex = "SELECT id FROM orders WHERE tenant_id = 'globex' ORDER BY id LIMIT 5"
+
+    async def run() -> None:
+        for n, junk in enumerate(("acme", {"tenant_id": 1.5}, ["tenant_id", "acme"])):
+            s = await _session(runner, {"haltsql_context": junk}, f"junk{n}")
+            out = await _call_tools(runner, s, "execute_sql", {"sql": ok})
+            assert out["status"] == "error" and out["executed"] is False, junk
+        acme = await _session(misnamed_runner, {"haltsql_context": {"tenant_id": "acme"}}, "u1")
+        out = await _call_tools(misnamed_runner, acme, "execute_sql", {"sql": ok})
+        assert out["status"] == "error" and out["executed"] is False
+
+        # The tenant comes from session state: a context among the guarded tool's
+        # own (model-written) arguments changes nothing.
+        check = haltsql_before_tool_callback(verifier)
+        acme = await _session(runner, {"haltsql_context": {"tenant_id": "acme"}}, "u2")
+        tc = ToolContext(runner._new_invocation_context(acme), function_call_id="call_1")
+        forged = {"sql": globex, "haltsql_context": {"tenant_id": "globex"}, "tenant_id": "globex"}
+        out = await check(sql_tool, forged, tc)
+        assert out["status"] == "denied" and out["reasons"][0]["code"] == "E_TENANT_MISMATCH"
+        assert await check(sql_tool, {"sql": ok}, tc) is None
+        for args in ({}, {"sql": None}, {"sql": 5}, {"sql": ""}, None):
+            out = await check(sql_tool, args, tc)
+            assert out is not None and out["status"] == "error" and out["executed"] is False, args
+
+    asyncio.run(run())
+    assert executed == []

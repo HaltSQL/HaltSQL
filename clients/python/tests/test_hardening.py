@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from haltsql import AsyncHaltSQLClient, HaltSQLClient, HaltSQLUnavailable, RetryPolicy
+from haltsql import AsyncHaltSQLClient, HaltSQLClient, HaltSQLRequestError, HaltSQLUnavailable, RetryPolicy
 from haltsql.client import _ssl_context
 from haltsql.testing import make_verdict_dict
 
@@ -230,3 +230,139 @@ async def test_async_custom_ca_bundle_is_trusted(tls_sidecar):
     url, ca = tls_sidecar
     async with AsyncHaltSQLClient(url, verify=ca, retry=RetryPolicy(max_attempts=1)) as c:
         assert (await c.verify(SQL, {"tenant_id": "a"})).allowed
+
+
+# ---- only a direct 200 answer is a verdict ------------------------------------
+
+
+def _allow(request):
+    body = json.loads(request.content)
+    return make_verdict_dict(body["sql"], allowed=True, bind=["a"])
+
+
+@pytest.mark.parametrize("status", [201, 202, 203, 206, 226, 300, 301, 302, 303, 304, 307, 308])
+async def test_non_200_with_an_allow_body_is_not_a_verdict(status):
+    """A well-formed "allowed" body under any status but 200 (a cache, a proxy,
+    a redirect page) never becomes a verdict."""
+
+    def handler(request):
+        return httpx.Response(status, json=_allow(request))
+
+    with HaltSQLClient("http://sidecar", transport=httpx.MockTransport(handler), retry=FAST) as c:
+        with pytest.raises(HaltSQLUnavailable) as ei:
+            c.verify(SQL, {"tenant_id": "a"})
+        assert ei.value.status == status
+        with pytest.raises(HaltSQLUnavailable):
+            c.check(SQL, {"tenant_id": "a"})
+    async with AsyncHaltSQLClient("http://sidecar", transport=httpx.MockTransport(handler), retry=FAST) as c:
+        with pytest.raises(HaltSQLUnavailable) as ei:
+            await c.verify(SQL, {"tenant_id": "a"})
+        assert ei.value.status == status
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_redirect_target_is_never_contacted(status):
+    """Following a redirect would send the SQL, the context and the bearer token
+    to whoever the Location header names, and take that host's answer as the verdict."""
+    elsewhere = []
+
+    def handler(request):
+        if request.url.host != "sidecar":
+            elsewhere.append((str(request.url), request.headers.get("authorization")))
+            return httpx.Response(200, json=_allow(request))
+        return httpx.Response(status, headers={"location": "http://evil.example/v1/verify"})
+
+    with HaltSQLClient(
+        "http://sidecar", token=TOKEN, transport=httpx.MockTransport(handler), retry=FAST
+    ) as c:
+        with pytest.raises(HaltSQLUnavailable):
+            c.verify(SQL, {"tenant_id": "a"})
+        with pytest.raises(HaltSQLUnavailable):
+            c.policies()
+    async with AsyncHaltSQLClient(
+        "http://sidecar", token=TOKEN, transport=httpx.MockTransport(handler), retry=FAST
+    ) as c:
+        with pytest.raises(HaltSQLUnavailable):
+            await c.verify(SQL, {"tenant_id": "a"})
+        with pytest.raises(HaltSQLUnavailable):
+            await c.policies()
+    assert elsewhere == []
+
+
+async def test_undeclared_oversized_body_is_cut_off_while_streaming():
+    """No Content-Length (chunked) or one that understates the body: the cap is
+    enforced on the bytes actually received."""
+    produced = []
+
+    def chunks():
+        for _ in range(64):
+            produced.append(1)
+            yield b" " * 1024
+
+    async def achunks():
+        for c in chunks():
+            yield c
+
+    def chunked(request):
+        return httpx.Response(200, content=chunks())
+
+    def understated(request):
+        return httpx.Response(200, headers={"content-length": "10"}, stream=httpx.ByteStream(b" " * 5000))
+
+    for handler in (chunked, understated):
+        with HaltSQLClient(
+            "http://sidecar", transport=httpx.MockTransport(handler), max_response_bytes=2048, retry=FAST
+        ) as c:
+            with pytest.raises(HaltSQLUnavailable, match="larger than 2048 bytes"):
+                c.verify(SQL, {"tenant_id": "a"})
+    assert len(produced) <= 8  # reading stopped at the cap, not after 64 KiB
+    produced.clear()
+
+    def achunked(request):
+        return httpx.Response(200, content=achunks())
+
+    async with AsyncHaltSQLClient(
+        "http://sidecar", transport=httpx.MockTransport(achunked), max_response_bytes=2048, retry=FAST
+    ) as c:
+        with pytest.raises(HaltSQLUnavailable, match="larger than 2048 bytes"):
+            await c.verify(SQL, {"tenant_id": "a"})
+    assert len(produced) <= 8
+
+
+@pytest.mark.parametrize("status,exc", [(401, HaltSQLRequestError), (403, HaltSQLRequestError),
+                                        (500, HaltSQLUnavailable), (203, HaltSQLUnavailable)])
+async def test_policies_and_health_require_200(status, exc):
+    listing = {"policies": [{"name": "saas", "version": "sha256:" + "0" * 64, "mode": "enforce"}],
+               "status": "ready"}
+
+    def handler(request):
+        return httpx.Response(status, json=listing)
+
+    one = RetryPolicy(max_attempts=1)
+    with HaltSQLClient("http://sidecar", transport=httpx.MockTransport(handler), retry=one) as c:
+        for call in (c.policies, c.healthz, c.readyz):
+            with pytest.raises(exc):
+                call()
+        assert c.is_ready() is False
+    async with AsyncHaltSQLClient("http://sidecar", transport=httpx.MockTransport(handler), retry=one) as c:
+        for call in (c.policies, c.healthz, c.readyz):
+            with pytest.raises(exc):
+                await call()
+        assert await c.is_ready() is False
+
+
+def test_request_id_is_validated_before_sending():
+    """A request id goes into a header: line breaks or control characters are refused."""
+    sent = []
+
+    def handler(request):
+        sent.append(request.headers.get("x-request-id"))
+        return httpx.Response(200, json=_allow(request))
+
+    with HaltSQLClient("http://sidecar", token=TOKEN, transport=httpx.MockTransport(handler)) as c:
+        for bad in ("a\r\nX-Injected: 1", "a\nb", "tab\there", "nul\x00", "x" * 201, 5, b"abc"):
+            with pytest.raises(ValueError, match="request_id"):
+                c.verify(SQL, {"tenant_id": "a"}, request_id=bad)
+        assert sent == []
+        assert c.verify(SQL, {"tenant_id": "a"}, request_id="req-1").allowed
+    assert sent == ["req-1"]

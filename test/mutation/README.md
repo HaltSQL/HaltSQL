@@ -22,6 +22,18 @@ each mutant.
 | `engine.py` | the analyzer, the tenancy prover, the parser bridge and its limits, the facade |
 | `python.py` | the Python guard, the verdict model, the HTTP client, the MCP tool core |
 
+### Python integrations (`integrations/`)
+
+`integrations/mutants_*.py` hold the mutants for the agent-framework packages
+and their shared core, LangChain / LlamaIndex / Vanna, the MCP server's
+transport and configuration, and the local, native and HTTP verifiers (259 in
+all). Each list also says which test directories a mutated file needs
+(`tests_for`), because the frameworks pin conflicting dependencies and every
+package is tested in its own virtualenv (`clients/python/run-all-tests.sh`
+with `FULL=1` creates them). They are not wired into `mutate.py` yet: run a
+mutant by applying its snippet and running the package's tests in its
+virtualenv.
+
 ## Rules for the lists
 
 - A mutant is one realistic regression, written so that the source still
