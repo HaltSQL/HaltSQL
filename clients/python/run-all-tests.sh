@@ -8,6 +8,7 @@
 #   FULL=1 clients/python/run-all-tests.sh     # also install langchain, llama-index, vanna, sqlalchemy,
 #                                              # and test the agent-framework packages
 #   ONLY=agents clients/python/run-all-tests.sh   # just the agent-framework packages
+#   HALTSQL_REQUIRE_ALL=1 ...                     # CI: any unexpected skip is a failure
 #
 # Integration tests use (when present) the binaries in _build/default/bin
 # (or HALTSQL_BIN / HALTSQL_SERVER_BIN) and the lab Postgres on 127.0.0.1:5417
@@ -26,6 +27,27 @@ AGENTS_CUTOFF="${AGENTS_CUTOFF:-2026-10-01T00:00:00Z}"
 
 status=0
 
+# With HALTSQL_REQUIRE_ALL=1 (CI) a skipped test is a failure: a missing Postgres,
+# binary or framework must not turn a suite into a no-op that still looks green.
+# The two skips below are expected everywhere and stay skips.
+EXPECTED_SKIPS='_ctypes is built into this interpreter|set HALTSQL_WHEEL='
+
+# run_pytest DIR PYTHON: pytest in DIR; sets status=1 on failure or, in strict
+# mode, on any unexpected skip.
+run_pytest() {
+  local dir="$1" py="$2" log
+  log="$(mktemp)"
+  (cd "$dir" && "$py" -m pytest -q -rs -W ignore::DeprecationWarning) 2>&1 | tee "$log"
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then status=1; fi
+  if [ "${HALTSQL_REQUIRE_ALL:-0}" = "1" ] &&
+     grep '^SKIPPED' "$log" | grep -Ev "$EXPECTED_SKIPS" >/dev/null; then
+    echo "ERROR: tests skipped in $dir with HALTSQL_REQUIRE_ALL=1:"
+    grep '^SKIPPED' "$log" | grep -Ev "$EXPECTED_SKIPS" | sed 's/^/  /'
+    status=1
+  fi
+  rm -f "$log"
+}
+
 run_core() {
   if [ ! -x "$VENV/bin/python" ]; then
     "$PY" -m venv "$VENV"
@@ -41,9 +63,13 @@ run_core() {
 
   for dir in clients/python clients/mcp integrations/langchain integrations/llamaindex integrations/vanna; do
     echo "== $dir"
-    (cd "$ROOT/$dir" && "$VENV/bin/python" -m pytest -q -rs -W ignore::DeprecationWarning) || status=1
+    run_pytest "$ROOT/$dir" "$VENV/bin/python"
   done
 
+  if [ ! -x "${HALTSQL_BIN:-$ROOT/_build/default/bin/haltsql/main.exe}" ] &&
+     [ "${HALTSQL_REQUIRE_ALL:-0}" = "1" ]; then
+    echo "ERROR: no haltsql binary for the test-vector check (HALTSQL_REQUIRE_ALL=1)"; status=1
+  fi
   if [ -x "${HALTSQL_BIN:-$ROOT/_build/default/bin/haltsql/main.exe}" ]; then
     echo "== test vectors"
     "$VENV/bin/python" "$ROOT/clients/testvectors/generate.py" --check \
@@ -77,7 +103,9 @@ run_agents() {
 
   local apy
   if ! apy="$(agents_python)"; then
-    echo "== agent packages: SKIPPED (need Python 3.11-3.13; set PYTHON_AGENTS)"; return
+    echo "== agent packages: SKIPPED (need Python 3.11-3.13; set PYTHON_AGENTS)"
+    if [ "${HALTSQL_REQUIRE_ALL:-0}" = "1" ]; then status=1; fi
+    return
   fi
   for pkg in $AGENT_PKGS; do
     local dir="$ROOT/integrations/$pkg" venv="$ROOT/integrations/$pkg/.venv"
@@ -90,7 +118,7 @@ run_agents() {
            -c "$dir/constraints.txt" -e "$ROOT/clients/python[psycopg]" -e "$dir[test]"; then
       echo "install failed for integrations/$pkg"; status=1; continue
     fi
-    (cd "$dir" && "$venv/bin/python" -m pytest -q -rs -W ignore::DeprecationWarning) || status=1
+    run_pytest "$dir" "$venv/bin/python"
   done
 }
 

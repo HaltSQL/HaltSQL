@@ -245,6 +245,9 @@ jobs:
       - name: SDK, MCP, LangChain, LlamaIndex, Vanna, agent frameworks (OpenAI Agents, LangGraph, Semantic Kernel, CrewAI, Google ADK) and test vectors
         env:
           FULL: "1"
+          # A missing Postgres, binary or framework fails the job instead of
+          # skipping tests.
+          HALTSQL_REQUIRE_ALL: "1"
         run: clients/python/run-all-tests.sh
 
   python-sdk-minimum:
