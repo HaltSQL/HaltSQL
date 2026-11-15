@@ -10,7 +10,7 @@ test("CommonJS build", () => {
   assert.equal(typeof m.guardedTransactionOnClient, "function");
   assert.equal(typeof m.searchPathSetting, "function");
   assert.equal(typeof m.bindParamsToPositional, "function");
-  assert.equal(m.VERSION, "0.0.2");
+  assert.equal(m.VERSION, "0.0.3");
   const e = new m.HaltSQLTimeoutError(5);
   assert.ok(e instanceof m.HaltSQLError);
   assert.equal(e.allowed, false);

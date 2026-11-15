@@ -152,7 +152,7 @@ spec:
             capabilities: { drop: [ALL] }
       containers:
         - name: haltsql-proxy
-          image: ghcr.io/haltsql/haltsql:0.0.1   # same image; pin by digest
+          image: ghcr.io/haltsql/haltsql:0.0.3   # same image; pin by digest
           command: ["/usr/local/bin/haltsql-proxy"]
           args: ["run", "--config", "/etc/haltsql/config/proxy.yaml"]
           ports:

@@ -261,7 +261,7 @@ Steps:
 deploy/cloud/gcp/iam/setup.sh gke-shared
 kubectl create namespace haltsql
 # TLS: a kubernetes.io/tls Secret named haltsql-tls (cert-manager, Google CAS, ...)
-helm upgrade --install haltsql deploy/helm/haltsql -n haltsql \
+helm upgrade --install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 -n haltsql \
   -f deploy/cloud/gcp/gke/values-gke.yaml \
   --set-file 'policies.analytics-agent\.yaml=policies/analytics-agent.yaml'
 kubectl apply -n haltsql -f deploy/cloud/gcp/gke/shared-extras.yaml
@@ -281,7 +281,7 @@ first:
 
 ```sh
 deploy/cloud/gcp/iam/setup.sh image
-# image: $REGION-docker.pkg.dev/$PROJECT_ID/ghcr/haltsql/haltsql:0.0.1
+# image: $REGION-docker.pkg.dev/$PROJECT_ID/ghcr/haltsql/haltsql:0.0.3
 ```
 
 Settings that matter on Cloud Run, for both variants:

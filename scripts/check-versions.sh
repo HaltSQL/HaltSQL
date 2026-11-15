@@ -112,6 +112,11 @@ record "$console_chart" "version" "$(first_match "$console_chart" 's/^version: "
 record "$console_chart" "appVersion" "$(first_match "$console_chart" 's/^appVersion: "?([^"]+)"?$/\1/p')"
 record "$console_chart" "artifacthub.io/images" \
   "$(first_match "$console_chart" 's/^ *image: ghcr\.io\/haltsql\/haltsql-console:([^ ]+)$/\1/p')"
+# Its deployment manifests pin the same release (test/console/test_deploy.ml).
+for f in deploy/cloud/aws/console/Dockerfile.ecs deploy/cloud/gcp/console/cloudrun-service.yaml \
+         deploy/cloud/azure/console/containerapp.yaml; do
+  record "$f" "haltsql-console image" "$(first_match "$f" 's/.*ghcr\.io\/haltsql\/haltsql-console:([0-9][^ @"]*).*/\1/p')"
+done
 
 if [ "$print" = 1 ]; then
   [ "$failures" = 0 ] || { printf '%s\n' "${rows[@]}" >&2; exit 1; }

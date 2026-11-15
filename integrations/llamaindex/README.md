@@ -6,7 +6,7 @@ verifies each statement with HaltSQL and runs only the exact verified string
 with the bound tenant parameters, read-only.
 
 ```sh
-pip install './integrations/llamaindex[llamaindex]'   # needs ../../clients/python too
+pip install 'haltsql-llamaindex[llamaindex]'
 ```
 
 ```python

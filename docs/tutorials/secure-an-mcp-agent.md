@@ -198,13 +198,11 @@ See [RLS generation](../rls-generation.md) for every option, and
 
 ## 5. Install haltsql-mcp
 
-The packages are not on PyPI yet, so install them from a clone of the
-repository into a virtual environment in your working directory:
+Install it from PyPI into a virtual environment in your working directory:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL
 python3 -m venv .venv
-.venv/bin/pip install ./HaltSQL/clients/python './HaltSQL/clients/mcp[yaml]'
+.venv/bin/pip install 'haltsql-mcp[yaml]'
 .venv/bin/haltsql-mcp --help
 ```
 

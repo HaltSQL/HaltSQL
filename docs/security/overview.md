@@ -333,7 +333,7 @@ and third layers ([defense-in-depth.md](../defense-in-depth.md)).
 
 ## Assurance
 
-HaltSQL is pre-1.0. Version 0.0.1 has not had an external security audit
+HaltSQL is pre-1.0. Version 0.0.3 has not had an external security audit
 ([threat-model.md](../threat-model.md#guarantees-goals)). Testing includes an
 attack corpus, property tests, a mutation fuzzer and a lab that runs every
 allowed query against real PostgreSQL under independent oracles

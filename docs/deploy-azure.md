@@ -89,7 +89,7 @@ flowchart TD
   by digest:
 
   ```sh
-  az acr import -n "$ACR" --source ghcr.io/haltsql/haltsql:0.0.1 --image haltsql:0.0.1
+  az acr import -n "$ACR" --source ghcr.io/haltsql/haltsql:0.0.3 --image haltsql:0.0.3
   ```
 
   To verify the signature first, see
@@ -297,7 +297,7 @@ zones, a PodDisruptionBudget and an HPA.
 ```sh
 kubectl create namespace haltsql
 kubectl apply -f deploy/cloud/azure/aks/networkpolicy-shared.yaml
-helm upgrade --install haltsql deploy/helm/haltsql -n haltsql \
+helm upgrade --install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 -n haltsql \
   -f deploy/cloud/azure/aks/values-aks.yaml
 ```
 

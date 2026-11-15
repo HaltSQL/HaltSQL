@@ -126,8 +126,8 @@ You don't need a central server, Python or anything else. See
 [Run it in Docker](#run-it-in-docker).
 
 ```sh
-docker pull ghcr.io/haltsql/haltsql-mcp
-alias haltsql='docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql ghcr.io/haltsql/haltsql-mcp'
+docker pull ghcr.io/haltsql/haltsql-mcp:0.0.3
+alias haltsql='docker run --rm -i -v "$PWD:/w" -w /w --entrypoint haltsql ghcr.io/haltsql/haltsql-mcp:0.0.3'
 ```
 
 With the alias, a database on your machine is `host.docker.internal` rather
@@ -137,8 +137,7 @@ than `localhost` (see
 **pip:**
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install ./clients/python './clients/mcp[yaml]'   # Python 3.10+; installs haltsql-mcp
+pip install 'haltsql-mcp[yaml]'   # Python 3.10+; pulls in the haltsql SDK
 ```
 
 With pip, install the `haltsql` CLI too. You need it to draft the policy and
@@ -214,7 +213,7 @@ works in Claude Desktop (`claude_desktop_config.json`) and Cursor
         "run", "-i", "--rm", "--read-only",
         "-v", "/path/to/haltsql:/config:ro",
         "-e", "HALTSQL_MCP_CONTEXT",
-        "ghcr.io/haltsql/haltsql-mcp",
+        "ghcr.io/haltsql/haltsql-mcp:0.0.3",
         "postgresql://agent_ro@host.docker.internal:5432/mydb"
       ],
       "env": { "HALTSQL_MCP_CONTEXT": "{\"tenant_id\": \"acme\"}" }
@@ -302,7 +301,7 @@ central `haltsql-server`, or serve many clients over HTTP.
 ```sh
 docker run -i --rm --read-only -v ~/haltsql:/config:ro \
   -e HALTSQL_MCP_CONTEXT='{"tenant_id":"acme"}' \
-  ghcr.io/haltsql/haltsql-mcp postgresql://agent_ro@host.docker.internal:5432/mydb
+  ghcr.io/haltsql/haltsql-mcp:0.0.3 postgresql://agent_ro@host.docker.internal:5432/mydb
 ```
 
 When `/config/policy.yaml` exists and nothing else is configured, the image
@@ -314,7 +313,7 @@ tables.
 
 Add `haltsql-mcp.yaml` next to the policy. Then the client config is just
 `docker run -i --rm --read-only -v ~/haltsql:/config:ro
-ghcr.io/haltsql/haltsql-mcp`:
+ghcr.io/haltsql/haltsql-mcp:0.0.3`:
 
 ```yaml
 # ~/haltsql/haltsql-mcp.yaml
@@ -352,7 +351,7 @@ or rejects the token, the query is not executed.
 
 ```sh
 docker run -d --name haltsql-mcp -p 127.0.0.1:8765:8765 --read-only \
-  -v /etc/haltsql-mcp:/config:ro ghcr.io/haltsql/haltsql-mcp \
+  -v /etc/haltsql-mcp:/config:ro ghcr.io/haltsql/haltsql-mcp:0.0.3 \
   --transport http --tokens-file /config/tokens.json
 ```
 

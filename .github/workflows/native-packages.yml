@@ -5,7 +5,8 @@ name: Native packages (wheels, npm)
 # would install them, and publishes them on release tags.
 #
 # Publishing follows release.yml's real/dry-run split:
-#   vX.Y.Z tag          publish-pypi (haltsql), publish-pypi-mcp, publish-npm
+#   vX.Y.Z tag          publish-pypi (haltsql), publish-pypi-mcp, publish-pypi-integrations
+#                       (the eight haltsql-<framework> packages), publish-npm
 #   vX.Y.Z-rc.N tag,    publish-dry-run: twine check --strict and npm publish --dry-run
 #   or a manual run     on the exact files; plus publish-testpypi when the repository
 #   with dry_run=true   variable TESTPYPI_PUBLISH is "true" (needs TestPyPI trusted
@@ -40,6 +41,7 @@ on:
       - "clients/typescript/scripts/**"
       - "clients/typescript/src/local.ts"
       - "clients/mcp/pyproject.toml"
+      - "integrations/*/pyproject.toml"
       - "scripts/check-versions.sh"
       - "Dockerfile"
       - "dune-project"
@@ -378,6 +380,22 @@ jobs:
           name: python-mcp-dist
           path: clients/mcp/dist/*
           if-no-files-found: error
+      # The framework integrations (integrations/*, haltsql-<framework>) are pure
+      # Python too, published after haltsql (they require haltsql>=<version>).
+      - name: Build the framework integrations
+        run: |
+          set -eu
+          mkdir -p integrations-dist
+          for d in integrations/*/; do
+            [ -f "$d/pyproject.toml" ] || continue
+            python -m build --sdist --wheel --outdir integrations-dist "$d"
+          done
+          ls -la integrations-dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-integrations-dist
+          path: integrations-dist/*
+          if-no-files-found: error
 
   # Dry run of both publish jobs below on the exact files they would upload.
   publish-dry-run:
@@ -399,7 +417,7 @@ jobs:
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: "{wheel-*,python-sdist,python-mcp-dist}"
+          pattern: "{wheel-*,python-sdist,python-mcp-dist,python-integrations-dist}"
           path: dist
           merge-multiple: true
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -416,6 +434,12 @@ jobs:
           for f in "haltsql-$v.tar.gz" "haltsql_mcp-$v.tar.gz" "haltsql_mcp-$v-py3-none-any.whl" \
                    "haltsql-$v-py3-none-any.whl"; do
             test -f "dist/$f" || { echo "missing dist/$f"; exit 1; }
+          done
+          # One sdist and one wheel per framework integration (publish-pypi-integrations).
+          for n in haltsql_crewai haltsql_google_adk haltsql_langchain haltsql_langgraph haltsql_llamaindex haltsql_openai_agents haltsql_semantic_kernel haltsql_vanna; do
+            for f in "$n-$v.tar.gz" "$n-$v-py3-none-any.whl"; do
+              test -f "dist/$f" || { echo "missing dist/$f"; exit 1; }
+            done
           done
           platform=(dist/haltsql-"$v"-py3-none-manylinux*.whl dist/haltsql-"$v"-py3-none-macosx*.whl)
           [ "${#platform[@]}" -eq 3 ] && [ -f "${platform[0]}" ] || { echo "expected 3 platform wheels"; exit 1; }
@@ -533,6 +557,9 @@ jobs:
           merge-multiple: true
       - run: ls -la dist
       - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          # PyPI's reason for a rejected upload is only printed in verbose mode.
+          verbose: true
 
   # After haltsql: haltsql-mcp requires haltsql>=<version>.
   publish-pypi-mcp:
@@ -552,6 +579,70 @@ jobs:
           path: dist
       - run: ls -la dist
       - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          # PyPI's reason for a rejected upload is only printed in verbose mode.
+          verbose: true
+
+  # The eight framework integrations. One environment per project
+  # (pypi-<slug>): PyPI refuses two pending trusted publishers with the same
+  # repository, workflow and environment. GitHub shows all of them in one
+  # "Review deployments" dialog.
+  publish-pypi-integrations:
+    name: Publish ${{ matrix.project }} to PyPI
+    needs: [publish-pypi]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: crewai
+            project: haltsql-crewai
+            dist: haltsql_crewai
+          - slug: google-adk
+            project: haltsql-google-adk
+            dist: haltsql_google_adk
+          - slug: langchain
+            project: haltsql-langchain
+            dist: haltsql_langchain
+          - slug: langgraph
+            project: haltsql-langgraph
+            dist: haltsql_langgraph
+          - slug: llamaindex
+            project: haltsql-llamaindex
+            dist: haltsql_llamaindex
+          - slug: openai-agents
+            project: haltsql-openai-agents
+            dist: haltsql_openai_agents
+          - slug: semantic-kernel
+            project: haltsql-semantic-kernel
+            dist: haltsql_semantic_kernel
+          - slug: vanna
+            project: haltsql-vanna
+            dist: haltsql_vanna
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi-${{ matrix.slug }}
+      url: https://pypi.org/project/${{ matrix.project }}/
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-integrations-dist
+          path: all
+      - name: Select ${{ matrix.project }}
+        env:
+          DIST: ${{ matrix.dist }}
+        run: |
+          set -eu
+          mkdir dist
+          mv all/"$DIST"-*.tar.gz all/"$DIST"-*-py3-none-any.whl dist/
+          ls -la dist
+          [ "$(find dist -type f | wc -l)" -eq 2 ] || { echo "expected an sdist and a wheel"; exit 1; }
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          # PyPI's reason for a rejected upload is only printed in verbose mode.
+          verbose: true
 
   publish-npm:
     name: Publish npm packages

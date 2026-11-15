@@ -74,7 +74,7 @@ variable "environment" {
 variable "image" {
   description = "haltsql image reference. Pin a digest (repo@sha256:...) for immutable deployments."
   type        = string
-  default     = "ghcr.io/haltsql/haltsql:0.0.1"
+  default     = "ghcr.io/haltsql/haltsql:0.0.3"
 
   validation {
     condition     = can(regex("^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[0-9a-f]{64})?$", var.image)) && can(regex("[:@][^/]+$", var.image))

@@ -238,13 +238,13 @@ A request without the token gets `401` with
 
 ## 5. Install the agent packages
 
-The packages are not on PyPI yet. Install them from the clone, pinned to the
-versions the integration was tested with:
+Install them from PyPI, pinned to the versions the integration was tested
+with (the constraints file is in the clone):
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -c ../HaltSQL/integrations/openai_agents/constraints.txt \
-  -e ../HaltSQL/clients/python -e ../HaltSQL/integrations/openai_agents 'psycopg[binary]'
+  haltsql-openai-agents 'psycopg[binary]'
 ```
 
 This installs the `haltsql` SDK, `haltsql-openai-agents`, `openai-agents` and

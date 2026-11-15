@@ -95,7 +95,7 @@ With `client_auth: required`, start the server with
 this automatically when `tls.enabled` is set:
 
 ```sh
-helm install haltsql deploy/helm/haltsql \
+helm install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 \
   --set tls.enabled=true --set tls.secretName=haltsql-tls \
   --set tls.clientAuth=required --set tls.minVersion=1.3
 ```
@@ -210,7 +210,7 @@ path, status and duration. Probe and metrics requests are logged at `debug`.
 ## Helm
 
 ```sh
-helm install haltsql deploy/helm/haltsql \
+helm install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 \
   --set-file 'policies.analytics-agent\.yaml=policies/analytics-agent.yaml' \
   --set 'tokens[0].name=analytics-agent' \
   --set 'tokens[0].sha256=<hex sha256 of the token>' \

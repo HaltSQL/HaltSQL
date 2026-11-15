@@ -74,7 +74,7 @@ And in all cases:
 9. **Deterministic.** The same inputs give the same verdict.
 
 These are design goals backed by tests (see [testing.md](testing.md)). HaltSQL
-0.0.1 has not had an external security audit.
+0.0.3 has not had an external security audit.
 
 ## Attack classes and defenses
 

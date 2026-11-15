@@ -213,7 +213,7 @@ Use the chart in `deploy/helm/haltsql` with the overlay
 `deploy/cloud/aws/eks/values-eks.yaml`:
 
 ```sh
-helm upgrade --install haltsql deploy/helm/haltsql -n haltsql --create-namespace \
+helm upgrade --install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 -n haltsql --create-namespace \
   -f deploy/cloud/aws/eks/values-eks.yaml \
   --set-file 'policies.analytics-agent\.yaml=policies/analytics-agent.yaml'
 kubectl apply -n haltsql -f deploy/cloud/aws/eks/networkpolicy-shared.yaml

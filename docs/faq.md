@@ -184,10 +184,13 @@ choose its tenant.
 The CLI, `haltsql-server` and `haltsql-proxy` come as release binaries, as a
 container image, or from source with opam. See
 [Quickstart: Install](quickstart.md#1-install) and
-[Deployment](deployment.md#docker). The Python and TypeScript packages are not
-on PyPI or npm yet. Install them from a clone of the repository, as the
-[tutorials](tutorials/multi-tenant-analytics-agent.md#5-install-the-agent-packages)
-do.
+[Deployment](deployment.md#docker). The SDKs and integrations are packages:
+`pip install haltsql` (with a bundled engine on Linux and macOS arm64),
+`npm install @haltsql/client`, `pip install haltsql-mcp`,
+`pip install haltsql-langchain` and the other `haltsql-<framework>` packages,
+and the Helm chart at `oci://ghcr.io/haltsql/charts/haltsql`. The Go module is
+`github.com/HaltSQL/HaltSQL/clients/go/haltsql`; the Java SDK is built from
+source for now ([sdk-java.md](sdk-java.md)).
 
 ## Policies in practice
 
@@ -240,7 +243,7 @@ denied. See [Open Policy Agent](opa.md).
 
 ### Is HaltSQL production ready? What does pre-1.0 mean?
 
-HaltSQL is 0.0.1, a pre-1.0 preview. The verdict format within
+HaltSQL is 0.0.3, a pre-1.0 preview. The verdict format within
 `haltsql.dev/v1` and the reason codes are stable: reason codes are never
 renamed or reused. Other interfaces, including the policy schema and the HTTP
 API, may still change before 1.0. Before 1.0, a minor release may contain

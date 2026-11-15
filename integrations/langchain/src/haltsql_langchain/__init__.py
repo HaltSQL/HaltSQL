@@ -27,7 +27,7 @@ from haltsql import GuardError, GuardedResult, guard
 from haltsql.integration import ContextSource, authorize_guarded, feedback_for_model, guard_read_only
 
 __all__ = ["HaltSQLQueryRunner", "HaltSQLQueryTool", "guard_sql_database", "__version__"]
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 DEFAULT_DESCRIPTION = (
     "Run one read-only PostgreSQL query. Input: a single SQL statement with a LIMIT. "

@@ -8,7 +8,7 @@ statement timeout and a row cap. `build_sql_agent_graph()` is an example agent
 graph that retries after a refusal, up to a limit.
 
 ```sh
-pip install -e clients/python -e integrations/langgraph   # from the repository root
+pip install haltsql-langgraph
 ```
 
 ```python

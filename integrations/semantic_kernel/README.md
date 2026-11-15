@@ -8,7 +8,7 @@ a `READ ONLY` transaction with a statement timeout and a row cap. It returns
 JSON: the rows, or the reason codes and hints.
 
 ```sh
-pip install -e clients/python -e integrations/semantic_kernel   # from the repository root
+pip install haltsql-semantic-kernel
 ```
 
 ```python

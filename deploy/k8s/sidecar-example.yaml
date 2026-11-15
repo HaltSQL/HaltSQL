@@ -81,7 +81,7 @@ spec:
         - name: haltsql
           # In production pin the signed digest and verify it with cosign:
           #   image: ghcr.io/haltsql/haltsql@sha256:<digest>
-          image: ghcr.io/haltsql/haltsql:0.0.1
+          image: ghcr.io/haltsql/haltsql:0.0.3
           imagePullPolicy: IfNotPresent
           # Listens on all pod interfaces so the kubelet's httpGet probes can
           # reach it; the NetworkPolicy below blocks other pods from port 8080,

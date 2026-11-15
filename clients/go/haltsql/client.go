@@ -20,7 +20,7 @@ import (
 )
 
 // Version is the SDK version, sent in the User-Agent header.
-const Version = "0.0.2"
+const Version = "0.0.3"
 
 // Client talks to one haltsql-server. It is safe for concurrent use; create
 // one per sidecar and share it so keep-alive connections are reused.

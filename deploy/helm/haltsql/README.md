@@ -9,7 +9,7 @@ validates every value, so a typo such as `replicacount` fails at
 `helm install` time instead of being silently ignored.
 
 ```sh
-helm install haltsql deploy/helm/haltsql -n haltsql --create-namespace \
+helm install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3 -n haltsql --create-namespace \
   -f my-values.yaml
 helm lint deploy/helm/haltsql -f my-values.yaml      # validate values first
 ```

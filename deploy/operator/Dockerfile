@@ -5,7 +5,7 @@
 # exact loader rules haltsql-server uses.
 #
 #   docker build -t haltsql-operator:dev \
-#     --build-arg HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.1 deploy/operator
+#     --build-arg HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.3 deploy/operator
 #
 # HALTSQL_IMAGE must be the haltsql image the servers run (or the same
 # release), so validation and serving agree. The haltsql binary in it is

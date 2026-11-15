@@ -16,7 +16,7 @@ export const featured = [
         id: 'mcp', name: 'MCP server', logo: 'mcp.svg', to: '/docs/mcp', lang: 'json',
         keywords: 'claude desktop cursor vs code server-postgres model context protocol',
         blurb: 'The safe drop-in replacement for @modelcontextprotocol/server-postgres. Same query tool, same connection string.',
-        install: 'docker run -i --rm --read-only -v "$PWD:/config:ro" ghcr.io/haltsql/haltsql-mcp',
+        install: 'docker run -i --rm --read-only -v "$PWD:/config:ro" ghcr.io/haltsql/haltsql-mcp:0.0.3',
         code: `{
   "mcpServers": {
     "postgres": {
@@ -37,7 +37,7 @@ export const featured = [
       {
         id: 'langchain', name: 'LangChain', logo: 'langchain.svg', to: '/docs/integrations/langchain', lang: 'python',
         blurb: 'Guard an existing SQLDatabase, or give the agent a tool whose only argument is the SQL.',
-        install: "pip install -e clients/python -e 'integrations/langchain[langchain]'",
+        install: "pip install 'haltsql-langchain[langchain]'",
         code: `from langchain_community.utilities import SQLDatabase
 from haltsql import HaltSQLClient
 from haltsql_langchain import guard_sql_database
@@ -52,7 +52,7 @@ guarded = guard_sql_database(
       {
         id: 'langgraph', name: 'LangGraph', logo: 'langgraph.svg', to: '/docs/integrations/langgraph', lang: 'python',
         blurb: 'A prebuilt SQL agent graph that returns reason codes to the model and stops after N denials.',
-        install: 'pip install -e clients/python -e integrations/langgraph',
+        install: "pip install haltsql-langgraph",
         code: `from haltsql import HaltSQLClient
 from haltsql_langgraph import HaltSQLToolRunner, haltsql_query_tool, build_sql_agent_graph
 
@@ -66,7 +66,7 @@ out = graph.invoke({"messages": [("user", "How many open orders?")]},
       {
         id: 'openai', name: 'OpenAI Agents SDK', logo: 'openai.svg', to: '/docs/integrations/openai-agents', lang: 'python',
         blurb: 'A function tool that verifies the SQL, then runs the exact string with server-bound tenant values.',
-        install: 'pip install -e clients/python -e integrations/openai_agents',
+        install: "pip install haltsql-openai-agents",
         code: `from agents import Agent, Runner
 from haltsql import HaltSQLClient
 from haltsql_openai_agents import HaltSQLToolRunner, haltsql_query_tool
@@ -82,7 +82,7 @@ result = await Runner.run(agent, "How many open orders?",
         id: 'adk', name: 'Google ADK', logo: 'adk.svg', to: '/docs/integrations/google-adk', lang: 'python',
         keywords: 'agent development kit gemini',
         blurb: 'A ready SQL agent for the Agent Development Kit, with the tenant kept in session state.',
-        install: 'pip install -e clients/python -e integrations/google_adk',
+        install: "pip install haltsql-google-adk",
         code: `from google.adk.runners import InMemoryRunner
 from haltsql import HaltSQLClient
 from haltsql_google_adk import HaltSQLToolRunner, build_sql_agent
@@ -97,7 +97,7 @@ session = await adk.session_service.create_session(
       {
         id: 'llamaindex', name: 'LlamaIndex', logo: 'llamaindex.svg', to: '/docs/integrations/llamaindex', lang: 'python',
         blurb: 'A guarded SQLDatabase, SQLRetriever and NL-to-SQL query engine.',
-        install: "pip install -e clients/python -e 'integrations/llamaindex[llamaindex]'",
+        install: "pip install 'haltsql-llamaindex[llamaindex]'",
         code: `from llama_index.core import SQLDatabase
 from haltsql import HaltSQLClient
 from haltsql_llamaindex import guarded_nl_sql_query_engine
@@ -112,7 +112,7 @@ engine = guarded_nl_sql_query_engine(
       {
         id: 'crewai', name: 'CrewAI', logo: 'crewai.svg', to: '/docs/integrations/crewai', lang: 'python',
         blurb: 'A CrewAI tool for your analyst agents. Denials come back as hints the agent can fix.',
-        install: 'pip install -e clients/python -e integrations/crewai',
+        install: "pip install haltsql-crewai",
         code: `from crewai import Agent
 from haltsql import HaltSQLClient
 from haltsql_crewai import HaltSQLQueryTool, HaltSQLToolRunner
@@ -128,7 +128,7 @@ analyst = Agent(role="Analyst", goal="Answer questions about orders",
         id: 'sk', name: 'Semantic Kernel', logo: 'sk.svg', to: '/docs/integrations/semantic-kernel', lang: 'python',
         keywords: 'microsoft',
         blurb: 'A kernel plugin that reads the caller’s context from a contextvar on each request.',
-        install: 'pip install -e clients/python -e integrations/semantic_kernel',
+        install: "pip install haltsql-semantic-kernel",
         code: `from semantic_kernel import Kernel
 from haltsql import HaltSQLClient
 from haltsql_semantic_kernel import HaltSQLPlugin, HaltSQLToolRunner, PLUGIN_NAME
@@ -143,7 +143,7 @@ kernel.add_plugin(HaltSQLPlugin(runner, context=current_ctx.get),
       {
         id: 'vanna', name: 'Vanna', logo: 'vanna.svg', to: '/docs/integrations/vanna', lang: 'python',
         blurb: 'An async SqlRunner for Vanna’s RunSqlTool.',
-        install: "pip install -e clients/python -e 'integrations/vanna[vanna]'",
+        install: "pip install 'haltsql-vanna[vanna]'",
         code: `from haltsql import AsyncHaltSQLClient
 from haltsql_vanna import HaltSQLSqlRunner
 from vanna.tools import RunSqlTool
@@ -162,7 +162,7 @@ tool = RunSqlTool(sql_runner=runner)`,
         id: 'python', name: 'Python', logo: 'python.svg', to: '/docs/sdk-python', lang: 'python',
         keywords: 'psycopg asyncpg sqlalchemy',
         blurb: 'Sync and async clients for psycopg 3, asyncpg and SQLAlchemy, plus a local CLI verifier.',
-        install: "pip install -e 'clients/python[psycopg]'",
+        install: "pip install 'haltsql[psycopg]'",
         code: `from haltsql import HaltSQLClient, guard
 
 hs = HaltSQLClient.from_env()
@@ -176,7 +176,7 @@ result = guard.execute(conn, sql, {"tenant_id": tenant}, verifier=hs,
         id: 'ts', name: 'TypeScript', logo: 'ts.svg', to: '/docs/sdk-typescript', lang: 'typescript',
         keywords: 'node javascript node-postgres',
         blurb: 'A Node.js client with guarded execution for node-postgres.',
-        install: 'npm install ./clients/typescript',
+        install: 'npm install @haltsql/client',
         code: `import { HaltSQLClient } from "@haltsql/client";
 
 const haltsql = new HaltSQLClient({
@@ -223,7 +223,7 @@ Verdict verdict = haltsql.verify(
         id: 'proxy', name: 'Wire proxy', logo: 'proxy.svg', to: '/docs/proxy', lang: 'bash',
         keywords: 'psql jdbc pgx driver postgres protocol',
         blurb: 'Speaks the Postgres wire protocol. Point psql, JDBC or pgx at it with no code changes.',
-        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.1',
+        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.3',
         code: `# Point any Postgres driver at the proxy instead of the database.
 haltsql-proxy run -c proxy.yaml --listen 0.0.0.0:6432
 
@@ -236,7 +236,7 @@ DETAIL: HaltSQL reasons: E_COLUMN_DENIED, E_TENANT_MISSING`,
         id: 'http', name: 'HTTP API', logo: 'http.svg', to: '/docs/http-api', lang: 'bash',
         keywords: 'rest sidecar curl any language',
         blurb: 'One POST /v1/verify call per query, from any language, through the haltsql-server sidecar.',
-        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.1',
+        install: 'docker pull ghcr.io/haltsql/haltsql:0.0.3',
         code: `curl -s http://127.0.0.1:8080/v1/verify \\
   -H "Authorization: Bearer $HALTSQL_TOKEN" \\
   -d '{"sql": "SELECT id, status FROM orders WHERE tenant_id = $1 LIMIT 50",

@@ -38,15 +38,14 @@ You need three things whichever client you use:
 and the `haltsql` CLI, so it can verify queries with no other process:
 
 ```sh
-docker pull ghcr.io/haltsql/haltsql-mcp
+docker pull ghcr.io/haltsql/haltsql-mcp:0.0.3
 ```
 
-**Local install.** `haltsql-mcp` needs Python 3.10 or newer. Install it from a
-checkout of the repository:
+**Local install.** `haltsql-mcp` needs Python 3.10 or newer. Install it from
+PyPI:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install ./clients/python './clients/mcp[yaml]'
+pip install 'haltsql-mcp[yaml]'
 ```
 
 The `yaml` extra installs PyYAML, which the server uses to read YAML config and
@@ -114,7 +113,7 @@ you change it.
         "run", "-i", "--rm", "--read-only",
         "-v", "/path/to/haltsql:/config:ro",
         "-e", "HALTSQL_MCP_CONTEXT",
-        "ghcr.io/haltsql/haltsql-mcp",
+        "ghcr.io/haltsql/haltsql-mcp:0.0.3",
         "postgresql://agent_ro@host.docker.internal:5432/mydb"
       ],
       "env": { "HALTSQL_MCP_CONTEXT": "{\"tenant_id\": \"acme\"}" }
@@ -191,7 +190,7 @@ claude mcp add postgres -e HALTSQL_MCP_CONTEXT='{"tenant_id":"acme"}' -- \
 ```sh
 claude mcp add postgres -e HALTSQL_MCP_CONTEXT='{"tenant_id":"acme"}' -- \
   docker run -i --rm --read-only -v /path/to/haltsql:/config:ro -e HALTSQL_MCP_CONTEXT \
-  ghcr.io/haltsql/haltsql-mcp postgresql://agent_ro@host.docker.internal:5432/mydb
+  ghcr.io/haltsql/haltsql-mcp:0.0.3 postgresql://agent_ro@host.docker.internal:5432/mydb
 ```
 
 **Shared HTTP server** (see [Other MCP clients](#streamable-http)):
@@ -353,7 +352,7 @@ statement_timeout_ms: 5000
 
 The client entry then only needs `haltsql-mcp --config /path/to/haltsql-mcp.yaml`,
 or `docker run -i --rm --read-only -v /path/to/haltsql:/config:ro
-ghcr.io/haltsql/haltsql-mcp`. Flags override environment variables, and
+ghcr.io/haltsql/haltsql-mcp:0.0.3`. Flags override environment variables, and
 environment variables override the file. Unknown keys are an error, and an
 inline `server.token` is rejected. See [Config file](../mcp.md#config-file)
 for every key.

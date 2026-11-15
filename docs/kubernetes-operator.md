@@ -47,7 +47,7 @@ Install the CRDs, RBAC and the operator in `haltsql-system` with kustomize:
 
 ```sh
 cd deploy/operator
-make install-manifests IMG=registry.example/haltsql-operator:0.0.1 | kubectl apply --server-side -f -
+make install-manifests IMG=registry.example/haltsql-operator:0.0.3 | kubectl apply --server-side -f -
 kubectl -n haltsql-system rollout status deploy/haltsql-operator-controller-manager
 ```
 
@@ -106,7 +106,7 @@ metadata:
   namespace: agents
 spec:
   replicas: 2
-  image: ghcr.io/haltsql/haltsql:0.0.1
+  image: ghcr.io/haltsql/haltsql:0.0.3
   policies:
     - name: orders
   auth:

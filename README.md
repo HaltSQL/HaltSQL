@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/HaltSQL/HaltSQL/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: pre-1.0](https://img.shields.io/badge/status-0.0.2%20preview-orange.svg)
+![Status: pre-1.0](https://img.shields.io/badge/status-0.0.3%20preview-orange.svg)
 
 **A policy firewall for LLM-generated PostgreSQL.**
 
@@ -192,7 +192,7 @@ When the query passes, `bind_params` tells you what to bind:
 
 ## Status
 
-HaltSQL is **0.0.2, a pre-1.0 preview**. Limits to know about:
+HaltSQL is **0.0.3, a pre-1.0 preview**. Limits to know about:
 
 - PostgreSQL only. HaltSQL vendors libpg_query 17 (the Postgres 17 grammar);
   `haltsql version` prints the exact version.
@@ -226,6 +226,43 @@ mature, so treat them in two tiers:
 
 ## Install
 
+Every release is signed and attested; see
+[verifying a release](docs/security/supply-chain.md#verifying-a-release).
+
+**CLI, server and proxy:** static Linux (amd64, arm64) and macOS (arm64)
+binaries on each [GitHub release](https://github.com/HaltSQL/HaltSQL/releases):
+
+```sh
+curl -LO https://github.com/HaltSQL/HaltSQL/releases/download/v0.0.3/haltsql-v0.0.3-linux-amd64.tar.gz
+tar -xzf haltsql-v0.0.3-linux-amd64.tar.gz && export PATH="$PWD/haltsql-v0.0.3-linux-amd64:$PATH"
+```
+
+**Container image** (`linux/amd64`, `linux/arm64`):
+
+```sh
+docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD:/etc/haltsql:ro" \
+  ghcr.io/haltsql/haltsql:0.0.3 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
+  --allow-unauthenticated   # local development only; use a config with tokens otherwise
+```
+
+**Kubernetes:**
+
+```sh
+helm install haltsql oci://ghcr.io/haltsql/charts/haltsql --version 0.0.3
+```
+
+**SDKs and agent integrations:**
+
+| | |
+|---|---|
+| Python SDK (bundled engine on Linux x86_64/aarch64 and macOS arm64) | `pip install 'haltsql[psycopg]'` |
+| TypeScript SDK (bundled engine via `@haltsql/native-*`) | `npm install @haltsql/client` |
+| Go SDK | `go get github.com/HaltSQL/HaltSQL/clients/go/haltsql@v0.0.3` |
+| MCP server | `pip install 'haltsql-mcp[yaml]'` or `ghcr.io/haltsql/haltsql-mcp:0.0.3` |
+| LangChain, LangGraph, LlamaIndex, OpenAI Agents, Google ADK, CrewAI, Semantic Kernel, Vanna | `pip install haltsql-langchain` (and `haltsql-langgraph`, `haltsql-llamaindex`, `haltsql-openai-agents`, `haltsql-google-adk`, `haltsql-crewai`, `haltsql-semantic-kernel`, `haltsql-vanna`) |
+
+The Java SDK is built from source for now ([sdk-java.md](docs/sdk-java.md)).
+
 **From source with opam** (OCaml 5.1 or newer):
 
 ```sh
@@ -233,19 +270,6 @@ opam pin add haltsql https://github.com/HaltSQL/HaltSQL.git
 opam pin add haltsql-server https://github.com/HaltSQL/HaltSQL.git   # optional sidecar
 opam pin add haltsql-proxy https://github.com/HaltSQL/HaltSQL.git    # optional wire proxy
 ```
-
-**Docker:**
-
-```sh
-docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD:/etc/haltsql:ro" \
-  ghcr.io/haltsql/haltsql:0.0.1 --policy /etc/haltsql/policy.yaml --listen 0.0.0.0:8080 \
-  --allow-unauthenticated   # local development only; use a config with tokens otherwise
-```
-
-**Release binaries:** static Linux (amd64, arm64) and macOS (arm64) binaries
-are attached to each [GitHub release](https://github.com/HaltSQL/HaltSQL/releases),
-with `SHA256SUMS`, a CycloneDX SBOM, and cosign signatures. See
-[deployment.md](docs/deployment.md#verifying-release-artifacts).
 
 ## Documentation
 

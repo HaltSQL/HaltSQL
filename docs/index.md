@@ -5,7 +5,7 @@ exact SQL string is allowed for a caller under a declarative policy, and returns
 a verdict with machine-readable reasons. It never rewrites SQL and never
 connects to the database.
 
-These docs describe version **0.0.1** (pre-1.0). The verdict format and reason
+These docs describe version **0.0.3** (pre-1.0). The verdict format and reason
 codes are stable; other interfaces may still change. See
 [Versioning and upgrades](operations/upgrades.md).
 

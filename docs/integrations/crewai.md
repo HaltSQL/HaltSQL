@@ -21,13 +21,11 @@ query goes through `haltsql.guard.authorize` and `guard.execute`.
 
 ## Install
 
-The package needs Python 3.10 to 3.13 and `crewai` 1.15 or newer, below 2. It
-is not on PyPI yet, so install it and the Python SDK from a checkout of the
-repository:
+The package needs Python 3.10 to 3.13 and `crewai` 1.15 or newer, below 2. Install it from PyPI; it pulls in the `haltsql`
+Python SDK:
 
 ```sh
-git clone https://github.com/HaltSQL/HaltSQL && cd HaltSQL
-pip install -e clients/python -e integrations/crewai
+pip install haltsql-crewai
 ```
 
 The SDK depends on psycopg 3, which needs `libpq` on the machine. If you do

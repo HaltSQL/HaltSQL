@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haltsql-mcp"
-version = "0.0.2"
+version = "0.0.3"
 description = "MCP server that runs LLM-written SQL on PostgreSQL only after HaltSQL allows it"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-  "haltsql>=0.0.2",
+  "haltsql>=0.0.3",
   "mcp>=1.10",
   "psycopg[binary]>=3.2",
 ]

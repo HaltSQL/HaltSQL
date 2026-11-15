@@ -4,7 +4,7 @@
 #   curl -fsSLo deploy/cloud/aws/ecs/rds-global-bundle.pem \
 #     https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 #   docker build -f deploy/cloud/aws/ecs/Dockerfile.proxy -t haltsql-proxy-config:2026-11-08 deploy/cloud/aws/ecs
-ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.1
+ARG HALTSQL_IMAGE=ghcr.io/haltsql/haltsql:0.0.3
 FROM ${HALTSQL_IMAGE}
 COPY proxy.yaml /etc/haltsql/proxy.yaml
 COPY policies/ /etc/haltsql/policies/

@@ -11,7 +11,7 @@ import type { Context, HealthStatus, PolicySummary, ReadyStatus, Verdict } from 
 import { checkContext, parsePolicies, parseVerdict } from "./validate.js";
 
 /** SDK version, sent in the `User-Agent` header. */
-export const VERSION = "0.0.2";
+export const VERSION = "0.0.3";
 
 export interface ClientOptions {
   /** Sidecar base URL, e.g. `http://127.0.0.1:8080`. Must be http(s). */
