@@ -6,7 +6,7 @@ replace github.com/HaltSQL/HaltSQL/clients/go/haltsql => ../haltsql
 
 require (
 	github.com/HaltSQL/HaltSQL/clients/go/haltsql v0.0.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 )
 
 require (
